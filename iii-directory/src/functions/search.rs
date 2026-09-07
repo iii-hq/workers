@@ -29,7 +29,9 @@ use crate::surface::search_catalog as catalog;
 const CATALOG_TIMEOUT_MS: u64 = 5_000;
 /// Function ids per `functions::info` batch — the engine's documented max.
 const CATALOG_INFO_BATCH: usize = 32;
-/// Workers returned by one `directory::search_functions` call.
+/// Workers returned by one batch. A batch with more than three lanes may
+/// return two workers per lane instead, so every capability keeps its
+/// runner-up worker (see `select_preordered_ids`).
 const MAX_SEARCH_WORKERS: usize = 6;
 /// Candidates returned by one call — the ranked guards usually select a
 /// handful; this is the backstop.
@@ -87,8 +89,14 @@ const PRODUCTION_ADMISSION_COSINE: f64 = 0.30;
 /// On expiry the request serves the fused retrieval order; the blocking
 /// rerank task itself is not cancelled and finishes in the background.
 const PRODUCTION_RERANK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-/// Capability-sized searches accepted by one request.
+/// Capability-sized searches per batch: each batch keeps its own candidate
+/// budget (`MAX_SEARCH_FUNCTIONS` / `MAX_SEARCH_WORKERS`), so every
+/// capability still receives about two candidates however many are sent.
 const MAX_SEARCH_QUERIES: usize = 6;
+/// Batches one request runs (sequentially — the reranker sits behind a
+/// mutex, so concurrent batches would only overlap their timeouts).
+/// Capabilities past the last batch are named in `guidance` instead.
+const MAX_SEARCH_BATCHES: usize = 3;
 /// Registry list queries per search: each capability, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
 /// natural-language queries that a single term ("email") hits. All
@@ -318,9 +326,9 @@ engine::functions::info call — never call an installable function before insta
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchFunctionsRequest {
-    /// One to six non-empty capability searches derived from the goal and
-    /// current execution state. For one search at each decision point, include all unmet
-    /// external capabilities once. Exclude intrinsic reasoning, summarization, planning, or
+    /// Non-empty capability searches derived from the goal and current execution state,
+    /// usually one to six and at most eighteen per call (searched in batches of six). For
+    /// one search at each decision point, include all unmet external capabilities once. Exclude intrinsic reasoning, summarization, planning, or
     /// formatting, and do not repeat needs already represented or satisfied. Requests to
     /// summarize provided text or content are ignored. Write every entry in English,
     /// translating non-English user requests while preserving proper names, URLs, and function
@@ -691,11 +699,18 @@ fn production_minilm_assemble(
 }
 
 fn select_preordered_ids(rankings: Vec<Vec<(String, f64)>>) -> Vec<String> {
+    // Round-robin hands every lane two of the twelve slots. With six lanes
+    // the six leaders alone fill a six-worker cap and every runner-up in a
+    // new namespace is dropped, so the cap grows with the lane count.
+    let max_workers = MAX_SEARCH_WORKERS.max(2 * rankings.len());
     let rankings = rankings
         .into_iter()
         .map(|ranking| drop_trailing_namespaces(ranking, SEARCH_RANK_FLOOR))
         .collect::<Vec<_>>();
-    limit_search_workers(round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS))
+    limit_search_workers(
+        round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS),
+        max_workers,
+    )
 }
 
 fn search_queries(capabilities: &[String]) -> Vec<String> {
@@ -716,7 +731,7 @@ fn baggage_session_id() -> Option<String> {
     (!session_id.is_empty()).then_some(session_id)
 }
 
-fn limit_search_workers(selected: Vec<String>) -> Vec<String> {
+fn limit_search_workers(selected: Vec<String>, max_workers: usize) -> Vec<String> {
     let mut namespaces: Vec<String> = Vec::new();
     selected
         .into_iter()
@@ -727,7 +742,7 @@ fn limit_search_workers(selected: Vec<String>) -> Vec<String> {
             if namespaces.iter().any(|seen| seen == namespace) {
                 return true;
             }
-            if namespaces.len() == MAX_SEARCH_WORKERS {
+            if namespaces.len() == max_workers {
                 return false;
             }
             namespaces.push(namespace.to_string());
@@ -736,9 +751,10 @@ fn limit_search_workers(selected: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Group the selected function ids into compact candidates by worker,
-/// keeping at most `MAX_SEARCH_WORKERS` workers. Ids missing from the catalog
-/// are skipped; within a worker the rank order is preserved — best first.
+/// Group the selected function ids into compact candidates by worker
+/// (`selected` is already worker-capped per batch). Ids missing from the
+/// catalog are skipped; within a worker the rank order is preserved — best
+/// first.
 fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWorker> {
     let mut workers: Vec<SearchWorker> = Vec::new();
     for function_id in selected {
@@ -757,11 +773,10 @@ fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWork
             .position(|worker| worker.namespace == namespace)
         {
             Some(index) => workers[index].functions.push(candidate),
-            None if workers.len() < MAX_SEARCH_WORKERS => workers.push(SearchWorker {
+            None => workers.push(SearchWorker {
                 namespace: namespace.to_string(),
                 functions: vec![candidate],
             }),
-            None => {}
         }
     }
     workers
@@ -1129,12 +1144,15 @@ pub async fn search_functions(
     if request.capabilities.is_empty() {
         return Err(Error::Handler("provide at least one capability".into()));
     }
-    // Over the cap: search the first MAX_SEARCH_QUERIES and name the rest in
+    // Over the batch budget: search what fits and name the rest in
     // `guidance` so the agent keeps this turn's candidates instead of a
     // rejected call.
-    let dropped = request
-        .capabilities
-        .split_off(request.capabilities.len().min(MAX_SEARCH_QUERIES));
+    let dropped = request.capabilities.split_off(
+        request
+            .capabilities
+            .len()
+            .min(MAX_SEARCH_QUERIES * MAX_SEARCH_BATCHES),
+    );
     if request
         .capabilities
         .iter()
@@ -1144,64 +1162,20 @@ pub async fn search_functions(
     }
     let started = Instant::now();
     let tools = deps.catalog.read().await.clone();
-    let search_queries = search_queries(&request.capabilities);
     let cfg = deps.config.load_full();
-    let mode = cfg.function_search_mode;
-    let lexical_started = Instant::now();
-    // ponytail: index rebuilt per call (~250 slim docs, sub-ms); cache by
-    // tool_fingerprint if search latency ever matters.
-    let corpus = canonical_tools(&tools);
-    let index = Bm25Index::build(&corpus);
-    let lexical = lexical_rankings(&index, &search_queries);
     let fingerprint = tool_fingerprint(&tools);
-    let lexical_top_ids: Vec<&str> = lexical
-        .iter()
-        .filter_map(|ranking| ranking.first().map(|(id, _)| id.as_str()))
-        .collect();
-    tracing::debug!(
-        ?mode,
-        %fingerprint,
-        elapsed_ms = lexical_started.elapsed().as_secs_f64() * 1000.0,
-        ?lexical_top_ids,
-        "lexical lane ranked"
-    );
-    let production_minilm =
-        mode == FunctionSearchMode::Hybrid && deps.semantic.is_production_minilm();
-    let production_outcome = if production_minilm {
-        let semantic_started = Instant::now();
-        let rankings = production_minilm_rankings(
-            &deps.semantic,
-            &fingerprint,
-            &tools,
-            &search_queries,
-            &lexical,
-        )
-        .await;
-        tracing::debug!(
-            ?mode,
-            available = rankings.is_some(),
-            complete = rankings.as_ref().is_some_and(|outcome| outcome.complete),
-            %fingerprint,
-            repository = deps.semantic.model_repository(),
-            revision = deps.semantic.model_revision(),
-            reranker_repository = deps.semantic.reranker_repository(),
-            reranker_revision = deps.semantic.reranker_revision(),
-            elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
-            "production MiniLM retrieval and reranking completed"
-        );
-        rankings
-    } else {
-        None
-    };
-    let production_rankings = production_outcome.map(|outcome| outcome.rankings);
-    let mut selected = match production_rankings {
-        Some(rankings) => select_preordered_ids(rankings),
-        None => select_preordered_ids(production_fallback_rankings(
-            &tools,
-            &search_queries,
-            &lexical,
-        )),
-    };
+    let mut selected: Vec<String> = Vec::new();
+    let mut installable: Vec<InstallableWorker> = Vec::new();
+    for batch in request.capabilities.chunks(MAX_SEARCH_QUERIES) {
+        let outcome = search_batch(deps, &cfg, &tools, &fingerprint, batch).await;
+        for function_id in outcome.selected {
+            if !selected.contains(&function_id) {
+                selected.push(function_id);
+            }
+        }
+        merge_installable(&mut installable, outcome.installable);
+    }
+    let batches = request.capabilities.len().div_ceil(MAX_SEARCH_QUERIES);
     let session_id = baggage_session_id();
     // Repeat queries in one session skip candidates the session already
     // received (session identity from caller baggage; absent → full
@@ -1216,23 +1190,8 @@ pub async fn search_functions(
         selected = new;
         repeated = prior;
     }
-    tracing::debug!(?mode, %fingerprint, top_ids = ?selected, "function search selected");
+    tracing::debug!(%fingerprint, batches, top_ids = ?selected, "function search selected");
     let workers = assemble_workers(&selected, &tools);
-    // Installable section: every search also consults the public registry
-    // for NOT-installed workers whose functions match — behind the
-    // registry_search knob; every failure inside returns an empty section
-    // (fail-open).
-    let mut installable: Vec<InstallableWorker> = Vec::new();
-    if cfg.registry_search {
-        installable = registry_installable(
-            &cfg,
-            &deps.registry_cache,
-            production_minilm.then_some(&deps.semantic),
-            &tools,
-            &search_queries,
-        )
-        .await;
-    }
     let guidance = if workers.is_empty() && repeated.is_empty() {
         if installable.is_empty() {
             SEARCH_REFINE_GUIDANCE.to_string()
@@ -1257,8 +1216,9 @@ unchanged — reuse the earlier result): {}.",
         guidance
     } else {
         format!(
-            "{guidance} Only the first {MAX_SEARCH_QUERIES} capabilities were searched; \
+            "{guidance} Only the first {} capabilities were searched; \
 search again for: {}.",
+            MAX_SEARCH_QUERIES * MAX_SEARCH_BATCHES,
             dropped.join(", ")
         )
     };
@@ -1268,6 +1228,120 @@ search again for: {}.",
         installable,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
+}
+
+/// Fold one batch's installable workers into the merged section: a worker
+/// two batches both surfaced keeps its first entry and gains the later
+/// batch's functions it did not already list.
+fn merge_installable(merged: &mut Vec<InstallableWorker>, batch: Vec<InstallableWorker>) {
+    for worker in batch {
+        match merged.iter_mut().find(|known| known.name == worker.name) {
+            Some(known) => {
+                for function in worker.functions {
+                    if !known
+                        .functions
+                        .iter()
+                        .any(|existing| existing.function_id == function.function_id)
+                    {
+                        known.functions.push(function);
+                    }
+                }
+            }
+            None => merged.push(worker),
+        }
+    }
+}
+
+/// Candidates one batch of capabilities produced: selected function ids
+/// in rank order (already budgeted by `select_preordered_ids`) and the
+/// matching NOT-installed registry workers.
+struct BatchOutcome {
+    selected: Vec<String>,
+    installable: Vec<InstallableWorker>,
+}
+
+async fn search_batch(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    tools: &[ToolSchema],
+    fingerprint: &str,
+    capabilities: &[String],
+) -> BatchOutcome {
+    let search_queries = search_queries(capabilities);
+    let mode = cfg.function_search_mode;
+    let lexical_started = Instant::now();
+    // ponytail: index rebuilt per call (~250 slim docs, sub-ms); cache by
+    // tool_fingerprint if search latency ever matters.
+    let corpus = canonical_tools(tools);
+    let index = Bm25Index::build(&corpus);
+    let lexical = lexical_rankings(&index, &search_queries);
+    let lexical_top_ids: Vec<&str> = lexical
+        .iter()
+        .filter_map(|ranking| ranking.first().map(|(id, _)| id.as_str()))
+        .collect();
+    tracing::debug!(
+        ?mode,
+        %fingerprint,
+        elapsed_ms = lexical_started.elapsed().as_secs_f64() * 1000.0,
+        ?lexical_top_ids,
+        "lexical lane ranked"
+    );
+    let production_minilm =
+        mode == FunctionSearchMode::Hybrid && deps.semantic.is_production_minilm();
+    let production_outcome = if production_minilm {
+        let semantic_started = Instant::now();
+        let rankings = production_minilm_rankings(
+            &deps.semantic,
+            fingerprint,
+            tools,
+            &search_queries,
+            &lexical,
+        )
+        .await;
+        tracing::debug!(
+            ?mode,
+            available = rankings.is_some(),
+            complete = rankings.as_ref().is_some_and(|outcome| outcome.complete),
+            %fingerprint,
+            repository = deps.semantic.model_repository(),
+            revision = deps.semantic.model_revision(),
+            reranker_repository = deps.semantic.reranker_repository(),
+            reranker_revision = deps.semantic.reranker_revision(),
+            elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
+            "production MiniLM retrieval and reranking completed"
+        );
+        rankings
+    } else {
+        None
+    };
+    let production_rankings = production_outcome.map(|outcome| outcome.rankings);
+    let selected = match production_rankings {
+        Some(rankings) => select_preordered_ids(rankings),
+        None => select_preordered_ids(production_fallback_rankings(
+            tools,
+            &search_queries,
+            &lexical,
+        )),
+    };
+    // Installable section: every search also consults the public registry
+    // for NOT-installed workers whose functions match — behind the
+    // registry_search knob; every failure inside returns an empty section
+    // (fail-open).
+    let mut installable: Vec<InstallableWorker> = Vec::new();
+    if cfg.registry_search {
+        installable = registry_installable(
+            cfg,
+            &deps.registry_cache,
+            production_minilm.then_some(&deps.semantic),
+            tools,
+            &search_queries,
+        )
+        .await;
+    }
+    BatchOutcome {
+        selected,
+        installable,
+    }
 }
 
 fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
@@ -2328,11 +2402,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_truncates_more_than_six_capabilities() {
-        let request: SearchFunctionsRequest = serde_json::from_value(json!({
-            "capabilities": ["one", "two", "three", "four", "five", "six", "seven", "eight"]
-        }))
-        .unwrap();
+    async fn search_truncates_beyond_the_batch_budget() {
+        let mut capabilities: Vec<String> = (1..=18).map(|n| format!("cap {n}")).collect();
+        capabilities.push("nineteen".into());
+        capabilities.push("twenty".into());
+        let request = SearchFunctionsRequest { capabilities };
 
         let response = search_functions(&search_deps(Vec::new()), request)
             .await
@@ -2340,8 +2414,25 @@ mod tests {
 
         assert!(
             response.guidance.contains(
-                "Only the first 6 capabilities were searched; search again for: seven, eight."
+                "Only the first 18 capabilities were searched; search again for: nineteen, twenty."
             ),
+            "{}",
+            response.guidance
+        );
+    }
+
+    #[tokio::test]
+    async fn search_batches_more_than_six_capabilities_without_a_note() {
+        let request = SearchFunctionsRequest {
+            capabilities: (1..=8).map(|n| format!("cap {n}")).collect(),
+        };
+
+        let response = search_functions(&search_deps(Vec::new()), request)
+            .await
+            .unwrap();
+
+        assert!(
+            !response.guidance.contains("were searched"),
             "{}",
             response.guidance
         );
@@ -2695,11 +2786,67 @@ mod tests {
     }
 
     #[test]
+    fn installable_workers_merge_functions_across_batches() {
+        let worker = |functions: &[&str]| InstallableWorker {
+            name: "email".into(),
+            version: "1.0.0".into(),
+            description: "Email worker".into(),
+            functions: functions
+                .iter()
+                .map(|id| FunctionCandidate {
+                    function_id: (*id).into(),
+                    description: String::new(),
+                })
+                .collect(),
+            install: install_call("email"),
+        };
+        let mut merged = vec![worker(&["email::send"])];
+
+        merge_installable(&mut merged, vec![worker(&["email::read", "email::send"])]);
+
+        assert_eq!(merged.len(), 1);
+        let ids: Vec<&str> = merged[0]
+            .functions
+            .iter()
+            .map(|f| f.function_id.as_str())
+            .collect();
+        assert_eq!(ids, ["email::send", "email::read"]);
+    }
+
+    #[test]
+    fn six_lanes_keep_every_runner_up_worker() {
+        let rankings: Vec<Vec<(String, f64)>> = (0..6)
+            .map(|lane| {
+                vec![
+                    (format!("lead{lane}::run"), 1.0),
+                    (format!("second{lane}::run"), 0.9),
+                ]
+            })
+            .collect();
+
+        let selected = select_preordered_ids(rankings);
+
+        assert_eq!(selected.len(), 12, "{selected:?}");
+        assert!(selected.iter().any(|id| id == "second0::run"));
+    }
+
+    #[test]
+    fn one_lane_still_stops_at_six_workers() {
+        let ranking: Vec<(String, f64)> = (b'a'..=b'j')
+            .map(|letter| (format!("{}::run", char::from(letter)), 1.0))
+            .collect();
+
+        let selected = select_preordered_ids(vec![ranking]);
+
+        assert_eq!(selected.len(), MAX_SEARCH_WORKERS, "{selected:?}");
+    }
+
+    #[test]
     fn worker_cap_drops_candidates_before_session_delivery() {
         let ranked: Vec<String> = (b'a'..=b'g')
             .map(|letter| format!("{}::run", char::from(letter)))
             .collect();
-        let emitted = limit_search_workers(ranked);
+        let emitted = limit_search_workers(ranked, MAX_SEARCH_WORKERS);
         let mut registry = SessionRegistry::default();
 
         registry.split("session", "catalog", &emitted);

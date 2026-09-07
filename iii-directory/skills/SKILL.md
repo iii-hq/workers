@@ -43,7 +43,7 @@ never appear in `index` and `update`/`delete` refuse them.
 
 ## When to Use
 
-- You need functions for one to six unmet capabilities — `directory::search_functions`.
+- You need functions for a step's unmet capabilities (usually one to six, at most eighteen) — `directory::search_functions`.
 - You need to see which workers are installed — `directory::skills::index` (token-light; start here).
 - You need to read a worker's overview or a deeper doc it linked to — `directory::skills::get`.
 - You need to find a skill across the repo with filters — `directory::skills::list`.
@@ -67,7 +67,7 @@ never appear in `index` and `update`/`delete` refuse them.
 
 ## Functions
 
-- `directory::search_functions` — find compact installed and installable function candidates for one to six required capabilities.
+- `directory::search_functions` — find compact installed and installable function candidates for the required capabilities (usually one to six, at most eighteen per call).
 - `directory::skills::index` — token-light per-worker overview, one block per installed worker; truncates and tells you to call `list` when large.
 - `directory::skills::list` — enumerate every visible skill with id/title/type/description/bytes/modified_at; narrow with `search`, `prefix`, `type`, or `include_description`.
 - `directory::skills::get` — read one skill doc by its skill id; forgiving about short names, a trailing `.md`, an `iii://` prefix, and `SKILL.md` filenames. The response's `path` is the absolute on-disk file; its parent directory is the skill's base directory, where payload the body references by relative path (`scripts/`, `reference/`) lives.

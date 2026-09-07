@@ -451,7 +451,7 @@ catalog with `engine::functions::list`.
 
 | Function | Kind | What it does |
 |---|---|---|
-| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, latency_ms }`: BM25 rank over the live engine catalog (at most 6 workers / 12 candidates) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of one to six non-empty unmet external capability searches; extra entries are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
+| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, latency_ms }`: hybrid rank over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
 | `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per turn). |
 | `directory::on-functions-change` | internal | Refreshes the search catalog on the engine's functions-available push. |
 | `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |
@@ -485,8 +485,10 @@ Ranking pipeline:
    ranked per capability with BM25 fused with the MiniLM dense lane (same
    0.30 admission floor as the installed catalog), so a capability sharing no
    vocabulary with a contract ("retrieve web news articles" → `web::fetch`)
-   still surfaces. Returns up to 2 workers / 6 candidates that WOULD match if
-   installed, with `compose::add` guidance.
+   still surfaces. Returns up to 2 workers / 6 candidates per batch of six
+   capabilities (so up to 6 workers / 18 candidates across three batches; a
+   worker two batches both surface keeps one entry with its functions merged)
+   that WOULD match if installed, with `compose::add` guidance.
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.
 

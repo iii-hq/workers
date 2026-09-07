@@ -285,7 +285,7 @@ fn hint_block(functions_generation: u64, expose: ExposeKind) -> String {
     };
     format!(
         "<discovery_assist functions_generation={functions_generation}>\n\
-Before calling any task function whose ID has not already been verified in this conversation by a prior search result, contract lookup, or successful call, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Never invent or call an unverified function ID. A clear capability need is not a verified function ID. This search call is fully specified here; do not look up its contract first. Include one to six short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities. Always write every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. A call marked pre-verified by a Harness runtime block or update is already verified; use its exact payload directly and do not search for it or fetch its contract. {call_instruction}\
+Before calling any task function whose ID has not already been verified in this conversation by a prior search result, contract lookup, or successful call, call directory::search_functions ONCE at this decision point instead of engine::functions::list. Never invent or call an unverified function ID. A clear capability need is not a verified function ID. This search call is fully specified here; do not look up its contract first. Include short, non-overlapping `capabilities` derived from the goal and current execution state, covering all unmet external capabilities in this ONE call — usually one to six, at most eighteen. Always write every `capabilities` entry in English, even when the user writes in another language; preserve proper names, URLs, and function IDs. Do not search for intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented in the conversation or already satisfied. Requests to summarize provided text or content are ignored. The result contains candidates, not contracts: choose the smallest candidate set the task needs, then BEFORE their first use call engine::functions::info ONCE with {{ \"function_ids\": [\"<selected id>\", \"<another selected id>\"] }}. A call marked pre-verified by a Harness runtime block or update is already verified; use its exact payload directly and do not search for it or fetch its contract. {call_instruction}\
 </discovery_assist>"
     )
 }
@@ -531,7 +531,7 @@ mod tests {
         assert!(!prompt.contains("\"query\""));
         assert!(prompt.contains("current execution state"));
         assert!(prompt.contains("all unmet external capabilities"));
-        assert!(prompt.contains("one to six short, non-overlapping `capabilities`"));
+        assert!(prompt.contains("usually one to six, at most eighteen"));
         assert!(!prompt.contains("For one capability, omit the field"));
         assert!(prompt.contains(
             "Do not search for intrinsic reasoning, summarization, planning, or formatting"

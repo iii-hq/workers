@@ -1,11 +1,11 @@
 {
-  "description": "Search available functions for one to six external capabilities; returns compact function-id candidates grouped by worker.",
+  "description": "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker.",
   "function_id": "directory::search_functions",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "capabilities": {
-        "description": "One to six non-empty capability searches derived from the goal and current execution state. For one search at each decision point, include all unmet external capabilities once. Exclude intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented or satisfied. Requests to summarize provided text or content are ignored. Write every entry in English, translating non-English user requests while preserving proper names, URLs, and function IDs.",
+        "description": "Non-empty capability searches derived from the goal and current execution state, usually one to six and at most eighteen per call (searched in batches of six). For one search at each decision point, include all unmet external capabilities once. Exclude intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented or satisfied. Requests to summarize provided text or content are ignored. Write every entry in English, translating non-English user requests while preserving proper names, URLs, and function IDs.",
         "items": {
           "minLength": 1,
           "type": "string"
