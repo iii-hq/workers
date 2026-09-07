@@ -246,7 +246,8 @@ export interface SystemMessage extends BaseMessage {
    * attachment that could not be read, a worktree that landed). `turn-failure`
    * is a turn the provider or iii could not finish and renders as the
    * diagnosis card. `working-dir` marks a session scope change in the same
-   * activity-row grammar as function calls and trigger fires.
+   * activity-row grammar as function calls and trigger fires; `skills` marks
+   * the harness re-sending the model its skill index in that same grammar.
    */
   kind?:
     | 'notice'
@@ -254,6 +255,7 @@ export interface SystemMessage extends BaseMessage {
     | 'trigger-fired'
     | 'turn-failure'
     | 'working-dir'
+    | 'skills'
   /** User-facing remediation supplied by a structured lifecycle record. */
   nextActions?: string[]
   /** Diagnostic context kept behind a collapsed disclosure. */
@@ -262,6 +264,8 @@ export interface SystemMessage extends BaseMessage {
   failure?: SystemNoticeFailure
   /** The scope change behind a `kind: 'working-dir'` marker. */
   scope?: WorkingDirScope
+  /** The skill index behind a `kind: 'skills'` marker. */
+  skills?: SkillCatalogUpdate
   /**
    * Live-only fallback for a durable transcript entry with the same id.
    * It may fill a delivery gap, but must never replace the transcript-backed
@@ -310,6 +314,22 @@ export interface WorkingDirScope {
   cause: 'selected' | 'recovered' | 'unavailable'
 }
 
+/** One row of the skill index the harness handed the model. */
+export interface SkillCatalogEntry {
+  id: string
+  description: string
+}
+
+/**
+ * The skill index a `kind: 'skills'` marker announces. `available: false` is
+ * the harness withdrawing skill guidance altogether (the directory or the
+ * `directory::skills::get` function went away); `entries` is then empty.
+ */
+export interface SkillCatalogUpdate {
+  available: boolean
+  entries: SkillCatalogEntry[]
+}
+
 export type Message =
   | UserMessage
   | AssistantMessage
@@ -341,11 +361,12 @@ export interface MessagePatch {
   }
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'
-  kind?: 'notice' | 'compaction' | 'turn-failure' | 'working-dir'
+  kind?: 'notice' | 'compaction' | 'turn-failure' | 'working-dir' | 'skills'
   nextActions?: string[]
   technicalDetails?: SystemNoticeTechnicalDetails
   failure?: SystemNoticeFailure
   scope?: WorkingDirScope
+  skills?: SkillCatalogUpdate
   summaryText?: string
   tokensBefore?: number
 }

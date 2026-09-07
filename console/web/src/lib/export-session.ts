@@ -77,7 +77,9 @@ function renderMessage(message: Message): string {
             ? ' (turn failure)'
             : message.kind === 'working-dir'
               ? ' (working directory)'
-              : ''
+              : message.kind === 'skills'
+                ? ' (skill index)'
+                : ''
       return `## System${tone}${kind}\n${message.content || '_(empty)_'}`
     }
   }

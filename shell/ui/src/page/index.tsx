@@ -85,6 +85,8 @@ import {
 } from './nav-history'
 import { paneScopeToken, paneStateKey } from './pane-scope'
 import { parseShellPanelContext } from './panel-context'
+import { QUICK_OPEN_SHORTCUT } from './quick-open'
+import { QuickOpen } from './QuickOpen'
 import { formatFileReference, type LineRange, mentionPathFor } from './reference'
 import { dirname, isUnder } from './paths'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState, type TerminalDock } from './persist'
@@ -116,6 +118,7 @@ import {
   persistedTabs,
   pinTab,
   restoreTabs,
+  tabFilePaths,
   type TabTarget,
   type TabsState,
   tabIdFor,
@@ -235,6 +238,7 @@ export function ShellExplorerPage({
   const [browsePath, setBrowsePath] = useState<string | null>(null)
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null)
   const [goToLineSeq, setGoToLineSeq] = useState(0)
+  const [quickOpen, setQuickOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [narrow, setNarrow] = useState(false)
   // A callback ref, not useRef: the page renders a placeholder shell before
@@ -1587,10 +1591,12 @@ export function ShellExplorerPage({
       commands?.register([
         {
           id: 'open-file',
-          title: 'Open file…',
-          detail: 'Find a file by name',
-          keywords: ['quick open', 'go to file', 'path'],
-          run: () => host.palette?.open({ query: '#' }),
+          title: 'Go to file…',
+          detail: 'Find a file in this folder by typing any part of its path',
+          keywords: ['quick open', 'open file', 'path', 'ctrl+p'],
+          shortcut: QUICK_OPEN_SHORTCUT,
+          firesWhileTyping: true,
+          run: () => setQuickOpen(true),
         },
         {
           id: 'search',
@@ -2189,6 +2195,7 @@ export function ShellExplorerPage({
                 onMissing={onFileMissing}
                 onClose={() => closeTabId(fileTabId(activeFilePath))}
                 onReferenceInChat={referenceInChat}
+                onQuickOpen={() => setQuickOpen(true)}
               />
             ) : activeDiff !== null ? (
               <DiffTab
@@ -2228,15 +2235,9 @@ export function ShellExplorerPage({
                 turns={sessionTurns}
                 hasSession={!!conversationId}
                 turnRunning={harnessTurn.active}
-                recent={recentPaths(historyRef.current, 6)}
+                recent={tabFilePaths(tabs, recentPaths(historyRef.current, 60), 6)}
                 onOpenFile={(rel) => openFileTab(rel, { pin: true })}
-                onQuickOpen={() => {
-                  if (host.palette) host.palette.open({ query: '#' })
-                  else {
-                    setSideTab('files')
-                    setCollapsed(false)
-                  }
-                }}
+                onQuickOpen={() => setQuickOpen(true)}
                 onSearch={() => {
                   setSideTab('search')
                   setCollapsed(false)
@@ -2267,6 +2268,14 @@ export function ShellExplorerPage({
             )}
           </PageMain>
         </PageBody>
+        <QuickOpen
+          host={host}
+          root={root}
+          open={quickOpen}
+          onOpenChange={setQuickOpen}
+          recent={tabFilePaths(tabs, recentPaths(historyRef.current, 60), 8)}
+          onOpenFile={(rel) => openFileTab(rel, { pin: true })}
+        />
         <ConfirmDialog
           open={pendingDiscard !== null}
           onOpenChange={(open) => {

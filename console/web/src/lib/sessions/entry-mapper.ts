@@ -25,6 +25,7 @@
  */
 
 import { attachedFileLabel, parseAttachedFileHeader } from '@/lib/file-mentions'
+import { parseSkillUpdate } from '@/lib/skill-update'
 import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
 import type {
   Attachment,
@@ -569,15 +570,29 @@ export function entrySegments(
         origin?.skill_update === true ||
         /^e_.+_skills_\d+$/.test(item.entry_id)
       ) {
+        // The harness re-sent the model its skill index. The model needs the
+        // whole block; the reader gets a one-line marker with the list behind
+        // a disclosure. An unrecognised shape stays a plain notice.
+        const skills = parseSkillUpdate(text)
         return [
-          {
-            id: item.entry_id,
-            role: 'system',
-            kind: 'notice',
-            tone: 'info',
-            content: text,
-            createdAt: message.timestamp,
-          },
+          skills
+            ? {
+                id: item.entry_id,
+                role: 'system',
+                kind: 'skills',
+                tone: skills.available ? 'info' : 'warn',
+                content: text,
+                skills,
+                createdAt: message.timestamp,
+              }
+            : {
+                id: item.entry_id,
+                role: 'system',
+                kind: 'notice',
+                tone: 'info',
+                content: text,
+                createdAt: message.timestamp,
+              },
         ]
       }
       const isNotif =

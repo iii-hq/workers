@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Go to file (`Ctrl+P`).** A quick-open overlay inside the shell page:
+  type any characters of a path in order (`ptofolder` finds
+  `path/to/folder`) and the files of the pane's folder re-rank as you type,
+  each row with its file-type icon, its name and its folder in quieter ink,
+  the matched characters emphasised; `↑`/`↓` move, Enter opens the file
+  in this pane, an empty query offers the files the pane opened last. The
+  key is `Ctrl+P` on a Mac and `Alt+P` on Windows and Linux, where
+  `Ctrl+P` is the browser's Print; it also works from inside the editor,
+  where Monaco would otherwise take it for cursor-up. The launcher's
+  "Go to file" card and the palette row open the same overlay.
 - **The explorer is shaped like VS Code.** An activity bar on the sidebar's
   outer edge switches between Explorer, Search, Source control and Timeline;
   one tab strip holds files and diffs alike (a diff tab names what it
@@ -130,6 +140,15 @@
 
 ### Fixed
 
+- **`coder::search` with `fuzzy_paths` ranks against the searched folder.**
+  When the worker's own configured root sat inside the folder being
+  searched (its cwd under the repo a chat works in), entries under that
+  root were scored without their leading folder, so `shellpage` never found
+  `shell/ui/page.tsx` while the same query shape found every file outside
+  it. Glob matching is unchanged.
+- The launcher's "Recently opened" resolved history entries as raw tab ids,
+  so a diff visit showed `diff:turn=…` as its folder and reopened nothing;
+  it now lists the files behind those visits.
 - **Two panes saving at once could lose each other's state.** Every pane
   used to read the whole `shell-ui` map, put its own slice in and write
   the whole map back, so two saves in flight at the same time (a split

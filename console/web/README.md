@@ -2,7 +2,7 @@
 
 A base scaffold for a chat surface, built with Vite + React + TypeScript +
 Tailwind v4 and styled to the iii Schematic design system
-(see [`../DESIGN.md`](../DESIGN.md) for the full spec).
+(see [`../skills/design-system.md`](../skills/design-system.md) for the full spec).
 
 It runs entirely client-side with mocked streaming, so there are no API keys
 to configure. The mock backend ships in dev (`pnpm dev`) and is tree-shaken
@@ -173,7 +173,7 @@ If they all render correctly, your backend is contract-clean.
 
 ## Design system
 
-[`../DESIGN.md`](../DESIGN.md) is the canonical visual contract and this
+[`../skills/design-system.md`](../skills/design-system.md) is the canonical visual contract and this
 directory's `DESIGN.md` is a synchronized copy for local discovery. Theme and
 motion tokens live in [`src/index.css`](src/index.css); stable list, card,
 card-highlight, collapsible-card, panel, chip, field, segmented-control, and motion recipes live in

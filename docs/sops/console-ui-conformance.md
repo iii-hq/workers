@@ -106,7 +106,7 @@ owns; the registry refuses those at registration. See the injectable-UI SOP,
 | chat (first-party) | focus composer, next / previous message, approve / deny the pending call, expand, copy, latest, switch model, stop, new chat, search conversations | `I`, `J` / `K`, `A` / `D`, `O`, `Y`, `End`, `M`, `Escape`, `N`, `/` | chats (built in) |
 | workers (first-party) | refresh, search, open Compose (when the compose-ui page is registered); start / stop / restart on compose-supervised rows | `R`, `/`, `C` | workers, functions (built in) |
 | traces (first-party) | search, follow turns, clear filters, close detail | `/`, `F`, `Escape` | |
-| shell | open file…, search in files, file tree, toggle sidebar, toggle terminal, next / previous tab, close tab, next / previous change; setup: open file…, open | `P`, `F`, `E`, `B`, `` ` ``, `Alt+←` / `Alt+→`, `W`, `J` / `K` | files (`coder::search`, `#`) |
+| shell | go to file…, search in files, show the explorer / source control / timeline, toggle the sidebar, toggle the terminal, next / previous tab, close the tab, reveal the active file, go to line…, go back / forward, next / previous change, compare the active file with…, new file…, toggle hidden files, toggle word wrap, revert the last turn; setup: open file…, open | `Ctrl+P` (Mac) / `Alt+P` (elsewhere, where `Ctrl+P` is the browser's Print), `` Ctrl+` ``, `Alt+←` / `Alt+→`, `Shift+Alt+←` / `Shift+Alt+→`, `Alt+Z` | files (`coder::search`, `#`) |
 | database | focus SQL, refresh, focus tables; setup: open | `S`, `R`, `/` | tables (`database::listTables`) |
 | cron | new schedule, search, refresh, focus composer; setup: open, new schedule… | `N`, `/`, `R` | schedules (`listAllSchedules`) |
 | state | save; setup: open | `Mod+S` | keys (`state::list_groups` + `state::list_keys`) |
@@ -137,6 +137,13 @@ Every page names its `data-autofocus` target. Shared `TableRow interactive` and 
 - `ReviewScopePicker` owns hierarchical submenu selection.
 - `EmptyPane` is a persistent, always-open command palette; it uses shared
   list/panel recipes without adopting popover lifecycle.
+- The shell's go-to-file overlay (`Ctrl+P`) is a palette over the shared
+  `Dialog`: one field drives a listbox of the worker's fuzzy path matches
+  through `aria-activedescendant`, so its rows are local (the shared `List`
+  moves the focus onto its rows). Selection is the neutral wash plus edge;
+  the glyph is the shell's own file-type icon set. Inside the Monaco body
+  the pane reclaims the chord in the capture phase, because Monaco binds
+  `Ctrl+P` to cursor-up on a Mac and cancels it before the dispatcher.
 - Graphs, charts, editors, terminals, file trees, ERDs, and canvas surfaces
   may use domain colors and direct-manipulation behavior. Their surrounding
   navigation and selection still follow the shared contract.

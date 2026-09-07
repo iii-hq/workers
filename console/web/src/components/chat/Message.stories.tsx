@@ -225,6 +225,53 @@ const workingDirUnavailable: SystemMessage = {
   createdAt: 1_785_949_000_000,
 }
 
+const skillsUpdated: SystemMessage = {
+  id: 's_skills_updated',
+  role: 'system',
+  kind: 'skills',
+  tone: 'info',
+  content:
+    'The available skills have changed. This list supersedes the previous available skills list.\n<available_skills>\n…\n</available_skills>',
+  skills: {
+    available: true,
+    entries: [
+      {
+        id: 'console',
+        description:
+          'The iii web console — chat, trace explorer, worker catalog, and the runtime host every worker injects its own pages into.',
+      },
+      {
+        id: 'console/injectable-ui',
+        description:
+          'Build, structure, and validate polished responsive worker UI injected into the running iii console.',
+      },
+      {
+        id: 'console/design-system',
+        description:
+          'A minimal, engineering-document design system for the iii engine.',
+      },
+      {
+        id: 'configuration',
+        description:
+          'Schema-validated, reactive registry for named configuration entries.',
+      },
+      { id: 'fp', description: 'Lodash-style transforms and fp::pipe.' },
+    ],
+  },
+  createdAt: 1_785_949_000_000,
+}
+
+const skillsWithdrawn: SystemMessage = {
+  id: 's_skills_withdrawn',
+  role: 'system',
+  kind: 'skills',
+  tone: 'warn',
+  content:
+    'Skill guidance is no longer available. Do not use any previously listed skill.',
+  skills: { available: false, entries: [] },
+  createdAt: 1_785_949_000_000,
+}
+
 const failureCredentials: SystemMessage = {
   id: 'e_t1_error',
   role: 'system',
@@ -454,6 +501,16 @@ export const WorkingDirUnavailable: Story = {
   args: { message: workingDirUnavailable },
 }
 
+export const SkillsUpdated: Story = {
+  name: 'system, skill index · updated',
+  args: { message: skillsUpdated },
+}
+
+export const SkillsWithdrawn: Story = {
+  name: 'system, skill index · withdrawn',
+  args: { message: skillsWithdrawn },
+}
+
 export const TurnFailureCredentials: Story = {
   name: 'system, turn failure · credentials rejected (user)',
   args: { message: failureCredentials },
@@ -507,6 +564,8 @@ export const SystemNoticesStack: Story = {
       <Message message={failureInternal} />
       <Message message={workingDirRecovered} />
       <Message message={workingDirUnavailable} />
+      <Message message={skillsUpdated} />
+      <Message message={skillsWithdrawn} />
     </div>
   ),
 }

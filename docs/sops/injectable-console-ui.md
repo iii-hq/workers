@@ -21,7 +21,7 @@ implementation. The `state` worker is the broad delivery reference; the
 | Worker reference implementation | `workers/state/src/ui.rs` + `workers/state/ui/` |
 | Trigger-activity renderer reference | `workers/cron/src/ui.rs` + `workers/cron/ui/` |
 
-> **Companion skill — keep it in sync.** `workers/console/SKILL.md` is a
+> **Companion skill — keep it in sync.** `workers/console/skills/injectable-ui.md` is a
 > standalone skill teaching this same workflow to authors *outside* this
 > repo: it consumes `@iii-dev/console-ui` via `npm install` and the
 > `iii-console-ui` crate via `cargo add`, instead of the workspace/path
@@ -252,7 +252,7 @@ assets (dispatch on `path`), one trigger per asset. Rust workers don't
 hand-roll it — the shared **`iii-console-ui`** crate
 (`workers/crates/console-ui`) is the whole worker side. Workers in this
 repo link it directly by path so it versions with the console worker here
-(out-of-repo workers install it instead — see `workers/console/SKILL.md`):
+(out-of-repo workers install it instead — see `workers/console/skills/injectable-ui.md`):
 
 ```toml
 # <worker>/Cargo.toml
@@ -1281,7 +1281,7 @@ composer toolbar itself. Not shipped yet (don't design against them):
 | Spec item | Status |
 |---|---|
 | `@iii-dev/console-build` CLI + Tailwind preset | not implemented — hand-write scoped CSS (as `state` does) or scope your own Tailwind output; there is no automatic scoping pass to save you |
-| Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — in-repo workers consume it **workspace-linked** (out-of-repo authors install it from npm, see `workers/console/SKILL.md`); the runtime module specifier was renamed from the spec's `@iii/console` |
+| Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — in-repo workers consume it **workspace-linked** (out-of-repo authors install it from npm, see `workers/console/skills/injectable-ui.md`); the runtime module specifier was renamed from the spec's `@iii/console` |
 | Rust worker-side registration | shipped **beyond spec** as the path-linked `iii-console-ui` crate (`crates/console-ui`) — the spec's authoring doc had each worker hand-roll the content function, triggers, and watcher |
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |

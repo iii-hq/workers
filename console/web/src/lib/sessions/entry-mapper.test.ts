@@ -324,9 +324,16 @@ describe('entrySegments', () => {
     ).not.toHaveProperty('validation')
   })
 
-  it('renders durable skill catalog updates as informational notices', () => {
-    const content =
-      'The available skills have changed. This list supersedes the previous available skills list.'
+  it('renders durable skill catalog updates as skill-index markers', () => {
+    const content = [
+      'The available skills have changed. This list supersedes the previous',
+      'available skills list.',
+      '<available_skills>',
+      'A `<skill id="...">` block is already loaded; follow it directly.',
+      '- **console** — The iii web console.',
+      '- **console/injectable-ui** — Build worker UI &lt;at runtime&gt;.',
+      '</available_skills>',
+    ].join('\n')
 
     for (const item of [
       userItem('opaque-id', content, { skill_update: true }),
@@ -334,12 +341,42 @@ describe('entrySegments', () => {
     ]) {
       expect(entrySegments(item)[0]).toMatchObject({
         role: 'system',
-        kind: 'notice',
+        kind: 'skills',
         tone: 'info',
         content,
+        skills: {
+          available: true,
+          entries: [
+            { id: 'console', description: 'The iii web console.' },
+            {
+              id: 'console/injectable-ui',
+              description: 'Build worker UI <at runtime>.',
+            },
+          ],
+        },
       })
     }
     expect(entrySegments(userItem('ordinary-id', content))[0].role).toBe('user')
+  })
+
+  it('marks withdrawn skill guidance as a warning skill-index marker', () => {
+    const content =
+      'Skill guidance is no longer available. Do not use any previously listed skill.'
+    expect(
+      entrySegments(userItem('e_t_123_skills_8', content))[0],
+    ).toMatchObject({
+      role: 'system',
+      kind: 'skills',
+      tone: 'warn',
+      skills: { available: false, entries: [] },
+    })
+  })
+
+  it('keeps an unrecognised skill update as a plain notice', () => {
+    const content = 'The available skills have changed.'
+    expect(
+      entrySegments(userItem('e_t_123_skills_9', content))[0],
+    ).toMatchObject({ role: 'system', kind: 'notice', tone: 'info', content })
   })
 
   it('hides the machine-authored transient recovery prompt', () => {
