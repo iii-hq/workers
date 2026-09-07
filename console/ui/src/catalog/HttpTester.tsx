@@ -81,6 +81,10 @@ interface Outcome {
   durationMs: number
   body: string
   error?: string
+  // A redirect's `Location`, when the response carried one. The request runs
+  // server-side (`POST /probe`), so a 302 arrives with its real status and
+  // target — a browser `fetch` could show neither.
+  location?: string
 }
 
 export function HttpTester({
@@ -142,7 +146,13 @@ export function HttpTester({
       setOutcome(null)
       return
     }
-    const init: RequestInit = { method }
+    // The request runs server-side via `POST /probe`: the console process
+    // reads a redirect's real status and target, which a browser `fetch`
+    // cannot, and there is no cross-origin CORS wall between the tab and the
+    // http worker. `path` is everything after the base URL; the server
+    // resolves the host itself.
+    const headers: Record<string, string> = {}
+    let requestBody: string | undefined
     if (BODY_METHODS.has(method)) {
       try {
         JSON.parse(body)
@@ -151,21 +161,40 @@ export function HttpTester({
         setOutcome(null)
         return
       }
-      init.headers = { 'Content-Type': 'application/json' }
-      init.body = body
+      headers['Content-Type'] = 'application/json'
+      requestBody = body
     }
+    const path = `${filledPath}${queryString ? `?${queryString}` : ''}`
     setInvalid(null)
     setSending(true)
     const started = performance.now()
     try {
-      const response = await fetch(url, init)
-      const text = await response.text()
-      const contentType = response.headers.get('content-type') ?? ''
+      const response = await fetch('/probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method, path, headers, body: requestBody }),
+      })
+      const data = await response.json()
+      const durationMs = performance.now() - started
+      if (!response.ok) {
+        setOutcome({
+          ok: false,
+          status: null,
+          durationMs,
+          body: '',
+          error: typeof data?.error === 'string' ? data.error : 'probe failed',
+        })
+        return
+      }
+      const contentType =
+        typeof data.contentType === 'string' ? data.contentType : ''
+      const text = typeof data.body === 'string' ? data.body : ''
       setOutcome({
-        ok: response.ok,
-        status: response.status,
-        durationMs: performance.now() - started,
+        ok: data.status >= 200 && data.status < 400,
+        status: data.status,
+        durationMs,
         body: contentType.includes('json') ? pretty(safeJson(text)) : text,
+        location: typeof data.location === 'string' ? data.location : undefined,
       })
     } catch (err) {
       setOutcome({
@@ -324,6 +353,12 @@ export function HttpTester({
 
       {outcome?.error ? (
         <div className="console-catalog-error">{outcome.error}</div>
+      ) : null}
+      {outcome?.location ? (
+        <div className="console-catalog-field-row">
+          <span className="console-catalog-key">Location</span>
+          <code className="console-catalog-path">{outcome.location}</code>
+        </div>
       ) : null}
       {outcome && !outcome.error ? (
         <JsonHighlight

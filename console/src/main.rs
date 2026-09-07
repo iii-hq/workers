@@ -155,7 +155,7 @@ async fn main() -> Result<()> {
     }
 
     let engine_url_redacted = redact_url(&engine_url);
-    let state = server::AppState::new(Arc::new(engine_url), iii.namespace(), ui);
+    let state = server::AppState::new(Arc::new(engine_url), iii.namespace(), ui, Some(iii.clone()));
     let server_handle = server::start(cfg.http_port, state.clone()).await?;
     let apply_lock: configuration::ApplyLock = Arc::new(tokio::sync::Mutex::new(()));
 

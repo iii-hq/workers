@@ -6,6 +6,7 @@ pub mod config;
 pub mod configuration;
 pub mod functions;
 pub mod manifest;
+pub mod probe;
 pub mod proxy;
 pub mod server;
 pub mod ui;
