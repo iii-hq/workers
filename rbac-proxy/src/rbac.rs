@@ -245,8 +245,7 @@ impl<'de> Deserialize<'de> for FunctionFilter {
                     Ok(FunctionFilter::Match(WildcardPattern::new(&pattern)))
                 } else {
                     Err(de::Error::custom(format!(
-                        "expected match(\"pattern\"), got: {}",
-                        v
+                        "expected match(\"pattern\"), got: {v} — exact ids need it too: match(\"{v}\")"
                     )))
                 }
             }
