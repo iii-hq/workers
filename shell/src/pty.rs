@@ -805,7 +805,7 @@ pub fn register(iii: &IIIClient, manager: PtyManager) {
                 async move { Ok::<_, Error>(manager.sessions().await) }
             })
             .description(
-                "Live PTY sessions with their program, cwd, sequence, replay buffer size, and output target. Diagnostics only — no credentials.",
+                "List live PTY sessions with program, cwd, sequence, replay buffer size, and output target. Diagnostics only — no credentials.",
             ),
         );
     }

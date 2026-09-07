@@ -1,5 +1,5 @@
 {
-  "description": "End-to-end self-test: data-dir writability, a save→recall→trash roundtrip in a scratch bank, and sibling reachability (router, session-manager). Reports degraded states explicitly instead of a bare process-up health.",
+  "description": "Self-test memory end to end: data-dir writability, a scratch-bank write/read/trash roundtrip, and sibling reachability (router, session-manager). Reports degraded states explicitly, not a bare process-up health.",
   "function_id": "memory::doctor",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

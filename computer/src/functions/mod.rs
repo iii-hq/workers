@@ -36,7 +36,7 @@ pub const DISPLAYS_DESC: &str =
      cursor. Native host only.";
 pub const SCREENSHOT_ID: &str = "computer::screenshot";
 pub const SCREENSHOT_DESC: &str =
-    "Capture the desktop as a viewable image. This is how you see the screen before acting; the \
+    "Take a screenshot of the desktop screen. This is how you see the screen before acting; the \
      coordinate space of computer::act is this image's pixels (top-left origin).";
 pub const OBSERVE_ID: &str = "computer::observe";
 pub const OBSERVE_DESC: &str =

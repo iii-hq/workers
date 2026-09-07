@@ -35,15 +35,15 @@ pub const WHOIS_ID: &str = "tailscale::whois";
 pub const DNS_STATUS_ID: &str = "tailscale::dns::status";
 pub const DNS_QUERY_ID: &str = "tailscale::dns::query";
 
-const STATUS_DESC: &str = "Inspect local Tailscale connectivity, node identity, health notices, and the active Serve and Funnel routes. Keys, users, and capability maps are omitted.";
+const STATUS_DESC: &str = "Check if Tailscale is connected on this node, plus identity, health notices, and Serve and Funnel routes. Keys, users, and capability maps are omitted.";
 const CONFIGURATION_DESC: &str = "Return the non-secret worker settings and the current Serve configuration. The CLI path is omitted.";
 const CONNECT_DESC: &str = "Connect this node to the tailnet (`tailscale up`). When the node still needs a sign-in, returns the Tailscale login URL instead of connecting.";
 const DISCONNECT_DESC: &str = "Disconnect this node from the tailnet (`tailscale down`). Shared routes stop answering until the node connects again.";
-const LOGIN_DESC: &str = "Start a Tailscale sign-in for this node (`tailscale login`) and return the browser URL a person completes it at; call connect afterwards.";
+const LOGIN_DESC: &str = "Sign in to Tailscale on this node (`tailscale login`). Returns the browser URL a person completes it at; call connect afterwards.";
 const LOGOUT_DESC: &str = "Log this node out (`tailscale logout`): disconnects and expires the node key, so the next connect needs a fresh sign-in.";
 const VERSION_DESC: &str =
-    "Tailscale client version, and optionally the latest upstream release for the current track.";
-const IP_DESC: &str = "Tailscale IP addresses of this node, or of a peer by hostname or IP.";
+    "Report the Tailscale client version, and the latest upstream release for the track.";
+const IP_DESC: &str = "Get this node's Tailscale IP addresses, or a peer's by name or IP.";
 const NETCHECK_DESC: &str = "Analyse the local network for Tailscale: UDP reachability, IPv4/IPv6, NAT mapping, port-mapping protocols, the preferred DERP relay and relay latencies.";
 const PING_DESC: &str = "Ping a peer at the Tailscale layer and report whether each reply came over a DERP relay or a direct path.";
 const WHOIS_DESC: &str =

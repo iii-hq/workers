@@ -47,21 +47,21 @@ slack_method!(
     info,
     "slack::users::info",
     "users.info",
-    "Get a user's profile and metadata.",
+    "Get a Slack user's account details: name, timezone, team, and admin/bot flags.",
     InfoReq
 );
 slack_method!(
     lookup_by_email,
     "slack::users::lookup-by-email",
     "users.lookupByEmail",
-    "Find a user by email address.",
+    "Look up a Slack workspace user by their email address.",
     LookupByEmailReq
 );
 slack_method!(
     profile_get,
     "slack::users::profile-get",
     "users.profile.get",
-    "Get a user's profile fields.",
+    "Get a user's profile fields: display name, title, phone, and status.",
     ProfileGetReq
 );
 

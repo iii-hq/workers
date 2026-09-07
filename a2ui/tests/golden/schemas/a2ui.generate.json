@@ -1,5 +1,5 @@
 {
-  "description": "Generate a safe A2UI v0.9.1 Console surface from a short description and optional data; returns a compact receipt while the UI renders in chat and on the A2UI page.",
+  "description": "Generate a user interface from a short description and optional data. Renders a safe A2UI v0.9.1 surface in chat and on the A2UI page, returning a compact receipt.",
   "function_id": "a2ui::generate",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

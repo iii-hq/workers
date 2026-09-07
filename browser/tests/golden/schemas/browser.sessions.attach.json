@@ -1,6 +1,6 @@
 {
   "function_id": "browser::sessions::attach",
-  "description": "Attach a session to an already-running browser over CDP (Chrome started with --remote-debugging-port): opens a fresh tab the session owns, or adopts a user tab by URL substring and releases it untouched on stop. Reaches the real profile and its logins; requires allow_attach in config.",
+  "description": "Attach a session to an already-running browser over CDP. Opens a fresh tab the session owns, or adopts a user tab by URL substring and releases it untouched on stop. Reaches the real profile and its logins; needs Chrome started with --remote-debugging-port and allow_attach in config.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "AttachInput",

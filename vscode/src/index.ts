@@ -212,7 +212,7 @@ iii.registerFunction(
     return { deleted: true };
   },
   {
-    description: 'Stop a VS Code Workbench process and optionally remove its isolated profile.',
+    description: 'Delete a VS Code Workbench instance and optionally its isolated profile.',
     request_format: schema({ id: { type: 'string' }, delete_profile: { type: 'boolean' } }, ['id']),
     response_format: schema({ deleted: { type: 'boolean' } }, ['deleted']),
   },

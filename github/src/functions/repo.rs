@@ -8,11 +8,11 @@ use serde::Deserialize;
 use super::{argv, push_opt};
 
 pub const VIEW_ID: &str = "github::repo::view";
-pub const VIEW_DESC: &str = "View a repository's metadata (description, default branch, visibility, stars, language, topics, latest release): { repo: \"owner/name\" } -> { value }.";
+pub const VIEW_DESC: &str = "View a repository's metadata: description, default branch, visibility, stars, language, topics, and latest release.";
 pub const VIEW_JSON: &str = "name,nameWithOwner,description,url,defaultBranchRef,visibility,isPrivate,isFork,isArchived,stargazerCount,forkCount,primaryLanguage,repositoryTopics,latestRelease,pushedAt,updatedAt,homepageUrl";
 
 pub const LIST_ID: &str = "github::repo::list";
-pub const LIST_DESC: &str = "List repositories of an owner: { owner?, limit? } -> { value: [{name, nameWithOwner, description, url, visibility, ...}] }. owner defaults to the authenticated user.";
+pub const LIST_DESC: &str = "List the repositories owned by a user or organization. owner defaults to the authenticated user.";
 pub const LIST_JSON: &str = "name,nameWithOwner,description,url,visibility,isPrivate,isFork,isArchived,stargazerCount,primaryLanguage,pushedAt";
 
 #[derive(Debug, Deserialize, JsonSchema)]

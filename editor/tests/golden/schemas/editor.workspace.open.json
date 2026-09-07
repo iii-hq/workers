@@ -1,5 +1,5 @@
 {
-  "description": "Set the directory the editor works in. Any folder will do — a git repository is an overlay, not a requirement. Returns the buffers and expanded folders remembered for it.",
+  "description": "Open a folder as the editor workspace. Any folder will do — a git repository is an overlay, not a requirement. Returns the buffers and expanded folders remembered for it.",
   "function_id": "editor::workspace::open",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -273,7 +273,8 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         .description(
             "Internal: hot-reload approval-gate from the authoritative configuration when it \
              changes — swaps the per-call snapshot (timeouts + approval defaults).",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

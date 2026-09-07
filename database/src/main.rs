@@ -213,7 +213,7 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            .description("Prepare a parameterized statement once."),
+            .description("Prepare a parameterized SQL statement once for repeated runs."),
         );
     }
     {
@@ -228,7 +228,7 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            .description("Run a previously-prepared handle."),
+            .description("Run a prepared SQL statement by handle, passing fresh parameters."),
         );
     }
     {
@@ -243,7 +243,7 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            .description("Run a sequence of statements atomically."),
+            .description("Run a list of SQL statements in one atomic transaction."),
         );
     }
     {
@@ -276,7 +276,7 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            .description("Run a read-only SQL query inside an interactive transaction."),
+            .description("Query rows inside an open transaction."),
         );
     }
     {
@@ -292,8 +292,8 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "Run a write statement inside an interactive transaction. \
-                 BEGIN/COMMIT/ROLLBACK are rejected; use commit/rollbackTransaction.",
+                "Execute a write inside an open transaction. BEGIN/COMMIT/ROLLBACK \
+                 are rejected; use commit/rollbackTransaction.",
             ),
         );
     }
@@ -309,7 +309,7 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            .description("Commit and finalize an interactive transaction."),
+            .description("Commit an open SQL transaction, making its writes permanent."),
         );
     }
     {
@@ -324,7 +324,7 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            .description("Rollback and finalize an interactive transaction."),
+            .description("Roll back an open SQL transaction, discarding its uncommitted writes."),
         );
     }
     {
@@ -336,8 +336,8 @@ async fn main() -> Result<()> {
                     .map_err(iii_sdk::errors::Error::from)
             })
             .description(
-                "Probe a candidate database config (url + optional tls) with one \
-                 throwaway connection, without touching configured pools. Reports \
+                "Test a candidate database URL (plus optional TLS) with one throwaway \
+                 connection. Configured pools are untouched; reports \
                  ok/driver/latency/server version; failures are data, not errors.",
             ),
         );
@@ -379,7 +379,7 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "How a table is laid out for reading: column widths, hidden columns and \
+                "Get a table's column layout for reading: widths, hidden columns and \
                  column order. Stored in the state worker rather than a browser, so it \
                  survives a restart and any caller can set it up for someone else.",
             ),
@@ -491,9 +491,9 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "Recent queries run against a database, newest first. Best effort — \
-                 recording never blocks or fails a query, so this is a convenience \
-                 rather than an audit log. For an audit trail bind database::row-changed.",
+                "List recent queries run against a database, newest first. Best effort \
+                 — recording never blocks or fails a query, so it is a convenience, not \
+                 an audit log. For an audit trail bind database::row-changed.",
             ),
         );
     }
@@ -510,10 +510,10 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "Lay out the schema as a diagram: positioned table nodes and routed \
-                 foreign-key edges, plus the hub degree of each table, the isolated \
-                 tables, and the remaining edge crossings. Reads the whole catalog in \
-                 a handful of queries rather than one per table.",
+                "Diagram the database schema: tables as positioned nodes, foreign \
+                 keys as routed edges. Also reports hub degree per table, isolated \
+                 tables and remaining edge crossings. Reads the whole catalog in a \
+                 handful of queries rather than one per table.",
             ),
         );
     }
@@ -550,10 +550,10 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "Live pool occupancy plus active queries, table sizes, blocking locks \
-                 and cache hit ratio. Each section reports separately as available, \
-                 unsupported or denied, so a driver gap or a restricted role is never \
-                 mistaken for an empty result.",
+                "Check live pool occupancy plus active queries, table sizes, blocking \
+                 locks and cache hit ratio. Each section reports separately as \
+                 available, unsupported or denied, so a driver gap or a restricted role \
+                 never reads as an empty result.",
             ),
         );
     }
@@ -589,10 +589,10 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "Return a statement's query plan as a tree with per-node costs, row \
-                 estimates and warnings, instead of the driver's raw text. `analyze` \
-                 collects real timings by RUNNING the statement, so it defaults to \
-                 false and is refused for anything that is not a single read.",
+                "Explain a statement's query plan as a tree with per-node costs, row \
+                 estimates and warnings. `analyze` collects real timings by RUNNING the \
+                 statement, so it defaults to false and is refused for anything that is \
+                 not a single read.",
             ),
         );
     }

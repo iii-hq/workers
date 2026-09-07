@@ -1,5 +1,5 @@
 {
-  "description": "Files currently open in the workspace.",
+  "description": "List the files currently open as buffers in the editor workspace.",
   "function_id": "editor::buffers::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

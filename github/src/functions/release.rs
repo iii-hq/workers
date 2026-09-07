@@ -6,17 +6,17 @@ use serde::Deserialize;
 use super::{argv, push_bool, push_opt};
 
 pub const LIST_ID: &str = "github::release::list";
-pub const LIST_DESC: &str = "List releases: { repo: \"owner/name\", limit? } -> { value: [{tagName, name, isDraft, isLatest, isPrerelease, createdAt, publishedAt}] }.";
+pub const LIST_DESC: &str =
+    "List a repository's releases with their tags and draft/prerelease flags.";
 pub const LIST_JSON: &str = "tagName,name,isDraft,isLatest,isPrerelease,createdAt,publishedAt";
 
 pub const VIEW_ID: &str = "github::release::view";
-pub const VIEW_DESC: &str =
-    "View one release including body and assets: { repo: \"owner/name\", tag } -> { value }.";
+pub const VIEW_DESC: &str = "View one release by tag, including its notes and attached assets.";
 pub const VIEW_JSON: &str =
     "tagName,name,body,isDraft,isPrerelease,author,assets,targetCommitish,url,createdAt,publishedAt";
 
 pub const CREATE_ID: &str = "github::release::create";
-pub const CREATE_DESC: &str = "Create a release: { repo, tag, title?, notes?, generate_notes?, draft?, prerelease?, target? } -> { output: <release url> }. generate_notes autogenerates from merged PRs.";
+pub const CREATE_DESC: &str = "Create a GitHub release for a tag, optionally as a draft or prerelease. generate_notes autogenerates notes from merged PRs.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListRequest {

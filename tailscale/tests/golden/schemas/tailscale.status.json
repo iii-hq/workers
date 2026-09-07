@@ -1,5 +1,5 @@
 {
-  "description": "Inspect local Tailscale connectivity, node identity, health notices, and the active Serve and Funnel routes. Keys, users, and capability maps are omitted.",
+  "description": "Check if Tailscale is connected on this node, plus identity, health notices, and Serve and Funnel routes. Keys, users, and capability maps are omitted.",
   "function_id": "tailscale::status",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

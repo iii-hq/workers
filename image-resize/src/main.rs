@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
     let _fn_ref = iii.register_function(
         "image_resize::resize",
         RegisterFunction::new_async(resize_handler)
-            .description("Resize an image via channel I/O")
+            .description("Resize an image to a target width and height (thumbnail) over channel I/O.")
             .request_format(serde_json::json!({
                 "type": "object",
                 "properties": {

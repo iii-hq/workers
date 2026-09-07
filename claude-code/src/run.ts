@@ -582,7 +582,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       return { session_id, stopped: true };
     },
     {
-      description: 'Interrupt a live Claude Code run for a session.',
+      description: 'Stop a live Claude Code run for a session.',
       request_format: SESSION_ID_FORMAT,
       response_format: STOP_RESPONSE_FORMAT,
     },
@@ -596,7 +596,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       return { session_id, live: live.has(session_id), record };
     },
     {
-      description: 'Point-in-time status of a Claude Code session.',
+      description: 'Check the status of a Claude Code session.',
       request_format: SESSION_ID_FORMAT,
       response_format: STATUS_RESPONSE_FORMAT,
     },

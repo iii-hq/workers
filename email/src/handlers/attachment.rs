@@ -62,7 +62,7 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
             }
         })
         .description(
-            "Stream an attachment's raw bytes from a message. Payload: \
+            "Download an email's attachment by part id. Payload: \
              { account, folder, uid, part_id }. `part_id` comes from \
              email::get's attachments[].part_id. Bytes flow over the response \
              channel in chunks as IMAP delivers them; no in-memory buffering. \

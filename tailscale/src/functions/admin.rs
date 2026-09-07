@@ -19,7 +19,7 @@ const ACCOUNTS_LIST_DESC: &str =
     "List the Tailscale accounts logged in on this device and which one is active.";
 const ACCOUNTS_SWITCH_DESC: &str =
     "Switch this device to another logged-in Tailscale account by id, tailnet, or login name.";
-const UPDATE_DESC: &str = "Update the Tailscale client to the latest release, or with dry_run=true only report what would change.";
+const UPDATE_DESC: &str = "Update the Tailscale client to the latest release. With dry_run=true, only report what would change.";
 const BUGREPORT_DESC: &str = "Generate a Tailscale bug report identifier that support can look up; optional note and in-depth diagnosis.";
 const METRICS_DESC: &str = "Return the client's user-facing metrics in Prometheus text format.";
 

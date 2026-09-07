@@ -1,6 +1,6 @@
 {
   "function_id": "browser::recording::start",
-  "description": "Record a session's live viewport to a video file (webm or mp4) by piping the screencast through ffmpeg. Turns screencast on if needed. Requires ffmpeg on PATH; browser::doctor reports whether it is available.",
+  "description": "Record a session's live viewport to a video file (webm or mp4). Turns the screencast on if needed and pipes it through ffmpeg, which must be on PATH; browser::doctor reports whether it is available.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "RecordingStartInput",

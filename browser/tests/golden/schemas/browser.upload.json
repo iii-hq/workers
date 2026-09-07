@@ -1,6 +1,6 @@
 {
   "function_id": "browser::upload",
-  "description": "Attach up to eight base64 files to exactly one input[type=file] selected by CSS. Files are staged privately for the session and removed when it stops.",
+  "description": "Upload up to eight base64 files to exactly one input[type=file] selected by CSS. Files are staged privately for the session and removed when it stops.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "UploadInput",

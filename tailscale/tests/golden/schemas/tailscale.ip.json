@@ -1,5 +1,5 @@
 {
-  "description": "Tailscale IP addresses of this node, or of a peer by hostname or IP.",
+  "description": "Get this node's Tailscale IP addresses, or a peer's by name or IP.",
   "function_id": "tailscale::ip",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

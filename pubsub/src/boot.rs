@@ -105,7 +105,7 @@ pub async fn start(iii: Arc<IIIClient>, config: PubSubConfig) -> anyhow::Result<
                 Ok::<_, Error>(PubSubPublishResponse)
             }
         })
-        .description("Publishes an event"),
+        .description("Publish an event to a pubsub topic"),
     );
 
     Ok(BootHandle {

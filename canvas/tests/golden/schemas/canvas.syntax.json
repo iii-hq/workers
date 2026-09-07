@@ -1,5 +1,5 @@
 {
-  "description": "Return the mermaid syntax reference: every supported diagram family with a short summary and a working example, or — narrowed to one family — a compact syntax primer. Call this before writing mermaid source.",
+  "description": "Look up how to write mermaid diagram syntax. Every supported family with a short summary and a working example, or, narrowed to one family, a compact primer. Call this before writing mermaid source.",
   "function_id": "canvas::syntax",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -1,5 +1,5 @@
 {
-  "description": "Tombstone a memory (sets invalid_at). It leaves recall immediately but stays on disk and readable with include_superseded.",
+  "description": "Delete a memory (tombstone: sets invalid_at). It leaves recall immediately but stays on disk, readable with include_superseded.",
   "function_id": "memory::delete",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

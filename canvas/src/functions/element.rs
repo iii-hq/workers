@@ -45,9 +45,9 @@ pub const ADD_DESC: &str =
 
 pub const UPDATE_ID: &str = "canvas::element::update";
 pub const UPDATE_DESC: &str =
-    "Merge properties into one element of a freeform canvas by element id (move it, \
-     recolor it, change its text). Unknown ids error and name the canvas. The open \
-     console canvas streams the change live.";
+    "Update one element of a freeform canvas by element id: move it, recolor it, change its text. \
+     Properties are merged; unknown ids error and name the canvas. The open canvas streams the \
+     change live.";
 
 pub const DELETE_ID: &str = "canvas::element::delete";
 pub const DELETE_DESC: &str =

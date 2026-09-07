@@ -17,8 +17,9 @@ pub const EXIT_NODE_SET_ID: &str = "tailscale::exit-node::set";
 pub const PREFS_GET_ID: &str = "tailscale::prefs::get";
 pub const PREFS_SET_ID: &str = "tailscale::prefs::set";
 
-const PEERS_LIST_DESC: &str = "List the devices on the tailnet as this node sees them: names, Tailscale IPs, OS, online state, tags, exit-node offers, and traffic counters. Keys are omitted.";
-const EXIT_NODE_LIST_DESC: &str = "List the peers that offer to be an exit node for internet traffic, and which one this node uses.";
+const PEERS_LIST_DESC: &str = "List the devices on your Tailscale network (tailnet) and whether each is online. Also names, IPs, OS, tags, exit-node offers, traffic counters; keys omitted.";
+const EXIT_NODE_LIST_DESC: &str =
+    "List the available exit nodes for internet traffic, and which one this node uses.";
 const EXIT_NODE_SUGGEST_DESC: &str =
     "Ask Tailscale for the best available exit node for this node.";
 const EXIT_NODE_SET_DESC: &str = "Route this node's internet traffic through an exit node (by name or IP, or `auto:any`), or clear it with an empty value.";

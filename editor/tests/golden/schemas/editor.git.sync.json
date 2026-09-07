@@ -1,5 +1,5 @@
 {
-  "description": "Fetch, fast-forward pull, or push. Pull is --ff-only on purpose: a merge under open buffers is how an editor ends up showing a conflicted tree it never asked for.",
+  "description": "Fetch, pull, or push the workspace git repository. Pull is --ff-only on purpose: a merge under open buffers leaves the editor showing a conflicted tree.",
   "function_id": "editor::git::sync",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

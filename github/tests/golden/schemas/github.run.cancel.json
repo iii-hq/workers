@@ -1,5 +1,5 @@
 {
-  "description": "Cancel an in-progress workflow run: { repo, run_id } -> { output }.",
+  "description": "Cancel a workflow run that is still in progress.",
   "function_id": "github::run::cancel",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

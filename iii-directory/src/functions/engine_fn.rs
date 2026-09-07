@@ -59,9 +59,9 @@ pub fn register(iii: &Arc<IIIClient>) {
             async move { function_info(&iii, req).await.map_err(Error::Handler) }
         })
         .description(
-            "Full detail for one engine function: schemas, owning worker, and \
+            "Read full detail for one engine function: schemas, owning worker, and \
              registered triggers that target it. Proxies to the engine's native \
-             engine::functions::info for the core data.",
+             engine::functions::info.",
         ),
     );
 }

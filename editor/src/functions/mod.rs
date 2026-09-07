@@ -34,42 +34,42 @@ use crate::{diff, fuzzy, lang, tree};
 use types::*;
 
 pub const DESC_WORKSPACE_OPEN: &str =
-    "Set the directory the editor works in. Any folder will do — a git repository is an \
-     overlay, not a requirement. Returns the buffers and expanded folders remembered for it.";
+    "Open a folder as the editor workspace. Any folder will do — a git repository is an overlay, \
+     not a requirement. Returns the buffers and expanded folders remembered for it.";
 pub const DESC_WORKSPACE_GET: &str =
-    "The active workspace: its root, the files open against it, and which folders are \
-     expanded. Shared by every surface, so this is what the agent and the console both see.";
+    "Get the active workspace: its root, the open files, and which folders are expanded. Shared by \
+     every surface — what the agent and the console both see.";
 pub const DESC_CHANGES: &str =
-    "Recent file changes in the workspace, newest first, one entry per path, recorded \
-     however the write was made. Each entry carries the patch, line counts, the function \
-     that wrote, and the harness session and turn.";
+    "List recent file changes in the workspace, newest first, one per path, recorded however the \
+     write was made. Each entry carries the patch, line counts, the function that wrote, and the \
+     harness session and turn.";
 pub const DESC_TREE: &str =
     "List a folder in the workspace, with the expansion state the workspace remembers. \
      The walk, the noise-folder excludes and the jail are the shell worker's.";
 pub const DESC_OPEN: &str =
-    "Read a text file and record it as an open buffer, with the metadata needed to write \
-     it back safely: its language id, and the mtime and content version to hand to \
-     editor::save.";
+    "Read a text file and record it as an open buffer. Carries the metadata needed to write it \
+     back safely: its language id, the mtime and content version to hand to editor::save.";
 pub const DESC_SAVE: &str =
     "Write a file, refusing the write when it changed underneath since the editor::open it \
      started from. On refusal the divergence comes back as a patch.";
-pub const DESC_BUFFERS_LIST: &str = "Files currently open in the workspace.";
+pub const DESC_BUFFERS_LIST: &str =
+    "List the files currently open as buffers in the editor workspace.";
 pub const DESC_BUFFERS_CLOSE: &str = "Close one open buffer. The file on disk is untouched.";
 pub const DESC_MOVE: &str =
     "Move or rename a path and rewrite every open buffer and expanded folder at or under \
      it. Moving a folder with `shell::fs::mv` alone leaves buffers pointing at the old \
      location, which silently recreates it on the next save.";
 pub const DESC_FIND: &str =
-    "Fuzzy file finder over the workspace, ranked the way an editor's open-file palette \
-     ranks. Candidates come from git when the root is a repository and from the folder \
-     listing when it is not.";
+    "Find a file by name in the workspace, fuzzy-ranked like an editor's open-file palette. \
+     Candidates come from git when the root is a repository and from the folder listing when it is \
+     not.";
 pub const DESC_DIFF: &str =
-    "Unified diff between two texts. Pure: nothing is read from disk. Use it to show what \
-     an edit will do before writing it, or to explain what a write did.";
+    "Compare two texts as a unified diff. Pure: nothing is read from disk. Use it to preview an \
+     edit before writing it, or to explain what a write did.";
 pub const DESC_GIT_STATUS: &str =
-    "Working-tree status as typed rows: branch, upstream, ahead/behind, and one entry per \
-     changed path. Fails when the root is not a repository — that is an absent overlay, \
-     not a broken workspace.";
+    "Show git working-tree status: branch, upstream, ahead/behind, and one typed row per changed \
+     path. Fails when the root is not a repository — that is an absent overlay, not a broken \
+     workspace.";
 pub const DESC_CREATE: &str =
     "Create a file or folder in the workspace, with parents as needed. A file may be \
      seeded with content.";
@@ -77,14 +77,13 @@ pub const DESC_DELETE: &str =
     "Remove a path and close any buffer it held. An open buffer for a deleted file would \
      recreate it on the next save.";
 pub const DESC_SEARCH: &str =
-    "Search file contents across the workspace, grouped by file — the shell worker's \
-     recursive grep, shaped into what a results panel renders.";
+    "Search file contents across the workspace, grouped by file. The shell worker's recursive \
+     grep, shaped into what a results panel renders.";
 pub const DESC_GIT_COMMIT: &str =
-    "Stage and commit. Returns the new SHA, or committed:false when there was nothing \
-     staged.";
+    "Stage and commit changes. Returns the new SHA, or committed:false if nothing was staged.";
 pub const DESC_GIT_SYNC: &str =
-    "Fetch, fast-forward pull, or push. Pull is --ff-only on purpose: a merge under open \
-     buffers is how an editor ends up showing a conflicted tree it never asked for.";
+    "Fetch, pull, or push the workspace git repository. Pull is --ff-only on purpose: a merge \
+     under open buffers leaves the editor showing a conflicted tree.";
 pub const DESC_GIT_STASH: &str = "Stash the working tree, or pop the most recent stash.";
 pub const DESC_GIT_UNDO_COMMIT: &str =
     "Undo the last commit, keeping its changes staged (reset --soft HEAD~1). Returns the \
@@ -93,10 +92,9 @@ pub const DESC_GIT_SHOW: &str =
     "Read a file's contents at a revision (HEAD by default). Pair it with the working copy \
      to render a real side-by-side or unified diff, rather than parsing a patch.";
 pub const DESC_GIT_HUNKS: &str =
-    "What changed in one file: the rendered patch plus its line ranges. Compares the \
-     working tree against the index, the index against HEAD, or the working tree against \
-     HEAD — so it shows an edit made by anything, including an agent that never called \
-     this worker.";
+    "Show what changed in one file: a patch plus its line ranges. Compares the working tree \
+     against the index, the index against HEAD, or the working tree against HEAD — so it shows an \
+     edit made by anything, including an agent that never called this worker.";
 
 /// `cfg` is the live snapshot cell, not a captured value: the configuration
 /// worker can change these limits at any time, and a handler that closed over
