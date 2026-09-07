@@ -455,8 +455,10 @@ Ranking pipeline:
    ranked per capability with BM25 fused with the MiniLM dense lane (same
    0.30 admission floor as the installed catalog), so a capability sharing no
    vocabulary with a contract ("retrieve web news articles" → `web::fetch`)
-   still surfaces. Returns up to 2 workers / 6 candidates that WOULD match if
-   installed, with `compose::add` guidance.
+   still surfaces. Returns up to 2 workers / 6 candidates per batch of six
+   capabilities (so up to 6 workers / 18 candidates across three batches; a
+   worker two batches both surface keeps one entry with its functions merged)
+   that WOULD match if installed, with `compose::add` guidance.
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.
 

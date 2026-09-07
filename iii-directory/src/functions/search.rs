@@ -1155,11 +1155,7 @@ pub async fn search_functions(
                 selected.push(function_id);
             }
         }
-        for worker in outcome.installable {
-            if !installable.iter().any(|known| known.name == worker.name) {
-                installable.push(worker);
-            }
-        }
+        merge_installable(&mut installable, outcome.installable);
     }
     let batches = request.capabilities.len().div_ceil(MAX_SEARCH_QUERIES);
     let session_id = baggage_session_id();
@@ -1214,6 +1210,28 @@ search again for: {}.",
         installable,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
+}
+
+/// Fold one batch's installable workers into the merged section: a worker
+/// two batches both surfaced keeps its first entry and gains the later
+/// batch's functions it did not already list.
+fn merge_installable(merged: &mut Vec<InstallableWorker>, batch: Vec<InstallableWorker>) {
+    for worker in batch {
+        match merged.iter_mut().find(|known| known.name == worker.name) {
+            Some(known) => {
+                for function in worker.functions {
+                    if !known
+                        .functions
+                        .iter()
+                        .any(|existing| existing.function_id == function.function_id)
+                    {
+                        known.functions.push(function);
+                    }
+                }
+            }
+            None => merged.push(worker),
+        }
+    }
 }
 
 /// Candidates one batch of capabilities produced: selected function ids
@@ -2715,6 +2733,34 @@ mod tests {
         let ids: Vec<&str> = ranked.iter().map(|tool| tool.name.as_str()).collect();
 
         assert_eq!(ids, ["browser::fetch"]);
+    }
+
+    #[test]
+    fn installable_workers_merge_functions_across_batches() {
+        let worker = |functions: &[&str]| InstallableWorker {
+            name: "email".into(),
+            version: "1.0.0".into(),
+            description: "Email worker".into(),
+            functions: functions
+                .iter()
+                .map(|id| FunctionCandidate {
+                    function_id: (*id).into(),
+                    description: String::new(),
+                })
+                .collect(),
+            install: install_call("email"),
+        };
+        let mut merged = vec![worker(&["email::send"])];
+
+        merge_installable(&mut merged, vec![worker(&["email::read", "email::send"])]);
+
+        assert_eq!(merged.len(), 1);
+        let ids: Vec<&str> = merged[0]
+            .functions
+            .iter()
+            .map(|f| f.function_id.as_str())
+            .collect();
+        assert_eq!(ids, ["email::send", "email::read"]);
     }
 
     #[test]
