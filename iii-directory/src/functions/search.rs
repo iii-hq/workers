@@ -29,7 +29,9 @@ use crate::surface::search_catalog as catalog;
 const CATALOG_TIMEOUT_MS: u64 = 5_000;
 /// Function ids per `functions::info` batch — the engine's documented max.
 const CATALOG_INFO_BATCH: usize = 32;
-/// Workers returned by one `directory::search_functions` call.
+/// Workers returned by one batch. A batch with more than three lanes may
+/// return two workers per lane instead, so every capability keeps its
+/// runner-up worker (see `select_preordered_ids`).
 const MAX_SEARCH_WORKERS: usize = 6;
 /// Candidates returned by one call — the ranked guards usually select a
 /// handful; this is the backstop.
@@ -679,11 +681,18 @@ fn production_minilm_assemble(
 }
 
 fn select_preordered_ids(rankings: Vec<Vec<(String, f64)>>) -> Vec<String> {
+    // Round-robin hands every lane two of the twelve slots. With six lanes
+    // the six leaders alone fill a six-worker cap and every runner-up in a
+    // new namespace is dropped, so the cap grows with the lane count.
+    let max_workers = MAX_SEARCH_WORKERS.max(2 * rankings.len());
     let rankings = rankings
         .into_iter()
         .map(|ranking| drop_trailing_namespaces(ranking, SEARCH_RANK_FLOOR))
         .collect::<Vec<_>>();
-    limit_search_workers(round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS))
+    limit_search_workers(
+        round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS),
+        max_workers,
+    )
 }
 
 fn search_queries(capabilities: &[String]) -> Vec<String> {
@@ -704,7 +713,7 @@ fn baggage_session_id() -> Option<String> {
     (!session_id.is_empty()).then_some(session_id)
 }
 
-fn limit_search_workers(selected: Vec<String>) -> Vec<String> {
+fn limit_search_workers(selected: Vec<String>, max_workers: usize) -> Vec<String> {
     let mut namespaces: Vec<String> = Vec::new();
     selected
         .into_iter()
@@ -715,7 +724,7 @@ fn limit_search_workers(selected: Vec<String>) -> Vec<String> {
             if namespaces.iter().any(|seen| seen == namespace) {
                 return true;
             }
-            if namespaces.len() == MAX_SEARCH_WORKERS {
+            if namespaces.len() == max_workers {
                 return false;
             }
             namespaces.push(namespace.to_string());
@@ -724,14 +733,11 @@ fn limit_search_workers(selected: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Group the selected function ids into compact candidates by worker,
-/// keeping at most `max_workers` workers. Ids missing from the catalog
-/// are skipped; within a worker the rank order is preserved — best first.
-fn assemble_workers(
-    selected: &[String],
-    tools: &[ToolSchema],
-    max_workers: usize,
-) -> Vec<SearchWorker> {
+/// Group the selected function ids into compact candidates by worker
+/// (`selected` is already worker-capped per batch). Ids missing from the
+/// catalog are skipped; within a worker the rank order is preserved — best
+/// first.
+fn assemble_workers(selected: &[String], tools: &[ToolSchema]) -> Vec<SearchWorker> {
     let mut workers: Vec<SearchWorker> = Vec::new();
     for function_id in selected {
         let Some(namespace) = function_namespace(function_id) else {
@@ -749,11 +755,10 @@ fn assemble_workers(
             .position(|worker| worker.namespace == namespace)
         {
             Some(index) => workers[index].functions.push(candidate),
-            None if workers.len() < max_workers => workers.push(SearchWorker {
+            None => workers.push(SearchWorker {
                 namespace: namespace.to_string(),
                 functions: vec![candidate],
             }),
-            None => {}
         }
     }
     workers
@@ -1172,7 +1177,7 @@ pub async fn search_functions(
         repeated = prior;
     }
     tracing::debug!(%fingerprint, batches, top_ids = ?selected, "function search selected");
-    let workers = assemble_workers(&selected, &tools, MAX_SEARCH_WORKERS * batches);
+    let workers = assemble_workers(&selected, &tools);
     let guidance = if workers.is_empty() && repeated.is_empty() {
         if installable.is_empty() {
             SEARCH_REFINE_GUIDANCE.to_string()
@@ -1637,7 +1642,7 @@ mod tests {
             }),
         }];
 
-        let workers = assemble_workers(&["github::pr::create".into()], &tools, MAX_SEARCH_WORKERS);
+        let workers = assemble_workers(&["github::pr::create".into()], &tools);
         let candidate = serde_json::to_value(&workers[0].functions[0]).unwrap();
 
         assert_eq!(
@@ -2713,11 +2718,39 @@ mod tests {
     }
 
     #[test]
+    fn six_lanes_keep_every_runner_up_worker() {
+        let rankings: Vec<Vec<(String, f64)>> = (0..6)
+            .map(|lane| {
+                vec![
+                    (format!("lead{lane}::run"), 1.0),
+                    (format!("second{lane}::run"), 0.9),
+                ]
+            })
+            .collect();
+
+        let selected = select_preordered_ids(rankings);
+
+        assert_eq!(selected.len(), 12, "{selected:?}");
+        assert!(selected.iter().any(|id| id == "second0::run"));
+    }
+
+    #[test]
+    fn one_lane_still_stops_at_six_workers() {
+        let ranking: Vec<(String, f64)> = (b'a'..=b'j')
+            .map(|letter| (format!("{}::run", char::from(letter)), 1.0))
+            .collect();
+
+        let selected = select_preordered_ids(vec![ranking]);
+
+        assert_eq!(selected.len(), MAX_SEARCH_WORKERS, "{selected:?}");
+    }
+
+    #[test]
     fn worker_cap_drops_candidates_before_session_delivery() {
         let ranked: Vec<String> = (b'a'..=b'g')
             .map(|letter| format!("{}::run", char::from(letter)))
             .collect();
-        let emitted = limit_search_workers(ranked);
+        let emitted = limit_search_workers(ranked, MAX_SEARCH_WORKERS);
         let mut registry = SessionRegistry::default();
 
         registry.split("session", "catalog", &emitted);
