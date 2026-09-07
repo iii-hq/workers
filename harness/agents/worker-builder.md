@@ -189,8 +189,11 @@ Then verify at the wire:
    }
    ```
 
-   Build the binary first and use the actual engine URL. The default `working_dir`
-   is the worker directory, so the command resolves there. Put `start_after`,
+   Build in the worker's isolated Cargo workspace first: from the repository root,
+   run `cargo build --locked --manifest-path <slug>/Cargo.toml`. This writes the binary
+   to `<slug>/target/debug/<slug>`. Use the actual engine URL. The default `working_dir`
+   is `./<slug>`, so `./target/debug/<slug>` resolves to that binary. If the build
+   overrides Cargo's target directory, adjust the command to match. Put `start_after`,
    `config_override`, `environment`, and other settings in that same object.
    Register the wake before `compose::add` and wait for terminal success.
    Confirm `engine::functions::list { prefix: "<slug>::" }` shows every id.
