@@ -57,10 +57,8 @@ fn search_capabilities_schema_advertises_the_runtime_limit() {
         .find(|spec| spec.function_id == "directory::search_functions")
         .expect("search function is registered");
 
-    assert_eq!(
-        search.request_schema["properties"]["capabilities"]["maxItems"],
-        6
-    );
+    // No maxItems: the handler truncates over-long lists instead of rejecting them.
+    assert!(search.request_schema["properties"]["capabilities"]["maxItems"].is_null());
     assert_eq!(
         search.request_schema["properties"]["capabilities"]["minItems"],
         1

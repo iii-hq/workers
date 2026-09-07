@@ -309,11 +309,7 @@ pub struct SearchFunctionsRequest {
     /// IDs.
     // MOT-4654: kept verbatim on purpose — this is a tuned search directive pinned
     // phrase-by-phrase by tests/search_schemas.rs, not descriptive prose.
-    #[schemars(
-        with = "HashSet<String>",
-        length(min = 1, max = 6),
-        inner(length(min = 1))
-    )]
+    #[schemars(with = "HashSet<String>", length(min = 1), inner(length(min = 1)))]
     pub capabilities: Vec<String>,
 }
 
@@ -1110,16 +1106,17 @@ async fn registry_installable(
 /// candidates for only the ranked functions — never a whole worker.
 pub async fn search_functions(
     deps: &Deps,
-    request: SearchFunctionsRequest,
+    mut request: SearchFunctionsRequest,
 ) -> Result<SearchFunctionsResponse, Error> {
     if request.capabilities.is_empty() {
         return Err(Error::Handler("provide at least one capability".into()));
     }
-    if request.capabilities.len() > MAX_SEARCH_QUERIES {
-        return Err(Error::Handler(format!(
-            "provide at most {MAX_SEARCH_QUERIES} capabilities"
-        )));
-    }
+    // Over the cap: search the first MAX_SEARCH_QUERIES and name the rest in
+    // `guidance` so the agent keeps this turn's candidates instead of a
+    // rejected call.
+    let dropped = request
+        .capabilities
+        .split_off(request.capabilities.len().min(MAX_SEARCH_QUERIES));
     if request
         .capabilities
         .iter()
@@ -1237,6 +1234,15 @@ unchanged — reuse the earlier result): {}.",
             guidance = format!("{guidance} {SEARCH_INSTALL_NOTE}");
         }
         guidance
+    };
+    let guidance = if dropped.is_empty() {
+        guidance
+    } else {
+        format!(
+            "{guidance} Only the first {MAX_SEARCH_QUERIES} capabilities were searched; \
+search again for: {}.",
+            dropped.join(", ")
+        )
     };
     Ok(SearchFunctionsResponse {
         guidance,
@@ -2272,17 +2278,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_rejects_more_than_six_capabilities() {
+    async fn search_truncates_more_than_six_capabilities() {
         let request: SearchFunctionsRequest = serde_json::from_value(json!({
-            "capabilities": ["one", "two", "three", "four", "five", "six", "seven"]
+            "capabilities": ["one", "two", "three", "four", "five", "six", "seven", "eight"]
         }))
         .unwrap();
 
-        let error = search_functions(&search_deps(Vec::new()), request)
+        let response = search_functions(&search_deps(Vec::new()), request)
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert!(error.to_string().contains("at most 6 capabilities"));
+        assert!(
+            response.guidance.contains(
+                "Only the first 6 capabilities were searched; search again for: seven, eight."
+            ),
+            "{}",
+            response.guidance
+        );
     }
 
     #[tokio::test]
