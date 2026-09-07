@@ -5,27 +5,29 @@ stop_timeout: 10s
 engine:
   url: ws://127.0.0.1:49134
 
+# CI disables install prompts when compose starts workers without a terminal.
 containers:
   queue:
     worker: path://../queue
     environment:
       RUST_LOG: info
     scripts:
-      run: cargo run --locked --bin queue
+      run: cargo run --bin queue
 
   state:
     worker: path://../state
     environment:
       RUST_LOG: info
+      CI: "true"
     scripts:
-      run: cargo run --locked --bin state
+      run: cargo run --bin state
 
   session-manager:
     worker: path://../session-manager
     environment:
       RUST_LOG: info
     scripts:
-      run: cargo run --locked --bin session-manager
+      run: cargo run --bin session-manager
 
   llm-router:
     worker: path://../llm-router
@@ -33,10 +35,11 @@ containers:
       - state
     environment:
       RUST_LOG: info
+      CI: "true"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     scripts:
-      run: cargo run --locked --bin llm-router
+      run: cargo run --bin llm-router
 
   provider-openai-codex:
     worker: path://../provider-openai-codex
@@ -45,8 +48,9 @@ containers:
       - state
     environment:
       RUST_LOG: info
+      CI: "true"
     scripts:
-      run: cargo run --locked --bin provider-openai-codex
+      run: cargo run --bin provider-openai-codex
 
   provider-openai:
     worker: path://../provider-openai
@@ -56,7 +60,7 @@ containers:
     environment:
       RUST_LOG: info
     scripts:
-      run: cargo run --locked --bin provider-openai
+      run: cargo run --bin provider-openai
 
   provider-anthropic:
     worker: path://../provider-anthropic
@@ -66,7 +70,7 @@ containers:
     environment:
       RUST_LOG: info
     scripts:
-      run: cargo run --locked --bin provider-anthropic
+      run: cargo run --bin provider-anthropic
 
   context-manager:
     worker: path://../context-manager
@@ -74,41 +78,46 @@ containers:
       - llm-router
     environment:
       RUST_LOG: info
+      CI: "true"
     scripts:
-      run: cargo run --locked --bin context-manager
+      run: cargo run --bin context-manager
 
   iii-directory:
     worker: path://../iii-directory
     environment:
       RUST_LOG: info
+      CI: "true"
       ORT_PREFER_DYNAMIC_LINK: "0"
     scripts:
       # iii-directory links the pinned static ONNX Runtime: ort-sys downloads and
       # verifies it for the build target. Offline hosts export ORT_LIB_PATH first
       # (see ../iii-directory/scripts/provision-onnxruntime.sh for Linux x86_64).
       run: >-
-        cargo run --locked --bin iii-directory
+        cargo run --bin iii-directory
 
   cron:
     worker: path://../cron
     environment:
       RUST_LOG: info
+      CI: "true"
     scripts:
-      run: cargo run --locked --bin cron
+      run: cargo run --bin cron
 
   console:
     worker: path://../console
     environment:
       RUST_LOG: info
+      CI: "true"
     scripts:
-      run: cargo run --locked --bin console
+      run: cargo run --bin console
 
   shell:
     worker: path://../shell
     environment:
       RUST_LOG: info
+      CI: "true"
     scripts:
-      run: cargo run --locked --bin shell
+      run: cargo run --bin shell
 
   harness:
     worker: path://.
@@ -127,6 +136,6 @@ containers:
       - shell
     environment:
       RUST_LOG: info
+      CI: "true"
     scripts:
-      run: cargo run --locked --bin harness
-  # added by compose::add
+      run: cargo run --bin harness
