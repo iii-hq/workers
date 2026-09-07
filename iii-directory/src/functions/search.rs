@@ -308,9 +308,9 @@ engine::functions::info call — never call an installable function before insta
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchFunctionsRequest {
-    /// One to six non-empty capability searches derived from the goal and
-    /// current execution state. For one search at each decision point, include all unmet
-    /// external capabilities once. Exclude intrinsic reasoning, summarization, planning, or
+    /// Non-empty capability searches derived from the goal and current execution state,
+    /// usually one to six and at most eighteen per call (searched in batches of six). For
+    /// one search at each decision point, include all unmet external capabilities once. Exclude intrinsic reasoning, summarization, planning, or
     /// formatting, and do not repeat needs already represented or satisfied. Requests to
     /// summarize provided text or content are ignored. Write every entry in English,
     /// translating non-English user requests while preserving proper names, URLs, and function

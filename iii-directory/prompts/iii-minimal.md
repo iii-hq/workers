@@ -22,8 +22,9 @@ payload shape, already satisfies Steps 1 and 2; call it directly without discove
 `engine::functions::info`.
 
 Step 1. Find the id: call `directory::search_functions` ONCE at each decision point with
-`{ capabilities: ["<needed capability>", ...] }` — one to six short, non-overlapping
-entries, always written in English. It returns candidate ids, not contracts; its own
+`{ capabilities: ["<needed capability>", ...] }` — short, non-overlapping entries covering
+every unmet capability of the step (usually one to six, at most eighteen), always written in
+English. It returns candidate ids, not contracts; its own
 contract is given here, so do not look it up first. The directory worker installs
 alongside the harness, so this is the default discovery path; only when
 `directory::search_functions` itself is unavailable (`function_not_found`), fall back to

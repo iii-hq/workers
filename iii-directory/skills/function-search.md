@@ -9,7 +9,7 @@ type: how-to
 
 # Function search
 
-A required list of one to six unmet external capabilities returns only compact
+A required list of unmet external capabilities (usually one to six, at most eighteen) returns only compact
 `function_id` + description candidates, grouped by worker. Choose the needed
 ids, then fetch their contracts in one batched `engine::functions::info` call.
 
@@ -17,15 +17,17 @@ ids, then fetch their contracts in one batched `engine::functions::info` call.
 
 - `directory::search_functions`: call once with
   `{ "capabilities": ["<unmet external capability>", "<another>"] }`. Provide
-  one to six short, non-overlapping capabilities derived from the goal and
-  current execution state, omitting work already satisfied. Include every
-  unmet external capability once in the same call. Write every capability in
+  short, non-overlapping capabilities derived from the goal and current
+  execution state, omitting work already satisfied. Include every unmet
+  external capability once in the same call — usually one to six, at most
+  eighteen; past that the result names what was not searched. Write every capability in
   English, translating non-English requests while preserving proper names,
   URLs, and function IDs. Exclude intrinsic reasoning,
   summarization, planning, and formatting; requests to summarize provided
   text or content are ignored. Each capability ranks independently and
-  candidates merge round-robin. The result contains at most six workers and
-  twelve compact candidates, never request schemas or a whole worker surface.
+  candidates merge round-robin in batches of six capabilities. Each batch
+  contributes at most twelve compact candidates across at most max(6, 2 ×
+  capabilities) workers, never request schemas or a whole worker surface.
   Choose the smallest needed id set and call `engine::functions::info` once with
   `{ "function_ids": [...] }` before using them. Repeat queries in one
   session omit candidates already delivered.

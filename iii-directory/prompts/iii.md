@@ -50,8 +50,9 @@ payload shape, already satisfies Steps 1 and 2; call it directly without discove
 
 Step 1. Find the function id through exactly one task-capability discovery path. The default
 path is `directory::search_functions` with `{ capabilities: ["<needed capability>", ...] }` —
-one to six short, non-overlapping capability phrases, always written in English. It ranks the
-installed catalog and returns candidate ids (and, when a capability needs a worker that is not
+short, non-overlapping capability phrases covering every unmet capability of the step in one
+call (usually one to six, at most eighteen), always written in English. It ranks the installed
+catalog and returns candidate ids (and, when a capability needs a worker that is not
 installed, installable workers from the registry); it returns candidates, not contracts, and
 its own contract is given here, so never fetch it with `engine::functions::info` first. If
 `<discovery_assist>` is present, follow it instead of searching. Only when
