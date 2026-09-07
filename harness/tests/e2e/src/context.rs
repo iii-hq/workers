@@ -27,17 +27,23 @@ struct RootProgress {
     expects_wake: bool,
 }
 
-impl From<&StatusReport> for RootProgress {
-    fn from(status: &StatusReport) -> Self {
-        Self {
+impl TryFrom<&StatusReport> for RootProgress {
+    type Error = anyhow::Error;
+
+    fn try_from(status: &StatusReport) -> Result<Self> {
+        let pending_function_calls = status
+            .pending_function_calls
+            .as_ref()
+            .ok_or_else(|| anyhow!("verbose harness::status omitted pending_function_calls"))?;
+        Ok(Self {
             turn_id: status.turn_id.clone(),
             status: status.status,
             step: status.step,
-            pending_function_calls: status.pending_function_calls.len(),
+            pending_function_calls: pending_function_calls.len(),
             children: status.children.len(),
-            queued_messages: status.queued.len(),
+            queued_messages: status.queued.as_ref().map_or(0, Vec::len),
             expects_wake: status.expects_wake,
-        }
+        })
     }
 }
 
@@ -138,18 +144,24 @@ impl E2eContext {
         let mut metrics_progress = None;
         loop {
             let status: Option<StatusReport> = self
-                .trigger("harness::status", json!({ "session_id": session_id }))
+                .trigger(
+                    "harness::status",
+                    json!({ "session_id": session_id, "verbose": true }),
+                )
                 .await?;
             if let Some(status) = status {
                 if let Some(turn_id) = &status.turn_id {
                     active_turn_id.clone_from(turn_id);
                 }
+                let observed = RootProgress::try_from(&status)?;
+                let max_turns = status
+                    .max_turns
+                    .ok_or_else(|| anyhow!("verbose harness::status omitted max_turns"))?;
                 if session_is_terminal(&status)? {
                     return Ok(status);
                 }
-                let observed = RootProgress::from(&status);
                 if root_progress.as_ref() != Some(&observed) {
-                    root_progress = Some(observed);
+                    root_progress = Some(observed.clone());
                     last_progress = tokio::time::Instant::now();
                 }
                 if progress_due(&mut next_progress, progress_interval) {
@@ -161,10 +173,10 @@ impl E2eContext {
                         status = ?status.status,
                         step = status.step,
                         turns = status.turn_count,
-                        max_turns = status.max_turns,
-                        pending_functions = status.pending_function_calls.len(),
+                        max_turns,
+                        pending_functions = observed.pending_function_calls,
                         children = status.children.len(),
-                        queued_messages = status.queued.len(),
+                        queued_messages = observed.queued_messages,
                         expects_wake = status.expects_wake,
                         "E2E scenario progress"
                     );
@@ -455,18 +467,18 @@ mod tests {
             status,
             step: 0,
             turn_count: 1,
-            max_turns: 100,
-            validation_retries: 0,
-            max_validation_retries: 0,
-            transient_resumes: 0,
-            max_transient_resumes: 0,
-            partial_result_available: false,
-            depth: 0,
-            pending_function_calls: Vec::new(),
+            max_turns: Some(100),
+            validation_retries: Some(0),
+            max_validation_retries: Some(0),
+            transient_resumes: Some(0),
+            max_transient_resumes: Some(0),
+            partial_result_available: Some(false),
+            depth: Some(0),
+            pending_function_calls: Some(Vec::new()),
             children: Vec::new(),
             expects_wake,
-            armed_wakes: Vec::new(),
-            queued: Vec::new(),
+            armed_wakes: None,
+            queued: None,
             result: None,
             result_error: None,
         }

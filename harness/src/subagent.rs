@@ -132,9 +132,7 @@ fn enforce_fanout(
     ))
 }
 
-/// The immediate function result for a successful fire-and-forget spawn. The
-/// hint line teaches models still carrying the old parked-spawn doctrine that
-/// no result will come back through this call.
+/// The immediate function result for a successful fire-and-forget spawn.
 pub fn spawned_result(child: &ChildIds) -> ResultData {
     let ids = json!({
         "child_session_id": child.session_id,
@@ -146,12 +144,7 @@ pub fn spawned_result(child: &ChildIds) -> ResultData {
     } else {
         ""
     };
-    let text = format!(
-        "{ids}{reuse_note}\nfire-and-forget: this turn will NOT receive the child's result — or its \
-         failure. The child talks to the world only through the destination its task names; \
-         read that destination, poll `harness::status` on the child for its health, and put a \
-         deadline (a `timer` wake or a binding `lifecycle`) on anything you wait for."
-    );
+    let text = format!("{ids}{reuse_note}");
     ResultData {
         content: vec![ContentBlock::text(text)],
         is_error: false,
@@ -1152,20 +1145,50 @@ mod tests {
     }
 
     #[test]
-    fn spawned_result_promises_no_failure_backchannel() {
-        // A child's death is not injected into the spawner: the result text
-        // must steer the caller to the medium + status + deadlines instead of
-        // promising a [child-failure] wake-up that no longer exists.
-        let ids = ChildIds {
+    fn spawned_result_is_compact_for_fresh_and_reused_children() {
+        let fresh = spawned_result(&ChildIds {
             session_id: "s_child".into(),
             turn_id: "t_child".into(),
             reused: false,
-        };
-        let result = spawned_result(&ids);
-        let text = serde_json::to_string(&result.content).unwrap();
-        assert!(!text.contains("[child-failure]"));
-        assert!(text.contains("harness::status"));
-        assert!(text.contains("deadline"));
+        });
+        assert_eq!(
+            fresh.content,
+            vec![ContentBlock::text(
+                r#"{"child_session_id":"s_child","child_turn_id":"t_child"}"#,
+            )]
+        );
+        assert_eq!(
+            fresh.details,
+            json!({
+                "child_session_id": "s_child",
+                "child_turn_id": "t_child",
+                "fire_and_forget": true,
+                "reused": false,
+            })
+        );
+
+        let reused = spawned_result(&ChildIds {
+            session_id: "s_child".into(),
+            turn_id: "t_child".into(),
+            reused: true,
+        });
+        assert_eq!(
+            reused.content,
+            vec![ContentBlock::text(
+                "{\"child_session_id\":\"s_child\",\"child_turn_id\":\"t_child\"}\nreused: \
+                 the named session already existed (inside your own tree) — its prior transcript is \
+                 retained and this task was appended to it.",
+            )]
+        );
+        assert_eq!(
+            reused.details,
+            json!({
+                "child_session_id": "s_child",
+                "child_turn_id": "t_child",
+                "fire_and_forget": true,
+                "reused": true,
+            })
+        );
     }
 
     /// Prevents: the courier-k3m7 mis-nesting — an in-turn spawn naming an id

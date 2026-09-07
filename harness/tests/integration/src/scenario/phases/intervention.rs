@@ -783,7 +783,7 @@ where
                 let status = client
                     .call_with_deadline(
                         "harness::status",
-                        json!({ "session_id": session_id }),
+                        json!({ "session_id": session_id, "verbose": true }),
                         deadline,
                         DEFAULT_CALL_TIMEOUT_MS,
                     )
@@ -823,7 +823,7 @@ async fn wait_for_child_statuses(
                         let status = client
                             .call_with_deadline(
                                 "harness::status",
-                                json!({ "session_id": session_id }),
+                                json!({ "session_id": session_id, "verbose": true }),
                                 deadline,
                                 DEFAULT_CALL_TIMEOUT_MS,
                             )

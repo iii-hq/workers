@@ -5,6 +5,11 @@
     "properties": {
       "session_id": {
         "type": "string"
+      },
+      "verbose": {
+        "default": false,
+        "description": "Include the full runtime report and unmodified result.",
+        "type": "boolean"
       }
     },
     "required": [
@@ -447,7 +452,10 @@
             "items": {
               "$ref": "#/definitions/ArmedWake"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "children": {
             "items": {
@@ -458,7 +466,10 @@
           "depth": {
             "format": "uint32",
             "minimum": 0.0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "expects_wake": {
             "default": false,
@@ -468,33 +479,51 @@
           "max_transient_resumes": {
             "format": "uint32",
             "minimum": 0.0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_turns": {
             "format": "uint32",
             "minimum": 0.0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "max_validation_retries": {
             "format": "uint32",
             "minimum": 0.0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "partial_result_available": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "pending_function_calls": {
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "queued": {
             "description": "Messages queued while a step streams, in arrival order; they land in the transcript when the stream ends.",
             "items": {
               "$ref": "#/definitions/QueuedMessage"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "result": true,
           "result_error": {
@@ -517,7 +546,10 @@
           "transient_resumes": {
             "format": "uint32",
             "minimum": 0.0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "turn_count": {
             "format": "uint32",
@@ -533,23 +565,18 @@
           "validation_retries": {
             "format": "uint32",
             "minimum": 0.0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
           "children",
-          "depth",
-          "max_transient_resumes",
-          "max_turns",
-          "max_validation_retries",
-          "partial_result_available",
-          "pending_function_calls",
           "session_id",
           "status",
           "step",
-          "transient_resumes",
-          "turn_count",
-          "validation_retries"
+          "turn_count"
         ],
         "type": "object"
       },

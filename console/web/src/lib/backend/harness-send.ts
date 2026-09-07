@@ -144,6 +144,15 @@ export interface HarnessChildRef {
   turn_id: string
 }
 
+/** One active wake subscription owned by the session. */
+export interface HarnessArmedWake {
+  subscription_id: string
+  trigger_type?: string
+  config?: unknown
+  created_at: number
+  expires_at?: number
+}
+
 /**
  * One message parked in the harness's per-session queue while a step streams
  * (mirrors `harness_queue` rows surfaced by `harness::status`). `message` is
@@ -158,12 +167,13 @@ export interface HarnessQueuedMessage {
     role: string
     content?: Array<{ type: string; text?: string }>
   }
+  origin?: unknown
   queued_at: number
 }
 
 export interface HarnessStatusReport {
   session_id: string
-  turn_id?: string
+  turn_id: string | null
   status: HarnessTurnStatus
   step: number
   turn_count: number
@@ -177,6 +187,10 @@ export interface HarnessStatusReport {
   /** function_call_ids parked awaiting a deferred result / approval. */
   pending_function_calls: string[]
   children: HarnessChildRef[]
+  /** A completed turn is parked rather than terminal while this is true. */
+  expects_wake: boolean
+  /** Wake details are omitted when no wake is armed. */
+  armed_wakes?: HarnessArmedWake[]
   /** Messages queued while a step streams, in arrival order. */
   queued?: HarnessQueuedMessage[]
   result?: unknown
@@ -267,5 +281,6 @@ export function getTurnStatus(
 ): Promise<HarnessStatusReport | null> {
   return client.trigger<HarnessStatusReport | null>('harness::status', {
     session_id: sessionId,
+    verbose: true,
   })
 }

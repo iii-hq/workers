@@ -68,6 +68,7 @@ describe('getTurnStatus', () => {
   it('triggers harness::status and returns the report (or null)', async () => {
     const report = {
       session_id: 's-1',
+      turn_id: 't-1',
       status: 'running' as const,
       step: 2,
       turn_count: 1,
@@ -80,9 +81,15 @@ describe('getTurnStatus', () => {
       partial_result_available: true,
       pending_function_calls: [],
       children: [],
+      expects_wake: false,
+      armed_wakes: [],
     }
     const client = fakeClient(() => report)
     expect(await getTurnStatus(client, 's-1')).toEqual(report)
+    expect(client.trigger).toHaveBeenCalledWith('harness::status', {
+      session_id: 's-1',
+      verbose: true,
+    })
 
     const empty = fakeClient(() => null)
     expect(await getTurnStatus(empty, 's-1')).toBeNull()

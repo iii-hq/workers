@@ -153,7 +153,10 @@ export async function awaitTurn(worker, session_id, { timeoutMs = 240_000, inter
   for (;;) {
     let s;
     try {
-      s = await worker.trigger({ function_id: 'harness::status', payload: { session_id } });
+      s = await worker.trigger({
+        function_id: 'harness::status',
+        payload: { session_id, verbose: true },
+      });
     } catch (e) {
       throw new Error(`harness::status failed: ${e?.message || e}`);
     }
