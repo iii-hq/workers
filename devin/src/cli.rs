@@ -179,6 +179,10 @@ pub async fn run(iii: IIIClient, cfg: Arc<Config>, req: RunRequest) -> Value {
     let mut command = Command::new(cfg.devin_bin());
     command
         .args(&argv)
+        // The CLI (and any `iii` it shells out to) must not inherit this
+        // worker's identity, or it registers AS this worker and is refused.
+        .env_remove("III_WORKER_NAME")
+        .env_remove("III_NAMESPACE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

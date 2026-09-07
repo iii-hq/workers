@@ -16,7 +16,9 @@ env:
   # overrides are still gated: PATH/HOME/LD_*/DYLD_* and interpreter startup
   # keys can never be set per call (see exec/policy.rs DANGEROUS_ENV_KEYS).
   # NOTE: this also forwards any secrets in the worker's env to every command;
-  # run the worker with a clean environment if that matters to you.
+  # run the worker with a clean environment if that matters to you. The
+  # worker's own identity (III_WORKER_NAME, III_NAMESPACE) is always stripped
+  # so an `iii` CLI or SDK script started from here connects as itself.
   inherit: true
   # When `inherit` is false, ONLY these keys are forwarded to children. Has
   # no effect on per-call `env` (deny-only, see line 16 above) — this list
