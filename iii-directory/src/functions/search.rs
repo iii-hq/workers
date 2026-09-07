@@ -293,14 +293,24 @@ supports them, to set scripts, start_after, config_override, or other supported 
 Otherwise keep install.payload as shorthand for defaults; if settings are required, \
 report that they cannot be applied and stop the installation. Explain the worker and \
 follow the caller's installation approval requirements; if approval is still needed, \
-wait for explicit confirmation before compose::add. Register a one-shot compose-operation \
-wake with terminal_only: true before compose::add and pass the same unique operation_id \
-in both calls. Read compose::operation once for race recovery; if terminal, unregister \
-the wake, otherwise wait for it. Wait for terminal success, not just acceptance, \
-then call directory::search_functions again \
-for the newly registered candidates and fetch selected contracts with one batched \
-engine::functions::info call. If none fit, search once more with concrete unmet \
-`capabilities`; for a need no function covers — authoring a worker, registering a new \
+wait for explicit confirmation before compose::add. Choose a unique operation_id. \
+Register a one-shot compose-operation \
+wake with engine::register_trigger { \"trigger_type\": \"compose-operation\", \
+\"config\": { \"operation_id\": \"<operation-id>\", \"terminal_only\": true }, \"once\": true }. \
+This wake payload is complete; invoke it directly without trigger discovery or contract \
+lookup. Save the returned subscription_id. After registration succeeds, call compose::add \
+using install.payload plus the same operation_id. Read \
+compose::operation { operation_id: \"<operation-id>\" } once for race recovery; if terminal, \
+unregister any still-armed wake with engine::unregister_trigger { id: \"<subscription_id>\" }, \
+otherwise end the turn and wait for its notification. Do not poll. \
+Wait for terminal success, not just acceptance, then confirm registration directly with \
+engine::workers::info { name: \"<worker name>\" }. Report failed operations or missing \
+registration instead of readiness. If the user only asked to install, report the installed \
+version and readiness and finish; no further capability search or function contract lookup \
+is needed. If a remaining user task needs installed functions, reuse function IDs already \
+returned and fetch only the needed, not-yet-fetched contracts in one batched \
+engine::functions::info call. Search again only when a required function ID is still unknown. \
+For a remaining need no function covers — authoring a worker, registering a new \
 engine function — read the shipped how-to instead: directory::skills::list, then \
 directory::skills::get { id: \"<id>\" }. Do not search for intrinsic reasoning, \
 summarization, planning, or \
@@ -317,12 +327,22 @@ start_after, config_override, or other supported fields. Otherwise keep install.
 as shorthand for defaults; if settings are required, report that they cannot be applied \
 and stop the installation. Explain the worker and follow the caller's installation \
 approval requirements; if approval is still needed, wait for explicit confirmation \
-before compose::add. Register a one-shot compose-operation wake with terminal_only: true \
-before compose::add and pass the same unique operation_id in both calls. Read \
-compose::operation once for race recovery; if terminal, unregister the wake, otherwise \
-wait for it. Wait for terminal success, not just acceptance, then search again and fetch \
-selected contracts with one batched \
-engine::functions::info call — never call an installable function before installing.";
+before compose::add. Choose a unique operation_id. Register a one-shot compose-operation \
+wake with engine::register_trigger { \"trigger_type\": \"compose-operation\", \
+\"config\": { \"operation_id\": \"<operation-id>\", \"terminal_only\": true }, \"once\": true }. \
+This wake payload is complete; invoke it directly without trigger discovery or contract \
+lookup. Save the returned subscription_id. After registration succeeds, call compose::add \
+using install.payload plus the same operation_id. Read \
+compose::operation { operation_id: \"<operation-id>\" } once for race recovery; if terminal, \
+unregister any still-armed wake with engine::unregister_trigger { id: \"<subscription_id>\" }, \
+otherwise end the turn and wait for its notification. Do not poll. \
+Wait for terminal success, not just acceptance, then confirm registration directly with \
+engine::workers::info { name: \"<worker name>\" }. Report failed operations or missing \
+registration instead of readiness. If the user only asked to install, report the installed \
+version and readiness and finish; no further capability search or function contract lookup \
+is needed. If a remaining user task needs installed functions, reuse function IDs already \
+returned and fetch only the needed, not-yet-fetched contracts in one batched \
+engine::functions::info call. Search again only when a required function ID is still unknown.";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchFunctionsRequest {
@@ -2345,18 +2365,8 @@ mod tests {
             .guidance
             .find("Wait for terminal success, not just acceptance")
             .expect("mixed guidance waits for successful completion");
-        let search_again = response
-            .guidance
-            .find("then search again")
-            .expect("mixed guidance searches after installation");
-        let installed_info = response
-            .guidance
-            .rfind("one batched engine::functions::info call")
-            .expect("mixed guidance fetches the installed contract last");
         assert!(install_schema < wake);
         assert!(wake < ready_wait);
-        assert!(ready_wait < search_again);
-        assert!(search_again < installed_info);
         assert_eq!(response.installable[0].install.function, "compose::add");
         assert_eq!(
             response.installable[0].install.payload,
@@ -2388,6 +2398,44 @@ mod tests {
                 .find("Register a one-shot compose-operation wake")
                 .unwrap();
             assert!(approval < registration);
+            let payload_start = guidance
+                .find("engine::register_trigger ")
+                .expect("installation supplies the exact wake call")
+                + "engine::register_trigger ".len();
+            let wake_payload = serde_json::Deserializer::from_str(&guidance[payload_start..])
+                .into_iter::<Value>()
+                .next()
+                .unwrap()
+                .expect("the documented wake payload is valid JSON");
+            assert_eq!(
+                wake_payload,
+                json!({
+                    "trigger_type": "compose-operation",
+                    "config": { "operation_id": "<operation-id>", "terminal_only": true },
+                    "once": true
+                })
+            );
+            let ready_wait = guidance.find("Wait for terminal success").unwrap();
+            let inventory = guidance
+                .find("engine::workers::info { name: \"<worker name>\" }")
+                .expect("installation confirms registration directly");
+            let finish = guidance
+                .find("If the user only asked to install")
+                .expect("installation-only requests have an explicit completion point");
+            let continue_task = guidance
+                .find("If a remaining user task needs installed functions")
+                .expect("using installed functions is conditional on the user's task");
+            let installed_info = guidance
+                .rfind("one batched engine::functions::info call")
+                .unwrap();
+            let search_again = guidance
+                .find("Search again only when a required function ID is still unknown")
+                .expect("known function IDs do not require another capability search");
+            assert!(ready_wait < inventory);
+            assert!(inventory < finish);
+            assert!(finish < continue_task);
+            assert!(continue_task < installed_info);
+            assert!(installed_info < search_again);
         }
         assert!(
             response.guidance.contains(
