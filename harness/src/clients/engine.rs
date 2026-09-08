@@ -177,7 +177,8 @@ impl EngineClient {
 /// Compose starts project workers in the project namespace, while its control
 /// functions live in the daemon namespace. These two environment values are
 /// supervisor-owned: they route `compose::*` to the daemon that started this
-/// harness and pin every request to this harness's compose file.
+/// harness and pin every request to this harness's compose file. Compose-only
+/// contract lookups use the same daemon namespace in their introspection payload.
 #[derive(Clone, Debug, Default)]
 struct ComposeScope {
     namespace: Option<String>,
@@ -193,6 +194,28 @@ impl ComposeScope {
     }
 
     fn prepare<'a>(&'a self, function_id: &str, mut payload: Value) -> (Value, Option<&'a str>) {
+        if function_id == "engine::functions::info" {
+            let compose_only = match (payload.get("function_id"), payload.get("function_ids")) {
+                (Some(Value::String(id)), None) => id.starts_with("compose::"),
+                (None, Some(Value::Array(ids))) => {
+                    !ids.is_empty()
+                        && ids
+                            .iter()
+                            .all(|id| id.as_str().is_some_and(|id| id.starts_with("compose::")))
+                }
+                _ => false,
+            };
+            if compose_only {
+                if let (Some(namespace), Some(arguments)) =
+                    (&self.namespace, payload.as_object_mut())
+                {
+                    arguments.insert("namespace".to_string(), Value::String(namespace.clone()));
+                }
+            }
+            // The engine built-in stays in its own namespace; only the lookup
+            // target is scoped. A compose file is not an introspection argument.
+            return (payload, None);
+        }
         if !function_id.starts_with("compose::") {
             return (payload, None);
         }
@@ -447,6 +470,53 @@ mod tests {
         assert_eq!(payload["worker"], "database");
         assert_eq!(payload["file"], "/srv/app/worker-compose.yaml");
         assert_eq!(payload["namespace"], "compose-daemon");
+    }
+
+    #[test]
+    fn compose_contract_lookups_use_the_supervisor_namespace_in_the_payload() {
+        let scope = ComposeScope {
+            namespace: Some("compose-daemon".to_string()),
+            file: Some("/srv/app/worker-compose.yaml".to_string()),
+        };
+        for mut payload in [
+            json!({ "function_id": "compose::add" }),
+            json!({ "function_ids": ["compose::add", "compose::operation"] }),
+        ] {
+            payload["namespace"] = json!("other-daemon");
+            let (prepared, prepared_namespace) =
+                scope.prepare("engine::functions::info", payload.clone());
+            payload["namespace"] = json!("compose-daemon");
+            assert_eq!(prepared, payload);
+            assert_eq!(
+                dispatch_namespace("engine::functions::info", prepared_namespace),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn contract_lookups_without_a_shared_compose_scope_keep_their_payload() {
+        let scope = ComposeScope {
+            namespace: Some("compose-daemon".to_string()),
+            file: Some("/srv/app/worker-compose.yaml".to_string()),
+        };
+        for payload in [
+            json!({ "function_id": "shell::fs::ls", "namespace": "project" }),
+            json!({ "function_ids": ["compose::add", "shell::fs::ls"] }),
+            json!({ "function_ids": [] }),
+            json!({ "function_id": "compose::add", "function_ids": ["compose::operation"] }),
+            json!({ "function_ids": ["compose::add", null] }),
+        ] {
+            assert_eq!(
+                scope.prepare("engine::functions::info", payload.clone()),
+                (payload, None)
+            );
+        }
+        let payload = json!({ "function_id": "compose::add", "namespace": "explicit" });
+        assert_eq!(
+            ComposeScope::default().prepare("engine::functions::info", payload.clone()),
+            (payload, None)
+        );
     }
 
     #[test]

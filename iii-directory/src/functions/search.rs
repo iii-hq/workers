@@ -287,7 +287,9 @@ user writes in another language; preserve proper names, URLs, and function IDs."
 const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched these capabilities. The \
 `installable` entries are registry workers whose functions WOULD match, \
 but they are NOT installed: calling their functions now FAILS with function_not_found. To \
-use one, fetch compose::schema { function_id: \"compose::add\" }. The install.payload is a \
+use one, fetch engine::functions::info { \"function_ids\": [\"compose::add\", \"compose::operation\"] } \
+for the install and recovery contracts, omitting contracts already fetched in this \
+conversation. Follow compose::add's request_schema. The install.payload is a \
 minimal shorthand. Replace worker with objects in workers only if the returned schema \
 supports them, to set scripts, start_after, config_override, or other supported fields. \
 Otherwise keep install.payload as shorthand for defaults; if settings are required, \
@@ -320,8 +322,10 @@ writes in another language; preserve proper names, URLs, and function IDs.";
 const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable`. The \
 `installable` entries are registry workers that are NOT installed: calling their functions now \
 FAILS with function_not_found. Do not pass an `installable` function ID to \
-engine::functions::info. Only when no `workers` entry fits, FIRST fetch compose::schema \
-{ function_id: \"compose::add\" }. The install.payload is a minimal shorthand. Replace worker \
+engine::functions::info. Only when no `workers` entry fits, FIRST fetch engine::functions::info \
+{ \"function_ids\": [\"compose::add\", \"compose::operation\"] } for the install and recovery \
+contracts, omitting contracts already fetched in this conversation. Follow compose::add's \
+request_schema. The install.payload is a minimal shorthand. Replace worker \
 with objects in workers only if the returned schema supports them, to set scripts, \
 start_after, config_override, or other supported fields. Otherwise keep install.payload \
 as shorthand for defaults; if settings are required, report that they cannot be applied \
@@ -2355,7 +2359,7 @@ mod tests {
             .contains("Do not pass an `installable` function ID to engine::functions::info"));
         let install_schema = response
             .guidance
-            .find("FIRST fetch compose::schema")
+            .find("FIRST fetch engine::functions::info")
             .expect("mixed guidance checks the install contract");
         let wake = response
             .guidance
@@ -2384,6 +2388,23 @@ mod tests {
         assert!(installable_only.workers.is_empty());
         assert_eq!(installable_only.installable[0].name, "mailer");
         for guidance in [&response.guidance, &installable_only.guidance] {
+            assert!(!guidance.contains("compose::schema"));
+            let contracts_start = guidance
+                .find("engine::functions::info {")
+                .expect("installation fetches contracts through engine introspection")
+                + "engine::functions::info ".len();
+            let contracts_payload =
+                serde_json::Deserializer::from_str(&guidance[contracts_start..])
+                    .into_iter::<Value>()
+                    .next()
+                    .unwrap()
+                    .expect("the documented contract lookup is valid JSON");
+            assert_eq!(
+                contracts_payload,
+                json!({ "function_ids": ["compose::add", "compose::operation"] })
+            );
+            assert!(guidance.contains("omitting contracts already fetched in this conversation"));
+            assert!(guidance.contains("Follow compose::add's request_schema"));
             assert!(
                 guidance.contains("objects in workers only if the returned schema supports them")
             );

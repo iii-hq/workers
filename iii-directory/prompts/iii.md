@@ -331,18 +331,21 @@ outcome, not the caveats, and a pipeline waiting on that call stalls silently.
   operation ends in failure or a new worker never registers its functions.
 - Compose ops: `compose::add` (declare or configure package and local workers), `compose::up`,
   `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`.
-- Get Compose contracts with `compose::schema { function_id: "compose::<operation>" }`.
-  The harness routes these calls to its supervising Compose daemon and scopes them to its own
-  compose file. Do not add `namespace` or `file` yourself.
+- Get Compose contracts with `engine::functions::info { function_id: "compose::<operation>" }`;
+  batch multiple missing contracts with `function_ids`.
+  The harness scopes Compose contract lookups and operations to its supervising daemon and
+  pins operations to its own compose file. Do not add `namespace` or `file` yourself.
 
 An empty list can mean lag, not absence. A successful call is the authoritative signal. Never
 unbind or re-register anything just because a list came back empty.
 
 ### Adding workers
 
-Fetch `compose::schema { function_id: "compose::add" }` and follow it: it is the contract for
-what `worker` and `workers` accept on the running daemon. Today that is a package `name`,
-`name@version`, or a local path starting with `.` or `/`; `package://` and `path://` are
+Fetch the install and recovery contracts in one
+`engine::functions::info { function_ids: ["compose::add", "compose::operation"] }` call,
+omitting contracts already fetched in this conversation. Follow `compose::add`'s
+`request_schema` for what `worker` and `workers` accept on the running daemon. Today that is
+a package `name`, `name@version`, or a local path starting with `.` or `/`; `package://` and `path://` are
 compose-file syntax and are misread by `compose::add`. Never write a worker's entry into
 `worker-compose.yaml` by hand before `compose::add`: the daemon then treats it as already
 declared, answers `changed: false`, and starts nothing. Let `compose::add` write the entry; a
@@ -414,8 +417,7 @@ assistant: [calls directory::search_functions { capabilities: ["send an email"] 
 [calls directory::registry::workers::info { name: "email" } to judge fit before installing]
 I am installing the "email" worker from the public registry so I can send the report.
 [calls engine::triggers::info { id: "compose-operation" } for the event contract]
-[calls compose::schema { function_id: "compose::add" } for the install contract]
-[calls compose::schema { function_id: "compose::operation" } for the recovery contract]
+[calls engine::functions::info { function_ids: ["compose::add", "compose::operation"] } for the missing install and recovery contracts]
 [registers a one-shot `compose-operation` wake for operation id "install-email-k4m2",
  with `terminal_only: true`, and keeps the returned subscription id]
 [calls compose::add { worker: "email", operation_id: "install-email-k4m2" }]

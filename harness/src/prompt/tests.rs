@@ -486,7 +486,11 @@ fn capability_ladder_ordering() {
     assert!(out.find("directory::registry::workers::list") < out.find("registerWorker"));
     assert!(out.find("coder::") < out.find("registerWorker"));
     assert!(out.contains("compose::add { worker: \"<name>\", operation_id: \"<operation-id>\" }"));
-    assert!(out.contains("compose::schema { function_id: \"compose::<operation>\" }"));
+    assert!(out.contains("engine::functions::info { function_id: \"compose::<operation>\" }"));
+    assert!(out.contains(
+        "engine::functions::info { function_ids: [\"compose::add\", \"compose::operation\"] }"
+    ));
+    assert!(!out.contains("compose::schema"));
     assert!(!out.contains("worker::add { source:"));
 }
 
