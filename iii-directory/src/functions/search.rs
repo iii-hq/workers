@@ -286,13 +286,34 @@ user writes in another language; preserve proper names, URLs, and function IDs."
 
 const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched these capabilities. The \
 `installable` entries are registry workers whose functions WOULD match, \
-but they are NOT installed: calling their functions now FAILS with function_not_found. To \
-use one, fetch engine::functions::info { \"function_ids\": [\"compose::add\", \"compose::operation\"] } \
+but they are NOT installed: calling their functions now FAILS with function_not_found. \
+For a remaining need no function covers — authoring a worker, registering a new \
+engine function — read the shipped how-to instead: directory::skills::list, then \
+directory::skills::get { id: \"<id>\" }. Do not search for intrinsic reasoning, \
+summarization, planning, or formatting. Always write every `capabilities` entry in English, \
+even when the user writes in another language; preserve proper names, URLs, and function IDs.";
+
+const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable` \
+for unmet capabilities. An explicit installation request follows the installation workflow below \
+even when compose::add is already in `workers`. The `installable` entries are registry workers \
+that are NOT installed: calling their functions now FAILS with function_not_found. \
+Do not pass an `installable` function ID to engine::functions::info.";
+
+const SEARCH_INSTALL_WORKFLOW: &str = "Installation workflow: When the user names a registry worker, \
+preserve that exact package name; confirm it before selecting any semantic alternative. \
+Use the pre-verified call directory::registry::workers::info { \"name\": \"<exact worker name>\" }. \
+For a requested version or tag, add the corresponding `version` or `tag` field (never both). \
+This lookup payload is complete; call it directly without discovery or contract lookup. \
+If that package or requested version is absent, report it and stop; a different package \
+requires the user's explicit choice. For capability-only requests, select a worker that \
+covers the unmet need. Before compose::add, fetch engine::functions::info { \"function_ids\": [\"compose::add\", \"compose::operation\"] } \
 for the install and recovery contracts, omitting contracts already fetched in this \
-conversation. Follow compose::add's request_schema. The install.payload is a \
+conversation. Follow compose::add's request_schema. Build the install payload from the \
+confirmed package, preserving the requested version or using the confirmed latest version. \
+Use install.payload only when it names that selected package. The selected payload is a \
 minimal shorthand. Replace worker with objects in workers only if the returned schema \
 supports them, to set scripts, start_after, config_override, or other supported fields. \
-Otherwise keep install.payload as shorthand for defaults; if settings are required, \
+Otherwise keep the selected payload as shorthand for defaults; if settings are required, \
 report that they cannot be applied and stop the installation. Explain the worker and \
 follow the caller's installation approval requirements; if approval is still needed, \
 wait for explicit confirmation before compose::add. Choose a unique operation_id. \
@@ -301,52 +322,23 @@ wake with engine::register_trigger { \"trigger_type\": \"compose-operation\", \
 \"config\": { \"operation_id\": \"<operation-id>\", \"terminal_only\": true }, \"once\": true }. \
 This wake payload is complete; invoke it directly without trigger discovery or contract \
 lookup. Save the returned subscription_id. After registration succeeds, call compose::add \
-using install.payload plus the same operation_id. Read \
+using the selected payload plus the same operation_id. Read \
 compose::operation { operation_id: \"<operation-id>\" } once for race recovery; if terminal, \
 unregister any still-armed wake with engine::unregister_trigger { id: \"<subscription_id>\" }, \
 otherwise end the turn and wait for its notification. Do not poll. \
-Wait for terminal success, not just acceptance, then confirm registration directly with \
-engine::workers::info { name: \"<worker name>\" }. Report failed operations or missing \
-registration instead of readiness. If the user only asked to install, report the installed \
-version and readiness and finish; no further capability search or function contract lookup \
-is needed. If a remaining user task needs installed functions, reuse function IDs already \
-returned and fetch only the needed, not-yet-fetched contracts in one batched \
-engine::functions::info call. Search again only when a required function ID is still unknown. \
-For a remaining need no function covers — authoring a worker, registering a new \
-engine function — read the shipped how-to instead: directory::skills::list, then \
-directory::skills::get { id: \"<id>\" }. Do not search for intrinsic reasoning, \
-summarization, planning, or \
-formatting. Always write every `capabilities` entry in English, even when the user \
-writes in another language; preserve proper names, URLs, and function IDs.";
-
-const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable`. The \
-`installable` entries are registry workers that are NOT installed: calling their functions now \
-FAILS with function_not_found. Do not pass an `installable` function ID to \
-engine::functions::info. Only when no `workers` entry fits, FIRST fetch engine::functions::info \
-{ \"function_ids\": [\"compose::add\", \"compose::operation\"] } for the install and recovery \
-contracts, omitting contracts already fetched in this conversation. Follow compose::add's \
-request_schema. The install.payload is a minimal shorthand. Replace worker \
-with objects in workers only if the returned schema supports them, to set scripts, \
-start_after, config_override, or other supported fields. Otherwise keep install.payload \
-as shorthand for defaults; if settings are required, report that they cannot be applied \
-and stop the installation. Explain the worker and follow the caller's installation \
-approval requirements; if approval is still needed, wait for explicit confirmation \
-before compose::add. Choose a unique operation_id. Register a one-shot compose-operation \
-wake with engine::register_trigger { \"trigger_type\": \"compose-operation\", \
-\"config\": { \"operation_id\": \"<operation-id>\", \"terminal_only\": true }, \"once\": true }. \
-This wake payload is complete; invoke it directly without trigger discovery or contract \
-lookup. Save the returned subscription_id. After registration succeeds, call compose::add \
-using install.payload plus the same operation_id. Read \
-compose::operation { operation_id: \"<operation-id>\" } once for race recovery; if terminal, \
-unregister any still-armed wake with engine::unregister_trigger { id: \"<subscription_id>\" }, \
-otherwise end the turn and wait for its notification. Do not poll. \
-Wait for terminal success, not just acceptance, then confirm registration directly with \
-engine::workers::info { name: \"<worker name>\" }. Report failed operations or missing \
+Wait for terminal success, not just acceptance, then confirm registration with the pre-verified call \
+engine::workers::info { \"name\": \"<worker name>\" }. This confirmation payload is complete; \
+invoke it directly without discovery or contract lookup. Report failed operations or missing \
 registration instead of readiness. If the user only asked to install, report the installed \
 version and readiness and finish; no further capability search or function contract lookup \
 is needed. If a remaining user task needs installed functions, reuse function IDs already \
 returned and fetch only the needed, not-yet-fetched contracts in one batched \
 engine::functions::info call. Search again only when a required function ID is still unknown.";
+
+const SEARCH_LANGUAGE_GUIDANCE: &str = "Keep user-facing text in the language of the user's task, \
+including progress, tool descriptions, and the final response, unless the user explicitly \
+requests another language. English search capabilities and tool or notification text do not \
+change the response language.";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SearchFunctionsRequest {
@@ -383,8 +375,8 @@ pub struct InstallableWorker {
     pub name: String,
     pub version: String,
     pub description: String,
-    /// Compact candidates only. After installation, search again and fetch
-    /// selected contracts through `engine::functions::info`.
+    /// Compact candidates only. If the remaining task needs these functions,
+    /// reuse their IDs and fetch the required contracts through `engine::functions::info`.
     pub functions: Vec<FunctionCandidate>,
     /// The `compose::add` target and payload; agent-trigger callers add `description`.
     pub install: InstallCall,
@@ -1236,6 +1228,17 @@ unchanged — reuse the earlier result): {}.",
         }
         guidance
     };
+    let guidance = if !installable.is_empty()
+        || selected
+            .iter()
+            .chain(&repeated)
+            .any(|id| id == "compose::add")
+    {
+        format!("{guidance} {SEARCH_INSTALL_WORKFLOW}")
+    } else {
+        guidance
+    };
+    let guidance = format!("{guidance} {SEARCH_LANGUAGE_GUIDANCE}");
     let guidance = if dropped.is_empty() {
         guidance
     } else {
@@ -2269,6 +2272,82 @@ mod tests {
         assert!(response
             .guidance
             .contains("Always write every `capabilities` entry in English"));
+        assert!(response
+            .guidance
+            .contains("Keep user-facing text in the language of the user's task"));
+        assert!(!response
+            .guidance
+            .contains("Register a one-shot compose-operation wake"));
+    }
+
+    #[tokio::test]
+    async fn installed_compose_add_carries_installation_guidance_without_installable_candidates() {
+        use opentelemetry::baggage::BaggageExt;
+
+        let deps = search_deps(vec![
+            ToolSchema {
+                name: "compose::add".into(),
+                description: "Install a worker from the public registry.".into(),
+                parameters: json!({ "type": "object" }),
+            },
+            ToolSchema {
+                name: "compose::remove".into(),
+                description: "Remove an installed worker.".into(),
+                parameters: json!({ "type": "object" }),
+            },
+        ]);
+        let context = opentelemetry::Context::new().with_baggage([opentelemetry::KeyValue::new(
+            SESSION_BAGGAGE_KEY,
+            "compose-install-guidance",
+        )]);
+        let _guard = context.attach();
+        let first = search_functions(
+            &deps,
+            SearchFunctionsRequest {
+                capabilities: vec!["compose::add".into()],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.workers[0].functions[0].function_id, "compose::add");
+        let repeated = search_functions(
+            &deps,
+            SearchFunctionsRequest {
+                capabilities: vec!["compose::add".into(), "compose::remove".into()],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(repeated
+            .workers
+            .iter()
+            .flat_map(|w| &w.functions)
+            .all(|f| f.function_id != "compose::add"));
+        assert!(repeated
+            .guidance
+            .contains("Already provided earlier in this session"));
+        for response in [first, repeated] {
+            assert!(response.installable.is_empty());
+            assert!(response
+                .guidance
+                .contains("When the user names a registry worker"));
+            assert!(response
+                .guidance
+                .contains("Register a one-shot compose-operation wake"));
+            assert!(response
+                .guidance
+                .contains("If the user only asked to install"));
+            assert_eq!(
+                response
+                    .guidance
+                    .matches("Register a one-shot compose-operation wake")
+                    .count(),
+                1
+            );
+            assert!(response
+                .guidance
+                .contains("Keep user-facing text in the language of the user's task"));
+        }
     }
 
     #[tokio::test]
@@ -2348,7 +2427,7 @@ mod tests {
             .expect("mixed guidance prioritizes installed candidates");
         let install_route = response
             .guidance
-            .find("Only when no `workers` entry fits")
+            .find("An explicit installation request follows the installation workflow below")
             .expect("mixed guidance gates the installation route");
         assert!(installed_route < install_route);
         assert!(response
@@ -2359,7 +2438,7 @@ mod tests {
             .contains("Do not pass an `installable` function ID to engine::functions::info"));
         let install_schema = response
             .guidance
-            .find("FIRST fetch engine::functions::info")
+            .find("Before compose::add, fetch engine::functions::info")
             .expect("mixed guidance checks the install contract");
         let wake = response
             .guidance
@@ -2388,6 +2467,29 @@ mod tests {
         assert!(installable_only.workers.is_empty());
         assert_eq!(installable_only.installable[0].name, "mailer");
         for guidance in [&response.guidance, &installable_only.guidance] {
+            let lookup_start = guidance
+                .find("directory::registry::workers::info {")
+                .expect("named workers are confirmed in the registry before installation")
+                + "directory::registry::workers::info ".len();
+            let lookup_payload = serde_json::Deserializer::from_str(&guidance[lookup_start..])
+                .into_iter::<Value>()
+                .next()
+                .unwrap()
+                .unwrap();
+            let lookup: WorkerInfoInput = serde_json::from_value(lookup_payload).unwrap();
+            assert_eq!(lookup.name, "<exact worker name>");
+            assert!(lookup.version.is_none());
+            assert!(lookup.tag.is_none());
+            assert!(guidance.contains("preserve that exact package name"));
+            assert!(guidance
+                .contains("If that package or requested version is absent, report it and stop"));
+            assert!(guidance.contains("Keep user-facing text in the language of the user's task"));
+            assert_eq!(
+                guidance
+                    .matches("Register a one-shot compose-operation wake")
+                    .count(),
+                1
+            );
             assert!(!guidance.contains("compose::schema"));
             let contracts_start = guidance
                 .find("engine::functions::info {")
@@ -2408,7 +2510,9 @@ mod tests {
             assert!(
                 guidance.contains("objects in workers only if the returned schema supports them")
             );
-            assert!(guidance.contains("Otherwise keep install.payload as shorthand for defaults"));
+            assert!(
+                guidance.contains("Otherwise keep the selected payload as shorthand for defaults")
+            );
             assert!(
                 guidance.contains("report that they cannot be applied and stop the installation")
             );
@@ -2438,7 +2542,7 @@ mod tests {
             );
             let ready_wait = guidance.find("Wait for terminal success").unwrap();
             let inventory = guidance
-                .find("engine::workers::info { name: \"<worker name>\" }")
+                .find("pre-verified call engine::workers::info { \"name\": \"<worker name>\" }")
                 .expect("installation confirms registration directly");
             let finish = guidance
                 .find("If the user only asked to install")
