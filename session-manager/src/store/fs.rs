@@ -161,9 +161,8 @@ impl FsStore {
     /// Replay a session file into a [`LoadedSession`]. Missing file ->
     /// empty state. Malformed lines (incl. a truncated trailing line
     /// from a crash mid-append) are skipped with a warning.
-    fn replay_file(&self, session_id: &str) -> Result<LoadedSession, StoreError> {
-        let path = self.file_path(session_id);
-        let contents = match std::fs::read_to_string(&path) {
+    fn replay_file(path: &Path, session_id: &str) -> Result<LoadedSession, StoreError> {
+        let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(LoadedSession::default())
@@ -191,16 +190,26 @@ impl FsStore {
 
     /// Run `f` against the loaded (cached) state of a session,
     /// replaying the file on first access.
-    fn with_loaded<T>(
+    ///
+    /// The replay runs on the blocking pool and outside the cache lock: a
+    /// multi-MB transcript parsed on the async thread while holding the
+    /// `std::Mutex` stalled every other session's append behind it.
+    async fn with_loaded<T>(
         &self,
         session_id: &str,
         f: impl FnOnce(&mut LoadedSession) -> T,
     ) -> Result<T, StoreError> {
-        let mut cache = self.lock();
-        if !cache.contains_key(session_id) {
-            let loaded = self.replay_file(session_id)?;
-            cache.insert(session_id.to_string(), loaded);
+        if !self.lock().contains_key(session_id) {
+            let path = self.file_path(session_id);
+            let id = session_id.to_string();
+            let loaded = tokio::task::spawn_blocking(move || Self::replay_file(&path, &id))
+                .await
+                .map_err(|e| StoreError(format!("replay {session_id}: {e}")))??;
+            // A concurrent caller may have replayed (and mutated) the same
+            // session while we were off the lock; its state stays.
+            self.lock().entry(session_id.to_string()).or_insert(loaded);
         }
+        let mut cache = self.lock();
         let loaded = cache
             .get_mut(session_id)
             .expect("session state inserted just above");
@@ -302,7 +311,7 @@ impl FsStore {
 #[async_trait]
 impl SessionStore for FsStore {
     async fn get_meta(&self, session_id: &str) -> Result<Option<SessionMeta>, StoreError> {
-        self.with_loaded(session_id, |s| s.meta.clone())
+        self.with_loaded(session_id, |s| s.meta.clone()).await
     }
 
     async fn put_meta(&self, meta: &SessionMeta) -> Result<(), StoreError> {
@@ -313,13 +322,16 @@ impl SessionStore for FsStore {
         let record = Record::Meta { meta: meta.clone() };
         self.append_record(&meta.session_id, &record)?;
         self.with_loaded(&meta.session_id, |s| s.meta = Some(meta.clone()))
+            .await
     }
 
     async fn delete_meta(&self, session_id: &str) -> Result<(), StoreError> {
-        let snapshot = self.with_loaded(session_id, |s| {
-            s.meta = None;
-            s.clone()
-        })?;
+        let snapshot = self
+            .with_loaded(session_id, |s| {
+                s.meta = None;
+                s.clone()
+            })
+            .await?;
         if snapshot.is_empty() {
             self.lock().remove(session_id);
         }
@@ -329,7 +341,7 @@ impl SessionStore for FsStore {
     async fn list_metas(&self) -> Result<Vec<SessionMeta>, StoreError> {
         let mut metas = Vec::new();
         for session_id in self.session_ids_on_disk()? {
-            if let Some(meta) = self.with_loaded(&session_id, |s| s.meta.clone())? {
+            if let Some(meta) = self.with_loaded(&session_id, |s| s.meta.clone()).await? {
                 metas.push(meta);
             }
         }
@@ -342,6 +354,7 @@ impl SessionStore for FsStore {
         entry_id: &str,
     ) -> Result<Option<SessionEntry>, StoreError> {
         self.with_loaded(session_id, |s| s.entries.get(entry_id).cloned())
+            .await
     }
 
     async fn put_entry(&self, session_id: &str, entry: &SessionEntry) -> Result<(), StoreError> {
@@ -352,17 +365,21 @@ impl SessionStore for FsStore {
         self.with_loaded(session_id, |s| {
             s.entries.insert(entry.id().to_string(), entry.clone());
         })
+        .await
     }
 
     async fn list_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>, StoreError> {
         self.with_loaded(session_id, |s| s.entries.values().cloned().collect())
+            .await
     }
 
     async fn delete_entries(&self, session_id: &str) -> Result<(), StoreError> {
-        let snapshot = self.with_loaded(session_id, |s| {
-            s.entries.clear();
-            s.clone()
-        })?;
+        let snapshot = self
+            .with_loaded(session_id, |s| {
+                s.entries.clear();
+                s.clone()
+            })
+            .await?;
         if snapshot.is_empty() {
             self.lock().remove(session_id);
         }
@@ -370,7 +387,7 @@ impl SessionStore for FsStore {
     }
 
     async fn get_active_leaf(&self, session_id: &str) -> Result<Option<String>, StoreError> {
-        self.with_loaded(session_id, |s| s.leaf.clone())
+        self.with_loaded(session_id, |s| s.leaf.clone()).await
     }
 
     async fn set_active_leaf(&self, session_id: &str, entry_id: &str) -> Result<(), StoreError> {
@@ -379,13 +396,16 @@ impl SessionStore for FsStore {
         };
         self.append_record(session_id, &record)?;
         self.with_loaded(session_id, |s| s.leaf = Some(entry_id.to_string()))
+            .await
     }
 
     async fn delete_active_leaf(&self, session_id: &str) -> Result<(), StoreError> {
-        let snapshot = self.with_loaded(session_id, |s| {
-            s.leaf = None;
-            s.clone()
-        })?;
+        let snapshot = self
+            .with_loaded(session_id, |s| {
+                s.leaf = None;
+                s.clone()
+            })
+            .await?;
         if snapshot.is_empty() {
             self.lock().remove(session_id);
         }
