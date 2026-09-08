@@ -3086,6 +3086,7 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
                         "type": "text",
                         "text": "result elided from the assembled context (compaction); the call completed in an earlier turn — consult the transcript if its output matters",
                     }],
+                    "details": null,
                     "is_error": false,
                     "timestamp": AgentMessage::now_ms(),
                 }),
@@ -3987,6 +3988,9 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("toolu_orphan")
         );
+        let result: crate::types::message::FunctionResultMessage =
+            serde_json::from_value(msgs[2].clone()).expect("valid function result");
+        assert!(result.details.is_null());
         assert_eq!(msgs.len(), 5);
         // Fully paired context is untouched.
         assert_eq!(super::patch_orphaned_calls(&mut msgs), 0);
