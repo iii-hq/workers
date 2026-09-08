@@ -668,6 +668,8 @@ pub(crate) struct TurnLineage {
     pub depth: u32,
     pub parent: Option<ParentLink>,
     pub display_parent_session_id: Option<String>,
+    /// See `TurnRecord::dispatch_only_functions`.
+    pub dispatch_only_functions: Vec<String>,
 }
 
 /// One message on its way into a session: what to append, how to mark it, and
@@ -1258,6 +1260,7 @@ pub(crate) async fn seed_new(
         result: None,
         result_error: None,
         stop_reason: None,
+        dispatch_only_functions: lineage.dispatch_only_functions.clone(),
         validation_retries: 0,
         transient_resumes: 0,
         created_at: now,
@@ -1797,6 +1800,7 @@ mod tests {
             result: None,
             result_error: None,
             stop_reason: None,
+            dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
             created_at: 1,

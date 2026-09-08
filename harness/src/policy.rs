@@ -46,7 +46,9 @@ pub const CHILD_DISCOVERY_ALLOW: [&str; 2] = ["engine::functions::list", "engine
 /// its work functions silently ran with zero skill tokens while its parent had
 /// the full catalog (Linkly e2e, MOT-4718: both Ch. 1 children guessed the
 /// wrong `registerFunction` overload the parent's skill spelled out). Unioned
-/// into any NON-EMPTY child allow-list like [`CHILD_DISCOVERY_ALLOW`].
+/// into any NON-EMPTY child allow-list like [`CHILD_DISCOVERY_ALLOW`], and
+/// like it a dispatch-level grant only: the child calls it by id, it never
+/// joins the child's native toolset.
 pub const CHILD_SKILLS_ALLOW: [&str; 1] = ["directory::skills::get"];
 
 /// A compiled allow/deny matcher. Fail-closed: a call is allowed only when it

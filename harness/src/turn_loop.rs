@@ -552,7 +552,11 @@ async fn generate_step(
     // the exposure-mode tools plus the synthetic submit_result schema when the
     // contract uses the fallback.
     let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
-    let decision_tools = concrete_allowed_tools(&policy, &functions.functions);
+    let decision_tools = concrete_allowed_tools(
+        &policy,
+        &functions.functions,
+        &record.dispatch_only_functions,
+    );
     let expose = record
         .options
         .functions
@@ -1705,6 +1709,7 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
     // session continuing, so its depth still counts against the spawn budget
     // and its console nesting must not flatten.
     let lineage = crate::functions::send::TurnLineage {
+        dispatch_only_functions: Vec::new(),
         depth: record.depth,
         parent: record.parent.clone(),
         display_parent_session_id: record.display_parent_session_id.clone(),
@@ -3171,14 +3176,18 @@ pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<S
 /// allowed registry function, plus the harness-intercepted subscription
 /// controls (virtual functions the engine's public registry intentionally
 /// does not list). This is the decision surface hooks reason over,
-/// independent of how tools reach the provider.
+/// independent of how tools reach the provider. `hidden` are the spawn's
+/// dispatch-only grants (`TurnRecord::dispatch_only_functions`): still
+/// callable by id, never a tool.
 fn concrete_allowed_tools(
     policy: &CompiledPolicy,
     descriptors: &[crate::clients::FunctionDescriptor],
+    hidden: &[String],
 ) -> Vec<crate::types::model::AgentFunction> {
     let mut tools = crate::functions::subscribe::native_control_tools(policy);
     for descriptor in descriptors {
         if !policy.allows(&descriptor.function_id)
+            || hidden.iter().any(|id| id == &descriptor.function_id)
             || tools.iter().any(|tool| tool.name == descriptor.function_id)
         {
             continue;
@@ -3456,6 +3465,38 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_only_grants_stay_callable_but_never_become_native_tools() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["db::x".into(), "directory::skills::get".into()],
+                deny: vec![],
+                expose: Default::default(),
+            }));
+        let descriptors = vec![
+            crate::clients::FunctionDescriptor {
+                function_id: "db::x".into(),
+                description: None,
+                parameters: None,
+            },
+            crate::clients::FunctionDescriptor {
+                function_id: "directory::skills::get".into(),
+                description: None,
+                parameters: None,
+            },
+        ];
+        let hidden = vec!["directory::skills::get".to_string()];
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &hidden)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(names, vec!["db::x"], "the grant is not a tool");
+        assert!(
+            policy.allows("directory::skills::get"),
+            "but it is still callable by id"
+        );
+    }
+
+    #[test]
     fn normal_result_append_invalidates_a_reused_source_id_without_replacing_it() {
         use crate::types::turn::FunctionContractLedgerEntry;
 
@@ -3515,7 +3556,7 @@ mod tests {
             },
         ];
 
-        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors)
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &[])
             .into_iter()
             .map(|tool| tool.name)
             .collect();
