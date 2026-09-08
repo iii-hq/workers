@@ -1302,6 +1302,11 @@ export function completeFailedHydration(c: Conversation): Conversation {
  *  so every later hydration goes straight to the full read. */
 let tailReaderUnavailable = false
 
+// A lost response must reach the hydration retry path promptly even while the
+// socket stays connected. The SDK's 30s default leaves the chat loading until
+// then; use a shorter deadline for these interactive, read-only requests.
+const HYDRATION_READ_TIMEOUT_MS = 5_000
+
 /**
  * The page a chat opens on: the newest `TRANSCRIPT_TAIL_PAGE_LIMIT` blocks.
  * A session-manager that predates `session::messages-tail` answers
@@ -1316,6 +1321,7 @@ async function fetchHydrationPage(
     try {
       const tail = await fetchTranscriptTail(sessionId, {
         limit: TRANSCRIPT_TAIL_PAGE_LIMIT,
+        timeoutMs: HYDRATION_READ_TIMEOUT_MS,
       })
       return {
         items: tail.items,
@@ -1334,7 +1340,9 @@ async function fetchHydrationPage(
       }
     }
   }
-  const items = await fetchTranscript(sessionId)
+  const items = await fetchTranscript(sessionId, {
+    timeoutMs: HYDRATION_READ_TIMEOUT_MS,
+  })
   return { items, page: { hasMore: false } }
 }
 
