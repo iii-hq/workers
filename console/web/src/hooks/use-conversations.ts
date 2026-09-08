@@ -43,7 +43,7 @@ import {
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { requestComposerFocus } from '@/lib/composer-insert'
-import { errText } from '@/lib/errors'
+import { errText, isFunctionNotFound } from '@/lib/errors'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
@@ -1516,7 +1516,7 @@ export function useConversations(
               )
             })
           })
-          .catch(() => {
+          .catch((err) => {
             const stillCurrent =
               sessionMetaLookupGenerationRef.current.get(sessionId) ===
               generation
@@ -1524,6 +1524,11 @@ export function useConversations(
               !options.requireWatched ||
               (watchCountsRef.current.get(sessionId) ?? 0) > 0
             if (!stillCurrent || !stillWatched) return
+            // No session-manager registered: a timer will not bring it back,
+            // the `worker` lifecycle trigger re-enables the store when it
+            // arrives. Retrying here only writes an engine error line every
+            // 5 s for as long as the panel stays open.
+            if (isFunctionNotFound(err)) return
             const retryDelay =
               attempt < retries
                 ? 500 * (attempt + 1)
@@ -2037,9 +2042,14 @@ export function useConversations(
             return
           }
           patchConversation(sessionId, completeFailedHydration)
+          // Same as the meta lookup: a missing session-manager is not a
+          // transient read failure. Re-hydrating every 2 s against a
+          // function nobody registered was ~30 engine error lines a minute
+          // per watched conversation.
           if (
             (watchCountsRef.current.get(sessionId) ?? 0) > 0 &&
-            !hydrationRetryTimersRef.current.has(sessionId)
+            !hydrationRetryTimersRef.current.has(sessionId) &&
+            !isFunctionNotFound(err)
           ) {
             const retryTimer = setTimeout(() => {
               hydrationRetryTimersRef.current.delete(sessionId)

@@ -27,16 +27,21 @@ describe('approval-gate-config', () => {
         'approval::*',
         'configuration::register',
         'shell::run',
+        'shell::workspace::*',
         'state::set',
       ],
       expose: 'agent_trigger',
     })
   })
 
-  it('keeps configuration registration structurally denied', () => {
+  it('keeps the structural floor in lockstep with the fallback policy', () => {
     const deny = deriveFunctionPolicy([]).deny
 
-    expect(deny).toEqual(['approval::*', 'configuration::register'])
+    expect(deny).toEqual([
+      'approval::*',
+      'configuration::register',
+      'shell::workspace::*',
+    ])
     expect(deny).not.toContain('configuration::*')
     expect(deny).not.toContain('configuration::get')
     expect(deny).not.toContain('configuration::set')

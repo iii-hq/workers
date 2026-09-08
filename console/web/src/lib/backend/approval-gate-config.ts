@@ -52,7 +52,14 @@ export function autoAllowSeedFromRules(rules: JsonValue[]): string[] {
 export function deriveFunctionPolicy(
   rules: JsonValue[],
 ): HarnessFunctionPolicy {
-  const deny = new Set<string>(['approval::*', 'configuration::register'])
+  // Keep in lockstep with `FALLBACK_FUNCTION_POLICY` (real.ts): the
+  // structural floor must not shrink the moment an approval-gate entry
+  // exists. `shell::workspace::*` is the console's own control plane.
+  const deny = new Set<string>([
+    'approval::*',
+    'configuration::register',
+    'shell::workspace::*',
+  ])
   for (const entry of rules) {
     if (typeof entry === 'string') {
       if (entry.startsWith('!')) deny.add(entry.slice(1))

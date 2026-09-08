@@ -40,6 +40,12 @@ struct Cli {
     #[arg(long)]
     http_port: Option<u16>,
 
+    /// Interface to bind (`127.0.0.1` by default; `0.0.0.0` exposes the console
+    /// and its engine WebSocket proxy on every interface). Overrides
+    /// `http_host` from the seed file. Boot-time only: it does not hot-reload.
+    #[arg(long)]
+    http_host: Option<String>,
+
     /// Print the publish manifest as JSON and exit. Used by the
     /// registry publish pipeline; no engine connection.
     #[arg(long)]
@@ -77,6 +83,16 @@ async fn main() -> Result<()> {
     if let Some(port) = cli.http_port {
         cfg.http_port = port;
     }
+    if let Some(host) = cli.http_host {
+        cfg.http_host = host;
+    }
+    let bind_host: std::net::IpAddr = cfg.http_host.trim().parse().map_err(|error| {
+        anyhow::anyhow!(
+            "http_host {:?} is not an IP address ({error}); use 127.0.0.1, 0.0.0.0 or an interface address",
+            cfg.http_host
+        )
+    })?;
+    server::set_bind_host(bind_host);
 
     let engine_url = cli.url;
 
@@ -190,9 +206,11 @@ async fn main() -> Result<()> {
         .await
         .unwrap_or(server_handle.local_addr);
 
+    // Print the address actually bound: a `0.0.0.0` listener is reachable
+    // from other hosts, and a reader tailing this log deserves to know.
     tracing::info!(
-        "console ready — UI on http://127.0.0.1:{}/, /ws proxies to {}",
-        ready_addr.port(),
+        "console ready — UI on http://{}/, /ws proxies to {}",
+        ready_addr,
         engine_url_redacted,
     );
 
