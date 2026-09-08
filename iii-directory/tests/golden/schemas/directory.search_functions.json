@@ -61,7 +61,7 @@
             "type": "string"
           },
           "functions": {
-            "description": "Compact candidates only. After installation, search again and fetch selected contracts through `engine::functions::info`.",
+            "description": "Compact candidates only. If the remaining task needs these functions, reuse their IDs and fetch the required contracts through `engine::functions::info`.",
             "items": {
               "$ref": "#/definitions/FunctionCandidate"
             },

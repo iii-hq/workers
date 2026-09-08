@@ -112,6 +112,18 @@ mod tests {
         }
         let minimal = bundled_system_prompt("iii-minimal").unwrap();
         assert!(minimal.body.starts_with("You are an iii agent."));
+        for id in ["iii", "iii-minimal"] {
+            let (_, body) = fs_source::split_frontmatter(bundled_agent_raw(id).unwrap());
+            let body = body.replace('\n', " ");
+            assert!(
+                body.contains("Use the language of the user's latest task message"),
+                "{id}"
+            );
+            assert!(
+                body.contains("Keep that language across tool results and event notifications"),
+                "{id}"
+            );
+        }
         assert!(bundled_system_prompt("nope").is_none());
     }
 

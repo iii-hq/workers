@@ -48,6 +48,11 @@ pub fn build_command(
             }
         }
     }
+    // Identity keys never reach a child (see IDENTITY_ENV_KEYS); the per-call
+    // overrides below may still set them on purpose.
+    for k in crate::exec::policy::IDENTITY_ENV_KEYS {
+        cmd.env_remove(k);
+    }
     // Per-call env overrides are applied LAST so a permitted key's per-call
     // value wins over the config-forwarded value. Keys were already gated
     // against DANGEROUS_ENV_KEYS in the handler (deny-only — env.allow plays
@@ -496,6 +501,49 @@ mod tests {
         assert!(
             !out.stdout.contains("SHELL_DX_BLOCKED_9F3A"),
             "non-allowed key scrubbed: {}",
+            out.stdout
+        );
+    }
+
+    /// The worker's own identity never reaches a child even with the
+    /// inheriting default: an `iii` CLI or SDK script started from here
+    /// would otherwise connect AS this worker and be refused. A per-call
+    /// override still wins, so a script that wants a name can ask for one.
+    #[tokio::test]
+    async fn identity_env_stripped_even_when_inherit_true() {
+        const KEY: &str = "III_WORKER_NAME";
+        let _guard = EnvVarGuard::new(&[KEY]);
+        std::env::set_var(KEY, "shell");
+        let cfg = test_cfg();
+        assert!(cfg.env.inherit, "the test targets the inheriting default");
+
+        let out = run_to_completion(
+            &["env".into()],
+            &cfg,
+            5000,
+            &crate::exec::policy::ExecOverrides::default(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !out.stdout.contains("III_WORKER_NAME="),
+            "identity stripped: {}",
+            out.stdout
+        );
+
+        let overrides = crate::exec::policy::ExecOverrides {
+            env: Some(std::collections::BTreeMap::from([(
+                KEY.to_string(),
+                "explicit".to_string(),
+            )])),
+            ..Default::default()
+        };
+        let out = run_to_completion(&["env".into()], &cfg, 5000, &overrides)
+            .await
+            .unwrap();
+        assert!(
+            out.stdout.contains("III_WORKER_NAME=explicit"),
+            "explicit override lands: {}",
             out.stdout
         );
     }

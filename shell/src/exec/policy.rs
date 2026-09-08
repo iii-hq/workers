@@ -83,6 +83,14 @@ pub const DANGEROUS_ENV_KEYS: &[&str] = &[
     "NODE_OPTIONS",
 ];
 
+/// Worker-identity keys the iii SDK reads at connect time: `III_WORKER_NAME`
+/// overrides the client name and `III_NAMESPACE` is the fallback namespace.
+/// Stripped from every child unconditionally (whatever `env.inherit` says):
+/// an `iii` CLI or SDK script started from this worker's shell would
+/// otherwise connect AS this worker and be refused by the engine. A per-call
+/// `env` override may still set them deliberately.
+pub const IDENTITY_ENV_KEYS: &[&str] = &["III_WORKER_NAME", "III_NAMESPACE"];
+
 /// True if `key` is always rejected. Two layers: (1) family-prefix checks for
 /// the dynamic-loader variables (`LD_*` on glibc, `DYLD_*` on macOS) — the set
 /// of these is open-ended across libc/OS versions, and since the per-call

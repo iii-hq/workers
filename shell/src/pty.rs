@@ -846,6 +846,11 @@ fn spawn_process(
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command.env("TERM_PROGRAM", "iii");
+    // This path bypasses exec::host::build_command, so strip the worker's
+    // identity here too (see IDENTITY_ENV_KEYS).
+    for key in crate::exec::policy::IDENTITY_ENV_KEYS {
+        command.env_remove(key);
+    }
     // Per-call env last: a caller may override TERM* for its own program, and
     // the dangerous keys are already refused before the spawn.
     for (key, value) in env {
@@ -2509,6 +2514,31 @@ mod tests {
         harness
             .wait_for_output(&opened.session_id, "iii-env-marker")
             .await;
+        let _ = harness.manager.close_all().await;
+    }
+
+    /// The PTY path does not go through `build_command`, so it strips the
+    /// worker identity on its own: a program printing `$III_NAMESPACE` sees
+    /// it empty even though the worker process has it set. (Uses a key the
+    /// exec::host twin does not touch, so the two never race on process env.)
+    #[tokio::test]
+    async fn worker_identity_env_never_reaches_the_program() {
+        const KEY: &str = "III_NAMESPACE";
+        std::env::set_var(KEY, "leaked-namespace");
+        let harness = PtyTestHarness::unpinned().await;
+        let opened = harness
+            .open_request(
+                Some("/bin/sh"),
+                Some(vec![
+                    "-c".to_string(),
+                    "printf 'ns=[%s]\\n' \"$III_NAMESPACE\"; sleep 30".to_string(),
+                ]),
+                None,
+            )
+            .await
+            .expect("session opens");
+        harness.wait_for_output(&opened.session_id, "ns=[]").await;
+        std::env::remove_var(KEY);
         let _ = harness.manager.close_all().await;
     }
 
