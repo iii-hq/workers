@@ -151,6 +151,9 @@ pub struct SessionRegistry {
 struct SessionRecord {
     fingerprint: String,
     delivered: HashSet<String>,
+    /// Multi-KB guidance blocks this session already received; later
+    /// results carry a one-line pointer instead. Cleared with `delivered`.
+    preambles: HashSet<&'static str>,
     hint: Option<HintRecord>,
 }
 
@@ -180,10 +183,26 @@ impl SessionRegistry {
             .cloned()
             .partition(|function_id| record.delivered.contains(function_id));
         if new.is_empty() && !repeated.is_empty() {
+            record.preambles.clear();
             return (repeated, Vec::new());
         }
         record.delivered.extend(new.iter().cloned());
         (new, repeated)
+    }
+
+    /// `true` the first time `preamble` is asked for in this session, so the
+    /// multi-KB guidance blocks ride along once. Re-sent after a catalog
+    /// change or an all-repeat recovery (compaction dropped the earlier
+    /// result), the same points that wipe `delivered`.
+    fn first_send(&mut self, session_id: &str, preamble: &'static str) -> bool {
+        let fingerprint = self
+            .sessions
+            .get(session_id)
+            .map(|record| record.fingerprint.clone())
+            .unwrap_or_default();
+        self.session_record(session_id, &fingerprint)
+            .preambles
+            .insert(preamble)
     }
 
     /// One hint per turn: `true` means send it now. A same-step replay
@@ -225,6 +244,7 @@ impl SessionRegistry {
         if !fingerprint.is_empty() && record.fingerprint != fingerprint {
             record.fingerprint = fingerprint.to_string();
             record.delivered.clear();
+            record.preambles.clear();
         }
         record
     }
@@ -272,6 +292,13 @@ another language; preserve proper names, URLs, and function IDs. Do not search f
 reasoning, summarization, planning, or formatting, and do not repeat \
 satisfied or already represented needs. If a selected id is rejected, fall back to \
 normal discovery.";
+
+/// Stand-in for `SEARCH_GUIDANCE` once the session already received it: the
+/// full text is still in the agent's context.
+const SEARCH_GUIDANCE_REPEAT: &str = "Same rules as the search guidance earlier in this \
+session: choose the smallest candidate set from `workers`, fetch their contracts in ONE \
+engine::functions::info call before first use, and search again only for unmet external \
+capabilities.";
 
 const SEARCH_REFINE_GUIDANCE: &str =
     "No functions matched these capabilities. When the need is to BUILD something no function \
@@ -334,6 +361,11 @@ version and readiness and finish; no further capability search or function contr
 is needed. If a remaining user task needs installed functions, reuse function IDs already \
 returned and fetch only the needed, not-yet-fetched contracts in one batched \
 engine::functions::info call. Search again only when a required function ID is still unknown.";
+
+/// Stand-in for `SEARCH_INSTALL_WORKFLOW` once the session already received it.
+const SEARCH_INSTALL_WORKFLOW_REPEAT: &str = "Installation workflow: follow the workflow given \
+earlier in this session (registry::workers::info, compose-operation wake, compose::add, \
+engine::workers::info).";
 
 const SEARCH_LANGUAGE_GUIDANCE: &str = "Keep user-facing text in the language of the user's task, \
 including progress, tool descriptions, and the final response, unless the user explicitly \
@@ -1207,6 +1239,16 @@ pub async fn search_functions(
         repeated = prior;
     }
     tracing::debug!(%fingerprint, batches, top_ids = ?selected, "function search selected");
+    // The multi-KB preambles go out once per session; without a session id
+    // every call is a first call.
+    let first_send = |preamble: &'static str| match session_id.as_deref() {
+        Some(id) => deps
+            .sessions
+            .lock()
+            .expect("delivered registry")
+            .first_send(id, preamble),
+        None => true,
+    };
     let workers = assemble_workers(&selected, &tools);
     let guidance = if workers.is_empty() && repeated.is_empty() {
         if installable.is_empty() {
@@ -1215,7 +1257,11 @@ pub async fn search_functions(
             SEARCH_INSTALL_GUIDANCE.to_string()
         }
     } else {
-        let mut guidance = SEARCH_GUIDANCE.to_string();
+        let mut guidance = if first_send("guidance") {
+            SEARCH_GUIDANCE.to_string()
+        } else {
+            SEARCH_GUIDANCE_REPEAT.to_string()
+        };
         if !repeated.is_empty() {
             guidance = format!(
                 "{guidance} Already provided earlier in this session (candidates \
@@ -1234,7 +1280,12 @@ unchanged — reuse the earlier result): {}.",
             .chain(&repeated)
             .any(|id| id == "compose::add")
     {
-        format!("{guidance} {SEARCH_INSTALL_WORKFLOW}")
+        let workflow = if first_send("install_workflow") {
+            SEARCH_INSTALL_WORKFLOW
+        } else {
+            SEARCH_INSTALL_WORKFLOW_REPEAT
+        };
+        format!("{guidance} {workflow}")
     } else {
         guidance
     };
@@ -2326,24 +2377,27 @@ mod tests {
         assert!(repeated
             .guidance
             .contains("Already provided earlier in this session"));
+        // The full workflow goes out once per session; the repeat carries a
+        // pointer to it.
+        assert!(first
+            .guidance
+            .contains("When the user names a registry worker"));
+        assert!(first.guidance.contains("If the user only asked to install"));
+        assert_eq!(
+            first
+                .guidance
+                .matches("Register a one-shot compose-operation wake")
+                .count(),
+            1
+        );
+        assert!(repeated
+            .guidance
+            .contains("follow the workflow given earlier in this session"));
+        assert!(!repeated
+            .guidance
+            .contains("When the user names a registry worker"));
         for response in [first, repeated] {
             assert!(response.installable.is_empty());
-            assert!(response
-                .guidance
-                .contains("When the user names a registry worker"));
-            assert!(response
-                .guidance
-                .contains("Register a one-shot compose-operation wake"));
-            assert!(response
-                .guidance
-                .contains("If the user only asked to install"));
-            assert_eq!(
-                response
-                    .guidance
-                    .matches("Register a one-shot compose-operation wake")
-                    .count(),
-                1
-            );
             assert!(response
                 .guidance
                 .contains("Keep user-facing text in the language of the user's task"));
@@ -3056,6 +3110,25 @@ mod tests {
         );
         // Other sessions are isolated.
         assert_eq!(registry.split("other", "f1", &first), (first, Vec::new()));
+    }
+
+    #[test]
+    fn preambles_go_out_once_per_session_and_return_with_the_recovery_paths() {
+        let mut registry = SessionRegistry::default();
+        registry.split("s", "f1", &["a::x".to_string()]);
+        assert!(registry.first_send("s", "guidance"));
+        assert!(!registry.first_send("s", "guidance"));
+        // Independent per preamble and per session.
+        assert!(registry.first_send("s", "install_workflow"));
+        assert!(registry.first_send("other", "guidance"));
+        // A catalog fingerprint change re-sends.
+        registry.split("s", "f1", &["b::y".to_string()]);
+        assert!(!registry.first_send("s", "guidance"));
+        registry.split("s", "f2", &["a::x".to_string()]);
+        assert!(registry.first_send("s", "guidance"));
+        // So does an all-repeat query (compaction recovery).
+        registry.split("s", "f2", &["a::x".to_string()]);
+        assert!(registry.first_send("s", "guidance"));
     }
 
     #[test]
