@@ -56,7 +56,7 @@ fn user_content_to_wire(content: &[ContentBlock]) -> Value {
         parts.push(json!({ "type": "text", "text": text }));
     }
     for c in content {
-        if let ContentBlock::Image { mime, data } = c {
+        if let ContentBlock::Image { mime, data, .. } = c {
             parts.push(json!({
                 "type": "image_url",
                 "image_url": { "url": format!("data:{mime};base64,{data}") }
@@ -369,6 +369,7 @@ mod tests {
                 ContentBlock::Image {
                     mime: "image/png".into(),
                     data: "QUJD".into(),
+                    attachment_id: None,
                 },
             ])],
             "",
@@ -410,6 +411,7 @@ mod tests {
                 ContentBlock::Image {
                     mime: "image/png".into(),
                     data: "QUJD".into(),
+                    attachment_id: None,
                 },
             ],
             details: json!({}),

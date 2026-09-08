@@ -19,7 +19,7 @@ const ORPHAN_TOOL_PLACEHOLDER: &str =
 pub fn content_block_to_wire(b: &ContentBlock) -> Option<Value> {
     match b {
         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-        ContentBlock::Image { mime, data } => Some(json!({
+        ContentBlock::Image { mime, data, .. } => Some(json!({
             "type": "image",
             "source": { "type": "base64", "media_type": mime, "data": data }
         })),
@@ -53,6 +53,8 @@ pub fn content_block_to_wire(b: &ContentBlock) -> Option<Value> {
         ContentBlock::RedactedThinking { data } => {
             Some(json!({ "type": "redacted_thinking", "data": data }))
         }
+        // Attachment references are stripped by the harness; ignore stray references.
+        ContentBlock::File { .. } => None,
         // Only valid inside a FunctionResultMessage, handled there.
         ContentBlock::FunctionResult { .. } => None,
     }
@@ -96,7 +98,7 @@ fn function_result_to_wire(m: &FunctionResultMessage) -> Value {
             blocks.push(json!({ "type": "text", "text": body }));
         }
         for c in &m.content {
-            if let ContentBlock::Image { mime, data } = c {
+            if let ContentBlock::Image { mime, data, .. } = c {
                 blocks.push(json!({
                     "type": "image",
                     "source": { "type": "base64", "media_type": mime, "data": data }
@@ -229,6 +231,30 @@ mod tests {
         AgentMessage, AssistantMessage, AssistantRoleTag, CustomMessage, CustomRoleTag,
         FunctionResultMessage, FunctionResultRoleTag, UserMessage, UserRoleTag,
     };
+
+    #[test]
+    fn attachment_references_are_not_sent_upstream() {
+        let file = ContentBlock::File {
+            attachment_id: "attachment-1".into(),
+            name: "notes.txt".into(),
+            mime: "text/plain".into(),
+            size: 12,
+        };
+        assert_eq!(content_block_to_wire(&file), None);
+
+        let image = ContentBlock::Image {
+            mime: "image/png".into(),
+            data: "QUJD".into(),
+            attachment_id: Some("attachment-2".into()),
+        };
+        assert_eq!(
+            content_block_to_wire(&image),
+            Some(json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": "image/png", "data": "QUJD" }
+            }))
+        );
+    }
 
     fn user(content: Vec<ContentBlock>) -> AgentMessage {
         AgentMessage::User(UserMessage {
@@ -443,6 +469,7 @@ mod tests {
                 ContentBlock::Image {
                     mime: "image/png".into(),
                     data: "QUJD".into(),
+                    attachment_id: None,
                 },
             ],
             details: json!({}),
@@ -463,6 +490,7 @@ mod tests {
         let wire = to_wire_messages(&[user(vec![ContentBlock::Image {
             mime: "image/jpeg".into(),
             data: "Zm9v".into(),
+            attachment_id: None,
         }])]);
         assert_eq!(wire[0]["content"][0]["type"], "image");
         assert_eq!(wire[0]["content"][0]["source"]["type"], "base64");

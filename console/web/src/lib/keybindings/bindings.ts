@@ -174,6 +174,20 @@ const PHYSICAL_CODES: Record<string, string> = {
   '/': 'Slash',
 }
 
+const SHIFTED_PUNCTUATION: Record<string, string> = {
+  '`': '~',
+  '-': '_',
+  '=': '+',
+  '[': '{',
+  ']': '}',
+  '\\': '|',
+  ';': ':',
+  "'": '"',
+  ',': '<',
+  '.': '>',
+  '/': '?',
+}
+
 export function bindingMatchesEvent(
   binding: string,
   event: KeyEventLike,
@@ -199,6 +213,11 @@ export function bindingMatchesEvent(
   }
   if (isNamedToken(parsed.key)) return event.key === NAMED_KEYS[parsed.key]
   if (event.key === parsed.key) return true
+  // A layout can produce the shifted character without reporting Shift.
+  // Keep that character's shortcut: Alt+} must not fall back to Alt+].
+  if (!parsed.shift && event.key === SHIFTED_PUNCTUATION[parsed.key]) {
+    return false
+  }
   // The physical key says nothing about shift, so that comparison is back on.
   return (
     event.code !== undefined &&

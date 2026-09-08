@@ -349,10 +349,16 @@ mod tests {
         let listed = map_models(vec![model("gpt-6-astra", "list", 1)]);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "codex/gpt-6-astra");
-        assert_eq!(listed[0].display_name.as_deref(), Some("gpt-6-astra (Codex)"));
+        assert_eq!(
+            listed[0].display_name.as_deref(),
+            Some("gpt-6-astra (Codex)")
+        );
 
         let hidden = map_models(vec![model("gpt-6-astra", "hide", 1)]);
-        assert!(hidden.is_empty(), "hidden Astra must not reach the router catalog");
+        assert!(
+            hidden.is_empty(),
+            "hidden Astra must not reach the router catalog"
+        );
     }
 
     #[test]

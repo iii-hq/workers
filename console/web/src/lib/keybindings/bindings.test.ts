@@ -154,6 +154,21 @@ describe('bindingMatchesEvent', () => {
       bindingMatchesEvent('Ctrl+`', press('Dead', { ctrlKey: true }), 'mac'),
     ).toBe(false)
   })
+
+  it.each([
+    ['[', '{', 'BracketLeft'],
+    [']', '}', 'BracketRight'],
+  ])(
+    'keeps Alt+%s separate from Alt+%s on the same physical key',
+    (key, shifted, code) => {
+      // Layouts and synthetic browser events can produce braces without Shift.
+      for (const shiftKey of [false, true]) {
+        const event = press(shifted, { altKey: true, shiftKey, code })
+        expect(bindingMatchesEvent(`Alt+${key}`, event, 'other')).toBe(false)
+        expect(bindingMatchesEvent(`Alt+${shifted}`, event, 'other')).toBe(true)
+      }
+    },
+  )
 })
 
 describe('formatBinding', () => {

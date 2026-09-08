@@ -68,6 +68,22 @@ describe('createKeyDispatcher', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
+  it('moves between panes with braces without opening or closing a pane', () => {
+    const seen: string[] = []
+    const dispatcher = createKeyDispatcher(
+      () => ({
+        'panel.split': () => seen.push('split'),
+        'panel.close': () => seen.push('close'),
+        'panel.next': () => seen.push('next'),
+        'panel.previous': () => seen.push('previous'),
+      }),
+      'other',
+    )
+    dispatcher.onKeyDown(key('}', { altKey: true, code: 'BracketRight' }))
+    dispatcher.onKeyDown(key('{', { altKey: true, code: 'BracketLeft' }))
+    expect(seen).toEqual(['next', 'previous'])
+  })
+
   it('ignores the bare keys and fires their modifier chords', () => {
     const seen: string[] = []
     const dispatcher = createKeyDispatcher(

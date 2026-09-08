@@ -3,6 +3,8 @@ import { expect, expectPassingResult, openSession, test } from './harness-stack'
 
 test.use({ scenario: 'streamed-text' })
 
+const workspaceModifier = process.platform === 'darwin' ? 'Control' : 'Alt'
+
 const strip = (page: Page) =>
   page.getByRole('tablist', { name: 'Workspace tabs' })
 const tabs = (page: Page) => strip(page).getByRole('tab')
@@ -29,26 +31,26 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   // Create two workspaces from the keyboard; each becomes active. A new
   // empty workspace focuses its search field, so leave it before the next key.
   await settle(page)
-  await page.keyboard.press('Alt+t')
+  await page.keyboard.press(`${workspaceModifier}+t`)
   await expect(tabs(page)).toHaveCount(2)
   await settle(page)
-  await page.keyboard.press('Alt+t')
+  await page.keyboard.press(`${workspaceModifier}+t`)
   await expect(tabs(page)).toHaveCount(3)
   await settle(page)
   const thirdId = await activeTab(page).getAttribute('data-tab-id')
   expect(thirdId).not.toBe(homeId)
 
   // Step with alt-shift-arrows, jump with alt-digits.
-  await page.keyboard.press('Alt+Shift+ArrowLeft')
+  await page.keyboard.press(`${workspaceModifier}+Shift+ArrowLeft`)
   await expect(activeTab(page)).not.toHaveAttribute(
     'data-tab-id',
     thirdId ?? '',
   )
   await settle(page)
-  await page.keyboard.press('Alt+Shift+ArrowRight')
+  await page.keyboard.press(`${workspaceModifier}+Shift+ArrowRight`)
   await expect(activeTab(page)).toHaveAttribute('data-tab-id', thirdId ?? '')
   await settle(page)
-  await page.keyboard.press('Alt+1')
+  await page.keyboard.press(`${workspaceModifier}+1`)
   await expect(activeTab(page)).toHaveAttribute('data-tab-id', homeId ?? '')
 
   // Shortcuts stand down while typing.
@@ -61,10 +63,10 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   await settle(page)
 
   // Middle tab closes onto its right-hand neighbour.
-  await page.keyboard.press('Alt+2')
+  await page.keyboard.press(`${workspaceModifier}+2`)
   const secondId = await activeTab(page).getAttribute('data-tab-id')
   await settle(page)
-  await page.keyboard.press('Alt+w')
+  await page.keyboard.press(`${workspaceModifier}+w`)
   await expect(tabs(page)).toHaveCount(2)
   await expect(activeTab(page)).toHaveAttribute('data-tab-id', thirdId ?? '')
   expect(secondId).not.toBe(thirdId)
@@ -89,7 +91,7 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   // The go-to chord and a deep link open the screen once and never a second
   // tab for it.
   await settle(page)
-  await page.keyboard.press('Alt+g')
+  await page.keyboard.press(`${workspaceModifier}+g`)
   await page.keyboard.press('w')
   await expect(tabs(page).filter({ hasText: 'workers' })).toHaveCount(1)
   await page.goto(`${stack.consoleUrl}#/traces`)

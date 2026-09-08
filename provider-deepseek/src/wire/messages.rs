@@ -271,6 +271,7 @@ mod tests {
         ContentBlock::Image {
             mime: "image/png".into(),
             data: "QUJD".into(),
+            attachment_id: None,
         }
     }
 
