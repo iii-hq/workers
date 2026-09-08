@@ -69,6 +69,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "session::update-message",
             "session::messages",
             "session::get-message",
+            "session::messages-tail",
+            "session::messages-range",
             "session::fork",
             "session::set-active-leaf",
             "session::put-attachment",

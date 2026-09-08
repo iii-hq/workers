@@ -15,6 +15,10 @@
  *   re-derives the segment list wholesale and replaces the entry's range.
  * - `function_result` entries render no row of their own; they fill the
  *   `output` of the function-trigger row with the matching `functionTriggerId`.
+ * - An `elided` item (a paged read left the inside of a long tool-call run
+ *   out) produces the same rows with `unloaded: true` and no arguments or
+ *   output; the whole entry from `session::messages-range` later replaces
+ *   them in place through the same identity scheme, so the swap is invisible.
  * - Lifecycle custom entries (`error`, `recovery`, `reaction`) render durable
  *   system notices so failure state survives refresh.
  * - `custom_type: "compaction"` custom entries render the compaction marker.
@@ -731,7 +735,12 @@ export function entrySegments(
       return [msg]
     }
     case 'assistant': {
-      const segments = assistantSegments(item.entry_id, message, sessionId)
+      const segments = assistantSegments(
+        item.entry_id,
+        message,
+        sessionId,
+        item.elided === true,
+      )
       // Hook annotations from the entry origin: which memory bank and
       // memories fed this generate. Tag the first assistant segment so
       // the chat renders one memory chip per reply.
@@ -829,10 +838,32 @@ function assistantSegments(
   entryId: string,
   message: Extract<AgentMessage, { role: 'assistant' }>,
   sessionId?: string,
+  elided = false,
 ): Message[] {
   const out: Message[] = []
   for (const [i, block] of message.content.entries()) {
     const id = `${entryId}:${i}`
+    // A placeholder call: the page kept the block's id and function id and
+    // emptied the arguments. Not unwrapped — with `arguments: {}` an
+    // `agent_trigger` wrapper has no target to unwrap to, so the row keeps
+    // the wrapper name until its (elided) result names the real function.
+    if (block.type === 'function_call' && elided) {
+      const msg: FunctionTriggerMessage = {
+        id,
+        role: 'function-trigger',
+        functionId: block.function_id,
+        input: undefined,
+        unloaded: true,
+        ...(block.function_id === 'agent_trigger'
+          ? { unresolvedTarget: true }
+          : {}),
+        functionTriggerId: block.id,
+        sessionId,
+        createdAt: message.timestamp,
+      }
+      out.push(msg)
+      continue
+    }
     switch (block.type) {
       case 'thinking':
         out.push({
@@ -899,8 +930,15 @@ export function functionResultOutput(
   return { content: message.content, details: message.details }
 }
 
-function belongsToEntry(messageId: string, entryId: string): boolean {
+/** Whether a UI message id is one of `entryId`'s segments (see the header). */
+export function belongsToEntry(messageId: string, entryId: string): boolean {
   return messageId === entryId || messageId.startsWith(`${entryId}:`)
+}
+
+/** The transcript entry a UI message id was derived from. */
+export function entryIdOfMessage(messageId: string): string {
+  const colon = messageId.indexOf(':')
+  return colon === -1 ? messageId : messageId.slice(0, colon)
 }
 
 /** Patchable transient state for a function-trigger row. */
@@ -914,6 +952,10 @@ export type FcallPatch = Partial<
     | 'sessionId'
     | 'functionTriggerId'
     | 'filesystemAccess'
+    | 'functionId'
+    | 'unresolvedTarget'
+    | 'unloaded'
+    | 'resultEntryId'
   >
 >
 
@@ -924,7 +966,7 @@ export type FcallPatch = Partial<
 export function applyFcallPatch(
   messages: Message[],
   functionTriggerId: string,
-  patch: FcallPatch,
+  patch: FcallPatch | ((row: FunctionTriggerMessage) => FcallPatch),
 ): { messages: Message[]; found: boolean } {
   let found = false
   const next = messages.map((m) => {
@@ -934,7 +976,10 @@ export function applyFcallPatch(
     )
       return m
     found = true
-    return { ...m, ...patch } as Message
+    return {
+      ...m,
+      ...(typeof patch === 'function' ? patch(m) : patch),
+    } as Message
   })
   return { messages: found ? next : messages, found }
 }
@@ -957,23 +1002,51 @@ export function applyEntryUpsert(
 ): Message[] {
   // function_result: fill the matching call row instead of inserting.
   if (item.message?.role === 'function_result') {
-    const output = functionResultOutput(item.message)
+    // An elided result settles the row without an output: the call is over
+    // (not running, not held), and the body is a placeholder until a range
+    // read brings the whole entry. The result's `function_id` is the real
+    // target — the harness resolves `agent_trigger` before recording it —
+    // so a wrapper-named placeholder learns its label here. A whole result
+    // clears the flag, since it is what the flag was waiting for.
+    const elided = item.elided === true
+    const result = item.message
+    const settled: FcallPatch = {
+      running: false,
+      pendingApproval: false,
+      resultEntryId: item.entry_id,
+    }
+    const patch = elided
+      ? (row: FunctionTriggerMessage): FcallPatch =>
+          // A re-read page elides a result this window already holds: the
+          // output stays, and so does the settled label.
+          row.output !== undefined
+            ? settled
+            : {
+                ...settled,
+                unloaded: true,
+                functionId: result.function_id,
+                unresolvedTarget: false,
+              }
+      : { ...settled, output: functionResultOutput(result), unloaded: false }
     const { messages: patched, found } = applyFcallPatch(
       messages,
-      item.message.function_call_id,
-      { output, running: false, pendingApproval: false },
+      result.function_call_id,
+      patch,
     )
     if (found) return patched
     // Fallback (assistant snapshot lost): standalone row carrying the result.
     const row: FunctionTriggerMessage = {
       id: item.entry_id,
       role: 'function-trigger',
-      functionId: item.message.function_id,
+      functionId: result.function_id,
       input: undefined,
-      output,
-      functionTriggerId: item.message.function_call_id,
+      ...(elided
+        ? { unloaded: true }
+        : { output: functionResultOutput(result) }),
+      resultEntryId: item.entry_id,
+      functionTriggerId: result.function_call_id,
       sessionId: opts?.sessionId,
-      createdAt: item.message.timestamp,
+      createdAt: result.timestamp,
     }
     return [...messages, row]
   }
@@ -995,6 +1068,21 @@ export function applyEntryUpsert(
     if (!existing) return segment
     if (!belongsToEntry(existing.id, item.entry_id))
       absorbedLocalIds.add(existing.id)
+    // A re-read page elides a call this window already holds whole (a
+    // reconnect re-hydrates the tail). Nothing on the page is newer than the
+    // row: keep it, under the page's segment id.
+    if (segment.unloaded && !existing.unloaded) {
+      return { ...existing, id: segment.id, createdAt: segment.createdAt }
+    }
+    // A whole entry replacing a placeholder brings the arguments, but the
+    // result is its own entry. If that result is known and still unfetched,
+    // the row stays a placeholder until it lands; a placeholder with no
+    // result on record has none coming (an interrupted call) and settles.
+    const stillUnloaded =
+      segment.unloaded === true ||
+      (existing.unloaded === true &&
+        existing.resultEntryId !== undefined &&
+        existing.output === undefined)
     return {
       ...segment,
       output: existing.output,
@@ -1003,6 +1091,13 @@ export function applyEntryUpsert(
       pendingApproval: existing.pendingApproval,
       sessionId: existing.sessionId ?? segment.sessionId,
       filesystemAccess: existing.filesystemAccess ?? segment.filesystemAccess,
+      resultEntryId: existing.resultEntryId ?? segment.resultEntryId,
+      ...(stillUnloaded ? { unloaded: true } : {}),
+      // A re-read placeholder keeps the label its result already resolved;
+      // the page itself still only knows the wrapper name.
+      ...(segment.unloaded && existing.functionId !== 'agent_trigger'
+        ? { functionId: existing.functionId, unresolvedTarget: false }
+        : {}),
     }
   })
 
@@ -1016,7 +1111,10 @@ export function applyEntryUpsert(
         segment.role !== 'function-trigger' ||
         segment.running ||
         segment.pendingApproval ||
-        segment.output !== undefined
+        segment.output !== undefined ||
+        // No output because the page left it out, not because the call is
+        // still going: a placeholder must never pulse.
+        segment.unloaded
       )
         return segment
       return { ...segment, running: true }
@@ -1091,6 +1189,26 @@ export function transcriptToMessages(
     })
   }
   return messages
+}
+
+/**
+ * Put an older page in front of the loaded window. The page is folded on its
+ * own (its runs are whole, so results pair inside it) and then dropped in
+ * above; a message the window already holds is left out of the older part,
+ * since the anchor entry can sit on both sides of a page boundary and a
+ * duplicate row would render twice. The live tail is untouched.
+ */
+export function prependTranscript(
+  messages: Message[],
+  items: TranscriptItem[],
+  sessionId?: string,
+): Message[] {
+  if (items.length === 0) return messages
+  const held = new Set(messages.map((m) => m.id))
+  const older = transcriptToMessages(items, sessionId).filter(
+    (m) => !held.has(m.id),
+  )
+  return older.length > 0 ? [...older, ...messages] : messages
 }
 
 /** Clear transient streaming/running flags (turn over, abort, error). */

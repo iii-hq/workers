@@ -12,6 +12,7 @@ import type { SessionMeta } from '@/lib/sessions/types'
 import type { Conversation, Message } from '@/types/chat'
 import {
   buildExportFilename,
+  conversationForExport,
   conversationToMarkdown,
   fetchWorkerVersions,
   formatTimestamp,
@@ -132,9 +133,12 @@ export function subagentSectionToMarkdown(
  * assembly without a browser click.
  */
 export async function assembleFullExport(
-  conversation: Conversation,
+  windowed: Conversation,
 ): Promise<{ markdown: string; filename: string }> {
   const workers = await fetchWorkerVersions()
+  // The root section renders the conversation record, which the chat keeps
+  // as a paged window; the export wants the whole transcript.
+  const conversation = await conversationForExport(windowed)
   const filename = buildExportFilename(conversation, 'full')
   const sessions = await listAllSessions()
   if (sessions === null) {

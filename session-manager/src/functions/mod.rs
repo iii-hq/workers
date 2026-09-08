@@ -1,4 +1,4 @@
-//! The 19 `session::*` functions.
+//! The 21 `session::*` functions.
 //!
 //! Each `<verb>.rs` holds the request/response types (serde +
 //! `schemars::JsonSchema`, so the SDK emits request/response schemas)
@@ -20,6 +20,8 @@ pub mod get_message;
 pub mod list;
 pub mod list_attachments;
 pub mod messages;
+pub mod messages_range;
+pub mod messages_tail;
 pub mod put_attachment;
 pub mod set_active_leaf;
 pub mod set_draft;
@@ -206,6 +208,22 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         "Read a single entry by id (null when unknown).",
         false,
         |d, r| async move { get_message::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::messages-tail",
+        "Newest page of the active path, walking backwards in block-aligned pages (a tool run never splits) with activity runs collapsed to placeholders; the reader a chat UI opens a session with.",
+        false,
+        |d, r| async move { messages_tail::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::messages-range",
+        "Full entries for a span (from/to) or list (entry_ids) of the active path — how a reader fetches the calls a collapsed run left out.",
+        false,
+        |d, r| async move { messages_range::handle(&d, r).await },
     );
     register(
         iii,

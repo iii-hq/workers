@@ -425,6 +425,12 @@ When you mention a function in text for the user, write @fn(<function_id>), for 
 `agent_trigger` and inside code blocks, use the bare name. When you read @fn(<function_id>)
 in text, treat it as the bare id.
 
+`#file(<path>)` in a user message is a reference to a file (or, with a trailing `/`, a folder)
+under the working directory, not its content: the console attaches nothing for it, so read the
+file with `coder::read-file` (or list the folder) when the task needs it. Only a line window,
+`#file(<path>:<from>-<to>)`, arrives with the named lines already attached as an
+`<attached-file …>` block right after the message.
+
 # Final checklist
 
 Before every call, check:

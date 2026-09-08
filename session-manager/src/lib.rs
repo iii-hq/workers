@@ -24,7 +24,9 @@
 //!   propagation plumbing (`EventEnvelope`, `RemotePublisher`,
 //!   `attach_bridge_relay`): the main instance is the single fan-out
 //!   point and every bridged instance re-emits its feed locally.
-//! - [`functions`] — the 19 `session::*` typed function handlers plus
+//! - [`pagination`] — block segmentation and elision behind the lazy
+//!   transcript readers (`session::messages-tail` / `messages-range`).
+//! - [`functions`] — the 21 `session::*` typed function handlers plus
 //!   the internal `session::store::*` protocol.
 //! - [`runtime`] — the hot-swappable storage + event runtime built from
 //!   the `adapter` config, so an adapter change reloads live (no restart).
@@ -37,6 +39,7 @@ pub mod error;
 pub mod events;
 pub mod functions;
 pub mod manifest;
+pub mod pagination;
 pub mod resync;
 pub mod runtime;
 pub mod service;

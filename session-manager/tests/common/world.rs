@@ -27,8 +27,8 @@ use session_manager::error::SessionError;
 use session_manager::events::{Emitter, TriggerSets};
 use session_manager::functions::{
     append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
-    get_message, list, list_attachments, messages, put_attachment, set_active_leaf, set_draft,
-    set_meta, set_status, update_message, Deps,
+    get_message, list, list_attachments, messages, messages_range, messages_tail, put_attachment,
+    set_active_leaf, set_draft, set_meta, set_status, update_message, Deps,
 };
 use session_manager::service::SessionService;
 use session_manager::store::FsStore;
@@ -269,6 +269,8 @@ pub async fn dispatch(deps: &Deps, function: &str, payload: Value) -> Result<Val
         "session::update-message" => out(update_message::handle(deps, parse(payload)?).await),
         "session::messages" => out(messages::handle(deps, parse(payload)?).await),
         "session::get-message" => out(get_message::handle(deps, parse(payload)?).await),
+        "session::messages-tail" => out(messages_tail::handle(deps, parse(payload)?).await),
+        "session::messages-range" => out(messages_range::handle(deps, parse(payload)?).await),
         "session::fork" => out(fork::handle(deps, parse(payload)?).await),
         "session::set-active-leaf" => out(set_active_leaf::handle(deps, parse(payload)?).await),
         "session::put-attachment" => out(put_attachment::handle(deps, parse(payload)?).await),

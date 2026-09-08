@@ -43,6 +43,7 @@ import {
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { requestComposerFocus } from '@/lib/composer-insert'
+import { errText } from '@/lib/errors'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
@@ -50,14 +51,22 @@ import {
   deleteSession,
   ensureSession as ensureSessionApi,
   fetchTranscript,
+  fetchTranscriptRange,
+  fetchTranscriptTail,
   getSession,
+  isInvalidCursorError,
+  isMissingFunctionError,
   listSessions,
   setSessionDraft,
   setSessionMeta,
+  TRANSCRIPT_OLDER_PAGE_LIMIT,
+  TRANSCRIPT_TAIL_PAGE_LIMIT,
 } from '@/lib/sessions/api'
 import {
   applyEntryUpsert,
+  belongsToEntry,
   clearTransientFlags,
+  prependTranscript,
   transcriptToMessages,
 } from '@/lib/sessions/entry-mapper'
 import {
@@ -1050,6 +1059,25 @@ export interface ConversationsApi {
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
   compactConversation: (id: string, marker: Message) => void
   /**
+   * Fetch the page of history above the loaded window and put it in front.
+   * One load per conversation at a time; a call while one is in flight is a
+   * no-op. `untilEntryId` widens the page back to that entry's block (a deep
+   * link into history) — the server sizes it, there is no client cap. When
+   * the anchor is no longer on the active path the conversation is marked
+   * un-hydrated and the ordinary re-hydration reloads from the top.
+   */
+  loadOlderMessages: (
+    id: string,
+    opts?: { untilEntryId?: string },
+  ) => Promise<void>
+  /**
+   * Fetch whole entries for placeholders a paged read left behind ("show
+   * all" on a collapsed group, or a call a renderer must draw while
+   * collapsed) and swap them in place. Ids already in flight for the
+   * conversation are not requested twice.
+   */
+  loadActivityEntries: (id: string, entryIds: string[]) => Promise<void>
+  /**
    * Materialise a draft conversation in session-manager before the first
    * send (idempotent). `titleHint` seeds the session title from the prompt.
    */
@@ -1162,22 +1190,91 @@ export function markDurableStarted(
   }
 }
 
+/** Where a hydration page ends at the top (see `Conversation.history`). */
+export type HydrationPage = NonNullable<Conversation['history']>
+
+/**
+ * Fold a (re-)hydration page into what the window already holds.
+ *
+ * The first read has nothing above the page. A re-read (reconnect, a
+ * `hydrated: false` reset) does: pages the reader scrolled up into, which
+ * the newest page does not cover. When the page's oldest entry is already in
+ * the window, everything above it is those older pages — keep them and
+ * replace from there, so a reconnect does not throw away a long scroll.
+ * When it is not, the window and the page do not overlap (many blocks
+ * landed while offline, or the leaf moved to another branch): durable rows
+ * are dropped rather than shown with a gap — scrolling up reloads them — and
+ * only local rows (uid-based notices) survive the replay. An empty page has
+ * no durable truth to assert, so everything stays, as before paging.
+ *
+ * `history` follows the same split: kept pages keep their anchor, a fresh
+ * window takes the page's.
+ */
+export function rehydrateTranscript(
+  conversation: Conversation,
+  fetched: Message[],
+  page: HydrationPage,
+  upserts: HydrationUpsert[],
+  opts: { sessionId: string; working: boolean },
+): { messages: Message[]; history: HydrationPage } {
+  const existing = conversation.messages
+  const oldest = page.oldestEntryId
+  const boundary = oldest
+    ? existing.findIndex((m) => belongsToEntry(m.id, oldest))
+    : -1
+  const kept = boundary === -1 ? [] : existing.slice(0, boundary)
+  const live =
+    boundary !== -1
+      ? existing.slice(boundary)
+      : oldest
+        ? existing.filter((m) => !m.id.startsWith('e_'))
+        : existing
+  const messages = mergeHydratedTranscript(
+    [...kept, ...fetched],
+    live,
+    upserts,
+    opts,
+  )
+  const history: HydrationPage =
+    kept.length > 0 && conversation.history
+      ? {
+          hasMore: conversation.history.hasMore,
+          ...(conversation.history.oldestEntryId
+            ? { oldestEntryId: conversation.history.oldestEntryId }
+            : {}),
+        }
+      : {
+          hasMore: page.hasMore,
+          ...(page.oldestEntryId ? { oldestEntryId: page.oldestEntryId } : {}),
+        }
+  return { messages, history }
+}
+
+/**
+ * @param page Where the read ended at the top. Absent for a full read (the
+ *   fallback against a session-manager without `session::messages-tail`),
+ *   which by definition has nothing above it.
+ */
 export function mergeHydratedConversation(
   conversation: Conversation,
   items: TranscriptItem[],
   upserts: HydrationUpsert[],
+  page: HydrationPage = { hasMore: false },
 ): Conversation {
   const working = conversation.status === 'working'
   const started =
     conversation.started === true || items.length > 0 || upserts.length > 0
+  const { messages, history } = rehydrateTranscript(
+    conversation,
+    transcriptToMessages(items, conversation.id, { working }),
+    page,
+    upserts,
+    { sessionId: conversation.id, working },
+  )
   const hydrated: Conversation = {
     ...conversation,
-    messages: mergeHydratedTranscript(
-      transcriptToMessages(items, conversation.id, { working }),
-      conversation.messages,
-      upserts,
-      { sessionId: conversation.id, working },
-    ),
+    messages,
+    history,
     started,
     hydrated: true,
   }
@@ -1199,6 +1296,46 @@ export function mergeHydratedConversation(
  * instead of remaining in the initializing state indefinitely. */
 export function completeFailedHydration(c: Conversation): Conversation {
   return c.hydrated ? c : { ...c, hydrated: true }
+}
+
+/** Remembered once the worker has answered that it lacks the paging reader,
+ *  so every later hydration goes straight to the full read. */
+let tailReaderUnavailable = false
+
+/**
+ * The page a chat opens on: the newest `TRANSCRIPT_TAIL_PAGE_LIMIT` blocks.
+ * A session-manager that predates `session::messages-tail` answers
+ * `function_not_found`; the console then reads the whole transcript as it
+ * always did and reports nothing above it, so an old worker keeps working
+ * with the old (unpaged) behaviour.
+ */
+async function fetchHydrationPage(
+  sessionId: string,
+): Promise<{ items: TranscriptItem[]; page: HydrationPage }> {
+  if (!tailReaderUnavailable) {
+    try {
+      const tail = await fetchTranscriptTail(sessionId, {
+        limit: TRANSCRIPT_TAIL_PAGE_LIMIT,
+      })
+      return {
+        items: tail.items,
+        page: {
+          hasMore: tail.hasMore,
+          ...(tail.oldestEntryId ? { oldestEntryId: tail.oldestEntryId } : {}),
+        },
+      }
+    } catch (err) {
+      if (!isMissingFunctionError(err)) throw err
+      tailReaderUnavailable = true
+      if (import.meta.env.DEV) {
+        console.warn(
+          '[conversations] session::messages-tail is not registered; reading whole transcripts (older session-manager)',
+        )
+      }
+    }
+  }
+  const items = await fetchTranscript(sessionId)
+  return { items, page: { hasMore: false } }
 }
 
 export function useConversations(
@@ -1865,8 +2002,8 @@ export function useConversations(
       }
       runs.set(sessionId, run)
       hydrationBuffersRef.current.set(sessionId, upserts)
-      void fetchTranscript(sessionId)
-        .then((items) => {
+      void fetchHydrationPage(sessionId)
+        .then(({ items, page }) => {
           if (
             run.cancelled ||
             run.connectionEpoch !== hydrationEpochRef.current ||
@@ -1876,7 +2013,7 @@ export function useConversations(
             return
           }
           patchConversation(sessionId, (conversation) =>
-            mergeHydratedConversation(conversation, items, upserts),
+            mergeHydratedConversation(conversation, items, upserts, page),
           )
           const retryTimer = hydrationRetryTimersRef.current.get(sessionId)
           if (retryTimer) clearTimeout(retryTimer)
@@ -2344,6 +2481,131 @@ export function useConversations(
     [patchConversation],
   )
 
+  /* One page-up per conversation at a time. The list's sentinel re-arms as
+     soon as `loadingOlder` clears, so the set is what stops a second request
+     from racing the first while React has not yet re-rendered the flag. */
+  const olderLoadsRef = useRef(new Set<string>())
+
+  const loadOlderMessages = useCallback(
+    async (id: string, opts?: { untilEntryId?: string }) => {
+      if (!serverEnabled || olderLoadsRef.current.has(id)) return
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      const history = conv?.history
+      if (!conv || conv.draft || !history?.hasMore || !history.oldestEntryId)
+        return
+      const before = history.oldestEntryId
+      olderLoadsRef.current.add(id)
+      patchConversation(id, (c) =>
+        c.history
+          ? {
+              ...c,
+              history: { ...c.history, loadingOlder: true, error: undefined },
+            }
+          : c,
+      )
+      try {
+        const page = await fetchTranscriptTail(id, {
+          limit: TRANSCRIPT_OLDER_PAGE_LIMIT,
+          beforeEntryId: before,
+          ...(opts?.untilEntryId ? { untilEntryId: opts.untilEntryId } : {}),
+        })
+        patchConversation(id, (c) => {
+          // The window moved under the read (a re-hydration reset its
+          // anchor): this page no longer joins onto what is held.
+          if (c.history?.oldestEntryId !== before) return c
+          return {
+            ...c,
+            messages: prependTranscript(c.messages, page.items, id),
+            history: {
+              hasMore: page.hasMore,
+              oldestEntryId: page.oldestEntryId ?? before,
+            },
+          }
+        })
+      } catch (err) {
+        if (isInvalidCursorError(err)) {
+          // A deep-link anchor that is not on the path is a miss, not a moved
+          // leaf: the request is best-effort and its owner gives up on its
+          // own. Only a plain page-up whose anchor vanished reloads.
+          if (opts?.untilEntryId) {
+            patchConversation(id, (c) =>
+              c.history
+                ? { ...c, history: { ...c.history, loadingOlder: false } }
+                : c,
+            )
+          } else {
+            patchConversation(id, (c) => ({
+              ...c,
+              hydrated: false,
+              history: undefined,
+            }))
+          }
+        } else {
+          patchConversation(id, (c) =>
+            c.history
+              ? {
+                  ...c,
+                  history: {
+                    ...c.history,
+                    loadingOlder: false,
+                    error: errText(err),
+                  },
+                }
+              : c,
+          )
+        }
+        if (import.meta.env.DEV) {
+          console.warn('[conversations] older page failed', id, err)
+        }
+      } finally {
+        olderLoadsRef.current.delete(id)
+      }
+    },
+    [serverEnabled, patchConversation],
+  )
+
+  /** Entry ids a range read is fetching, per conversation. */
+  const activityLoadsRef = useRef(new Map<string, Set<string>>())
+
+  const loadActivityEntries = useCallback(
+    async (id: string, entryIds: string[]) => {
+      if (!serverEnabled || entryIds.length === 0) return
+      let inflight = activityLoadsRef.current.get(id)
+      if (!inflight) {
+        inflight = new Set()
+        activityLoadsRef.current.set(id, inflight)
+      }
+      const wanted: string[] = []
+      for (const entryId of new Set(entryIds)) {
+        if (inflight.has(entryId)) continue
+        inflight.add(entryId)
+        wanted.push(entryId)
+      }
+      if (wanted.length === 0) return
+      try {
+        const items = await fetchTranscriptRange(id, { entryIds: wanted })
+        // Whole entries replace their placeholders by entry id; a result
+        // pairs into its row by call id. Nothing here marks running: the
+        // rows are history, and their transient state was settled on read.
+        patchConversation(id, (c) => {
+          let messages = c.messages
+          for (const item of items) {
+            messages = applyEntryUpsert(messages, item, { sessionId: id })
+          }
+          return messages === c.messages ? c : { ...c, messages }
+        })
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn('[conversations] activity entries failed', id, err)
+        }
+      } finally {
+        for (const entryId of wanted) inflight.delete(entryId)
+        if (inflight.size === 0) activityLoadsRef.current.delete(id)
+      }
+    },
+    [serverEnabled, patchConversation],
+  )
+
   const ensureSession = useCallback(
     async (id: string, titleHint?: string) => {
       const conv = conversations.find((c) => c.id === id)
@@ -2637,6 +2899,8 @@ export function useConversations(
     appendMessage,
     updateMessage,
     compactConversation,
+    loadOlderMessages,
+    loadActivityEntries,
     ensureSession,
     setDraftText,
     getDraftText,

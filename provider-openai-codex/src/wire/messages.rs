@@ -43,7 +43,7 @@ fn user_content_parts(content: &[ContentBlock]) -> Vec<Value> {
         parts.push(json!({ "type": "input_text", "text": text }));
     }
     for c in content {
-        if let ContentBlock::Image { mime, data } = c {
+        if let ContentBlock::Image { mime, data, .. } = c {
             parts.push(json!({
                 "type": "input_image",
                 "image_url": format!("data:{mime};base64,{data}")
@@ -169,7 +169,7 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                     .content
                     .iter()
                     .filter_map(|c| match c {
-                        ContentBlock::Image { mime, data } => Some(json!({
+                        ContentBlock::Image { mime, data, .. } => Some(json!({
                             "type": "input_image",
                             "image_url": format!("data:{mime};base64,{data}")
                         })),
@@ -249,6 +249,7 @@ mod tests {
         ContentBlock::Image {
             mime: "image/png".into(),
             data: data.into(),
+            attachment_id: None,
         }
     }
     fn call(id: &str) -> ContentBlock {

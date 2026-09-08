@@ -1,8 +1,16 @@
 /**
  * Typed `session::*` calls against the session-manager worker, via the
- * shared iii-browser-sdk client. Reads paginate (`session::messages`
- * defaults to 50 rows, hard cap 500/page) so callers always see the full
- * active path.
+ * shared iii-browser-sdk client.
+ *
+ * Three transcript readers, for three needs. `fetchTranscript` loops
+ * `session::messages` until the cursor runs out and is the FULL active path:
+ * an export or a compaction hands the whole conversation on and needs every
+ * byte. `fetchTranscriptTail` is one page of `session::messages-tail`, the
+ * newest blocks first and then backwards from an anchor: what a chat opens
+ * on and what scrolling up asks for, with the inside of long tool-call runs
+ * left out (`elided`). `fetchTranscriptRange` is `session::messages-range`,
+ * whole entries by id or span, and brings those elided parts back when a
+ * reader expands a group.
  */
 
 import type {
@@ -10,11 +18,21 @@ import type {
   GetAttachmentResponse,
   PutAttachmentResponse,
 } from '@/lib/attachments/store'
+import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
 import type { SessionMeta, SessionStatus, TranscriptItem } from './types'
 
 /** `session::messages` hard cap per page. */
 const MESSAGES_PAGE_LIMIT = 500
+/**
+ * Blocks on the page a chat opens with. A block is a plain entry or one whole
+ * activity run, so this is roughly the last fifteen conversational steps —
+ * enough to fill a tall viewport, small enough that a 300-call session opens
+ * as fast as a short one.
+ */
+export const TRANSCRIPT_TAIL_PAGE_LIMIT = 15
+/** Blocks per page when scrolling up into earlier history. */
+export const TRANSCRIPT_OLDER_PAGE_LIMIT = 25
 /** Sidebar page size (one page; `updated_desc` keeps recent chats first). */
 const LIST_PAGE_LIMIT = 200
 
@@ -230,4 +248,140 @@ export async function fetchTranscript(
     if (!next || page.length === 0) return items
     cursor = next
   }
+}
+
+/** One page of `session::messages-tail`, oldest first. */
+export interface TranscriptTailPage {
+  items: TranscriptItem[]
+  /** Older blocks exist above `items[0]`. */
+  hasMore: boolean
+  /**
+   * The first entry on the page — the `beforeEntryId` for the next page up.
+   * Absent when the page is empty.
+   */
+  oldestEntryId?: string
+}
+
+/**
+ * One page of the active path counted in BLOCKS (a plain entry, or one whole
+ * activity run with its results and wake entries), newest first and then
+ * backwards from `beforeEntryId` (exclusive — pass the oldest entry held).
+ * A page never splits a run, so a call and its result always land together.
+ *
+ * `untilEntryId` widens the page backwards until that entry's block is on
+ * it, for a deep link into history: the server decides how far back that is,
+ * and the caller does not cap it. An anchor that is not on the active path
+ * rejects with `session/invalid_cursor` — the leaf moved, reload from the
+ * top.
+ *
+ * Inside a run, only the last function-calling assistant entry, the results
+ * answering its calls, and wake entries arrive whole; every other entry is
+ * `elided` (see `TranscriptItem`). Image bytes are always left out here, as
+ * `fetchTranscript` does for the chat: the chips fetch them on view.
+ */
+export async function fetchTranscriptTail(
+  sessionId: string,
+  opts: {
+    limit: number
+    beforeEntryId?: string
+    untilEntryId?: string
+    timeoutMs?: number
+  },
+): Promise<TranscriptTailPage> {
+  const client = await getIiiClient()
+  const resp = await client.trigger<{
+    messages?: TranscriptItem[]
+    has_more?: boolean
+    oldest_entry_id?: string | null
+  }>(
+    'session::messages-tail',
+    {
+      session_id: sessionId,
+      limit: opts.limit,
+      include_custom: true,
+      include_image_data: false,
+      ...(opts.beforeEntryId ? { before_entry_id: opts.beforeEntryId } : {}),
+      ...(opts.untilEntryId ? { until_entry_id: opts.untilEntryId } : {}),
+    },
+    opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : undefined,
+  )
+  const items: TranscriptItem[] = []
+  for (const item of resp?.messages ?? []) {
+    if (item && typeof item.entry_id === 'string') items.push(item)
+  }
+  return {
+    items,
+    hasMore: resp?.has_more === true,
+    ...(resp?.oldest_entry_id ? { oldestEntryId: resp.oldest_entry_id } : {}),
+  }
+}
+
+/** Exactly one of: a span of the active path, or a list of specific ids. */
+export type TranscriptRangeSelector =
+  | { fromEntryId: string; toEntryId: string }
+  | { entryIds: string[] }
+
+/**
+ * Whole entries (never elided) for a span of the active path or a list of
+ * ids, in path order, looping `next_cursor` like `fetchTranscript`. This is
+ * how the placeholders a tail page left behind get their arguments and
+ * results back: "show all" on a group names the entries it holds. Rejects
+ * with `session/entry_not_found` for an id nobody wrote,
+ * `session/invalid_cursor` for one on another branch, and
+ * `session/invalid_request` for a reversed span.
+ */
+export async function fetchTranscriptRange(
+  sessionId: string,
+  selector: TranscriptRangeSelector,
+  opts?: { timeoutMs?: number },
+): Promise<TranscriptItem[]> {
+  const client = await getIiiClient()
+  const items: TranscriptItem[] = []
+  const selection =
+    'entryIds' in selector
+      ? { entry_ids: selector.entryIds }
+      : { from_entry_id: selector.fromEntryId, to_entry_id: selector.toEntryId }
+  let cursor: string | undefined
+  for (;;) {
+    const resp = await client.trigger<{
+      messages?: TranscriptItem[]
+      next_cursor?: string | null
+    }>(
+      'session::messages-range',
+      {
+        session_id: sessionId,
+        ...selection,
+        include_image_data: false,
+        ...(cursor ? { cursor } : {}),
+      },
+      opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : undefined,
+    )
+    const page = resp?.messages ?? []
+    for (const item of page) {
+      if (item && typeof item.entry_id === 'string') items.push(item)
+    }
+    const next = resp?.next_cursor
+    if (!next || page.length === 0) return items
+    cursor = next
+  }
+}
+
+/**
+ * The worker predates the function. The engine answers a call to an
+ * unregistered id with `function_not_found`; older engines phrased it as
+ * "not registered". Paging readers fall back to the full read on this, so a
+ * console shipped ahead of its session-manager keeps working.
+ */
+export function isMissingFunctionError(err: unknown): boolean {
+  return /function_not_found|function .*not (?:found|registered)|not registered/i.test(
+    errText(err),
+  )
+}
+
+/**
+ * The paging anchor is no longer on the active path (`session/invalid_cursor`):
+ * the leaf moved under us. The only recovery is to reload from the top.
+ */
+export function isInvalidCursorError(err: unknown): boolean {
+  return /session\/invalid_cursor|session\/entry_not_found/.test(errText(err))
 }

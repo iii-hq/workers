@@ -1,6 +1,7 @@
 import { ArrowDown, ChevronRight } from 'lucide-react'
 import {
   type CSSProperties,
+  forwardRef,
   type ReactNode,
   type TouchEvent,
   type UIEvent,
@@ -42,11 +43,16 @@ import {
   functionTriggersByAssistant,
 } from '@/lib/function-trigger-copy'
 import {
+  entryIdOfMessage,
   notificationBindingId,
   triggerFiredName,
 } from '@/lib/sessions/entry-mapper'
 import { cn } from '@/lib/utils'
-import type { Message as MessageType } from '@/types/chat'
+import type {
+  Conversation,
+  FunctionTriggerMessage,
+  Message as MessageType,
+} from '@/types/chat'
 import type { WorktreePickerOptions } from './DirectoryPicker'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
 import { functionTriggerGroups } from './function-trigger-groups'
@@ -60,6 +66,8 @@ import {
 import { THOUGHT_SETTLE_DURATION_MS } from './ThoughtMessage'
 import {
   nextTailScrollTop,
+  type PrependScrollMetrics,
+  scrollTopAfterPrepend,
   TAIL_GLIDE_SETTLE_DISTANCE_PX,
   TAIL_REARM_DISTANCE_PX,
   type TailScrollState,
@@ -143,9 +151,55 @@ interface MessageListProps {
    */
   focusMessageId?: string | null
   onFocusMessageHandled?: () => void
+  /**
+   * Where the loaded window ends at the top (`Conversation.history`). Drives
+   * the status row above the first message and the upward infinite scroll:
+   * while `hasMore`, a sentinel entering the viewport asks `onLoadOlder` for
+   * the page above. Absent on surfaces that hold the whole transcript.
+   */
+  history?: Conversation['history']
+  onLoadOlder?: () => void
+  /**
+   * Fetch whole entries for placeholder calls a paged read left behind, so a
+   * group can show them when expanded (or while collapsed, when a renderer
+   * wants the call visible).
+   */
+  onLoadActivityEntries?: (entryIds: string[]) => void
 }
 
 const TRIGGER_RESULT_DWELL_MS = 250
+
+/**
+ * How far above the viewport the top sentinel counts as "reached". A page is
+ * requested before the reader hits the edge, so the row they are heading for
+ * is usually there by the time they arrive.
+ */
+const OLDER_PAGE_ROOT_MARGIN = '600px 0px 0px 0px'
+/** No content resize for this long after hydration = the open has settled. */
+const OPEN_SETTLE_QUIET_MS = 120
+/** Reveal no later than this after hydration, settled or not. */
+const OPEN_SETTLE_MAX_MS = 800
+/** A fast open shows nothing rather than a flash of the loading line. */
+const OPEN_INDICATOR_DELAY_MS = 150
+const HISTORY_EDGE_BUTTON_CLASS =
+  'cursor-pointer underline decoration-dotted underline-offset-2 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
+
+/**
+ * Transcript entry ids a placeholder row needs fetched: its own entry and,
+ * when the read named it, the result entry. A fallback row whose id IS the
+ * result entry asks for that one entry.
+ */
+export function unloadedEntryIds(
+  rows: readonly FunctionTriggerMessage[],
+): string[] {
+  const ids = new Set<string>()
+  for (const row of rows) {
+    if (!row.unloaded) continue
+    ids.add(entryIdOfMessage(row.id))
+    if (row.resultEntryId) ids.add(row.resultEntryId)
+  }
+  return [...ids]
+}
 
 interface ThoughtPresenceState {
   signature: string
@@ -236,6 +290,26 @@ function useSettlingThoughtIds(
   return renderedPresenceState.settlingIds
 }
 
+/**
+ * Keys whose rows were appended live since the last commit: only those get
+ * the appear animation. A key is live when it is new AND sits after the
+ * newest previously known key that still exists. Anything new BEFORE that
+ * anchor was inserted into history: an older page prepended by the reader
+ * scrolling up, or a placeholder swapped for its whole entry. Animating
+ * those made every page-up look like a burst of fresh messages.
+ */
+export function liveAppendedKeys(
+  previousKeys: readonly string[],
+  keys: readonly string[],
+): Set<string> {
+  const known = new Set(previousKeys)
+  let anchor = -1
+  for (let i = previousKeys.length - 1; i >= 0 && anchor === -1; i--) {
+    anchor = keys.indexOf(previousKeys[i])
+  }
+  return new Set(keys.filter((key, index) => index > anchor && !known.has(key)))
+}
+
 function useLiveEntryKeys(
   keys: readonly string[],
   transcriptHydrated: boolean,
@@ -243,17 +317,15 @@ function useLiveEntryKeys(
   const signature = keys.join('\u0000')
   // biome-ignore lint/correctness/useExhaustiveDependencies: the primitive signature is the list's semantic identity.
   const stableKeys = useMemo(() => keys, [signature])
-  const previousKeysRef = useRef(new Set(stableKeys))
+  const previousKeysRef = useRef<readonly string[]>(stableKeys)
   const wasHydratedRef = useRef(transcriptHydrated)
   const animate = transcriptHydrated && wasHydratedRef.current
-  const liveKeys = new Set(
-    animate
-      ? stableKeys.filter((key) => !previousKeysRef.current.has(key))
-      : [],
-  )
+  const liveKeys: ReadonlySet<string> = animate
+    ? liveAppendedKeys(previousKeysRef.current, stableKeys)
+    : new Set()
 
   useLayoutEffect(() => {
-    previousKeysRef.current = new Set(stableKeys)
+    previousKeysRef.current = stableKeys
     wasHydratedRef.current = transcriptHydrated
   }, [stableKeys, transcriptHydrated])
 
@@ -487,9 +559,13 @@ export function MessageList({
   triggersById,
   focusMessageId,
   onFocusMessageHandled,
+  history,
+  onLoadOlder,
+  onLoadActivityEntries,
 }: MessageListProps) {
   const containerRef = useRef<HTMLElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  const topSentinelRef = useRef<HTMLDivElement>(null)
   const didInitialScrollRef = useRef(false)
   const animationFrameRef = useRef<number | null>(null)
   const lastAnimationTimeRef = useRef<number | null>(null)
@@ -647,6 +723,62 @@ export function MessageList({
     animationFrameRef.current = requestAnimationFrame(step)
   }, [cancelTailAnimation, writeScrollTop])
 
+  /* Opening veil. From mount until the first page has landed AND its layout
+     has gone quiet, the list is laid out and scrolled to the tail behind a
+     `visibility: hidden` veil with a loading line in front. The loaded state
+     a reader first sees must be final: no rows popping in, no glide chasing
+     late layout (images, rich cards, fonts, lazy chips). Quiet means no
+     content resize for OPEN_SETTLE_QUIET_MS; OPEN_SETTLE_MAX_MS caps the
+     wait so a page that keeps growing (a live turn, slow images) still
+     reveals. ChatView is keyed by conversation id, so every open starts
+     veiled, including a cached transcript re-opened. */
+  const [opening, setOpening] = useState(true)
+  const openingRef = useRef(true)
+  const [openingIndicator, setOpeningIndicator] = useState(false)
+  const openQuietTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const transcriptHydratedRef = useRef(transcriptHydrated)
+  transcriptHydratedRef.current = transcriptHydrated
+  const finishOpening = useCallback(() => {
+    if (!openingRef.current) return
+    openingRef.current = false
+    if (openQuietTimerRef.current !== null) {
+      clearTimeout(openQuietTimerRef.current)
+      openQuietTimerRef.current = null
+    }
+    setOpening(false)
+  }, [])
+  /* Every layout change while opening re-arms the quiet timer; the open ends
+     when it fires. Before hydration there is nothing to settle yet. */
+  const noteOpeningLayout = useCallback(() => {
+    if (!openingRef.current || !transcriptHydratedRef.current) return
+    if (openQuietTimerRef.current !== null) {
+      clearTimeout(openQuietTimerRef.current)
+    }
+    openQuietTimerRef.current = setTimeout(finishOpening, OPEN_SETTLE_QUIET_MS)
+  }, [finishOpening])
+  useEffect(() => {
+    if (!transcriptHydrated || !openingRef.current) return
+    noteOpeningLayout()
+    const cap = setTimeout(finishOpening, OPEN_SETTLE_MAX_MS)
+    return () => clearTimeout(cap)
+  }, [transcriptHydrated, noteOpeningLayout, finishOpening])
+  useEffect(() => {
+    if (!opening) return
+    const timer = setTimeout(
+      () => setOpeningIndicator(true),
+      OPEN_INDICATOR_DELAY_MS,
+    )
+    return () => clearTimeout(timer)
+  }, [opening])
+  useEffect(
+    () => () => {
+      if (openQuietTimerRef.current !== null) {
+        clearTimeout(openQuietTimerRef.current)
+      }
+    },
+    [],
+  )
+
   const hasScrollableContent =
     messages.length > 0 || Boolean(header) || waitingMounted
 
@@ -685,10 +817,13 @@ export function MessageList({
     if (!container || !content) return
 
     const observer = new ResizeObserver(() => {
+      noteOpeningLayout()
       if (tailStateRef.current === 'paused') return
-      if (!didInitialScrollRef.current) {
-        // Hydration can include late layout (images, rich cards, fonts). Keep
-        // initialization pinned with direct writes; never animate partial data.
+      if (!didInitialScrollRef.current || openingRef.current) {
+        // Hydration and the veiled settle include late layout (images, rich
+        // cards, fonts). Keep the tail pinned with direct writes: nothing
+        // glides while nothing is visible, and the reveal shows the settled
+        // bottom, never a scroll in progress.
         writeScrollTop(container, tailScrollTarget(container))
         return
       }
@@ -697,13 +832,133 @@ export function MessageList({
     observer.observe(container)
     observer.observe(content)
     return () => observer.disconnect()
-  }, [hasScrollableContent, scheduleTailFollow, writeScrollTop])
+  }, [
+    hasScrollableContent,
+    noteOpeningLayout,
+    scheduleTailFollow,
+    writeScrollTop,
+  ])
 
   useEffect(() => {
     if (reducedMotion && tailStateRef.current === 'following') {
       scheduleTailFollow()
     }
   }, [reducedMotion, scheduleTailFollow])
+
+  /* Upward infinite scroll. The sentinel sits above the first message; while
+     older history exists and none is loading, its entering the (margin-
+     extended) viewport asks for the page above. Armed ONLY for a reader who
+     has scrolled away from the tail (`paused`): opening a session lands at
+     the bottom in `following`, and a short first page has the sentinel in
+     view right there, so arming in that state pulled in page after page the
+     reader never asked for. A page that is too short to scroll cannot be
+     scrolled up either; the edge row offers the load as a button instead.
+     Observed once per arming: the effect re-arms when `loadingOlder` clears,
+     so a reader still heading up keeps getting pages ahead of them. A failed
+     page does NOT re-arm (the row offers the retry) or a dead connection
+     would loop request after request. */
+  const hasOlderHistory = history?.hasMore === true
+  const loadingOlder = history?.loadingOlder === true
+  const olderHistoryError = history?.error
+  const onLoadOlderRef = useRef(onLoadOlder)
+  onLoadOlderRef.current = onLoadOlder
+  useEffect(() => {
+    if (
+      !hasOlderHistory ||
+      loadingOlder ||
+      olderHistoryError ||
+      !onLoadOlder ||
+      !transcriptHydrated ||
+      tailState !== 'paused' ||
+      typeof IntersectionObserver === 'undefined'
+    ) {
+      return
+    }
+    const container = containerRef.current
+    const sentinel = topSentinelRef.current
+    if (!container || !sentinel) return
+    let requested = false
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (requested || !entries.some((entry) => entry.isIntersecting)) return
+        requested = true
+        onLoadOlderRef.current?.()
+      },
+      { root: container, rootMargin: OLDER_PAGE_ROOT_MARGIN },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [
+    hasOlderHistory,
+    loadingOlder,
+    olderHistoryError,
+    onLoadOlder,
+    tailState,
+    transcriptHydrated,
+  ])
+
+  /* Prepend scroll restoration. A page landing above the fold pushes
+     everything down by its height; the reader must not notice. The height
+     recorded at the last commit (and refreshed by the resize observer, since
+     images and cards grow without a re-render) is what the container
+     measured before this commit; the difference in scrollHeight is exactly
+     how far the content moved. The BASE is the container's live scrollTop,
+     not the recorded one: a paused reader keeps scrolling while the page is
+     in flight and no re-render records that, and with scroll anchoring off
+     the live value is still where the reader is at this instant. Written
+     through `writeScrollTop` so the resulting scroll event is not mistaken
+     for a manual gesture. Applied in EVERY tail state, not just `paused`:
+     for a reader at the bottom the shifted offset IS the new bottom (the
+     browser clamps it there), so the follow loop finds nothing to glide. It
+     cannot be left to the follow loop: the observer re-arms in this same
+     commit, and with the offset still at its old value the viewport sits on
+     the TOP of the page that just landed, sentinel in view, so the next page
+     is requested before the glide has moved a pixel, and the whole history
+     cascades in on a short first page. `didInitialScrollRef` is left alone,
+     this is not the open. */
+  const prevFirstIdRef = useRef<string | undefined>(undefined)
+  const prevMetricsRef = useRef<PrependScrollMetrics | null>(null)
+  const recordScrollMetrics = useCallback((container: HTMLElement) => {
+    prevMetricsRef.current = {
+      scrollTop: container.scrollTop,
+      scrollHeight: container.scrollHeight,
+    }
+  }, [])
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    const firstId = messages[0]?.id
+    const prevFirstId = prevFirstIdRef.current
+    prevFirstIdRef.current = firstId
+    if (!container) return
+    const previous = prevMetricsRef.current
+    const prepended =
+      previous !== null &&
+      prevFirstId !== undefined &&
+      firstId !== prevFirstId &&
+      messages.some((m) => m.id === prevFirstId)
+    if (prepended) {
+      writeScrollTop(
+        container,
+        scrollTopAfterPrepend(
+          {
+            scrollTop: container.scrollTop,
+            scrollHeight: previous.scrollHeight,
+          },
+          container.scrollHeight,
+        ),
+      )
+    }
+    recordScrollMetrics(container)
+  }, [messages, recordScrollMetrics, writeScrollTop])
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return
+    const container = containerRef.current
+    const content = contentRef.current
+    if (!container || !content) return
+    const observer = new ResizeObserver(() => recordScrollMetrics(container))
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [recordScrollMetrics])
 
   useEffect(() => cancelTailAnimation, [cancelTailAnimation])
 
@@ -731,8 +986,11 @@ export function MessageList({
       if (nextState === 'paused') cancelTailAnimation()
       transitionTailState(nextState)
       lastScrollTopRef.current = currentScrollTop
+      // A prepend restores against the offset the reader was at, not the
+      // one at the last commit.
+      recordScrollMetrics(container)
     },
-    [cancelTailAnimation, transitionTailState],
+    [cancelTailAnimation, recordScrollMetrics, transitionTailState],
   )
 
   const handleWheel = useCallback(
@@ -878,7 +1136,7 @@ export function MessageList({
     writeScrollTop,
   ])
 
-  if (messages.length === 0 && !header && !isThinking) {
+  if (messages.length === 0 && !header && !isThinking && transcriptHydrated) {
     return (
       <EmptyState
         {...resolveEmptyState(ctx, density, onConfigureProvider, {
@@ -914,8 +1172,17 @@ export function MessageList({
         data-turn-phase={turnVisualPhase}
         aria-label="conversation messages"
         tabIndex={-1}
+        data-transcript-opening={opening ? '' : undefined}
         className={cn(
-          'min-h-0 min-w-0 flex-1 overflow-y-auto focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent',
+          // Scroll anchoring is off: the prepend restoration above is the one
+          // adjustment, and it must not add to the browser's own.
+          'min-h-0 min-w-0 flex-1 overflow-y-auto [overflow-anchor:none] focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent',
+          // Opacity, not display or visibility: the veiled list keeps its
+          // layout so the tail jump and the settle happen for real behind it,
+          // and opacity composites the whole subtree, whereas `visibility:
+          // hidden` is only inherited: the status glyph/copy layers switch
+          // themselves to `visibility: visible` and showed through.
+          opening && 'pointer-events-none opacity-0',
           listPad,
         )}
         onScroll={handleScroll}
@@ -943,6 +1210,13 @@ export function MessageList({
           className="chat-message-stack mx-auto flex max-w-[720px] flex-col gap-y-6 sm:gap-y-8"
         >
           {header}
+          {history && messages.length > 0 ? (
+            <HistoryEdgeRow
+              ref={topSentinelRef}
+              history={history}
+              onLoadOlder={onLoadOlder}
+            />
+          ) : null}
           {rows.flatMap((row, rowIndex) => {
             if (row.kind === 'activity-group') {
               const activityRow = (
@@ -962,6 +1236,7 @@ export function MessageList({
                     livePhaseChildKeys={livePresentationKeys}
                     defaultOpenCalls={defaultOpenCalls}
                     focusMessageId={focusMessageId}
+                    onLoadActivityEntries={onLoadActivityEntries}
                     onResolveApproval={onResolveApproval}
                     onAlwaysAllow={onAlwaysAllow}
                     onResolveFilesystemAccess={onResolveFilesystemAccess}
@@ -1075,6 +1350,20 @@ export function MessageList({
           ) : null}
         </div>
       </section>
+      {opening ? (
+        // Same copy and voice as ChatPanel's "conversation not yet loaded"
+        // state, so the two waits read as one to the reader.
+        <div
+          data-transcript-loading=""
+          aria-live="polite"
+          className={cn(
+            'pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-base text-ink-faint transition-opacity duration-200',
+            openingIndicator ? 'opacity-100' : 'opacity-0',
+          )}
+        >
+          Loading conversation…
+        </div>
+      ) : null}
       {tailState === 'paused' ? (
         <Button
           type="button"
@@ -1103,6 +1392,67 @@ export function MessageList({
   )
 }
 
+/**
+ * The row above the first message: the top edge of the loaded window. It
+ * keeps one fixed height whatever it says, so switching from "loading" to a
+ * loaded page does not itself move the content the prepend restoration is
+ * measuring. It also carries the infinite-scroll sentinel (the forwarded
+ * ref), which therefore sits exactly at the edge of what is loaded.
+ */
+const HistoryEdgeRow = forwardRef<
+  HTMLDivElement,
+  {
+    history: NonNullable<Conversation['history']>
+    onLoadOlder?: () => void
+  }
+>(function HistoryEdgeRow({ history, onLoadOlder }, ref) {
+  const state = history.loadingOlder
+    ? 'loading'
+    : history.error
+      ? 'error'
+      : history.hasMore
+        ? 'more'
+        : 'beginning'
+  return (
+    <div
+      ref={ref}
+      data-history-edge={state}
+      className="flex h-6 items-center justify-center font-mono text-[11px] text-ink-ghost"
+      aria-live="polite"
+    >
+      {state === 'loading' ? (
+        <span className="animate-pulse">loading earlier messages…</span>
+      ) : state === 'error' ? (
+        <span className="flex items-center gap-2">
+          <span className="text-warn">earlier messages failed to load</span>
+          {onLoadOlder ? (
+            <button
+              type="button"
+              onClick={onLoadOlder}
+              className={HISTORY_EDGE_BUTTON_CLASS}
+            >
+              retry
+            </button>
+          ) : null}
+        </span>
+      ) : state === 'beginning' ? (
+        <span>beginning of conversation</span>
+      ) : onLoadOlder ? (
+        // The explicit path to older history: the only one when the page is
+        // too short to scroll, and a visible promise that nothing loads on
+        // its own while the reader sits at the tail.
+        <button
+          type="button"
+          onClick={onLoadOlder}
+          className={HISTORY_EDGE_BUTTON_CLASS}
+        >
+          load earlier messages
+        </button>
+      ) : null}
+    </div>
+  )
+})
+
 interface FunctionTriggerGroupProps {
   row: TimelineActivityGroupRow
   renderers: ReturnType<typeof useFunctionTriggerRenderers>
@@ -1118,6 +1468,7 @@ interface FunctionTriggerGroupProps {
   agentName?: string
   /** External landing target — a hidden matching item expands the group. */
   focusMessageId?: string | null
+  onLoadActivityEntries?: MessageListProps['onLoadActivityEntries']
 }
 
 function useDwelledActivityKeys(
@@ -1212,13 +1563,24 @@ function FunctionTriggerGroup({
   workingDir,
   agentName,
   focusMessageId,
+  onLoadActivityEntries,
 }: FunctionTriggerGroupProps) {
   const [expanded, setExpanded] = useState(!!defaultOpenCalls)
   const contentId = useId()
+  // A renderer that keeps its calls visible while the phase is collapsed
+  // (`metadata.display`) is decided by function id alone for a placeholder:
+  // there is nothing to `tryRender` yet, and the call must be fetched anyway
+  // so the display can draw it.
+  const hasDisplayRenderer = (functionId: string) =>
+    renderers.some(
+      (renderer) =>
+        renderer.isMatch(functionId) && renderer.metadata?.display === true,
+    )
   const collapsedItems = collapsedTimelineActivities(row.items, (call) => {
     // Trigger registrations stay visible as durable activity receipts without
     // opting the engine renderer into the richer `display` presentation.
     if (call.functionId === 'engine::register_trigger') return true
+    if (call.unloaded) return hasDisplayRenderer(call.functionId)
 
     const rendered = firstRendered(renderers, (renderer) => {
       if (!renderer.isMatch(call.functionId) || call.pendingApproval)
@@ -1256,6 +1618,46 @@ function FunctionTriggerGroup({
   }
   const hiddenCount = row.items.length - collapsedItems.length
   const canCollapse = hiddenCount > 0
+  // Placeholders the collapsed view shows anyway (a display renderer claims
+  // them) are fetched as soon as they appear — a handful per session. The
+  // rest wait for "show all". Ids asked for once are not asked again by this
+  // group; the store dedupes across groups and in flight.
+  const unloadedCalls = row.items.flatMap((item) =>
+    item.kind === 'function-trigger' && item.message.unloaded
+      ? [item.message]
+      : [],
+  )
+  const requestedEntryIdsRef = useRef(new Set<string>())
+  // `retry` is the explicit click: a placeholder still standing after an
+  // earlier request means that fetch failed, and asking again is the retry.
+  // The store dedupes ids still in flight, so a double click costs nothing.
+  const requestEntries = (
+    calls: readonly FunctionTriggerMessage[],
+    retry = false,
+  ) => {
+    if (!onLoadActivityEntries) return
+    const ids = unloadedEntryIds(calls).filter(
+      (id) => retry || !requestedEntryIdsRef.current.has(id),
+    )
+    if (ids.length === 0) return
+    for (const id of ids) requestedEntryIdsRef.current.add(id)
+    onLoadActivityEntries(ids)
+  }
+  const displayPlaceholderSignature = unloadedCalls
+    .filter((call) => hasDisplayRenderer(call.functionId))
+    .map((call) => call.id)
+    .join('\u0000')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the primitive signature is the placeholder set's identity; the request helper reads current props.
+  useEffect(() => {
+    if (!displayPlaceholderSignature) return
+    requestEntries(
+      unloadedCalls.filter((call) => hasDisplayRenderer(call.functionId)),
+    )
+  }, [displayPlaceholderSignature])
+  const toggleExpanded = () => {
+    if (!expanded) requestEntries(unloadedCalls, true)
+    setExpanded((value) => !value)
+  }
   const presentedKeyValues = expanded
     ? row.items.map(timelineActivityPresentationKey)
     : collapsedKeyValues
@@ -1296,7 +1698,7 @@ function FunctionTriggerGroup({
               type="button"
               aria-expanded={expanded}
               aria-controls={contentId}
-              onClick={() => setExpanded((value) => !value)}
+              onClick={toggleExpanded}
               tabIndex={canCollapse ? undefined : -1}
               className="group relative flex w-fit cursor-pointer items-center gap-2 font-mono text-base text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-[0.8125rem]"
             >

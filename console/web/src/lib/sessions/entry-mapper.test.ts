@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import type { Attachment, Message } from '@/types/chat'
+import type { Attachment, FunctionTriggerMessage, Message } from '@/types/chat'
 import {
   applyEntryUpsert,
   applyFcallPatch,
   clearTransientFlags,
   entrySegments,
+  prependTranscript,
   splitReactionTask,
   transcriptToMessages,
   triggerFiredSummary,
@@ -1533,5 +1534,264 @@ describe('applyFcallPatch / clearTransientFlags', () => {
       next.map((m) => ('streaming' in m ? m.streaming : undefined)),
     ).toEqual([false, false, undefined])
     expect((next[2] as { running?: boolean }).running).toBe(false)
+  })
+})
+
+/* Paged reads: `session::messages-tail` hands the inside of a collapsed run
+   back as `elided` placeholders, and `session::messages-range` brings the
+   whole entries later. The mapper must produce rows the group can count and
+   swap in place without the reader noticing the seam. */
+describe('elided placeholders', () => {
+  function elidedCall(
+    entryId: string,
+    calls: Array<{ id: string; functionId: string }>,
+    text?: string,
+  ): TranscriptItem {
+    return {
+      ...assistantItem(
+        entryId,
+        [
+          ...(text ? [{ type: 'text' as const, text }] : []),
+          ...calls.map((c) => ({
+            type: 'function_call' as const,
+            id: c.id,
+            function_id: c.functionId,
+            arguments: {},
+          })),
+        ],
+        'function_call',
+      ),
+      elided: true,
+    }
+  }
+
+  function elidedResult(
+    entryId: string,
+    functionTriggerId: string,
+    functionId = 'shell::run',
+  ): TranscriptItem {
+    return {
+      entry_id: entryId,
+      elided: true,
+      message: {
+        role: 'function_result',
+        function_call_id: functionTriggerId,
+        function_id: functionId,
+        content: [],
+        details: null,
+        is_error: false,
+        timestamp: 3,
+      },
+    }
+  }
+
+  it('maps an elided assistant to unloaded rows and keeps its prose', () => {
+    const segments = entrySegments(
+      elidedCall(
+        'e_a1',
+        [{ id: 'fc_1', functionId: 'shell::run' }],
+        'Looking at the file.',
+      ),
+    )
+    expect(segments).toHaveLength(2)
+    expect(segments[0]).toMatchObject({
+      id: 'e_a1:0',
+      role: 'assistant',
+      content: 'Looking at the file.',
+    })
+    expect(segments[1]).toMatchObject({
+      id: 'e_a1:1',
+      role: 'function-trigger',
+      functionId: 'shell::run',
+      functionTriggerId: 'fc_1',
+      unloaded: true,
+    })
+    expect((segments[1] as FunctionTriggerMessage).input).toBeUndefined()
+  })
+
+  /* The wrapper's target lives in the arguments the page dropped; the result
+     entry names the resolved function, so the row learns its label there. */
+  it('lets an elided result name an agent_trigger placeholder', () => {
+    const messages = transcriptToMessages([
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'agent_trigger' }]),
+      elidedResult('e_r1', 'fc_1', 'coder::read-file'),
+    ])
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      role: 'function-trigger',
+      functionId: 'coder::read-file',
+      unresolvedTarget: false,
+      unloaded: true,
+      resultEntryId: 'e_r1',
+      running: false,
+      pendingApproval: false,
+    })
+    expect(messages[0]).not.toHaveProperty('output')
+  })
+
+  it('never marks a placeholder running while the session works', () => {
+    const messages = transcriptToMessages(
+      [
+        elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+        elidedResult('e_r1', 'fc_1'),
+      ],
+      's-1',
+      { working: true },
+    )
+    expect(messages[0]).toMatchObject({ unloaded: true, running: false })
+    const bare = applyEntryUpsert(
+      [],
+      elidedCall('e_a2', [{ id: 'fc_2', functionId: 'shell::run' }]),
+      { working: true },
+    )
+    expect(bare[0]).toMatchObject({ unloaded: true })
+    expect((bare[0] as FunctionTriggerMessage).running).toBeUndefined()
+  })
+
+  it('records the result entry on a whole row too', () => {
+    const messages = transcriptToMessages([
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+      resultItem('e_r1', 'fc_1', 'ok'),
+    ])
+    expect(messages[0]).toMatchObject({
+      resultEntryId: 'e_r1',
+      unloaded: false,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+  })
+
+  it('keeps a placeholder for a lost assistant snapshot', () => {
+    const messages = transcriptToMessages([elidedResult('e_r1', 'fc_1')])
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      id: 'e_r1',
+      role: 'function-trigger',
+      functionTriggerId: 'fc_1',
+      unloaded: true,
+      resultEntryId: 'e_r1',
+    })
+    expect(messages[0]).not.toHaveProperty('output')
+  })
+
+  /* "Show all": the range read answers with the whole assistant entry and
+     its result. Each replaces its placeholder in place — same call id, same
+     position — and the flag clears only once the result has landed. */
+  it('replaces the placeholder in place from a range read', () => {
+    const page = transcriptToMessages([
+      userItem('e_u1', 'go'),
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+      elidedResult('e_r1', 'fc_1'),
+      userItem('e_u2', 'thanks'),
+    ])
+    expect(page.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+
+    const withCall = applyEntryUpsert(
+      page,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(withCall.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+    expect(withCall[1]).toMatchObject({
+      functionTriggerId: 'fc_1',
+      input: { command: 'ls' },
+      // The result is still on its way: the row stays a placeholder.
+      unloaded: true,
+      resultEntryId: 'e_r1',
+    })
+
+    const whole = applyEntryUpsert(withCall, resultItem('e_r1', 'fc_1', 'ok'))
+    expect(whole.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+    expect(whole[1]).toMatchObject({
+      functionTriggerId: 'fc_1',
+      input: { command: 'ls' },
+      unloaded: false,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+  })
+
+  /* A reconnect re-reads the tail, which elides a run the window already
+     holds whole. The re-read must not turn loaded rows back into skeletons. */
+  it('keeps a loaded row when a re-read page elides it', () => {
+    const loaded = transcriptToMessages([
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+      resultItem('e_r1', 'fc_1', 'ok'),
+    ])
+    let next = applyEntryUpsert(
+      loaded,
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+    )
+    next = applyEntryUpsert(next, elidedResult('e_r1', 'fc_1'))
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e_a1:0',
+      input: { command: 'ls' },
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+    expect((next[0] as FunctionTriggerMessage).unloaded).not.toBe(true)
+  })
+})
+
+describe('prependTranscript', () => {
+  it('puts the older page first, dedupes by id, and leaves the tail alone', () => {
+    const tail = transcriptToMessages([
+      userItem('e_u3', 'three'),
+      assistantItem('e_a3', [{ type: 'text', text: 'and three' }]),
+    ])
+    const older: TranscriptItem[] = [
+      userItem('e_u1', 'one'),
+      assistantItem('e_a1', [{ type: 'text', text: 'and one' }]),
+      userItem('e_u2', 'two'),
+      // The anchor entry can come back on the page boundary.
+      userItem('e_u3', 'three'),
+    ]
+    const merged = prependTranscript(tail, older, 's-1')
+    expect(merged.map((m) => m.id)).toEqual([
+      'e_u1',
+      'e_a1:0',
+      'e_u2',
+      'e_u3',
+      'e_a3:0',
+    ])
+    // The tail's own objects are the ones in the result, untouched.
+    expect(merged[3]).toBe(tail[0])
+    expect(merged[4]).toBe(tail[1])
+  })
+
+  it('returns the same list for an empty or fully duplicate page', () => {
+    const tail = transcriptToMessages([userItem('e_u1', 'one')])
+    expect(prependTranscript(tail, [])).toBe(tail)
+    expect(prependTranscript(tail, [userItem('e_u1', 'one')])).toBe(tail)
   })
 })

@@ -19,8 +19,8 @@ use crate::configuration::{
 };
 use crate::functions::{
     append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
-    get_message, list, list_attachments, messages, put_attachment, set_active_leaf, set_draft,
-    set_meta, set_status, store_protocol, update_message,
+    get_message, list, list_attachments, messages, messages_range, messages_tail, put_attachment,
+    set_active_leaf, set_draft, set_meta, set_status, store_protocol, update_message,
 };
 use crate::types::{SessionEntry, SessionMeta};
 
@@ -92,6 +92,12 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<messages::MessagesRequest, messages::MessagesResponse>("session::messages"),
         spec::<get_message::GetMessageRequest, Option<get_message::GetMessageResponse>>(
             "session::get-message",
+        ),
+        spec::<messages_tail::MessagesTailRequest, messages_tail::MessagesTailResponse>(
+            "session::messages-tail",
+        ),
+        spec::<messages_range::MessagesRangeRequest, messages_range::MessagesRangeResponse>(
+            "session::messages-range",
         ),
         spec::<fork::ForkRequest, fork::ForkResponse>("session::fork"),
         spec::<set_active_leaf::SetActiveLeafRequest, set_active_leaf::SetActiveLeafResponse>(

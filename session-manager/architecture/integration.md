@@ -199,6 +199,61 @@ session-manager` / `get function info`); the shapes below are the contract.
 { session_id, entry_id, include_image_data? } -> { entry: SessionEntry } | null
 ```
 
+### Lazy reading (open a long session a page at a time)
+
+`session::messages` is the exhaustive, oldest-first reader every consumer
+already relies on and it is left exactly as is. A chat UI opening a session
+wants the opposite: the newest few exchanges, older ones as the reader
+scrolls up, and a tool run of 300 calls arriving as "300 calls, here is the
+last one" until someone clicks *show all*. Two read-time views give it that.
+Nothing is removed from storage; every entry stays whole on disk and in
+`session::messages`.
+
+The unit of pagination is the **block**: one entry, or one whole **activity
+run** — a maximal stretch of assistant messages that carry `function_call`
+blocks, the `function_result` messages answering them, and the trigger-wake
+entries (`origin.notification` / `trigger_fired`, or the harness's
+`e_fire_*` / `e_trigfired_*` id family) that woke the agent into them. A
+page never cuts inside a block, so a page can never hold a call without its
+result, or half of what the UI collapses as one group.
+
+```typescript
+// One item of either reader: session::messages' item shape plus `elided`.
+type TailItem = { entry_id, message?: AgentMessage, custom?: { custom_type, data },
+                  origin?, elided?: true };
+
+// session::messages-tail — the newest page, then backwards. `limit` counts
+// BLOCKS (default 50, clamped). before_entry_id = the oldest entry the caller
+// holds (exclusive); until_entry_id widens the page back to the block
+// holding that entry (deep links) and never narrows it. Either anchor off
+// the active path => session/invalid_cursor (the leaf moved: reload from the
+// top). include_custom defaults to TRUE here. Inside a run only the last
+// function-calling assistant entry, the results answering ITS calls, and the
+// wake entries come back whole; every other entry of the run is
+// `elided: true`: text blocks kept, thinking dropped, function_call keeps
+// id + function_id with arguments: {}, function_result keeps
+// function_call_id + is_error with content: [] and details: null.
+{ session_id, limit?, before_entry_id?, until_entry_id?, include_custom?, include_image_data? }
+  -> { messages: TailItem[] /* oldest first */, has_more, oldest_entry_id? }
+
+// session::messages-range — whole entries (never elided) for a span of the
+// active path or a list of ids, in path order, paged by `limit` entries.
+// Exactly one selector. An id nobody wrote => session/entry_not_found; one
+// on another branch => session/invalid_cursor; a reversed span or no/both
+// selectors => session/invalid_request.
+{ session_id, from_entry_id, to_entry_id, limit?, cursor?, include_image_data? }
+| { session_id, entry_ids: string[], limit?, cursor?, include_image_data? }
+  -> { messages: TailItem[], next_cursor? }
+```
+
+The intended loop: open with `messages-tail { limit: 15 }`; on upward
+scroll, `messages-tail { limit: 25, before_entry_id: oldest_entry_id }` while
+`has_more`; on *show all* of a collapsed group, `messages-range` over the
+group's first..last entry ids and replace the placeholders in place (same
+entry ids, same call ids); for a call a renderer must draw even while
+collapsed, `messages-range { entry_ids }`. Live `session::message-added`
+events keep appending at the tail as before.
+
 ### Branching
 
 ```typescript

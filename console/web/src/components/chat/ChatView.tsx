@@ -76,7 +76,7 @@ import {
   shouldDropChatFocus,
   useChatMessageFocus,
 } from '@/lib/trace-links'
-import { turnAnchorMessageId } from '@/lib/turn-anchor'
+import { turnAnchorMessageId, turnFirstEntryId } from '@/lib/turn-anchor'
 import { SEND_FAILED_CODE } from '@/lib/turn-failure'
 import {
   useExtComposerActions,
@@ -664,7 +664,7 @@ export function ChatView({
   // Submitting a browsed queued message: edit it IN PLACE (`payload`), or
   // remove it (`null` — the composer was emptied). Both keep the message where
   // it is in the queue; an edit rebuilds content the same way a send does
-  // (re-expanding `#file(...)` mentions). Best-effort server call — a row that
+  // (re-expanding `#file(...)` line windows). Best-effort server call — a row that
   // already drained is a no-op; a failure means the stale version may still
   // deliver, so surface it.
   const handleEditQueued = useCallback(
@@ -1444,9 +1444,11 @@ export function ChatView({
         return
       }
 
-      // Expand `#file(...)` mentions into attachment blocks (real backend
-      // with a working dir only). Failures never block the send — a failed
-      // mention becomes a placeholder block plus a warn notice.
+      // Expand `#file(path:from-to)` line windows into attachment blocks
+      // (real backend with a working dir only). A whole-file or folder
+      // mention is a reference: the token stays in the text and the agent
+      // reads it on demand. Failures never block the send — a failed window
+      // becomes a placeholder block plus a warn notice.
       let attachedBlocks: string[] | undefined
       const workingDir = workingDirForSend
       const mentionPaths =
@@ -2085,6 +2087,32 @@ export function ChatView({
         : null,
     [chatFocus, conversation.messages],
   )
+  /* The transcript is paged: the turn may be above the loaded window. When
+     no loaded row belongs to it and older history exists, ask for the pages
+     back to the turn's first entry (the server widens the page to that
+     block; no client cap), then let the landing below run on the result.
+     One attempt per request — a turn that never wrote that entry is a miss,
+     not a reason to keep paging — and the drop grace is held meanwhile. */
+  const loadingOlderHistory = conversation.history?.loadingOlder === true
+  const historyFetchedForFocusRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!chatFocus || focusMessageId !== null || !conversationsCtx) return
+    if (conversation.hydrated === false || loadingOlderHistory) return
+    if (conversation.history?.hasMore !== true) return
+    if (historyFetchedForFocusRef.current === chatFocus.id) return
+    historyFetchedForFocusRef.current = chatFocus.id
+    void conversationsCtx.loadOlderMessages(conversation.id, {
+      untilEntryId: turnFirstEntryId(chatFocus.turnId),
+    })
+  }, [
+    chatFocus,
+    focusMessageId,
+    conversationsCtx,
+    conversation.id,
+    conversation.hydrated,
+    conversation.history?.hasMore,
+    loadingOlderHistory,
+  ])
   useEffect(() => {
     if (!chatFocus) return
     if (
@@ -2092,6 +2120,7 @@ export function ChatView({
         hydrated: conversation.hydrated,
         working: conversation.status === 'working',
         anchored: focusMessageId !== null,
+        loadingHistory: loadingOlderHistory,
       })
     ) {
       return
@@ -2104,9 +2133,39 @@ export function ChatView({
       CHAT_FOCUS_DROP_GRACE_MS,
     )
     return () => window.clearTimeout(timer)
-  }, [chatFocus, conversation.hydrated, conversation.status, focusMessageId])
+  }, [
+    chatFocus,
+    conversation.hydrated,
+    conversation.status,
+    focusMessageId,
+    loadingOlderHistory,
+  ])
   const chatFocusIdRef = useRef<number | null>(null)
   chatFocusIdRef.current = chatFocus?.id ?? null
+
+  /* Paged history: the list asks for the page above when the reader nears
+     the top, and for placeholder calls when a group expands. Both are
+     store actions; the view only forwards them with its conversation id. */
+  const loadOlderMessages = conversationsCtx?.loadOlderMessages
+  const loadActivityEntries = conversationsCtx?.loadActivityEntries
+  const handleLoadOlder = useMemo(
+    () =>
+      loadOlderMessages
+        ? () => {
+            void loadOlderMessages(conversation.id)
+          }
+        : undefined,
+    [loadOlderMessages, conversation.id],
+  )
+  const handleLoadActivityEntries = useMemo(
+    () =>
+      loadActivityEntries
+        ? (entryIds: string[]) => {
+            void loadActivityEntries(conversation.id, entryIds)
+          }
+        : undefined,
+    [loadActivityEntries, conversation.id],
+  )
   const handleFocusMessageHandled = useCallback(() => {
     if (chatFocusIdRef.current !== null) {
       clearChatMessageFocus(chatFocusIdRef.current)
@@ -2531,6 +2590,9 @@ export function ChatView({
           triggersById={triggersById}
           focusMessageId={focusMessageId}
           onFocusMessageHandled={handleFocusMessageHandled}
+          history={conversation.history}
+          onLoadOlder={handleLoadOlder}
+          onLoadActivityEntries={handleLoadActivityEntries}
         />
       </RegisteredTriggerStatusProvider>
       <LiveRegion announcement={announcer.announcement} />

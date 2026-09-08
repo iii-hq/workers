@@ -190,6 +190,20 @@ export interface FunctionTriggerMessage extends BaseMessage {
     attemptedPath?: string
     errorCode?: string
   }
+  /**
+   * A placeholder from a paged transcript read: the call's arguments and
+   * result were left out of the page (`TranscriptItem.elided`) because it
+   * sits inside a collapsed activity run. The card draws a skeleton in
+   * place of the panes; expanding the group fetches the whole entries and
+   * this flag goes away. `input` is `undefined` while it is set.
+   */
+  unloaded?: boolean
+  /**
+   * The transcript entry id of this call's `function_result`, when a read has
+   * shown it. It is what lets an expand name the exact entries to fetch
+   * instead of guessing at ids.
+   */
+  resultEntryId?: string
 }
 
 /**
@@ -556,6 +570,20 @@ export interface Conversation {
   draftAttachments?: Attachment[]
   /** Transcript fetched from session-manager at least once. */
   hydrated?: boolean
+  /**
+   * Where the loaded window of the transcript ends at the top. Hydration
+   * fetches only the newest page; scrolling up asks for the page before
+   * `oldestEntryId` while `hasMore` holds. Absent until the first page lands
+   * (and on backends that never page).
+   */
+  history?: {
+    hasMore: boolean
+    /** The first entry held — the exclusive anchor for the next page up. */
+    oldestEntryId?: string
+    loadingOlder?: boolean
+    /** The last page-up failed; the list offers a retry. */
+    error?: string
+  }
   createdAt: number
   updatedAt: number
 }

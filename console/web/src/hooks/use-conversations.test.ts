@@ -37,6 +37,7 @@ import {
   metadataForWrite,
   missingGenerationForDirectoryRefresh,
   preSendMetaUpdate,
+  rehydrateTranscript,
   resolveActiveConversationId,
   shouldAcceptReconnectDirectoryRow,
 } from './use-conversations'
@@ -884,6 +885,137 @@ describe('mergeHydratedTranscript', () => {
       ])
       expect(preSendMetaUpdate(hydrated)).toBeNull()
     }
+  })
+})
+
+/* Paged hydration: the read is the newest page, not the whole path. A
+   re-read (reconnect) must keep the pages the reader already scrolled into
+   when the new page joins onto them, and start over when it does not. */
+describe('rehydrateTranscript', () => {
+  const opts = { sessionId: 'console-1', working: false }
+
+  function userItem(entryId: string, text: string): TranscriptItem {
+    return {
+      entry_id: entryId,
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text }],
+        timestamp: 1,
+      },
+    }
+  }
+  const toMessages = (items: TranscriptItem[]) =>
+    transcriptToMessages(items, 'console-1', { working: false })
+
+  it('keeps older loaded pages when the page joins onto the window', () => {
+    const window = toMessages([
+      userItem('e_1', 'one'),
+      userItem('e_2', 'two'),
+      userItem('e_3', 'three'),
+      userItem('e_4', 'four'),
+    ])
+    const current = conversation({
+      messages: window,
+      history: { hasMore: true, oldestEntryId: 'e_1' },
+    })
+    const { messages, history } = rehydrateTranscript(
+      current,
+      toMessages([userItem('e_3', 'three'), userItem('e_4', 'four (edited)')]),
+      { hasMore: true, oldestEntryId: 'e_3' },
+      [],
+      opts,
+    )
+    expect(messages.map((m) => m.id)).toEqual(['e_1', 'e_2', 'e_3', 'e_4'])
+    expect(messages[3]).toMatchObject({ content: 'four (edited)' })
+    // The window still reaches back to where the reader had scrolled.
+    expect(history).toEqual({ hasMore: true, oldestEntryId: 'e_1' })
+  })
+
+  it('keeps live-only rows that sit inside the replaced range', () => {
+    const current = conversation({
+      messages: [
+        ...toMessages([userItem('e_1', 'one'), userItem('e_2', 'two')]),
+        {
+          id: 'notice-local',
+          role: 'system',
+          kind: 'notice',
+          content: 'working dir changed',
+          createdAt: 5,
+        },
+      ],
+      history: { hasMore: false },
+    })
+    const { messages } = rehydrateTranscript(
+      current,
+      toMessages([userItem('e_1', 'one'), userItem('e_2', 'two')]),
+      { hasMore: false, oldestEntryId: 'e_1' },
+      [],
+      opts,
+    )
+    expect(messages.map((m) => m.id)).toEqual(['e_1', 'e_2', 'notice-local'])
+  })
+
+  it('resets when the page does not overlap the window', () => {
+    const current = conversation({
+      messages: [
+        ...toMessages([userItem('e_1', 'one'), userItem('e_2', 'two')]),
+        {
+          id: 'notice-local',
+          role: 'system',
+          kind: 'notice',
+          content: 'kept: not a durable entry',
+          createdAt: 5,
+        },
+      ],
+      history: { hasMore: false, oldestEntryId: 'e_1' },
+    })
+    const { messages, history } = rehydrateTranscript(
+      current,
+      toMessages([userItem('e_40', 'forty'), userItem('e_41', 'forty-one')]),
+      { hasMore: true, oldestEntryId: 'e_40' },
+      [],
+      opts,
+    )
+    // Durable rows above the page are gone (scrolling up reloads them); the
+    // local notice survives the replay as it always has.
+    expect(messages.map((m) => m.id)).toEqual(['e_40', 'e_41', 'notice-local'])
+    expect(history).toEqual({ hasMore: true, oldestEntryId: 'e_40' })
+  })
+
+  /* A brand-new session's first read can answer before the harness wrote
+     anything; the optimistic user row must survive as it did before paging. */
+  it('keeps everything when the page is empty', () => {
+    const current = conversation({
+      messages: toMessages([userItem('e_idem_1', 'first prompt')]),
+    })
+    const { messages, history } = rehydrateTranscript(
+      current,
+      [],
+      { hasMore: false },
+      [],
+      opts,
+    )
+    expect(messages.map((m) => m.id)).toEqual(['e_idem_1'])
+    expect(history).toEqual({ hasMore: false })
+  })
+
+  it('stores the page edge on the conversation through mergeHydratedConversation', () => {
+    const hydrated = mergeHydratedConversation(
+      conversation({}),
+      [userItem('e_7', 'seven')],
+      [],
+      { hasMore: true, oldestEntryId: 'e_7' },
+    )
+    expect(hydrated.history).toEqual({ hasMore: true, oldestEntryId: 'e_7' })
+    expect(hydrated.hydrated).toBe(true)
+    // The full-read fallback (no page) has nothing above it.
+    expect(
+      mergeHydratedConversation(
+        conversation({}),
+        [userItem('e_7', 'seven')],
+        [],
+      ).history,
+    ).toEqual({ hasMore: false })
   })
 })
 

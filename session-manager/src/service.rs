@@ -42,12 +42,15 @@ use crate::functions::get_message::{GetMessageRequest, GetMessageResponse};
 use crate::functions::list::{ListOrder, ListRequest, ListResponse};
 use crate::functions::list_attachments::{ListAttachmentsRequest, ListAttachmentsResponse};
 use crate::functions::messages::{MessageItem, MessagesRequest, MessagesResponse};
+use crate::functions::messages_range::{MessagesRangeRequest, MessagesRangeResponse};
+use crate::functions::messages_tail::{MessagesTailRequest, MessagesTailResponse, TailItem};
 use crate::functions::put_attachment::{PutAttachmentRequest, PutAttachmentResponse};
 use crate::functions::set_active_leaf::{SetActiveLeafRequest, SetActiveLeafResponse};
 use crate::functions::set_draft::{SetDraftRequest, SetDraftResponse};
 use crate::functions::set_meta::{SetMetaRequest, SetMetaResponse};
 use crate::functions::set_status::{SetStatusRequest, SetStatusResponse};
 use crate::functions::update_message::{UpdateMessageRequest, UpdateMessageResponse};
+use crate::pagination::{self, BlockKind};
 use crate::store::SessionStore;
 use crate::types::{
     metadata_matches, AgentMessage, AttachmentMeta, ContentBlock, CustomPayload, SessionEntry,
@@ -959,6 +962,174 @@ impl SessionService {
     }
 
     // -----------------------------------------------------------------
+    // Lazy transcript readers (see `pagination`)
+    // -----------------------------------------------------------------
+
+    pub async fn messages_tail(
+        &self,
+        req: MessagesTailRequest,
+    ) -> Result<MessagesTailResponse, SessionError> {
+        self.meta_or_not_found(&req.session_id).await?;
+        let entries = self.store.list_entries(&req.session_id).await?;
+        let by_id: HashMap<&str, &SessionEntry> = entries.iter().map(|e| (e.id(), e)).collect();
+        let Some(leaf) = self.store.get_active_leaf(&req.session_id).await? else {
+            return Ok(MessagesTailResponse {
+                messages: vec![],
+                has_more: false,
+                oldest_entry_id: None,
+            });
+        };
+        // Custom entries default to included here: a transcript reader wants
+        // compaction markers and wake records in place, and dropping them
+        // after blocking would leave a page whose blocks no longer match
+        // what the caller sees.
+        let include_custom = req.include_custom.unwrap_or(true);
+        let path: Vec<&SessionEntry> = active_path(&by_id, &leaf)?
+            .into_iter()
+            .filter(|e| include_custom || e.is_message())
+            .collect();
+        let blocks = pagination::activity_blocks(&path);
+
+        // Both anchors name an entry the caller already holds, so "not on
+        // the path" means the path changed under it (fork, leaf switch):
+        // the same signal `session::messages` gives, so callers share one
+        // reload-from-the-top fallback.
+        let block_of = |entry_id: &str, what: &str| -> Result<usize, SessionError> {
+            let idx = path
+                .iter()
+                .position(|e| e.id() == entry_id)
+                .ok_or_else(|| {
+                    SessionError::InvalidCursor(format!(
+                        "{what} {entry_id} is not on the active path"
+                    ))
+                })?;
+            Ok(pagination::block_index_of(&blocks, idx).expect("every path index lies in a block"))
+        };
+
+        let end = match &req.before_entry_id {
+            Some(id) => block_of(id, "before_entry_id")?,
+            None => blocks.len(),
+        };
+        let limit = self.clamp_limit(req.limit).await;
+        let mut start = end.saturating_sub(limit);
+        if let Some(until) = &req.until_entry_id {
+            // Only ever widens the page: a target inside or newer than the
+            // page is already covered.
+            start = start.min(block_of(until, "until_entry_id")?);
+        }
+
+        let elide_images = !req.include_image_data.unwrap_or(true);
+        let mut messages = Vec::new();
+        for block in &blocks[start..end] {
+            let run = &path[block.start..block.end];
+            let kept = match block.kind {
+                BlockKind::ActivityRun => pagination::kept_in_collapsed_run(run),
+                BlockKind::Single => vec![true; run.len()],
+            };
+            for (entry, keep) in run.iter().zip(kept) {
+                messages.push(tail_item(entry, !keep, elide_images));
+            }
+        }
+        Ok(MessagesTailResponse {
+            has_more: start > 0,
+            oldest_entry_id: messages.first().map(|m| m.entry_id.clone()),
+            messages,
+        })
+    }
+
+    pub async fn messages_range(
+        &self,
+        req: MessagesRangeRequest,
+    ) -> Result<MessagesRangeResponse, SessionError> {
+        self.meta_or_not_found(&req.session_id).await?;
+        let entries = self.store.list_entries(&req.session_id).await?;
+        let by_id: HashMap<&str, &SessionEntry> = entries.iter().map(|e| (e.id(), e)).collect();
+        let path: Vec<&SessionEntry> = match self.store.get_active_leaf(&req.session_id).await? {
+            Some(leaf) => active_path(&by_id, &leaf)?,
+            None => Vec::new(),
+        };
+        // Same two answers as `session::messages` gives for its anchors: an
+        // id nobody ever wrote is `entry_not_found`; one that exists but sits
+        // on another branch is `invalid_cursor`, the reload signal.
+        let position = |entry_id: &str| -> Result<usize, SessionError> {
+            if !by_id.contains_key(entry_id) {
+                return Err(SessionError::EntryNotFound(format!(
+                    "entry {entry_id} does not exist in session {}",
+                    req.session_id
+                )));
+            }
+            path.iter().position(|e| e.id() == entry_id).ok_or_else(|| {
+                SessionError::InvalidCursor(format!("entry {entry_id} is not on the active path"))
+            })
+        };
+
+        // The selection is a sorted, deduplicated list of path positions;
+        // paging then works the same way for a span and for an id list.
+        let selected: Vec<usize> =
+            match (&req.from_entry_id, &req.to_entry_id, &req.entry_ids) {
+                (Some(from), Some(to), None) => {
+                    let (first, last) = (position(from)?, position(to)?);
+                    if first > last {
+                        return Err(SessionError::InvalidRequest(format!(
+                            "from_entry_id {from} comes after to_entry_id {to} on the active path"
+                        )));
+                    }
+                    (first..=last).collect()
+                }
+                (None, None, Some(ids)) => {
+                    let mut positions = ids
+                        .iter()
+                        .map(|id| position(id))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    positions.sort_unstable();
+                    positions.dedup();
+                    positions
+                }
+                _ => return Err(SessionError::InvalidRequest(
+                    "exactly one selector is required: from_entry_id + to_entry_id, or entry_ids"
+                        .into(),
+                )),
+            };
+
+        let start = match &req.cursor {
+            None => 0,
+            Some(raw) => {
+                let cursor: MessagesCursor = decode_cursor(raw)?;
+                let pos = selected
+                    .iter()
+                    .position(|&i| path[i].id() == cursor.id)
+                    .ok_or_else(|| {
+                        SessionError::InvalidCursor(format!(
+                            "cursor entry {} is not in the selection",
+                            cursor.id
+                        ))
+                    })?;
+                pos + 1
+            }
+        };
+        let limit = self.clamp_limit(req.limit).await;
+        let end = (start + limit).min(selected.len());
+        let elide_images = !req.include_image_data.unwrap_or(true);
+        let messages: Vec<TailItem> = selected[start..end]
+            .iter()
+            .map(|&i| tail_item(path[i], false, elide_images))
+            .collect();
+        let next_cursor = if end < selected.len() {
+            messages.last().map(|m| {
+                encode_cursor(&MessagesCursor {
+                    id: m.entry_id.clone(),
+                })
+            })
+        } else {
+            None
+        };
+        Ok(MessagesRangeResponse {
+            messages,
+            next_cursor,
+        })
+    }
+
+    // -----------------------------------------------------------------
     // Attachments
     // -----------------------------------------------------------------
 
@@ -1287,6 +1458,52 @@ fn active_path<'a>(
 
     path.reverse();
     Ok(path)
+}
+
+/// One `session::messages-tail` / `session::messages-range` item. `elide`
+/// strips the heavy parts of a message inside a collapsed run (see
+/// `pagination::elide_message`); the flag on the wire tells the reader the
+/// entry is a placeholder to fetch later, never a message that was that
+/// small.
+fn tail_item(entry: &SessionEntry, elide: bool, elide_images: bool) -> TailItem {
+    match entry {
+        SessionEntry::Message {
+            id,
+            message,
+            origin,
+            ..
+        } => {
+            let mut message = (**message).clone();
+            if elide {
+                pagination::elide_message(&mut message);
+            }
+            if elide_images {
+                ContentBlock::elide_image_data(message.content_mut());
+            }
+            TailItem {
+                entry_id: id.clone(),
+                message: Some(message),
+                custom: None,
+                origin: origin.clone(),
+                elided: elide.then_some(true),
+            }
+        }
+        SessionEntry::Custom {
+            id,
+            custom_type,
+            data,
+            ..
+        } => TailItem {
+            entry_id: id.clone(),
+            message: None,
+            custom: Some(CustomPayload {
+                custom_type: custom_type.clone(),
+                data: data.clone(),
+            }),
+            origin: None,
+            elided: None,
+        },
+    }
 }
 
 /// The `set-draft` echo of what is parked on `meta`.

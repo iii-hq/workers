@@ -3,7 +3,6 @@ import {
   attachedFileLabel,
   expandFileMentions,
   isAttachedFileBlock,
-  MAX_MENTIONS_PER_SEND,
   parseAttachedFileHeader,
   parseFileMentions,
   READ_FILE_FUNCTION_ID,
@@ -34,41 +33,14 @@ describe('parseFileMentions', () => {
       [],
     )
   })
-
-  it('caps at MAX_MENTIONS_PER_SEND unique paths', () => {
-    const text = Array.from(
-      { length: MAX_MENTIONS_PER_SEND + 5 },
-      (_, i) => `#file(f${i}.txt)`,
-    ).join(' ')
-    expect(parseFileMentions(text)).toHaveLength(MAX_MENTIONS_PER_SEND)
-  })
 })
 
 describe('expandFileMentions', () => {
-  it('formats content blocks and chip attachments from a batch read', async () => {
-    const trigger = vi.fn().mockResolvedValue({
-      results: [
-        {
-          path: '/w/src/a.rs',
-          success: true,
-          content: 'fn main() {}',
-          is_utf8: true,
-          total_lines: 1,
-          more_lines: false,
-          size: 12,
-        },
-      ],
-    })
+  it('makes no read call for a whole-file mention — the token is the reference', async () => {
+    const trigger = vi.fn()
     const out = await expandFileMentions('/w', [{ path: 'src/a.rs' }], trigger)
-    expect(trigger).toHaveBeenCalledWith(READ_FILE_FUNCTION_ID, {
-      paths: ['src/a.rs'],
-      fs_scope: { root: '/w', boundary: 'workspace' },
-    })
-    expect(out.blocks).toEqual([
-      '<attached-file path="src/a.rs" size="12" total-lines="1">\nfn main() {}\n</attached-file>',
-    ])
-    expect(out.attachments).toEqual([{ path: 'src/a.rs', size: 12 }])
-    expect(out.failures).toEqual([])
+    expect(trigger).not.toHaveBeenCalled()
+    expect(out).toEqual({ blocks: [], attachments: [], failures: [] })
   })
 
   it('reads a line window and labels the block with it', async () => {
@@ -102,25 +74,7 @@ describe('expandFileMentions', () => {
     expect(out.failures).toEqual([])
   })
 
-  it('marks truncated reads and keeps them as attachments', async () => {
-    const trigger = vi.fn().mockResolvedValue({
-      results: [
-        {
-          path: '/w/big.log',
-          success: true,
-          content: 'first lines',
-          is_utf8: true,
-          more_lines: true,
-          size: 999_999,
-        },
-      ],
-    })
-    const out = await expandFileMentions('/w', [{ path: 'big.log' }], trigger)
-    expect(out.blocks[0]).toContain('truncated="true"')
-    expect(out.failures).toEqual([])
-  })
-
-  it('turns per-entry failures and binary files into placeholder blocks', async () => {
+  it('turns per-window failures and binary files into placeholder blocks', async () => {
     const trigger = vi.fn().mockResolvedValue({
       results: [
         {
@@ -133,23 +87,26 @@ describe('expandFileMentions', () => {
     })
     const out = await expandFileMentions(
       '/w',
-      [{ path: 'gone.txt' }, { path: 'pic.png' }],
+      [
+        { path: 'gone.txt', range: { from: 1, to: 3 } },
+        { path: 'pic.png', range: { from: 2, to: 2 } },
+      ],
       trigger,
     )
     expect(out.blocks[0]).toBe(
-      '<attached-file path="gone.txt" error="not found: gone.txt" />',
+      '<attached-file path="gone.txt:1-3" error="not found: gone.txt" />',
     )
     expect(out.blocks[1]).toBe(
-      '<attached-file path="pic.png" error="binary file" />',
+      '<attached-file path="pic.png:2" error="binary file" />',
     )
     expect(out.failures).toEqual([
-      { path: 'gone.txt', reason: 'not found: gone.txt' },
-      { path: 'pic.png', reason: 'binary file' },
+      { path: 'gone.txt:1-3', reason: 'not found: gone.txt' },
+      { path: 'pic.png:2', reason: 'binary file' },
     ])
     expect(out.attachments).toEqual([])
   })
 
-  it('skips folder mentions and reads only files', async () => {
+  it('reads only line windows — folders and whole files stay references', async () => {
     const trigger = vi.fn().mockResolvedValue({
       results: [
         { path: '/w/src/a.rs', success: true, content: 'x', is_utf8: true },
@@ -157,15 +114,20 @@ describe('expandFileMentions', () => {
     })
     const out = await expandFileMentions(
       '/w',
-      [{ path: 'src/' }, { path: 'src/a.rs' }],
+      [
+        { path: 'src/' },
+        { path: 'src/b.rs' },
+        { path: 'src/a.rs', range: { from: 3, to: 3 } },
+      ],
       trigger,
     )
     expect(trigger).toHaveBeenCalledWith(READ_FILE_FUNCTION_ID, {
-      paths: ['src/a.rs'],
+      paths: [{ path: 'src/a.rs', line_from: 3, line_to: 3 }],
       fs_scope: { root: '/w', boundary: 'workspace' },
     })
     expect(out.blocks).toHaveLength(1)
-    expect(out.blocks[0]).toContain('path="src/a.rs"')
+    expect(out.blocks[0]).toContain('path="src/a.rs" lines="3"')
+    expect(out.attachments).toEqual([{ path: 'src/a.rs:3', size: 1 }])
     expect(out.failures).toEqual([])
   })
 
@@ -176,11 +138,14 @@ describe('expandFileMentions', () => {
     expect(out).toEqual({ blocks: [], attachments: [], failures: [] })
   })
 
-  it('degrades every mention to a failure when the batch call throws', async () => {
+  it('degrades every window to a failure when the batch call throws', async () => {
     const trigger = vi.fn().mockRejectedValue(new Error('shell worker away'))
     const out = await expandFileMentions(
       '/w',
-      [{ path: 'a.txt' }, { path: 'b.txt' }],
+      [
+        { path: 'a.txt', range: { from: 1, to: 2 } },
+        { path: 'b.txt', range: { from: 5, to: 5 } },
+      ],
       trigger,
     )
     expect(out.blocks).toHaveLength(2)

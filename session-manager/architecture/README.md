@@ -43,7 +43,7 @@ flowchart LR
     subs[trigger subscribers]
   end
   subgraph worker [session-manager]
-    fns["19 session::* functions"]
+    fns["21 session::* functions"]
     svc["SessionService (domain logic, per-session locks)"]
     emit["Emitter (6 trigger types, per-binding filters)"]
     storeTrait[SessionStore trait]
