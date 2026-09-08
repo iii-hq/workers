@@ -25,11 +25,17 @@ export interface AttachmentFailure {
  * — see `harness/src/types/content.rs`), which the Anthropic and OpenAI
  * providers already map onto their own image shapes. Text blocks describe a
  * document; this one IS the picture.
+ *
+ * `attachment_id` ties this inline copy to the original session-manager
+ * stores. With it, a transcript read can leave `data` out and the console
+ * fetches the picture only when its chip scrolls into view; without it the
+ * inline bytes are the only copy and always travel.
  */
 export interface AttachmentImageBlock {
   type: 'image'
   mime: string
   data: string
+  attachment_id?: string
 }
 
 /** What one attachment turned into, for the chip on the sent message. */

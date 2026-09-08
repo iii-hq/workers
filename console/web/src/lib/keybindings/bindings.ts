@@ -152,7 +152,41 @@ function resolveModifiers(
 export type KeyEventLike = Pick<
   KeyboardEvent,
   'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'
->
+> & { code?: string }
+
+/**
+ * Where each unshifted US punctuation key sits, by `KeyboardEvent.code`. A
+ * layout can move the character or make it a dead key (Brazilian-Pro reports
+ * `Dead` for the backquote key, ABNT2 puts `'` there), so a punctuation chord
+ * also fires from the physical key, the way editors resolve Ctrl+`.
+ */
+const PHYSICAL_CODES: Record<string, string> = {
+  '`': 'Backquote',
+  '-': 'Minus',
+  '=': 'Equal',
+  '[': 'BracketLeft',
+  ']': 'BracketRight',
+  '\\': 'Backslash',
+  ';': 'Semicolon',
+  "'": 'Quote',
+  ',': 'Comma',
+  '.': 'Period',
+  '/': 'Slash',
+}
+
+const SHIFTED_PUNCTUATION: Record<string, string> = {
+  '`': '~',
+  '-': '_',
+  '=': '+',
+  '[': '{',
+  ']': '}',
+  '\\': '|',
+  ';': ':',
+  "'": '"',
+  ',': '<',
+  '.': '>',
+  '/': '?',
+}
 
 export function bindingMatchesEvent(
   binding: string,
@@ -178,7 +212,18 @@ export function bindingMatchesEvent(
     return event.key.toUpperCase() === parsed.key
   }
   if (isNamedToken(parsed.key)) return event.key === NAMED_KEYS[parsed.key]
-  return event.key === parsed.key
+  if (event.key === parsed.key) return true
+  // A layout can produce the shifted character without reporting Shift.
+  // Keep that character's shortcut: Alt+} must not fall back to Alt+].
+  if (!parsed.shift && event.key === SHIFTED_PUNCTUATION[parsed.key]) {
+    return false
+  }
+  // The physical key says nothing about shift, so that comparison is back on.
+  return (
+    event.code !== undefined &&
+    event.code === PHYSICAL_CODES[parsed.key] &&
+    wanted.shift === event.shiftKey
+  )
 }
 
 /** The word printed between the chords of a sequence; never a key cap. */

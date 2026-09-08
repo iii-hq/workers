@@ -66,7 +66,11 @@ type SessionStatus = "idle" | "working" | "done" | "error";
 
 type ContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; mime: string; data: string }              // base64
+  | { type: "image"; mime: string; data: string; attachment_id?: string }
+      // base64; attachment_id links the inline copy to its stored original so
+      // readers may ask for data: "" and fetch lazily (include_image_data)
+  | { type: "file"; attachment_id: string; name: string; mime: string; size: number }
+      // reference to a stored attachment (session::put-attachment); bytes never inline
   | { type: "thinking"; text: string; signature?: string }
   | { type: "function_call"; id: string; function_id: string; arguments: unknown }
   | { type: "function_result"; function_call_id: string; content: ContentBlock[]; is_error?: boolean };
@@ -138,7 +142,7 @@ session-manager` / `get function info`); the shapes below are the contract.
 // Never touches SessionMeta.draft (that is session::set-draft's field).
 { session_id, title?, description?, metadata? } -> { meta }
 
-// session::set-draft — park (or clear) the session's unsent composer input,
+// session::set-draft — text and attachment ids; park (or clear) the session's unsent composer input,
 // read back as SessionMeta.draft on get/list. Written at keystroke cadence,
 // so deliberately event-SILENT and updated_at-NEUTRAL (a save never re-orders
 // session::list). Empty / whitespace-only text clears.
@@ -184,14 +188,71 @@ session-manager` / `get function info`); the shapes below are the contract.
 // the order). from_entry_id returns the chain root -> that entry instead.
 // roles narrows to matching message roles (and drops custom entries even
 // with include_custom). include_custom interleaves kind:"custom" entries at
-// their path position.
-{ session_id, limit?, cursor?, roles?, from_entry_id?, include_custom? }
+// their path position. include_image_data: false (default true) blanks the
+// data of image blocks that carry an attachment_id (see Attachments).
+{ session_id, limit?, cursor?, roles?, from_entry_id?, include_custom?, include_image_data? }
   -> { messages: [{ entry_id, message?: AgentMessage,
                     custom?: { custom_type, data } }], next_cursor? }
 
 // session::get-message — null when session or entry is unknown.
-{ session_id, entry_id } -> { entry: SessionEntry } | null
+// include_image_data as for session::messages.
+{ session_id, entry_id, include_image_data? } -> { entry: SessionEntry } | null
 ```
+
+### Lazy reading (open a long session a page at a time)
+
+`session::messages` is the exhaustive, oldest-first reader every consumer
+already relies on and it is left exactly as is. A chat UI opening a session
+wants the opposite: the newest few exchanges, older ones as the reader
+scrolls up, and a tool run of 300 calls arriving as "300 calls, here is the
+last one" until someone clicks *show all*. Two read-time views give it that.
+Nothing is removed from storage; every entry stays whole on disk and in
+`session::messages`.
+
+The unit of pagination is the **block**: one entry, or one whole **activity
+run** — a maximal stretch of assistant messages that carry `function_call`
+blocks, the `function_result` messages answering them, and the trigger-wake
+entries (`origin.notification` / `trigger_fired`, or the harness's
+`e_fire_*` / `e_trigfired_*` id family) that woke the agent into them. A
+page never cuts inside a block, so a page can never hold a call without its
+result, or half of what the UI collapses as one group.
+
+```typescript
+// One item of either reader: session::messages' item shape plus `elided`.
+type TailItem = { entry_id, message?: AgentMessage, custom?: { custom_type, data },
+                  origin?, elided?: true };
+
+// session::messages-tail — the newest page, then backwards. `limit` counts
+// BLOCKS (default 50, clamped). before_entry_id = the oldest entry the caller
+// holds (exclusive); until_entry_id widens the page back to the block
+// holding that entry (deep links) and never narrows it. Either anchor off
+// the active path => session/invalid_cursor (the leaf moved: reload from the
+// top). include_custom defaults to TRUE here. Inside a run only the last
+// function-calling assistant entry, the results answering ITS calls, and the
+// wake entries come back whole; every other entry of the run is
+// `elided: true`: text blocks kept, thinking dropped, function_call keeps
+// id + function_id with arguments: {}, function_result keeps
+// function_call_id + is_error with content: [] and details: null.
+{ session_id, limit?, before_entry_id?, until_entry_id?, include_custom?, include_image_data? }
+  -> { messages: TailItem[] /* oldest first */, has_more, oldest_entry_id? }
+
+// session::messages-range — whole entries (never elided) for a span of the
+// active path or a list of ids, in path order, paged by `limit` entries.
+// Exactly one selector. An id nobody wrote => session/entry_not_found; one
+// on another branch => session/invalid_cursor; a reversed span or no/both
+// selectors => session/invalid_request.
+{ session_id, from_entry_id, to_entry_id, limit?, cursor?, include_image_data? }
+| { session_id, entry_ids: string[], limit?, cursor?, include_image_data? }
+  -> { messages: TailItem[], next_cursor? }
+```
+
+The intended loop: open with `messages-tail { limit: 15 }`; on upward
+scroll, `messages-tail { limit: 25, before_entry_id: oldest_entry_id }` while
+`has_more`; on *show all* of a collapsed group, `messages-range` over the
+group's first..last entry ids and replace the placeholders in place (same
+entry ids, same call ids); for a call a renderer must draw even while
+collapsed, `messages-range { entry_ids }`. Live `session::message-added`
+events keep appending at the tail as before.
 
 ### Branching
 
@@ -207,6 +268,61 @@ session-manager` / `get function info`); the shapes below are the contract.
 // subsequent appends chain from it. No event (the spec'd exception).
 { session_id, entry_id } -> { active_leaf }
 ```
+
+### Attachments
+
+The transcript never carries file bytes inline. A client stores the
+original upload first, then embeds the returned `file` block in the
+message's `content` (beside whatever text expansion the model reads);
+readers resolve the block back to the bytes on demand. Consumers that hand
+content to a model drop `file` blocks. Uploading is event-silent and does
+not touch `message_count` / `updated_at` — the attachment surfaces through
+the message that references it. `session::delete` removes a session's
+attachments; `session::fork` copies exactly the attachments the copied
+path references, under the same ids, so no reference dangles.
+
+```typescript
+type AttachmentMeta = { attachment_id, session_id, name, mime, size, sha256, created_at };
+
+// session::put-attachment — data is standard (padded) base64. Decoded size
+// above the configured max_attachment_bytes => session/attachment_too_large;
+// bad base64 or a blank name => session/invalid_request. A blank mime is
+// stored as application/octet-stream. No event.
+{ session_id, name, mime, data }
+  -> { attachment: AttachmentMeta, block: { type: "file", attachment_id, name, mime, size } }
+
+// session::get-attachment — null when session or attachment is unknown.
+// include_data: false (default true) is a metadata-only read (data: null).
+{ session_id, attachment_id, include_data? } -> { attachment: AttachmentMeta, data: string | null } | null
+
+// session::list-attachments — oldest first.
+{ session_id } -> { attachments: AttachmentMeta[] }
+
+// session::delete-attachment — remove one attachment no transcript entry
+// references (a chip removed from the composer); a referenced one is
+// session/attachment_in_use. Also dropped from the parked draft. No event;
+// deleted: false when already absent.
+{ session_id, attachment_id } -> { deleted: boolean }
+```
+
+The composer's unsent chips ride on the draft: `session::set-draft` takes
+`attachment_ids?` (uploaded beforehand; omitted = unchanged, `[]` = clear,
+unknown id = `session/invalid_request`) and the resolved metadata reads back
+as `SessionMeta.draft_attachments`, so a reload rebuilds the chips and
+fetches the bytes with `session::get-attachment`. Forks never inherit the
+draft or its attachments.
+
+Images are the one kind of attachment that also travels inline: the model
+needs an `image` block, so the writer sends one AND stores the original with
+`session::put-attachment`, linking the two through `image.attachment_id`.
+That link is what lets a transcript reader skip the bytes: `session::messages`
+/ `session::get-message` with `include_image_data: false` return linked
+images as `{ type: "image", mime, data: "", attachment_id }` and the reader
+fetches each one with `session::get-attachment` when it is actually shown.
+Unlinked images (no stored original) are always returned inline; the default
+(`true`) returns everything inline, so model-bound readers see no change. A
+linked image counts as a reference exactly like a `file` block: `fork`
+copies its original and `delete-attachment` refuses it.
 
 ## 5. Reactive integration
 

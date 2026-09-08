@@ -30,6 +30,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -548,6 +549,11 @@ export function FunctionTriggerCard({
 }: FunctionTriggerCardProps) {
   const pending = !!message.pendingApproval
   const running = !!message.running
+  // A placeholder from a paged transcript read: the header knows the function
+  // and the description, the arguments and result are still on the server.
+  // No renderer is consulted — there is nothing to render yet — and the body
+  // is a skeleton until the group fetches the whole entry.
+  const unloaded = !!message.unloaded && !pending && !running
   // Registry-dispatched custom panes: injected renderers first, then the
   // first-party families, then the JSON fallback below. First non-null
   // wins; null falls through.
@@ -589,20 +595,23 @@ export function FunctionTriggerCard({
   >(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const customPreview = firstNonNull(renderers, (r) =>
-    r.isMatch(message.functionId)
-      ? (r.tryRenderPreview?.(message) ?? null)
-      : null,
-  )
-  const terminalRender = !pending
-    ? firstRendered(renderers, (r) =>
+  const customPreview = unloaded
+    ? null
+    : firstNonNull(renderers, (r) =>
         r.isMatch(message.functionId)
-          ? running
-            ? (r.tryRenderRunning ?? r.tryRender)(message)
-            : r.tryRender(message)
+          ? (r.tryRenderPreview?.(message) ?? null)
           : null,
       )
-    : null
+  const terminalRender =
+    !pending && !unloaded
+      ? firstRendered(renderers, (r) =>
+          r.isMatch(message.functionId)
+            ? running
+              ? (r.tryRenderRunning ?? r.tryRender)(message)
+              : r.tryRender(message)
+            : null,
+        )
+      : null
   const customTerminal = terminalRender?.node ?? null
   const hasCustomTerminal = customTerminal != null
   const displayCustomTerminal =
@@ -770,6 +779,7 @@ export function FunctionTriggerCard({
       data-message-role="function-call"
       data-function-id={message.functionId}
       data-expanded={expandedSurface}
+      {...(unloaded ? { 'data-unloaded': '' } : {})}
       aria-label={
         pending ? `action required for ${message.functionId}` : undefined
       }
@@ -866,7 +876,24 @@ export function FunctionTriggerCard({
         </button>
       </div>
 
-      {open ? (
+      {open && unloaded ? (
+        <div className="border-t border-rule-2">
+          {description ? (
+            <FunctionIdentityRow functionId={message.functionId} />
+          ) : null}
+          <div
+            role="status"
+            className="flex flex-col gap-2 px-3 py-3"
+            data-function-trigger-skeleton=""
+            aria-busy="true"
+            aria-label="loading call details"
+          >
+            <Skeleton className="h-3 w-2/3" />
+            <Skeleton className="h-3 w-1/2" />
+            <Skeleton className="h-3 w-5/6" />
+          </div>
+        </div>
+      ) : open ? (
         <div className="border-t border-rule-2">
           {description && !(running && message.unresolvedTarget) ? (
             <FunctionIdentityRow functionId={message.functionId} />

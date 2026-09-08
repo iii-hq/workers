@@ -132,3 +132,51 @@ pub fn count_framed_chat(
         .sum();
     framed.total_from(text_tokens)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::messages::{UserMessage, UserRoleTag};
+
+    #[test]
+    fn file_reference_blocks_contribute_no_wire_text() {
+        let with_file = AgentMessage::User(UserMessage {
+            role: UserRoleTag::User,
+            content: vec![
+                ContentBlock::Text { text: "hi".into() },
+                ContentBlock::File {
+                    attachment_id: "a_1".into(),
+                    name: "report.pdf".into(),
+                    mime: "application/pdf".into(),
+                    size: 12345,
+                },
+            ],
+            timestamp: 1,
+        });
+        assert_eq!(message_text(&with_file).as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn image_blocks_contribute_no_wire_text_linked_or_not() {
+        // An image's link to its stored original is bookkeeping, never text
+        // on the wire — it must not change what a counter sees.
+        let with_images = AgentMessage::User(UserMessage {
+            role: UserRoleTag::User,
+            content: vec![
+                ContentBlock::Text { text: "hi".into() },
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "AAAA".into(),
+                    attachment_id: None,
+                },
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "BBBB".into(),
+                    attachment_id: Some("a_1".into()),
+                },
+            ],
+            timestamp: 1,
+        });
+        assert_eq!(message_text(&with_images).as_deref(), Some("hi"));
+    }
+}

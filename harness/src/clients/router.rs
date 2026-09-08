@@ -28,6 +28,54 @@ use crate::types::event::{
 use crate::types::message::{empty_assistant, AssistantMessage};
 use crate::types::model::{AgentFunction, Model, ThinkingLevel};
 
+/// Remove every attachment reference from a router-bound message list (wire
+/// JSON form of `AgentMessage`): `{"type":"file"}` blocks are dropped and
+/// `{"type":"image"}` blocks lose their `attachment_id` link (the inline
+/// bytes stay), recursing into `function_result` blocks. Mirrors [`crate::types::content::ContentBlock::strip_files`]
+/// for the `Value` shape the request carries: a non-empty content array
+/// never strips to empty — an all-file message gets a single
+/// `"(attachment)"` text block instead.
+pub(crate) fn strip_file_blocks(messages: &mut [Value]) {
+    for message in messages.iter_mut() {
+        if let Some(content) = message.get_mut("content") {
+            strip_file_blocks_in_content(content);
+        }
+    }
+}
+
+fn strip_file_blocks_in_content(content: &mut Value) {
+    let Some(blocks) = content.as_array_mut() else {
+        return;
+    };
+    if blocks.is_empty() {
+        return;
+    }
+    blocks.retain(|block| block.get("type").and_then(Value::as_str) != Some("file"));
+    for block in blocks.iter_mut() {
+        match block.get("type").and_then(Value::as_str) {
+            Some("function_result") => {
+                if let Some(nested) = block.get_mut("content") {
+                    strip_file_blocks_in_content(nested);
+                }
+            }
+            // The link only serves lazy transcript readers; providers get
+            // the inline bytes and must not see session-manager ids.
+            Some("image") => {
+                if let Some(obj) = block.as_object_mut() {
+                    obj.remove("attachment_id");
+                }
+            }
+            _ => {}
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push(json!({
+            "type": "text",
+            "text": crate::types::content::ATTACHMENT_PLACEHOLDER,
+        }));
+    }
+}
+
 /// Receives coalesced partial assistant messages as a stream progresses.
 #[async_trait]
 pub trait StreamSink: Send + Sync {
@@ -216,12 +264,17 @@ impl RouterClient {
         });
 
         let request_id = params.request_id.clone();
+        // Last line of defense: the model never receives `file` attachment
+        // references (assembly already stripped the transcript; hook appends
+        // and future callers are covered here).
+        let mut messages = params.messages;
+        strip_file_blocks(&mut messages);
         let mut payload = json!({
             "writer_ref": channel.writer_ref,
             "request_id": params.request_id,
             "session_id": params.session_id,
             "model": params.model,
-            "messages": params.messages,
+            "messages": messages,
             "tools": params.tools,
         });
         if let Some(p) = &params.provider {
@@ -896,6 +949,152 @@ fn utf8_tail(s: &str, max: usize) -> &str {
         start += 1;
     }
     &s[start..]
+}
+
+#[cfg(test)]
+mod attachment_strip_tests {
+    use super::*;
+    use crate::types::content::{ContentBlock, ATTACHMENT_PLACEHOLDER};
+    use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
+    use serde_json::json;
+
+    fn file_block() -> ContentBlock {
+        ContentBlock::File {
+            attachment_id: "a_3f2e".into(),
+            name: "report.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 12345,
+        }
+    }
+
+    fn user_with_attachment() -> AgentMessage {
+        AgentMessage::User(UserMessage {
+            role: UserRoleTag::User,
+            content: vec![
+                ContentBlock::text("please read the attached report"),
+                file_block(),
+                ContentBlock::Image {
+                    mime: "image/png".into(),
+                    data: "iVBORw0KGgo=".into(),
+                    attachment_id: Some("a_9c1d".into()),
+                },
+            ],
+            timestamp: 1,
+        })
+    }
+
+    #[test]
+    fn router_bound_copy_drops_file_blocks_and_keeps_text_and_image() {
+        let persisted = user_with_attachment();
+        let mut messages = vec![serde_json::to_value(&persisted).unwrap()];
+
+        strip_file_blocks(&mut messages);
+
+        let sent = messages[0]["content"].as_array().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0]["type"], "text");
+        assert_eq!(sent[0]["text"], "please read the attached report");
+        assert_eq!(sent[1]["type"], "image");
+        assert_eq!(sent[1]["mime"], "image/png");
+        assert_eq!(sent[1]["data"], "iVBORw0KGgo=");
+        // The inline bytes travel; the link to the stored original does not.
+        assert!(sent[1].get("attachment_id").is_none());
+        assert!(sent.iter().all(|b| b["type"] != "file"));
+        // The stripped copy still parses as a harness message.
+        let parsed: AgentMessage = serde_json::from_value(messages[0].clone()).unwrap();
+        let AgentMessage::User(user) = parsed else {
+            panic!("expected a user message");
+        };
+        assert!(!ContentBlock::contains_file(&user.content));
+
+        // The original (what session-manager persists) is intact.
+        let AgentMessage::User(original) = &persisted else {
+            panic!("expected a user message");
+        };
+        assert_eq!(original.content.len(), 3);
+        assert_eq!(original.content[1], file_block());
+        assert!(matches!(
+            &original.content[2],
+            ContentBlock::Image { attachment_id: Some(id), .. } if id == "a_9c1d"
+        ));
+    }
+
+    #[test]
+    fn linked_image_without_file_blocks_still_loses_its_link_on_the_wire() {
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "what is this?" },
+                { "type": "image", "mime": "image/png", "data": "AAAA", "attachment_id": "a_1" }
+            ],
+            "timestamp": 1
+        })];
+        strip_file_blocks(&mut messages);
+        assert_eq!(
+            messages[0]["content"],
+            json!([
+                { "type": "text", "text": "what is this?" },
+                { "type": "image", "mime": "image/png", "data": "AAAA" }
+            ])
+        );
+    }
+
+    #[test]
+    fn all_file_message_becomes_a_placeholder_never_an_empty_array() {
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": [serde_json::to_value(file_block()).unwrap()],
+            "timestamp": 1
+        })];
+        strip_file_blocks(&mut messages);
+        assert_eq!(
+            messages[0]["content"],
+            json!([{ "type": "text", "text": ATTACHMENT_PLACEHOLDER }])
+        );
+    }
+
+    #[test]
+    fn nested_function_result_content_is_stripped_and_other_messages_untouched() {
+        let assistant = json!({
+            "role": "assistant",
+            "content": [],
+            "stop_reason": "end",
+            "model": "m",
+            "provider": "p",
+            "timestamp": 2
+        });
+        let mut messages = vec![
+            assistant.clone(),
+            json!({
+                "role": "user",
+                "content": [{
+                    "type": "function_result",
+                    "function_call_id": "c1",
+                    "content": [
+                        serde_json::to_value(file_block()).unwrap(),
+                        { "type": "text", "text": "ok" }
+                    ]
+                }],
+                "timestamp": 3
+            }),
+        ];
+        strip_file_blocks(&mut messages);
+        // An already-empty assistant placeholder stays empty (no fake text).
+        assert_eq!(messages[0], assistant);
+        assert_eq!(
+            messages[1]["content"][0]["content"],
+            json!([{ "type": "text", "text": "ok" }])
+        );
+    }
+
+    #[test]
+    fn typed_strip_on_agent_message_matches_the_wire_strip() {
+        let mut typed = user_with_attachment();
+        typed.strip_file_blocks();
+        let mut wire = vec![serde_json::to_value(user_with_attachment()).unwrap()];
+        strip_file_blocks(&mut wire);
+        assert_eq!(serde_json::to_value(&typed).unwrap(), wire[0]);
+    }
 }
 
 #[cfg(test)]

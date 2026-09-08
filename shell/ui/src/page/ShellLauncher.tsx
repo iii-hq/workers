@@ -13,6 +13,7 @@ import type { ComponentType } from 'react'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitState } from './git'
 import { basename, dirname } from './paths'
+import { quickOpenKeyLabel, quickOpenPlatform } from './quick-open'
 import { type SessionTurnSummary, turnTitle } from './turns'
 
 interface LauncherCard {
@@ -87,11 +88,12 @@ export function ShellLauncher({
   onOpenFiles,
 }: ShellLauncherProps) {
   const folder = root?.split('/').filter(Boolean).at(-1) ?? 'this folder'
+  const quickOpenKey = quickOpenKeyLabel(quickOpenPlatform())
   const cards: LauncherCard[] = [
     {
       id: 'open',
-      title: 'Open a file',
-      detail: 'Find any file by name',
+      title: 'Go to file',
+      detail: `Type any part of a path, from anywhere with ${quickOpenKey}`,
       Icon: FileSearch,
       onSelect: onQuickOpen,
     },
@@ -180,7 +182,8 @@ export function ShellLauncher({
           </section>
         ) : null}
         <p className="shui-launcher-hint">
-          Keys work while this pane has the focus. <kbd className="shui-launcher-key">Shift+Alt+←</kbd>{' '}
+          Keys work while this pane has the focus. <kbd className="shui-launcher-key">{quickOpenKey}</kbd> goes to a file,{' '}
+          <kbd className="shui-launcher-key">Shift+Alt+←</kbd>{' '}
           <kbd className="shui-launcher-key">Shift+Alt+→</kbd> walk the files you visited, <kbd className="shui-launcher-key">Alt+←</kbd>{' '}
           <kbd className="shui-launcher-key">Alt+→</kbd> step between tabs. Everything else is a row in the palette.
         </p>

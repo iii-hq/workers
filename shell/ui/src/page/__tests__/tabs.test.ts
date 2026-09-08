@@ -13,6 +13,7 @@ import {
   persistedTabs,
   pinTab,
   restoreTabs,
+  tabFilePaths,
   tabIdFor,
   tabsForPath,
 } from '../tabs'
@@ -21,6 +22,17 @@ const a = fileTarget('a.ts')
 const b = fileTarget('b.ts')
 const aStaged = diffTarget('a.ts', { type: 'staged' })
 const aUnstaged = diffTarget('a.ts', { type: 'unstaged' })
+
+describe('tabFilePaths', () => {
+  it('resolves visited tab ids to distinct open files, skipping what closed', () => {
+    let state = openPinned(EMPTY_TABS, a)
+    state = openPinned(state, aStaged)
+    state = openPinned(state, b)
+    const visits = [tabIdFor(b), tabIdFor(aStaged), 'file:gone.ts', tabIdFor(a), tabIdFor(b)]
+    expect(tabFilePaths(state, visits, 10)).toEqual(['b.ts', 'a.ts'])
+    expect(tabFilePaths(state, visits, 1)).toEqual(['b.ts'])
+  })
+})
 
 describe('tab ids', () => {
   it('derive from kind, source and path', () => {

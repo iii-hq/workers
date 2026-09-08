@@ -36,6 +36,8 @@ async-trait = "0.1"
 schemars = "0.8"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
+# SHA-256 of stored attachment bytes (`AttachmentMeta.sha256`).
+sha2 = "0.10"
 dirs = "5"
 
 [dev-dependencies]

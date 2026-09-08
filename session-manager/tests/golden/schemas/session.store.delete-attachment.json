@@ -1,0 +1,33 @@
+{
+  "function_id": "session::store::delete-attachment",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "attachment_id": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "attachment_id",
+      "session_id"
+    ],
+    "title": "AttachmentIdRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "deleted": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "deleted"
+    ],
+    "title": "DeletedResponse",
+    "type": "object"
+  }
+}

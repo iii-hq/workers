@@ -29,7 +29,12 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
 import { formatElapsed } from '@/lib/relative-time'
-import { fetchTranscript } from '@/lib/sessions/api'
+import {
+  fetchTranscript,
+  fetchTranscriptTail,
+  isMissingFunctionError,
+  TRANSCRIPT_TAIL_PAGE_LIMIT,
+} from '@/lib/sessions/api'
 import { subscribeSessionTranscript } from '@/lib/sessions/events'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
@@ -196,7 +201,15 @@ function useLiveSubagentActivity(
       )
     }
 
-    void fetchTranscript(sessionId)
+    // Only the newest activity is wanted, so one tail page is the whole
+    // read: a child that has run three hundred tools costs the same to seed
+    // as one that has run three. An elided item still names its kind. A
+    // session-manager without the paging reader falls back to the full read.
+    void fetchTranscriptTail(sessionId, { limit: TRANSCRIPT_TAIL_PAGE_LIMIT })
+      .then((page) => page.items)
+      .catch((err) =>
+        isMissingFunctionError(err) ? fetchTranscript(sessionId) : [],
+      )
       .then((items) => accept(latestSubagentActivity(items)))
       .catch(() => {})
     void getIiiClient()

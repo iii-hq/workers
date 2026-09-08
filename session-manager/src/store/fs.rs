@@ -17,6 +17,13 @@
 //! replay is last-wins per key, so the newest meta / entry revision /
 //! leaf pointer is authoritative. Deleting a session removes its file.
 //!
+//! Attachments are not part of the log. Each one is a pair of files under
+//! `<data_dir>/attachments/<encoded_session_id>/`:
+//! `<attachment_id>.bin` (the bytes) and `<attachment_id>.json` (the
+//! `AttachmentMeta`), both written atomically (tmp + rename), metadata
+//! last so a listed attachment always has its bytes. Deleting a session
+//! removes the folder.
+//!
 //! A lazy per-session cache makes reads cheap: the file is replayed on
 //! first access and kept write-through afterwards. This is safe because
 //! the service serializes mutations per session and this worker is the
@@ -33,7 +40,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::{SessionStore, StoreError};
-use crate::types::{SessionEntry, SessionMeta};
+use crate::types::{AttachmentMeta, SessionEntry, SessionMeta};
 
 /// One JSONL line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +276,27 @@ impl FsStore {
         }
         Ok(ids)
     }
+
+    /// Folder holding a session's attachments (`attachments/<encoded id>/`).
+    /// Lives beside the `.jsonl` files; `session_ids_on_disk` only reads
+    /// `.jsonl` names, so the folder is never mistaken for a session.
+    fn attachments_dir(&self, session_id: &str) -> PathBuf {
+        self.dir
+            .join("attachments")
+            .join(encode_session_id(session_id))
+    }
+
+    /// `(metadata, bytes)` paths of one attachment. Ids are store-generated,
+    /// but they pass through the same encoder as session ids so a hostile
+    /// value can never point outside the session's folder.
+    fn attachment_paths(&self, session_id: &str, attachment_id: &str) -> (PathBuf, PathBuf) {
+        let dir = self.attachments_dir(session_id);
+        let stem = encode_session_id(attachment_id);
+        (
+            dir.join(format!("{stem}.json")),
+            dir.join(format!("{stem}.bin")),
+        )
+    }
 }
 
 #[async_trait]
@@ -363,6 +391,125 @@ impl SessionStore for FsStore {
         }
         self.persist_snapshot(session_id, &snapshot)
     }
+
+    async fn put_attachment(&self, meta: &AttachmentMeta, bytes: &[u8]) -> Result<(), StoreError> {
+        let dir = self.attachments_dir(&meta.session_id);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| StoreError(format!("create {}: {e}", dir.display())))?;
+        let (meta_path, bin_path) = self.attachment_paths(&meta.session_id, &meta.attachment_id);
+        // Bytes first, metadata last: the metadata file is what makes an
+        // attachment visible, so a crash between the two leaves an orphan
+        // blob (harmless, overwritten by a retry) rather than a listed
+        // attachment whose bytes are missing.
+        write_atomically(&bin_path, bytes)?;
+        let json = serde_json::to_vec(meta)
+            .map_err(|e| StoreError(format!("serialize attachment meta: {e}")))?;
+        write_atomically(&meta_path, &json)
+    }
+
+    async fn get_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<Option<(AttachmentMeta, Vec<u8>)>, StoreError> {
+        let (meta_path, bin_path) = self.attachment_paths(session_id, attachment_id);
+        let Some(meta) = read_attachment_meta(&meta_path)? else {
+            return Ok(None);
+        };
+        let bytes = match std::fs::read(&bin_path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(StoreError(format!(
+                    "attachment {attachment_id} of session {session_id} has metadata but no bytes"
+                )))
+            }
+            Err(e) => return Err(StoreError(format!("read {}: {e}", bin_path.display()))),
+        };
+        Ok(Some((meta, bytes)))
+    }
+
+    async fn list_attachments(&self, session_id: &str) -> Result<Vec<AttachmentMeta>, StoreError> {
+        let dir = self.attachments_dir(session_id);
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(StoreError(format!("read {}: {e}", dir.display()))),
+        };
+        let mut metas = Vec::new();
+        for dent in entries {
+            let dent = dent.map_err(|e| StoreError(format!("read attachments entry: {e}")))?;
+            let path = dent.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(meta) = read_attachment_meta(&path)? {
+                metas.push(meta);
+            }
+        }
+        Ok(metas)
+    }
+
+    async fn delete_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<bool, StoreError> {
+        let (meta_path, bin_path) = self.attachment_paths(session_id, attachment_id);
+        // Metadata first: once it is gone the attachment is invisible to
+        // `list`/`get`, so a crash before the blob removal leaves only an
+        // orphan `.bin` (swept with the session folder), never a listed
+        // attachment with missing bytes.
+        let existed = match std::fs::remove_file(&meta_path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(StoreError(format!("remove {}: {e}", meta_path.display()))),
+        };
+        match std::fs::remove_file(&bin_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(StoreError(format!("remove {}: {e}", bin_path.display()))),
+        }
+        Ok(existed)
+    }
+
+    async fn delete_attachments(&self, session_id: &str) -> Result<(), StoreError> {
+        let dir = self.attachments_dir(session_id);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(StoreError(format!("remove {}: {e}", dir.display()))),
+        }
+    }
+}
+
+/// Write `bytes` to `path` via a sibling temp file + rename, so a reader
+/// never observes a half-written attachment.
+fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    // `<name>.<ext>.tmp`, not `with_extension`: the `.bin` and `.json` of
+    // one attachment must never collapse onto the same temp file.
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes).map_err(|e| StoreError(format!("write {}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        StoreError(format!(
+            "rename {} -> {}: {e}",
+            tmp.display(),
+            path.display()
+        ))
+    })
+}
+
+/// Parse one attachment metadata file; `None` when it does not exist.
+fn read_attachment_meta(path: &Path) -> Result<Option<AttachmentMeta>, StoreError> {
+    let raw = match std::fs::read(path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(StoreError(format!("read {}: {e}", path.display()))),
+    };
+    serde_json::from_slice(&raw)
+        .map(Some)
+        .map_err(|e| StoreError(format!("malformed attachment meta {}: {e}", path.display())))
 }
 
 #[cfg(test)]
@@ -380,6 +527,7 @@ mod tests {
             metadata: None,
             forked_from: None,
             draft: None,
+            draft_attachments: None,
             created_at: 1,
             updated_at: 1,
             message_count: 0,
@@ -569,5 +717,111 @@ mod tests {
         assert!(store.get_meta("nope").await.unwrap().is_none());
         assert!(store.list_entries("nope").await.unwrap().is_empty());
         assert!(store.get_active_leaf("nope").await.unwrap().is_none());
+    }
+
+    fn attachment(session_id: &str, id: &str, name: &str, bytes: &[u8]) -> AttachmentMeta {
+        AttachmentMeta {
+            attachment_id: id.into(),
+            session_id: session_id.into(),
+            name: name.into(),
+            mime: "application/octet-stream".into(),
+            size: bytes.len() as u64,
+            sha256: "00".into(),
+            created_at: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn attachments_roundtrip_survive_restart_and_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"%PDF-1.4 not really";
+        {
+            let store = FsStore::new(dir.path()).unwrap();
+            store.put_meta(&meta("s_1", "with files")).await.unwrap();
+            store
+                .put_attachment(&attachment("s_1", "a_1", "report.pdf", bytes), bytes)
+                .await
+                .unwrap();
+            store
+                .put_attachment(&attachment("s_1", "a_2", "notes.txt", b"hi"), b"hi")
+                .await
+                .unwrap();
+        }
+
+        // Worker restart: attachments are plain files, nothing to replay.
+        let store = FsStore::new(dir.path()).unwrap();
+        let (meta, data) = store.get_attachment("s_1", "a_1").await.unwrap().unwrap();
+        assert_eq!(meta.name, "report.pdf");
+        assert_eq!(meta.size, bytes.len() as u64);
+        assert_eq!(data, bytes);
+
+        let mut listed = store.list_attachments("s_1").await.unwrap();
+        listed.sort_by(|a, b| a.attachment_id.cmp(&b.attachment_id));
+        let ids: Vec<&str> = listed.iter().map(|m| m.attachment_id.as_str()).collect();
+        assert_eq!(ids, vec!["a_1", "a_2"]);
+
+        // The attachments folder must never be mistaken for a session file.
+        let metas = store.list_metas().await.unwrap();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].session_id, "s_1");
+
+        assert!(store.get_attachment("s_1", "a_9").await.unwrap().is_none());
+        assert!(store.get_attachment("s_x", "a_1").await.unwrap().is_none());
+        assert!(store.list_attachments("s_x").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_attachment_replaces_and_delete_removes_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        store
+            .put_attachment(&attachment("s_1", "a_1", "v1.txt", b"one"), b"one")
+            .await
+            .unwrap();
+        store
+            .put_attachment(&attachment("s_1", "a_1", "v2.txt", b"two!"), b"two!")
+            .await
+            .unwrap();
+        let (meta, data) = store.get_attachment("s_1", "a_1").await.unwrap().unwrap();
+        assert_eq!(meta.name, "v2.txt");
+        assert_eq!(data, b"two!");
+
+        // Single removal: gone from get/list, other attachments untouched,
+        // a repeat reports `false`.
+        store
+            .put_attachment(&attachment("s_1", "a_2", "other.txt", b"o"), b"o")
+            .await
+            .unwrap();
+        assert!(store.delete_attachment("s_1", "a_1").await.unwrap());
+        assert!(!store.delete_attachment("s_1", "a_1").await.unwrap());
+        assert!(store.get_attachment("s_1", "a_1").await.unwrap().is_none());
+        assert_eq!(store.list_attachments("s_1").await.unwrap().len(), 1);
+        assert!(!store.delete_attachment("s_x", "a_1").await.unwrap());
+
+        let folder = store.attachments_dir("s_1");
+        assert!(folder.is_dir());
+        store.delete_attachments("s_1").await.unwrap();
+        assert!(!folder.exists());
+        assert!(store.list_attachments("s_1").await.unwrap().is_empty());
+        // Deleting again is a no-op, not an error.
+        store.delete_attachments("s_1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hostile_attachment_ids_stay_inside_the_session_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        let id = "../../escape";
+        store
+            .put_attachment(&attachment("s_1", id, "x", b"x"), b"x")
+            .await
+            .unwrap();
+        let folder = store.attachments_dir("s_1");
+        let names: Vec<String> = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|d| d.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.contains('/')), "{names:?}");
+        assert!(store.get_attachment("s_1", id).await.unwrap().is_some());
     }
 }

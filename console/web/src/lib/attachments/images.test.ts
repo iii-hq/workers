@@ -113,6 +113,19 @@ describe('needsDownscale', () => {
 describe('expandImageAttachments', () => {
   const neverDownscales = vi.fn().mockResolvedValue(null)
 
+  /* The inline copy names its stored original so a transcript read can
+     leave the bytes out and the chip fetch them on view. A chip the store
+     never took has no id, and its block must not invent one. */
+  it('stamps the stored id on the image block when the chip has one', async () => {
+    const result = await expandImageAttachments(
+      [{ ...image(), attachmentId: 'a_1' }, image('other.png')],
+      neverDownscales,
+    )
+    expect(result.images).toHaveLength(2)
+    expect(result.images[0].attachment_id).toBe('a_1')
+    expect(result.images[1]).not.toHaveProperty('attachment_id')
+  })
+
   it('sends a supported image as a native image block', async () => {
     const result = await expandImageAttachments([image()], neverDownscales)
 

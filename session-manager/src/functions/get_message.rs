@@ -11,6 +11,10 @@ use crate::types::SessionEntry;
 pub struct GetMessageRequest {
     pub session_id: String,
     pub entry_id: String,
+    /// Default true. When false, `image` blocks that carry an
+    /// `attachment_id` come back with `data: ""` (same rule as
+    /// `session::messages`).
+    pub include_image_data: Option<bool>,
 }
 
 /// `null` when the session or entry is unknown.

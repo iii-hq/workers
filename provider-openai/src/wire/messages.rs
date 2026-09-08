@@ -57,7 +57,7 @@ fn user_content_to_wire(content: &[ContentBlock]) -> Value {
         parts.push(json!({ "type": "text", "text": text }));
     }
     for c in content {
-        if let ContentBlock::Image { mime, data } = c {
+        if let ContentBlock::Image { mime, data, .. } = c {
             parts.push(json!({
                 "type": "image_url",
                 "image_url": { "url": format!("data:{mime};base64,{data}") }
@@ -213,7 +213,9 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                     .content
                     .iter()
                     .filter_map(|c| match c {
-                        ContentBlock::Image { mime, data } => Some((mime.clone(), data.clone())),
+                        ContentBlock::Image { mime, data, .. } => {
+                            Some((mime.clone(), data.clone()))
+                        }
                         _ => None,
                     })
                     .collect();
@@ -261,7 +263,7 @@ fn responses_user_content_parts(content: &[ContentBlock]) -> Vec<Value> {
         parts.push(json!({ "type": "input_text", "text": text }));
     }
     for block in content {
-        if let ContentBlock::Image { mime, data } = block {
+        if let ContentBlock::Image { mime, data, .. } = block {
             parts.push(json!({
                 "type": "input_image",
                 "image_url": format!("data:{mime};base64,{data}")
@@ -388,7 +390,7 @@ pub fn to_responses_input(messages: &[AgentMessage], system_prompt: &str) -> Vec
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        ContentBlock::Image { mime, data } => Some(json!({
+                        ContentBlock::Image { mime, data, .. } => Some(json!({
                             "type": "input_image",
                             "image_url": format!("data:{mime};base64,{data}")
                         })),
@@ -468,6 +470,7 @@ mod tests {
                 ContentBlock::Image {
                     mime: "image/png".into(),
                     data: data.into(),
+                    attachment_id: None,
                 },
             ],
             details: json!({}),
@@ -616,6 +619,7 @@ mod tests {
                 ContentBlock::Image {
                     mime: "image/png".into(),
                     data: "QUJD".into(),
+                    attachment_id: None,
                 },
             ])],
             "",

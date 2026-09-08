@@ -1,0 +1,81 @@
+{
+  "function_id": "session::store::put-attachment",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AttachmentMeta": {
+        "description": "Metadata of one stored attachment. The bytes live in the session's attachment store (`session::get-attachment`), never inline in the transcript: a message references them through a [`ContentBlock::File`] block carrying the same `attachment_id`.",
+        "properties": {
+          "attachment_id": {
+            "description": "Store-generated id (`a_<uuid>`), unique within the session.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mime": {
+            "description": "MIME type, as uploaded (`application/octet-stream` when unknown).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Original filename, as uploaded.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the bytes.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Decoded byte length.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "created_at",
+          "mime",
+          "name",
+          "session_id",
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "data": {
+        "description": "Standard (padded) base64 of the bytes.",
+        "type": "string"
+      },
+      "meta": {
+        "$ref": "#/definitions/AttachmentMeta"
+      }
+    },
+    "required": [
+      "data",
+      "meta"
+    ],
+    "title": "PutAttachmentRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "OkResponse",
+    "type": "object"
+  }
+}

@@ -54,6 +54,15 @@ pub const MAX_FILES_PER_TURN: usize = 400;
 pub const MAX_PRE_IMAGE_BYTES: usize = 64 * 1024;
 /// Bodies inflated into one `shell::turns::get` response.
 pub const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+/// How long a hooked call's claim on a path outlives the call. Another
+/// session's workspace watch on the same root sees that write too, some
+/// FSEvents latency plus a coalesce window later; within this long the
+/// path is still the caller's, not the watcher's.
+pub const CLAIM_TTL_MS: u64 = 2_500;
+/// How long a top-level session still counts as working after its last
+/// hooked call ended: the window in which a watch can still report writes
+/// that call made.
+pub const ACTIVITY_GRACE_MS: u64 = 2_000;
 
 /// A session id as a file name: ids made of safe characters stay readable,
 /// anything else becomes a digest so no id can escape the directory.
@@ -781,6 +790,20 @@ impl TurnStore {
     }
 }
 
+/// A hooked call's hold on a path: which top-level session wrote it, and when.
+#[derive(Debug, Clone)]
+struct Claim {
+    session_id: String,
+    at: u64,
+}
+
+/// What a top-level session's hooked calls are up to, sub-agents included.
+#[derive(Debug, Clone, Default)]
+struct Activity {
+    in_flight: usize,
+    last_end: u64,
+}
+
 pub struct TurnLog {
     store: TurnStore,
     pending: Mutex<HashMap<PendingKey, ReadImage>>,
@@ -789,6 +812,14 @@ pub struct TurnLog {
     /// from `turn-started` events and hook metadata. Every change a child
     /// makes is recorded under its top-level ancestor's turn.
     parents: std::sync::Mutex<HashMap<String, (String, String)>>,
+    /// Path → the top-level session whose hooked call last touched it, so
+    /// another session's workspace watch on the same root does not record
+    /// that write as its own. A claim outlives its call by `CLAIM_TTL_MS`.
+    claims: std::sync::Mutex<HashMap<String, Claim>>,
+    /// Top-level session → its hooked calls in flight and when the last
+    /// one ended; what a contested workspace watch consults before it
+    /// records a write under the session.
+    activity: std::sync::Mutex<HashMap<String, Activity>>,
 }
 
 /// Where a child's changes belong: the top-level session and turn above it.
@@ -822,6 +853,8 @@ impl TurnLog {
             pending: Mutex::new(HashMap::new()),
             locks: Mutex::new(HashMap::new()),
             parents: std::sync::Mutex::new(HashMap::new()),
+            claims: std::sync::Mutex::new(HashMap::new()),
+            activity: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -865,6 +898,83 @@ impl TurnLog {
 
     pub fn is_child(&self, session_id: &str) -> bool {
         self.parents().contains_key(session_id)
+    }
+
+    fn claims(&self) -> std::sync::MutexGuard<'_, HashMap<String, Claim>> {
+        self.claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn activity(&self) -> std::sync::MutexGuard<'_, HashMap<String, Activity>> {
+        self.activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A hooked call of top-level `session_id` is writing `path`, or just
+    /// did. Stale claims are dropped on the way.
+    pub fn claim(&self, path: &str, session_id: &str) {
+        self.claim_at(path, session_id, now_ms());
+    }
+
+    fn claim_at(&self, path: &str, session_id: &str, at: u64) {
+        let mut claims = self.claims();
+        claims.retain(|_, claim| at.saturating_sub(claim.at) <= CLAIM_TTL_MS);
+        claims.insert(
+            path.to_string(),
+            Claim {
+                session_id: session_id.to_string(),
+                at,
+            },
+        );
+    }
+
+    /// Whether a hooked call of a top-level session other than `session_id`
+    /// touched `path` within `CLAIM_TTL_MS`: that call's own record is the
+    /// better one, and a watch of another session must not take the write.
+    pub fn claimed_by_other(&self, path: &str, session_id: &str) -> bool {
+        self.claimed_by_other_at(path, session_id, now_ms())
+    }
+
+    fn claimed_by_other_at(&self, path: &str, session_id: &str, at: u64) -> bool {
+        self.claims().get(path).is_some_and(|claim| {
+            claim.session_id != session_id && at.saturating_sub(claim.at) <= CLAIM_TTL_MS
+        })
+    }
+
+    /// A hooked call of top-level `session_id`, or of one of its children,
+    /// started.
+    pub fn begin_call(&self, session_id: &str) {
+        self.activity()
+            .entry(session_id.to_string())
+            .or_default()
+            .in_flight += 1;
+    }
+
+    /// ... and ended.
+    pub fn end_call(&self, session_id: &str) {
+        self.end_call_at(session_id, now_ms());
+    }
+
+    fn end_call_at(&self, session_id: &str, at: u64) {
+        let mut activity = self.activity();
+        let entry = activity.entry(session_id.to_string()).or_default();
+        entry.in_flight = entry.in_flight.saturating_sub(1);
+        entry.last_end = entry.last_end.max(at);
+    }
+
+    /// Whether a hooked call of the top-level session, or of a child of it,
+    /// is running or ended within `ACTIVITY_GRACE_MS` — the only time a
+    /// write its workspace watch sees can be the session's own work.
+    pub fn is_working(&self, session_id: &str) -> bool {
+        self.is_working_at(session_id, now_ms())
+    }
+
+    fn is_working_at(&self, session_id: &str, at: u64) -> bool {
+        self.activity().get(session_id).is_some_and(|activity| {
+            activity.in_flight > 0 || at.saturating_sub(activity.last_end) <= ACTIVITY_GRACE_MS
+        })
     }
 
     /// A `turn-started` event: a top-level turn opens its record and takes
@@ -991,7 +1101,10 @@ impl TurnLog {
         .await
     }
 
-    /// Record a batch of watch-observed changes under a turn.
+    /// Record a batch of watch-observed changes under a turn. A path a
+    /// hooked call of another top-level session just touched is left out:
+    /// that call recorded it, pre-image and all, and a watch that shares
+    /// the root with it only saw the write.
     pub async fn fold_observed(
         &self,
         session_id: &str,
@@ -1001,6 +1114,13 @@ impl TurnLog {
     ) {
         let at = now_ms();
         let target = self.resolve_root(session_id, turn_id);
+        let changes: Vec<(String, &'static str)> = changes
+            .into_iter()
+            .filter(|(path, _)| !self.claimed_by_other(path, &target.session_id))
+            .collect();
+        if changes.is_empty() {
+            return;
+        }
         let agent = (target.session_id != session_id).then(|| AgentRef {
             session_id: session_id.to_string(),
             name: None,
@@ -1020,6 +1140,14 @@ impl TurnLog {
 
     pub async fn on_turn_completed(&self, session_id: &str, turn_id: &str) -> Result<(), Error> {
         let at = now_ms();
+        // No call of a finished turn is still running; a post hook that
+        // never arrived must not leave the session "working" for good.
+        {
+            let mut activity = self.activity();
+            let entry = activity.entry(session_id.to_string()).or_default();
+            entry.in_flight = 0;
+            entry.last_end = entry.last_end.max(at);
+        }
         self.update(session_id, |record| {
             turn_mut(record, turn_id, at).ended_at = Some(at);
         })
@@ -1091,18 +1219,22 @@ impl TurnLog {
         else {
             return;
         };
+        if let Some((parent_session, parent_turn)) = parent_of(input.metadata.as_ref()) {
+            self.link_parent(&session_id, &parent_session, &parent_turn);
+        }
+        // Every hooked call counts, paths or not: a `shell::exec` is what a
+        // contested workspace watch attributes its writes by.
+        let target = self.resolve_root(&session_id, &turn_id);
+        self.begin_call(&target.session_id);
         let touches = touches(&call);
         if touches.is_empty() {
             return;
         }
         let root = session_root(input.metadata.as_ref());
-        if let Some((parent_session, parent_turn)) = parent_of(input.metadata.as_ref()) {
-            self.link_parent(&session_id, &parent_session, &parent_turn);
-        }
-        let target = self.resolve_root(&session_id, &turn_id);
         let mut pending = self.pending.lock().await;
         for touch in touches {
             let path = absolute_path(&touch.path, root.as_deref());
+            self.claim(&path, &target.session_id);
             let read = read_pre_image(&path).await;
             pending.insert(
                 PendingKey {
@@ -1121,16 +1253,17 @@ impl TurnLog {
         else {
             return;
         };
+        if let Some((parent_session, parent_turn)) = parent_of(input.metadata.as_ref()) {
+            self.link_parent(&session_id, &parent_session, &parent_turn);
+        }
+        let target = self.resolve_root(&session_id, &turn_id);
+        self.end_call(&target.session_id);
         let touches = touches(&call);
         if touches.is_empty() {
             return;
         }
         let failed = input.result.as_ref().is_some_and(|r| r.is_error);
         let root = session_root(input.metadata.as_ref());
-        if let Some((parent_session, parent_turn)) = parent_of(input.metadata.as_ref()) {
-            self.link_parent(&session_id, &parent_session, &parent_turn);
-        }
-        let target = self.resolve_root(&session_id, &turn_id);
         let agent = (target.session_id != session_id).then(|| AgentRef {
             session_id: session_id.clone(),
             name: agent_name(input.metadata.as_ref()),
@@ -1139,6 +1272,9 @@ impl TurnLog {
         let mut changes: Vec<FileRecord> = Vec::new();
         for touch in touches {
             let path = absolute_path(&touch.path, root.as_deref());
+            // The write is done and another session's watch has yet to see
+            // it: the claim runs from here.
+            self.claim(&path, &target.session_id);
             let key = PendingKey {
                 session_id: target.session_id.clone(),
                 turn_id: target.turn_id.clone(),
@@ -2511,6 +2647,139 @@ mod tests {
             second.files[0].after.is_none(),
             "the newest turn's after is the working copy"
         );
+    }
+
+    #[tokio::test]
+    async fn observed_change_claimed_by_another_session_is_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        log.on_turn_opened("s1", "t1", Some("mine"), None)
+            .await
+            .unwrap();
+        // Another chat's coder call is writing discovery.rs in the same root;
+        // this session's workspace watch saw the write all the same.
+        log.claim("/w/discovery.rs", "s2");
+        log.fold_observed(
+            "s1",
+            "t1",
+            "/w",
+            vec![
+                ("/w/discovery.rs".into(), "modified"),
+                ("/w/mine.ts".into(), "modified"),
+            ],
+        )
+        .await;
+        let turn = &log.load("s1").await.unwrap().turns[0];
+        let paths: Vec<&str> = turn.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["/w/mine.ts"]);
+    }
+
+    #[tokio::test]
+    async fn own_claim_keeps_an_observed_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        log.link_parent("child", "s1", "t1");
+        // The parent's own call claimed it; the child's watch may still fold it.
+        log.claim("/w/a.rs", "s1");
+        log.fold_observed("child", "ct", "/w", vec![("/w/a.rs".into(), "modified")])
+            .await;
+        assert_eq!(log.load("s1").await.unwrap().turns[0].files.len(), 1);
+    }
+
+    #[test]
+    fn claims_expire_and_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        let t0 = 1_000_000;
+        log.claim_at("/w/a.rs", "s2", t0);
+        assert!(log.claimed_by_other_at("/w/a.rs", "s1", t0 + CLAIM_TTL_MS));
+        assert!(!log.claimed_by_other_at("/w/a.rs", "s1", t0 + CLAIM_TTL_MS + 1));
+        assert!(
+            !log.claimed_by_other_at("/w/a.rs", "s2", t0),
+            "one's own claim"
+        );
+        assert!(!log.claimed_by_other_at("/w/other.rs", "s1", t0));
+        // A later touch by the same call extends the hold; a new claim
+        // prunes the stale ones.
+        log.claim_at("/w/a.rs", "s2", t0 + 2_000);
+        assert!(log.claimed_by_other_at("/w/a.rs", "s1", t0 + CLAIM_TTL_MS + 1));
+        log.claim_at("/w/b.rs", "s3", t0 + 10_000);
+        assert_eq!(log.claims().len(), 1);
+    }
+
+    #[test]
+    fn a_session_works_while_its_calls_run_and_shortly_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        let t0 = 1_000_000;
+        assert!(!log.is_working_at("s1", t0));
+        log.begin_call("s1");
+        assert!(
+            log.is_working_at("s1", t0 + 60_000),
+            "in flight, however long"
+        );
+        log.end_call_at("s1", t0);
+        assert!(log.is_working_at("s1", t0 + ACTIVITY_GRACE_MS));
+        assert!(!log.is_working_at("s1", t0 + ACTIVITY_GRACE_MS + 1));
+        assert!(!log.is_working_at("s2", t0));
+    }
+
+    #[tokio::test]
+    async fn turn_completion_clears_calls_left_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        log.begin_call("s1");
+        log.begin_call("s1");
+        log.on_turn_completed("s1", "t1").await.unwrap();
+        assert_eq!(log.activity().get("s1").map(|a| a.in_flight), Some(0));
+        assert!(!log.is_working_at("s1", now_ms() + ACTIVITY_GRACE_MS + 1));
+    }
+
+    #[tokio::test]
+    async fn hooks_claim_paths_and_track_the_root_session_at_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let log = log_in(dir.path());
+        log.link_parent("child", "parent", "pt");
+        let file = root.join("gen.rs");
+        let file_s = file.to_string_lossy().into_owned();
+
+        // A call that names no path still marks the top-level session as working.
+        let exec = hook(
+            "child",
+            "ct",
+            call("shell::exec", json!({ "argv": ["make"] })),
+            &root_s,
+            false,
+        );
+        log.on_pre_trigger(hook_clone(&exec)).await;
+        assert!(log.is_working("parent"));
+        assert!(
+            !log.is_working("child"),
+            "activity is kept per top-level session"
+        );
+        log.on_post_trigger(exec).await;
+        assert_eq!(log.activity().get("parent").map(|a| a.in_flight), Some(0));
+
+        let write = hook(
+            "child",
+            "ct",
+            call(
+                "coder::create-file",
+                json!({ "files": [{ "path": "gen.rs" }] }),
+            ),
+            &root_s,
+            false,
+        );
+        log.on_pre_trigger(hook_clone(&write)).await;
+        assert!(log.claimed_by_other(&file_s, "other"));
+        assert!(!log.claimed_by_other(&file_s, "parent"));
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        log.on_post_trigger(write).await;
+        assert!(log.claimed_by_other(&file_s, "other"));
+        assert_eq!(log.load("parent").await.unwrap().turns[0].files.len(), 1);
     }
 
     fn hook_clone(input: &HookInput) -> HookInput {

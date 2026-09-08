@@ -43,6 +43,7 @@ import { isMissingFileError, loadErrorMessage } from './load-error'
 import { imageMimeFromPath, monacoLangFromPath } from './file-kinds'
 import { PaneNotice } from './PaneNotice'
 import { dirname } from './paths'
+import { isQuickOpenKey, quickOpenPlatform } from './quick-open'
 import { type LineRange, selectionLines } from './reference'
 import { isRichPreviewPath, richPreviewNode } from './rich-preview'
 
@@ -51,6 +52,8 @@ export { imageMimeFromPath, monacoLangFromPath } from './file-kinds'
 /** Read-only reasons: binary content, or a byte-capped read (saving a
     truncated body would destroy the tail). */
 export type ReadOnlyReason = 'binary' | 'truncated' | null
+
+const PLATFORM = quickOpenPlatform()
 
 export interface EditorCacheEntry {
   /** What the worker last gave (or accepted) for this file. */
@@ -110,6 +113,10 @@ interface EditorPaneProps {
   /** Offer "Reference in chat" on a selection: the chosen lines go to the
       composer as a `#file(path:from-to)` mention. Absent = no offer. */
   onReferenceInChat?: (relPath: string, range: LineRange) => void
+  /** Open the page's go-to-file overlay. The editor body reclaims its
+      chord in the capture phase: Monaco binds Ctrl+P to cursor-up on a
+      Mac and would cancel the event before the page's keys see it. */
+  onQuickOpen?: () => void
 }
 
 export function EditorPane({
@@ -127,6 +134,7 @@ export function EditorPane({
   onDirtyChange,
   onRevealDir,
   onCompare,
+  onQuickOpen,
   missing = false,
   onMissing,
   onClose,
@@ -452,7 +460,16 @@ export function EditorPane({
         ) : null}
       </div>
 
-      <div className="shui-editor-body" data-keybindings-standdown="">
+      <div
+        className="shui-editor-body"
+        data-keybindings-standdown=""
+        onKeyDownCapture={(event) => {
+          if (!onQuickOpen || !isQuickOpenKey(event, PLATFORM)) return
+          event.preventDefault()
+          event.stopPropagation()
+          onQuickOpen()
+        }}
+      >
         {pane.phase === 'loading' ? (
           <div className="shui-side-note">{loadingLabel}</div>
         ) : pane.phase === 'error' ? (

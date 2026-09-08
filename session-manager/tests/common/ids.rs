@@ -5,11 +5,13 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use session_manager::service::{Clock, IdGen};
 
-/// Sequential ids: sessions `s_001, s_002, ...`, entries `e_001, ...`.
+/// Sequential ids: sessions `s_001, s_002, ...`, entries `e_001, ...`,
+/// attachments `a_001, ...`.
 #[derive(Default)]
 pub struct SeqIds {
     sessions: AtomicU64,
     entries: AtomicU64,
+    attachments: AtomicU64,
 }
 
 impl IdGen for SeqIds {
@@ -19,6 +21,13 @@ impl IdGen for SeqIds {
 
     fn entry_id(&self) -> String {
         format!("e_{:03}", self.entries.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+
+    fn attachment_id(&self) -> String {
+        format!(
+            "a_{:03}",
+            self.attachments.fetch_add(1, Ordering::SeqCst) + 1
+        )
     }
 }
 

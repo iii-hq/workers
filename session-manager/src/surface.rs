@@ -18,7 +18,8 @@ use crate::configuration::{
     ConfigStatusRequest, OnConfigChangeEvent, OnConfigChangeResponse, ReloadStatus,
 };
 use crate::functions::{
-    append, append_many, create, delete, ensure, fork, get, get_message, list, messages,
+    append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
+    get_message, list, list_attachments, messages, messages_range, messages_tail, put_attachment,
     set_active_leaf, set_draft, set_meta, set_status, store_protocol, update_message,
 };
 use crate::types::{SessionEntry, SessionMeta};
@@ -66,6 +67,11 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<sp::SessionIdRequest, sp::ActiveLeafResponse>(sp::GET_ACTIVE_LEAF),
         spec::<sp::EntryIdRequest, sp::OkResponse>(sp::SET_ACTIVE_LEAF),
         spec::<sp::SessionIdRequest, sp::OkResponse>(sp::DELETE_ACTIVE_LEAF),
+        spec::<sp::PutAttachmentRequest, sp::OkResponse>(sp::PUT_ATTACHMENT),
+        spec::<sp::AttachmentIdRequest, Option<sp::StoredAttachment>>(sp::GET_ATTACHMENT),
+        spec::<sp::SessionIdRequest, sp::ListAttachmentsResponse>(sp::LIST_ATTACHMENTS),
+        spec::<sp::AttachmentIdRequest, sp::DeletedResponse>(sp::DELETE_ATTACHMENT),
+        spec::<sp::SessionIdRequest, sp::OkResponse>(sp::DELETE_ATTACHMENTS),
         spec::<sp::PublishEventsRequest, sp::PublishEventsResponse>(sp::PUBLISH_EVENTS),
         // 2. agent-facing session::* functions (register_all order)
         spec::<create::CreateRequest, create::CreateResponse>("session::create"),
@@ -87,10 +93,29 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<get_message::GetMessageRequest, Option<get_message::GetMessageResponse>>(
             "session::get-message",
         ),
+        spec::<messages_tail::MessagesTailRequest, messages_tail::MessagesTailResponse>(
+            "session::messages-tail",
+        ),
+        spec::<messages_range::MessagesRangeRequest, messages_range::MessagesRangeResponse>(
+            "session::messages-range",
+        ),
         spec::<fork::ForkRequest, fork::ForkResponse>("session::fork"),
         spec::<set_active_leaf::SetActiveLeafRequest, set_active_leaf::SetActiveLeafResponse>(
             "session::set-active-leaf",
         ),
+        spec::<put_attachment::PutAttachmentRequest, put_attachment::PutAttachmentResponse>(
+            "session::put-attachment",
+        ),
+        spec::<get_attachment::GetAttachmentRequest, Option<get_attachment::GetAttachmentResponse>>(
+            "session::get-attachment",
+        ),
+        spec::<list_attachments::ListAttachmentsRequest, list_attachments::ListAttachmentsResponse>(
+            "session::list-attachments",
+        ),
+        spec::<
+            delete_attachment::DeleteAttachmentRequest,
+            delete_attachment::DeleteAttachmentResponse,
+        >("session::delete-attachment"),
         // 3. configuration handlers (register_config_trigger, then register_config_status)
         spec::<OnConfigChangeEvent, OnConfigChangeResponse>("session::on-config-change"),
         spec::<ConfigStatusRequest, ReloadStatus>("session::config-status"),

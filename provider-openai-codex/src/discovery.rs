@@ -345,6 +345,23 @@ mod tests {
     }
 
     #[test]
+    fn astra_is_kept_only_when_picker_visible() {
+        let listed = map_models(vec![model("gpt-6-astra", "list", 1)]);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "codex/gpt-6-astra");
+        assert_eq!(
+            listed[0].display_name.as_deref(),
+            Some("gpt-6-astra (Codex)")
+        );
+
+        let hidden = map_models(vec![model("gpt-6-astra", "hide", 1)]);
+        assert!(
+            hidden.is_empty(),
+            "hidden Astra must not reach the router catalog"
+        );
+    }
+
+    #[test]
     fn models_url_replaces_responses_and_sets_compat_version() {
         let url = models_url("https://chatgpt.com/backend-api/codex/responses").unwrap();
         assert_eq!(

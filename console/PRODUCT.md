@@ -23,7 +23,7 @@ Success looks like an operator who can steer an agent, watch function calls reso
 
 **Instrument panel.** Calm, precise, nothing decorative. Like reading a schematic or an engineering document, not a consumer chat app.
 
-Voice is concise, naturally cased sans interface copy with monospace reserved for technical values, explicit state (Running / Pending / Error), and warm cream-and-ink warmth without softness. Confidence comes from clarity and density, not from gradients, mascots, or empty hero space. The iii Schematic design system (see DESIGN.md) encodes this: blueprint aesthetic, one disciplined 6 px radius, neutral selection, a single rationed accent, and functional motion.
+Voice is concise, naturally cased sans interface copy with monospace reserved for technical values, explicit state (Running / Pending / Error), and warm cream-and-ink warmth without softness. Confidence comes from clarity and density, not from gradients, mascots, or empty hero space. The iii Schematic design system (see `skills/design-system.md`) encodes this: blueprint aesthetic, one disciplined 6 px radius, neutral selection, a single rationed accent, and functional motion.
 
 Three words: **precise**, **legible**, **warm**.
 

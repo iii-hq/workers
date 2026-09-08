@@ -233,6 +233,7 @@ this directly — `assemble` applies compaction inline.
     previous_summary?: string;       // anchor so summaries converge instead of growing
     preserve_recent_tokens?: number; // override the adaptive verbatim-tail budget
     lease_key?: string;              // mutual-exclusion key; default: hash of the message set
+    instructions?: string;           // one-shot guidance: what to keep, drop, or emphasise
   };
 }
 -> // discriminated on `status`:
@@ -246,7 +247,12 @@ this directly — `assemble` applies compaction inline.
 The summary follows a fixed Markdown template (Goal / Constraints & Preferences
 / Progress / Key Decisions / Actions Taken / Next Steps / Critical Context /
 Relevant Files). With `previous_summary` it is **updated in place**, not
-restarted. Requires `llm-router`; without it you get `overflow`.
+restarted. `instructions` is free-text guidance for *this* compaction (e.g. the
+text a user types after `/compact`): it steers what the summary keeps, drops, or
+emphasises, but the template and its sections always stay in force. It is
+trimmed, ignored when blank, cut past 2000 chars, and never carried forward —
+pass it again to steer a later compaction. Requires `llm-router`; without it you
+get `overflow`.
 
 ## 5. The compaction round trip
 

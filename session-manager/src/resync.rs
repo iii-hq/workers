@@ -216,6 +216,7 @@ mod tests {
             metadata: None,
             forked_from: None,
             draft: None,
+            draft_attachments: None,
             created_at: 1,
             updated_at: 1,
             message_count: 0,

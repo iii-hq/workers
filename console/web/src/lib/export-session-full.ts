@@ -12,6 +12,7 @@ import type { SessionMeta } from '@/lib/sessions/types'
 import type { Conversation, Message } from '@/types/chat'
 import {
   buildExportFilename,
+  conversationForExport,
   conversationToMarkdown,
   fetchWorkerVersions,
   formatTimestamp,
@@ -132,9 +133,12 @@ export function subagentSectionToMarkdown(
  * assembly without a browser click.
  */
 export async function assembleFullExport(
-  conversation: Conversation,
+  windowed: Conversation,
 ): Promise<{ markdown: string; filename: string }> {
   const workers = await fetchWorkerVersions()
+  // The root section renders the conversation record, which the chat keeps
+  // as a paged window; the export wants the whole transcript.
+  const conversation = await conversationForExport(windowed)
   const filename = buildExportFilename(conversation, 'full')
   const sessions = await listAllSessions()
   if (sessions === null) {
@@ -148,8 +152,11 @@ export async function assembleFullExport(
   for (const sub of descendants) {
     let messages: Message[] | null = null
     try {
+      // An export is the one reader that must carry the pictures themselves:
+      // a markdown file cannot fetch a thumbnail later.
       const items = await fetchTranscript(sub.meta.session_id, {
         timeoutMs: TRANSCRIPT_TIMEOUT_MS,
+        includeImageData: true,
       })
       messages = transcriptToMessages(items, sub.meta.session_id)
     } catch {

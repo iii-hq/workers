@@ -11,6 +11,8 @@
 
 use std::sync::Arc;
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
@@ -21,7 +23,7 @@ use crate::configuration::AppState;
 use crate::events::{Emitter, EventEnvelope};
 use crate::runtime::AdapterMode;
 use crate::store::SessionStore;
-use crate::types::{SessionEntry, SessionMeta};
+use crate::types::{AttachmentMeta, SessionEntry, SessionMeta};
 
 pub const GET_META: &str = "session::store::get-meta";
 pub const PUT_META: &str = "session::store::put-meta";
@@ -34,6 +36,11 @@ pub const DELETE_ENTRIES: &str = "session::store::delete-entries";
 pub const GET_ACTIVE_LEAF: &str = "session::store::get-active-leaf";
 pub const SET_ACTIVE_LEAF: &str = "session::store::set-active-leaf";
 pub const DELETE_ACTIVE_LEAF: &str = "session::store::delete-active-leaf";
+pub const PUT_ATTACHMENT: &str = "session::store::put-attachment";
+pub const GET_ATTACHMENT: &str = "session::store::get-attachment";
+pub const LIST_ATTACHMENTS: &str = "session::store::list-attachments";
+pub const DELETE_ATTACHMENT: &str = "session::store::delete-attachment";
+pub const DELETE_ATTACHMENTS: &str = "session::store::delete-attachments";
 pub const PUBLISH_EVENTS: &str = "session::store::publish-events";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -83,6 +90,37 @@ pub struct OkResponse {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PutAttachmentRequest {
+    pub meta: AttachmentMeta,
+    /// Standard (padded) base64 of the bytes.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct AttachmentIdRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+}
+
+/// One stored attachment as the protocol moves it: metadata plus the bytes
+/// as standard base64.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct StoredAttachment {
+    pub meta: AttachmentMeta,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ListAttachmentsResponse {
+    pub attachments: Vec<AttachmentMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DeletedResponse {
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct PublishEventsRequest {
     /// Event envelopes produced by a bridged instance's mutation.
     pub events: Vec<EventEnvelope>,
@@ -96,6 +134,15 @@ pub struct PublishEventsResponse {
 
 fn storage_err(e: crate::store::StoreError) -> Error {
     Error::from(crate::error::SessionError::from(e))
+}
+
+/// Standard (padded) base64 -> bytes, as `session/invalid_request`.
+pub(crate) fn decode_base64(data: &str) -> Result<Vec<u8>, Error> {
+    BASE64.decode(data).map_err(|e| {
+        Error::from(crate::error::SessionError::InvalidRequest(format!(
+            "attachment data is not valid base64: {e}"
+        )))
+    })
 }
 
 /// Message returned when a non-authoritative (bridge-mode) instance is asked to
@@ -322,6 +369,104 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
 
     let st = state.clone();
     iii.register_function(
+        PUT_ATTACHMENT,
+        RegisterFunction::new_async(move |req: PutAttachmentRequest| {
+            let st = st.clone();
+            async move {
+                let store = fs_store(&st).await?;
+                let bytes = decode_base64(&req.data)?;
+                store
+                    .put_attachment(&req.meta, &bytes)
+                    .await
+                    .map_err(storage_err)?;
+                Ok::<_, Error>(OkResponse { ok: true })
+            }
+        })
+        .description("Internal store protocol: write one attachment (metadata + base64 bytes).")
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+
+    let st = state.clone();
+    iii.register_function(
+        GET_ATTACHMENT,
+        RegisterFunction::new_async(move |req: AttachmentIdRequest| {
+            let st = st.clone();
+            async move {
+                let store = fs_store(&st).await?;
+                let found = store
+                    .get_attachment(&req.session_id, &req.attachment_id)
+                    .await
+                    .map_err(storage_err)?;
+                Ok::<_, Error>(found.map(|(meta, bytes)| StoredAttachment {
+                    meta,
+                    data: BASE64.encode(bytes),
+                }))
+            }
+        })
+        .description(
+            "Internal store protocol: read one attachment (metadata + base64 bytes; null when unknown).",
+        )
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+
+    let st = state.clone();
+    iii.register_function(
+        LIST_ATTACHMENTS,
+        RegisterFunction::new_async(move |req: SessionIdRequest| {
+            let st = st.clone();
+            async move {
+                let store = fs_store(&st).await?;
+                let attachments = store
+                    .list_attachments(&req.session_id)
+                    .await
+                    .map_err(storage_err)?;
+                Ok::<_, Error>(ListAttachmentsResponse { attachments })
+            }
+        })
+        .description("Internal store protocol: list every attachment's metadata of a session.")
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+
+    let st = state.clone();
+    iii.register_function(
+        DELETE_ATTACHMENT,
+        RegisterFunction::new_async(move |req: AttachmentIdRequest| {
+            let st = st.clone();
+            async move {
+                let store = fs_store(&st).await?;
+                let deleted = store
+                    .delete_attachment(&req.session_id, &req.attachment_id)
+                    .await
+                    .map_err(storage_err)?;
+                Ok::<_, Error>(DeletedResponse { deleted })
+            }
+        })
+        .description(
+            "Internal store protocol: delete one attachment (deleted: false when unknown).",
+        )
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+
+    let st = state.clone();
+    iii.register_function(
+        DELETE_ATTACHMENTS,
+        RegisterFunction::new_async(move |req: SessionIdRequest| {
+            let st = st.clone();
+            async move {
+                let store = fs_store(&st).await?;
+                store
+                    .delete_attachments(&req.session_id)
+                    .await
+                    .map_err(storage_err)?;
+                Ok::<_, Error>(OkResponse { ok: true })
+            }
+        })
+        .description("Internal store protocol: delete every attachment of a session.")
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+
+    let st = state.clone();
+    iii.register_function(
         PUBLISH_EVENTS,
         RegisterFunction::new_async(move |req: PublishEventsRequest| {
             let st = st.clone();
@@ -338,7 +483,7 @@ pub fn register_store_protocol(iii: &Arc<IIIClient>, state: AppState) {
         .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
 
-    tracing::info!("session::store::* protocol registered (12 functions)");
+    tracing::info!("session::store::* protocol registered (17 functions)");
 }
 
 #[cfg(test)]

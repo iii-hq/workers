@@ -6,6 +6,7 @@ test.use({ scenario: 'streamed-text' })
 const pane = (page: Page, index: number) =>
   page.locator('[data-workspace-pane-id]').nth(index)
 const composer = (page: Page) => page.getByLabel('message composer')
+const paneModifier = process.platform === 'darwin' ? 'Control' : 'Alt'
 
 async function settle(page: Page): Promise<void> {
   await page.evaluate(() => {
@@ -74,18 +75,18 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   ).toBeVisible()
   await page.keyboard.press('Escape')
 
-  // A second pane, then the alt-braces move the keyboard between panes, and the
+  // A second pane, then the modified braces move the keyboard between panes, and the
   // palette's "open" lands the keyboard in the page it opened.
   await settle(page)
   await expect(page.locator('[data-workspace-pane-id]')).toHaveCount(2)
-  await page.keyboard.press('Alt+]')
+  await page.keyboard.press(`${paneModifier}+]`)
   await expect(page.locator('[data-workspace-pane-id]')).toHaveCount(3)
   // The new pane opens with its search focused, where `}` is a character.
   await pane(page, 0).focus()
   const focusedPane = page.locator('[data-workspace-pane-id]:focus-within')
-  await page.keyboard.press('Alt+}')
+  await page.keyboard.press(`${paneModifier}+}`)
   await expect(focusedPane).toHaveAttribute('data-workspace-panel', '1')
-  await page.keyboard.press('Alt+{')
+  await page.keyboard.press(`${paneModifier}+{`)
   await expect(focusedPane).toHaveAttribute('data-workspace-panel', '0')
 
   await page.keyboard.press('ControlOrMeta+k')

@@ -95,8 +95,18 @@ export function shouldDropChatFocus(state: {
   hydrated?: boolean
   working: boolean
   anchored: boolean
+  /**
+   * A page of older history is on its way for this request: the anchor may
+   * be on it, so the request is held until the page lands.
+   */
+  loadingHistory?: boolean
 }): boolean {
-  return !state.anchored && state.hydrated !== false && !state.working
+  return (
+    !state.anchored &&
+    state.hydrated !== false &&
+    !state.working &&
+    !state.loadingHistory
+  )
 }
 
 /** Test-only reset; exported to keep the store deterministic in unit tests. */

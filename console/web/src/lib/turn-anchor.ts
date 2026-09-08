@@ -32,3 +32,18 @@ export function turnAnchorMessageId(
   }
   return messages[first].id
 }
+
+/**
+ * The one entry every harness turn that generated anything wrote first: its
+ * first generate step, `e_<turn_id>_0_assistant`. Steps count from 0: the
+ * harness creates a turn record at `step: 0` and names the assistant entry
+ * after the step that produced it (harness/src/functions/send.rs,
+ * harness/src/turn_loop.rs `ids::assistant_entry_id(turn_id, payload.step)`).
+ * A paged transcript uses it as the `until_entry_id` anchor to widen the
+ * loaded window back to a turn the reader was linked to but which is not
+ * loaded yet. The user row above it may still be on the page before;
+ * `turnAnchorMessageId` then lands on this entry instead.
+ */
+export function turnFirstEntryId(turnId: string): string {
+  return `e_${turnId}_0_assistant`
+}

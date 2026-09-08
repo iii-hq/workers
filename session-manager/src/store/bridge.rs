@@ -11,13 +11,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
 use super::{SessionStore, StoreError};
 use crate::functions::store_protocol;
-use crate::types::{SessionEntry, SessionMeta};
+use crate::types::{AttachmentMeta, SessionEntry, SessionMeta};
 
 pub struct BridgeStore {
     remote: Arc<IIIClient>,
@@ -167,6 +169,78 @@ impl SessionStore for BridgeStore {
     async fn delete_active_leaf(&self, session_id: &str) -> Result<(), StoreError> {
         self.call(
             store_protocol::DELETE_ACTIVE_LEAF,
+            json!({ "session_id": session_id }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn put_attachment(&self, meta: &AttachmentMeta, bytes: &[u8]) -> Result<(), StoreError> {
+        self.call(
+            store_protocol::PUT_ATTACHMENT,
+            json!({ "meta": meta, "data": BASE64.encode(bytes) }),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn get_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<Option<(AttachmentMeta, Vec<u8>)>, StoreError> {
+        let v = self
+            .call(
+                store_protocol::GET_ATTACHMENT,
+                json!({ "session_id": session_id, "attachment_id": attachment_id }),
+            )
+            .await?;
+        if v.is_null() {
+            return Ok(None);
+        }
+        let stored: store_protocol::StoredAttachment =
+            Self::parse(store_protocol::GET_ATTACHMENT, v)?;
+        let bytes = BASE64.decode(&stored.data).map_err(|e| {
+            StoreError(format!(
+                "bridge {} returned malformed attachment bytes: {e}",
+                store_protocol::GET_ATTACHMENT
+            ))
+        })?;
+        Ok(Some((stored.meta, bytes)))
+    }
+
+    async fn list_attachments(&self, session_id: &str) -> Result<Vec<AttachmentMeta>, StoreError> {
+        let v = self
+            .call(
+                store_protocol::LIST_ATTACHMENTS,
+                json!({ "session_id": session_id }),
+            )
+            .await?;
+        let attachments = v.get("attachments").cloned().ok_or_else(|| {
+            StoreError("bridge list_attachments response missing `attachments`".into())
+        })?;
+        Self::parse(store_protocol::LIST_ATTACHMENTS, attachments)
+    }
+
+    async fn delete_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<bool, StoreError> {
+        let v = self
+            .call(
+                store_protocol::DELETE_ATTACHMENT,
+                json!({ "session_id": session_id, "attachment_id": attachment_id }),
+            )
+            .await?;
+        v.get("deleted")
+            .and_then(|d| d.as_bool())
+            .ok_or_else(|| StoreError("bridge delete_attachment response missing `deleted`".into()))
+    }
+
+    async fn delete_attachments(&self, session_id: &str) -> Result<(), StoreError> {
+        self.call(
+            store_protocol::DELETE_ATTACHMENTS,
             json!({ "session_id": session_id }),
         )
         .await

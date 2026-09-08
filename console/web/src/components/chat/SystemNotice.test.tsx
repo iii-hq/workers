@@ -64,6 +64,71 @@ describe('SystemNotice · working directory', () => {
   })
 })
 
+describe('SystemNotice · skill index', () => {
+  const updated: SystemMessage = {
+    id: 'e_t_1_skills_2',
+    role: 'system',
+    kind: 'skills',
+    tone: 'info',
+    content:
+      'The available skills have changed.\n<available_skills>\n- **console** — The iii web console.\n</available_skills>',
+    skills: {
+      available: true,
+      entries: [
+        { id: 'console', description: 'The iii web console.' },
+        {
+          id: 'console/injectable-ui',
+          description: 'Build worker UI injected into the running console.',
+        },
+        { id: 'fp', description: '' },
+      ],
+    },
+    createdAt: 0,
+  }
+
+  it('collapses to one line with the count, never the raw block', () => {
+    const out = html(updated)
+    expect(out).toContain('data-message-role="skills"')
+    expect(out).toContain('data-timeline-activity-kind="skills"')
+    expect(out).toContain('data-skills-count="3"')
+    expect(out).toContain('Skills </span>updated · 3 available')
+    expect(out).not.toContain('&lt;available_skills&gt;')
+    expect(out).not.toContain('supersedes')
+    expect(out).not.toContain('uppercase')
+  })
+
+  it('lists every skill id with its description in the disclosure', () => {
+    const out = html(updated)
+    expect(out).toContain('Skill index updated')
+    expect(out).toContain('fresh index of 3 skills')
+    expect(out).toContain('data-skills-list')
+    expect(out).toContain('>console<')
+    expect(out).toContain('>console/injectable-ui<')
+    expect(out).toContain('Build worker UI injected into the running console.')
+    expect(out).toContain('>fp<')
+  })
+
+  it('marks withdrawn guidance with a warning status and no list', () => {
+    const out = html({
+      ...updated,
+      tone: 'warn',
+      content: 'Skill guidance is no longer available.',
+      skills: { available: false, entries: [] },
+    })
+    expect(out).toContain('data-skills-available="false"')
+    expect(out).toContain('data-status="error"')
+    expect(out).toContain('Skills </span>unavailable')
+    expect(out).toContain('Skill guidance withdrawn')
+    expect(out).not.toContain('data-skills-list')
+  })
+
+  it('is what Message renders for the skills kind', () => {
+    expect(renderToStaticMarkup(<Message message={updated} />)).toContain(
+      'data-message-role="skills"',
+    )
+  })
+})
+
 describe('SystemNotice · turn failure', () => {
   it('leads with who has to act for a credentials failure', () => {
     const out = html({

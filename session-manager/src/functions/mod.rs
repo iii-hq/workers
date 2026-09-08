@@ -1,4 +1,4 @@
-//! The 15 `session::*` functions.
+//! The 21 `session::*` functions.
 //!
 //! Each `<verb>.rs` holds the request/response types (serde +
 //! `schemars::JsonSchema`, so the SDK emits request/response schemas)
@@ -11,12 +11,18 @@ pub mod append;
 pub mod append_many;
 pub mod create;
 pub mod delete;
+pub mod delete_attachment;
 pub mod ensure;
 pub mod fork;
 pub mod get;
+pub mod get_attachment;
 pub mod get_message;
 pub mod list;
+pub mod list_attachments;
 pub mod messages;
+pub mod messages_range;
+pub mod messages_tail;
+pub mod put_attachment;
 pub mod set_active_leaf;
 pub mod set_draft;
 pub mod set_meta;
@@ -143,7 +149,7 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         iii,
         state,
         "session::set-draft",
-        "Park (or clear) the session's unsent composer input; event-silent, read back on SessionMeta.draft.",
+        "Park (or clear) the session's unsent composer input — text and attachment ids; event-silent, read back on SessionMeta.draft / draft_attachments.",
         true,
         |d, r| async move { set_draft::handle(&d, r).await },
     );
@@ -206,6 +212,22 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
     register(
         iii,
         state,
+        "session::messages-tail",
+        "Newest page of the active path, walking backwards in block-aligned pages (a tool run never splits) with activity runs collapsed to placeholders; the reader a chat UI opens a session with.",
+        false,
+        |d, r| async move { messages_tail::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::messages-range",
+        "Full entries for a span (from/to) or list (entry_ids) of the active path — how a reader fetches the calls a collapsed run left out.",
+        false,
+        |d, r| async move { messages_range::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
         "session::fork",
         "Copy history up to an entry into a new session (copy-on-fork); fires session::created.",
         true,
@@ -218,6 +240,38 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
         "Move the active path to end at a given entry (branch switch).",
         true,
         |d, r| async move { set_active_leaf::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::put-attachment",
+        "Store an attachment's original bytes (base64) for a session and return the `file` content block that references it; event-silent.",
+        true,
+        |d, r| async move { put_attachment::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::get-attachment",
+        "Read one stored attachment's metadata and bytes (null when unknown).",
+        false,
+        |d, r| async move { get_attachment::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::list-attachments",
+        "List the metadata of every attachment stored for a session.",
+        false,
+        |d, r| async move { list_attachments::handle(&d, r).await },
+    );
+    register(
+        iii,
+        state,
+        "session::delete-attachment",
+        "Delete one stored attachment no transcript entry references (e.g. a chip removed from the composer); also drops it from the draft. Event-silent.",
+        true,
+        |d, r| async move { delete_attachment::handle(&d, r).await },
     );
 
     tracing::info!("all session::* functions registered");

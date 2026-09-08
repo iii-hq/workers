@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import type { Message } from '@/types/chat'
+import type { Attachment, FunctionTriggerMessage, Message } from '@/types/chat'
 import {
   applyEntryUpsert,
   applyFcallPatch,
   clearTransientFlags,
   entrySegments,
+  prependTranscript,
   splitReactionTask,
   transcriptToMessages,
   triggerFiredSummary,
@@ -175,6 +176,342 @@ describe('entrySegments', () => {
     })
   })
 
+  /* A `file` block is the reference to the stored original. Alone it is the
+     whole chip; next to the expansion of the same file it must NOT become a
+     second chip, because the console sends both for every attachment. */
+  describe('file blocks', () => {
+    const fileBlock = {
+      type: 'file' as const,
+      attachment_id: 'a_1',
+      name: 'report.pdf',
+      mime: 'application/pdf',
+      size: 12345,
+    }
+
+    it('turns a lone file block into a downloadable chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-5-user-0',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'read this' }, fileBlock],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        role: 'user',
+        content: 'read this',
+        attachments: [
+          {
+            id: 'a_1',
+            name: 'report.pdf',
+            size: 12345,
+            type: 'application/pdf',
+            attachmentId: 'a_1',
+          },
+        ],
+      })
+    })
+
+    it('folds a file block into its attached-file expansion as one chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-6-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarise' },
+            {
+              type: 'text',
+              text: '<attached-file path="report.pdf" size="12345" format="pdf-markdown">\n# Report\n</attached-file>',
+            },
+            fileBlock,
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: unknown[] }).attachments
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]).toMatchObject({
+        id: 'a_1',
+        name: 'report.pdf',
+        size: 12345,
+        type: 'application/pdf',
+        attachmentId: 'a_1',
+      })
+      expect((msg as { content: string }).content).toBe('summarise')
+    })
+
+    /* The expansion's label can say more than the name — here, why the read
+       failed. That stays on the one surviving chip. */
+    it('keeps the expansion label when it carries more than the name', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-7-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarise' },
+            {
+              type: 'text',
+              text: '<attached-file path="report.pdf" error="the pdf worker is not running" />',
+            },
+            fileBlock,
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_1',
+            name: 'report.pdf (the pdf worker is not running)',
+            attachmentId: 'a_1',
+          },
+        ],
+      })
+    })
+
+    it('merges an image block with its file block, keeping the thumbnail', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-8-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is this?' },
+            {
+              type: 'file',
+              attachment_id: 'a_2',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            { type: 'image', mime: 'image/png', data: 'AAAA' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_2',
+            name: 'shot.png',
+            size: 4096,
+            type: 'image/png',
+            dataUrl: 'data:image/png;base64,AAAA',
+            attachmentId: 'a_2',
+          },
+        ],
+      })
+      expect((msg as { attachments: unknown[] }).attachments).toHaveLength(1)
+    })
+
+    /* Two pictures pair with their references by order: image blocks carry
+       no name, and the send path writes both lists in attachment order. */
+    it('pairs several images with their file blocks in order', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-9-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'compare' },
+            {
+              type: 'file',
+              attachment_id: 'a_3',
+              name: 'before.png',
+              mime: 'image/png',
+              size: 1,
+            },
+            {
+              type: 'file',
+              attachment_id: 'a_4',
+              name: 'after.jpg',
+              mime: 'image/jpeg',
+              size: 2,
+            },
+            { type: 'image', mime: 'image/png', data: 'BBBB' },
+            { type: 'image', mime: 'image/jpeg', data: 'CCCC' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          { name: 'before.png', dataUrl: 'data:image/png;base64,BBBB' },
+          { name: 'after.jpg', dataUrl: 'data:image/jpeg;base64,CCCC' },
+        ],
+      })
+    })
+
+    /* A read with `include_image_data: false` leaves the picture's bytes out
+       and names the stored original instead. The two blocks still fold into
+       one chip, and that chip must carry the id to fetch by and no thumbnail
+       to draw from — the renderer reads exactly that as "fetch on view". */
+    it('merges an elided image with its file block into one lazy chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-11-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is this?' },
+            {
+              type: 'file',
+              attachment_id: 'a_5',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: '',
+              attachment_id: 'a_5',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: Attachment[] }).attachments
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]).toMatchObject({
+        id: 'a_5',
+        name: 'shot.png',
+        size: 4096,
+        type: 'image/png',
+        attachmentId: 'a_5',
+      })
+      expect(attachments[0]).not.toHaveProperty('dataUrl')
+    })
+
+    /* With ids on both sides the pairing no longer depends on order, so a
+       transcript whose blocks were reordered still puts each thumbnail on
+       the right chip. */
+    it('pairs elided images with their file blocks by id, not by order', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-12-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'compare' },
+            {
+              type: 'file',
+              attachment_id: 'a_6',
+              name: 'before.png',
+              mime: 'image/png',
+              size: 1,
+            },
+            {
+              type: 'file',
+              attachment_id: 'a_7',
+              name: 'after.png',
+              mime: 'image/png',
+              size: 2,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: 'AFTER',
+              attachment_id: 'a_7',
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: '',
+              attachment_id: 'a_6',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: Attachment[] }).attachments
+      expect(attachments).toHaveLength(2)
+      expect(attachments[0]).toMatchObject({
+        name: 'before.png',
+        attachmentId: 'a_6',
+      })
+      expect(attachments[0]).not.toHaveProperty('dataUrl')
+      expect(attachments[1]).toMatchObject({
+        name: 'after.png',
+        attachmentId: 'a_7',
+        dataUrl: 'data:image/png;base64,AFTER',
+      })
+    })
+
+    /* An older session-manager ignores `include_image_data` and answers with
+       the bytes; a chip drawn from them must look exactly as it did before. */
+    it('keeps the inline thumbnail when the worker still sends the bytes', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-13-user-0',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              attachment_id: 'a_8',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: 'AAAA',
+              attachment_id: 'a_8',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_8',
+            name: 'shot.png',
+            attachmentId: 'a_8',
+            dataUrl: 'data:image/png;base64,AAAA',
+          },
+        ],
+      })
+    })
+
+    /* A transcript written before the store existed has no file blocks, and
+       its chips must not change. */
+    it('maps messages without file blocks exactly as before', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-10-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'look' },
+            {
+              type: 'text',
+              text: '<attached-file path="notes.txt" size="7">\nabc\n</attached-file>',
+            },
+            { type: 'image', mime: 'image/png', data: 'AAAA' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        content: 'look',
+        attachments: [
+          {
+            id: 'mention-notes.txt',
+            name: 'notes.txt',
+            size: 7,
+            type: 'text/x-file-mention',
+          },
+          {
+            id: 'image-1',
+            name: 'image 1',
+            type: 'image/png',
+            dataUrl: 'data:image/png;base64,AAAA',
+          },
+        ],
+      })
+      for (const chip of (msg as { attachments: object[] }).attachments) {
+        expect(chip).not.toHaveProperty('attachmentId')
+      }
+    })
+  })
+
   it('keeps command blocks visible and collapses skill blocks into chips', () => {
     const commandBlock =
       '<command name="review-pr">\nThe entire prompt body.\n</command>'
@@ -324,9 +661,16 @@ describe('entrySegments', () => {
     ).not.toHaveProperty('validation')
   })
 
-  it('renders durable skill catalog updates as informational notices', () => {
-    const content =
-      'The available skills have changed. This list supersedes the previous available skills list.'
+  it('renders durable skill catalog updates as skill-index markers', () => {
+    const content = [
+      'The available skills have changed. This list supersedes the previous',
+      'available skills list.',
+      '<available_skills>',
+      'A `<skill id="...">` block is already loaded; follow it directly.',
+      '- **console** — The iii web console.',
+      '- **console/injectable-ui** — Build worker UI &lt;at runtime&gt;.',
+      '</available_skills>',
+    ].join('\n')
 
     for (const item of [
       userItem('opaque-id', content, { skill_update: true }),
@@ -334,12 +678,42 @@ describe('entrySegments', () => {
     ]) {
       expect(entrySegments(item)[0]).toMatchObject({
         role: 'system',
-        kind: 'notice',
+        kind: 'skills',
         tone: 'info',
         content,
+        skills: {
+          available: true,
+          entries: [
+            { id: 'console', description: 'The iii web console.' },
+            {
+              id: 'console/injectable-ui',
+              description: 'Build worker UI <at runtime>.',
+            },
+          ],
+        },
       })
     }
     expect(entrySegments(userItem('ordinary-id', content))[0].role).toBe('user')
+  })
+
+  it('marks withdrawn skill guidance as a warning skill-index marker', () => {
+    const content =
+      'Skill guidance is no longer available. Do not use any previously listed skill.'
+    expect(
+      entrySegments(userItem('e_t_123_skills_8', content))[0],
+    ).toMatchObject({
+      role: 'system',
+      kind: 'skills',
+      tone: 'warn',
+      skills: { available: false, entries: [] },
+    })
+  })
+
+  it('keeps an unrecognised skill update as a plain notice', () => {
+    const content = 'The available skills have changed.'
+    expect(
+      entrySegments(userItem('e_t_123_skills_9', content))[0],
+    ).toMatchObject({ role: 'system', kind: 'notice', tone: 'info', content })
   })
 
   it('hides the machine-authored transient recovery prompt', () => {
@@ -1160,5 +1534,264 @@ describe('applyFcallPatch / clearTransientFlags', () => {
       next.map((m) => ('streaming' in m ? m.streaming : undefined)),
     ).toEqual([false, false, undefined])
     expect((next[2] as { running?: boolean }).running).toBe(false)
+  })
+})
+
+/* Paged reads: `session::messages-tail` hands the inside of a collapsed run
+   back as `elided` placeholders, and `session::messages-range` brings the
+   whole entries later. The mapper must produce rows the group can count and
+   swap in place without the reader noticing the seam. */
+describe('elided placeholders', () => {
+  function elidedCall(
+    entryId: string,
+    calls: Array<{ id: string; functionId: string }>,
+    text?: string,
+  ): TranscriptItem {
+    return {
+      ...assistantItem(
+        entryId,
+        [
+          ...(text ? [{ type: 'text' as const, text }] : []),
+          ...calls.map((c) => ({
+            type: 'function_call' as const,
+            id: c.id,
+            function_id: c.functionId,
+            arguments: {},
+          })),
+        ],
+        'function_call',
+      ),
+      elided: true,
+    }
+  }
+
+  function elidedResult(
+    entryId: string,
+    functionTriggerId: string,
+    functionId = 'shell::run',
+  ): TranscriptItem {
+    return {
+      entry_id: entryId,
+      elided: true,
+      message: {
+        role: 'function_result',
+        function_call_id: functionTriggerId,
+        function_id: functionId,
+        content: [],
+        details: null,
+        is_error: false,
+        timestamp: 3,
+      },
+    }
+  }
+
+  it('maps an elided assistant to unloaded rows and keeps its prose', () => {
+    const segments = entrySegments(
+      elidedCall(
+        'e_a1',
+        [{ id: 'fc_1', functionId: 'shell::run' }],
+        'Looking at the file.',
+      ),
+    )
+    expect(segments).toHaveLength(2)
+    expect(segments[0]).toMatchObject({
+      id: 'e_a1:0',
+      role: 'assistant',
+      content: 'Looking at the file.',
+    })
+    expect(segments[1]).toMatchObject({
+      id: 'e_a1:1',
+      role: 'function-trigger',
+      functionId: 'shell::run',
+      functionTriggerId: 'fc_1',
+      unloaded: true,
+    })
+    expect((segments[1] as FunctionTriggerMessage).input).toBeUndefined()
+  })
+
+  /* The wrapper's target lives in the arguments the page dropped; the result
+     entry names the resolved function, so the row learns its label there. */
+  it('lets an elided result name an agent_trigger placeholder', () => {
+    const messages = transcriptToMessages([
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'agent_trigger' }]),
+      elidedResult('e_r1', 'fc_1', 'coder::read-file'),
+    ])
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      role: 'function-trigger',
+      functionId: 'coder::read-file',
+      unresolvedTarget: false,
+      unloaded: true,
+      resultEntryId: 'e_r1',
+      running: false,
+      pendingApproval: false,
+    })
+    expect(messages[0]).not.toHaveProperty('output')
+  })
+
+  it('never marks a placeholder running while the session works', () => {
+    const messages = transcriptToMessages(
+      [
+        elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+        elidedResult('e_r1', 'fc_1'),
+      ],
+      's-1',
+      { working: true },
+    )
+    expect(messages[0]).toMatchObject({ unloaded: true, running: false })
+    const bare = applyEntryUpsert(
+      [],
+      elidedCall('e_a2', [{ id: 'fc_2', functionId: 'shell::run' }]),
+      { working: true },
+    )
+    expect(bare[0]).toMatchObject({ unloaded: true })
+    expect((bare[0] as FunctionTriggerMessage).running).toBeUndefined()
+  })
+
+  it('records the result entry on a whole row too', () => {
+    const messages = transcriptToMessages([
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+      resultItem('e_r1', 'fc_1', 'ok'),
+    ])
+    expect(messages[0]).toMatchObject({
+      resultEntryId: 'e_r1',
+      unloaded: false,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+  })
+
+  it('keeps a placeholder for a lost assistant snapshot', () => {
+    const messages = transcriptToMessages([elidedResult('e_r1', 'fc_1')])
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      id: 'e_r1',
+      role: 'function-trigger',
+      functionTriggerId: 'fc_1',
+      unloaded: true,
+      resultEntryId: 'e_r1',
+    })
+    expect(messages[0]).not.toHaveProperty('output')
+  })
+
+  /* "Show all": the range read answers with the whole assistant entry and
+     its result. Each replaces its placeholder in place — same call id, same
+     position — and the flag clears only once the result has landed. */
+  it('replaces the placeholder in place from a range read', () => {
+    const page = transcriptToMessages([
+      userItem('e_u1', 'go'),
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+      elidedResult('e_r1', 'fc_1'),
+      userItem('e_u2', 'thanks'),
+    ])
+    expect(page.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+
+    const withCall = applyEntryUpsert(
+      page,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(withCall.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+    expect(withCall[1]).toMatchObject({
+      functionTriggerId: 'fc_1',
+      input: { command: 'ls' },
+      // The result is still on its way: the row stays a placeholder.
+      unloaded: true,
+      resultEntryId: 'e_r1',
+    })
+
+    const whole = applyEntryUpsert(withCall, resultItem('e_r1', 'fc_1', 'ok'))
+    expect(whole.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+    expect(whole[1]).toMatchObject({
+      functionTriggerId: 'fc_1',
+      input: { command: 'ls' },
+      unloaded: false,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+  })
+
+  /* A reconnect re-reads the tail, which elides a run the window already
+     holds whole. The re-read must not turn loaded rows back into skeletons. */
+  it('keeps a loaded row when a re-read page elides it', () => {
+    const loaded = transcriptToMessages([
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+      resultItem('e_r1', 'fc_1', 'ok'),
+    ])
+    let next = applyEntryUpsert(
+      loaded,
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+    )
+    next = applyEntryUpsert(next, elidedResult('e_r1', 'fc_1'))
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e_a1:0',
+      input: { command: 'ls' },
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+    expect((next[0] as FunctionTriggerMessage).unloaded).not.toBe(true)
+  })
+})
+
+describe('prependTranscript', () => {
+  it('puts the older page first, dedupes by id, and leaves the tail alone', () => {
+    const tail = transcriptToMessages([
+      userItem('e_u3', 'three'),
+      assistantItem('e_a3', [{ type: 'text', text: 'and three' }]),
+    ])
+    const older: TranscriptItem[] = [
+      userItem('e_u1', 'one'),
+      assistantItem('e_a1', [{ type: 'text', text: 'and one' }]),
+      userItem('e_u2', 'two'),
+      // The anchor entry can come back on the page boundary.
+      userItem('e_u3', 'three'),
+    ]
+    const merged = prependTranscript(tail, older, 's-1')
+    expect(merged.map((m) => m.id)).toEqual([
+      'e_u1',
+      'e_a1:0',
+      'e_u2',
+      'e_u3',
+      'e_a3:0',
+    ])
+    // The tail's own objects are the ones in the result, untouched.
+    expect(merged[3]).toBe(tail[0])
+    expect(merged[4]).toBe(tail[1])
+  })
+
+  it('returns the same list for an empty or fully duplicate page', () => {
+    const tail = transcriptToMessages([userItem('e_u1', 'one')])
+    expect(prependTranscript(tail, [])).toBe(tail)
+    expect(prependTranscript(tail, [userItem('e_u1', 'one')])).toBe(tail)
   })
 })

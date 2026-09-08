@@ -32,22 +32,41 @@ import {
   type SystemPromptAddon,
   type SystemPromptState,
 } from '@/components/chat/system-prompt-selection'
+import {
+  createDraftAttachmentStore,
+  type DraftAttachmentChange,
+  draftAttachmentIds,
+  draftAttachmentsFromMeta,
+  reconcileDraftAttachments,
+  releaseRemovedDraftAttachments,
+} from '@/lib/attachments/draft-attachments'
+import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { requestComposerFocus } from '@/lib/composer-insert'
+import { errText } from '@/lib/errors'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
+  deleteAttachment,
   deleteSession,
   ensureSession as ensureSessionApi,
   fetchTranscript,
+  fetchTranscriptRange,
+  fetchTranscriptTail,
   getSession,
+  isInvalidCursorError,
+  isMissingFunctionError,
   listSessions,
   setSessionDraft,
   setSessionMeta,
+  TRANSCRIPT_OLDER_PAGE_LIMIT,
+  TRANSCRIPT_TAIL_PAGE_LIMIT,
 } from '@/lib/sessions/api'
 import {
   applyEntryUpsert,
+  belongsToEntry,
   clearTransientFlags,
+  prependTranscript,
   transcriptToMessages,
 } from '@/lib/sessions/entry-mapper'
 import {
@@ -71,6 +90,7 @@ import {
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
   type AgentProfileSnapshot,
+  type Attachment,
   type Conversation,
   type ConversationMetadataEdits,
   DEFAULT_THINKING_LEVEL,
@@ -95,6 +115,41 @@ function sessionIdsFromSignature(signature: string): string[] {
 /** Composer-draft save cadence (`session::set-draft` is event-silent, so the
  *  only costs are the RPC and one JSONL append per flush). */
 const DRAFT_SAVE_DEBOUNCE_MS = 500
+
+/** One queued `session::set-draft` write. `attachmentIds` is the parked list
+ *  when the chips changed; absent on a text-only save, which leaves the
+ *  server's list alone (see `setSessionDraft`). */
+export interface PendingDraft {
+  id: string
+  text: string
+  attachmentIds?: string[]
+}
+
+/** What the last successful save for a session carried; `attachmentIds` is
+ *  unknown until a save has sent the list once. */
+export interface SavedDraft {
+  text: string
+  attachmentIds?: string[]
+}
+
+/**
+ * A save can be skipped when the server already holds what it would write:
+ * the same text and — if the save carries a list — the same list. A first
+ * list (even an empty one, the post-send clear) always goes: the server side
+ * has never been told, so nothing local can vouch for it.
+ */
+export function draftSaveIsRedundant(
+  saved: SavedDraft | undefined,
+  pending: PendingDraft,
+): boolean {
+  if (!saved || saved.text !== pending.text) return false
+  if (pending.attachmentIds === undefined) return true
+  if (saved.attachmentIds === undefined) return false
+  return (
+    saved.attachmentIds.length === pending.attachmentIds.length &&
+    saved.attachmentIds.every((id, i) => id === pending.attachmentIds?.[i])
+  )
+}
 
 function deriveTitle(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim().toLowerCase()
@@ -134,7 +189,8 @@ export function isUntouchedDraft(conversation: Conversation): boolean {
   return (
     conversation.draft === true &&
     conversation.messages.length === 0 &&
-    (conversation.draftText ?? '') === ''
+    (conversation.draftText ?? '') === '' &&
+    (conversation.draftAttachments?.length ?? 0) === 0
   )
 }
 
@@ -613,6 +669,7 @@ function conversationFromMeta(
       typeof meta.draft === 'string' && meta.draft.length > 0
         ? meta.draft
         : undefined,
+    draftAttachments: draftAttachmentsFromMeta(meta),
     messages: [],
     status: meta.status,
     statusReason: meta.status_reason,
@@ -821,6 +878,12 @@ export function mergeConversationMeta(
     ...mapped,
     messages: existing.messages,
     hydrated: existing.hydrated,
+    // The server names the parked attachments again; keep the chip objects
+    // this tab already hydrated (bytes, thumbnail) for the same ids.
+    draftAttachments: reconcileDraftAttachments(
+      existing.draftAttachments,
+      mapped.draftAttachments,
+    ),
     serverMetaUpdatedAt: Math.max(
       existing.serverMetaUpdatedAt ?? -Infinity,
       meta.updated_at,
@@ -937,13 +1000,18 @@ export function appendMessageToConversation(
     messages,
     updatedAt: now,
   }
-  if (message.role === 'user') {
+  // A typed send starts a harness turn, so mark the session working until
+  // `session::status-changed` reports back. A client-handled `command` row
+  // (`/compact`) starts no turn: flipping it here would leave the session
+  // working forever, since no status event will ever clear it.
+  const startsTurn = message.role === 'user' && !message.command
+  if (startsTurn) {
     next.status = 'working'
     next.statusReason = undefined
   }
   if (
     !c.titleManual &&
-    message.role === 'user' &&
+    startsTurn &&
     c.messages.every((m) => m.role !== 'user')
   ) {
     next.title = deriveTitle(message.content)
@@ -991,6 +1059,25 @@ export interface ConversationsApi {
   updateMessage: (id: string, messageId: string, patch: MessagePatch) => void
   compactConversation: (id: string, marker: Message) => void
   /**
+   * Fetch the page of history above the loaded window and put it in front.
+   * One load per conversation at a time; a call while one is in flight is a
+   * no-op. `untilEntryId` widens the page back to that entry's block (a deep
+   * link into history) — the server sizes it, there is no client cap. When
+   * the anchor is no longer on the active path the conversation is marked
+   * un-hydrated and the ordinary re-hydration reloads from the top.
+   */
+  loadOlderMessages: (
+    id: string,
+    opts?: { untilEntryId?: string },
+  ) => Promise<void>
+  /**
+   * Fetch whole entries for placeholders a paged read left behind ("show
+   * all" on a collapsed group, or a call a renderer must draw while
+   * collapsed) and swap them in place. Ids already in flight for the
+   * conversation are not requested twice.
+   */
+  loadActivityEntries: (id: string, entryIds: string[]) => Promise<void>
+  /**
    * Materialise a draft conversation in session-manager before the first
    * send (idempotent). `titleHint` seeds the session title from the prompt.
    */
@@ -1008,6 +1095,27 @@ export interface ConversationsApi {
    * `SessionMeta.draft`. `undefined` when there is nothing to restore.
    */
   getDraftText: (id: string) => string | undefined
+  /**
+   * Record the composer's live attachment chips for a conversation, with why
+   * they changed. Kept per conversation like the text (the same `Attachment`
+   * objects, `File` included, so an image keeps its thumbnail across a
+   * switch). For server-backed sessions the chips are also uploaded
+   * (`session::put-attachment`) and parked with the draft through the same
+   * debounced `session::set-draft` save as the text; a chip the user removed
+   * releases its stored bytes.
+   */
+  setDraftAttachments: (
+    id: string,
+    attachments: Attachment[],
+    change?: DraftAttachmentChange,
+  ) => void
+  /**
+   * The chips to seed the composer with when (re)opening a conversation:
+   * what this tab last recorded via `setDraftAttachments`, else the
+   * server-restored `SessionMeta.draft_attachments`. `undefined` when there
+   * is nothing to restore.
+   */
+  getDraftAttachments: (id: string) => Attachment[] | undefined
 }
 
 /**
@@ -1082,22 +1190,91 @@ export function markDurableStarted(
   }
 }
 
+/** Where a hydration page ends at the top (see `Conversation.history`). */
+export type HydrationPage = NonNullable<Conversation['history']>
+
+/**
+ * Fold a (re-)hydration page into what the window already holds.
+ *
+ * The first read has nothing above the page. A re-read (reconnect, a
+ * `hydrated: false` reset) does: pages the reader scrolled up into, which
+ * the newest page does not cover. When the page's oldest entry is already in
+ * the window, everything above it is those older pages — keep them and
+ * replace from there, so a reconnect does not throw away a long scroll.
+ * When it is not, the window and the page do not overlap (many blocks
+ * landed while offline, or the leaf moved to another branch): durable rows
+ * are dropped rather than shown with a gap — scrolling up reloads them — and
+ * only local rows (uid-based notices) survive the replay. An empty page has
+ * no durable truth to assert, so everything stays, as before paging.
+ *
+ * `history` follows the same split: kept pages keep their anchor, a fresh
+ * window takes the page's.
+ */
+export function rehydrateTranscript(
+  conversation: Conversation,
+  fetched: Message[],
+  page: HydrationPage,
+  upserts: HydrationUpsert[],
+  opts: { sessionId: string; working: boolean },
+): { messages: Message[]; history: HydrationPage } {
+  const existing = conversation.messages
+  const oldest = page.oldestEntryId
+  const boundary = oldest
+    ? existing.findIndex((m) => belongsToEntry(m.id, oldest))
+    : -1
+  const kept = boundary === -1 ? [] : existing.slice(0, boundary)
+  const live =
+    boundary !== -1
+      ? existing.slice(boundary)
+      : oldest
+        ? existing.filter((m) => !m.id.startsWith('e_'))
+        : existing
+  const messages = mergeHydratedTranscript(
+    [...kept, ...fetched],
+    live,
+    upserts,
+    opts,
+  )
+  const history: HydrationPage =
+    kept.length > 0 && conversation.history
+      ? {
+          hasMore: conversation.history.hasMore,
+          ...(conversation.history.oldestEntryId
+            ? { oldestEntryId: conversation.history.oldestEntryId }
+            : {}),
+        }
+      : {
+          hasMore: page.hasMore,
+          ...(page.oldestEntryId ? { oldestEntryId: page.oldestEntryId } : {}),
+        }
+  return { messages, history }
+}
+
+/**
+ * @param page Where the read ended at the top. Absent for a full read (the
+ *   fallback against a session-manager without `session::messages-tail`),
+ *   which by definition has nothing above it.
+ */
 export function mergeHydratedConversation(
   conversation: Conversation,
   items: TranscriptItem[],
   upserts: HydrationUpsert[],
+  page: HydrationPage = { hasMore: false },
 ): Conversation {
   const working = conversation.status === 'working'
   const started =
     conversation.started === true || items.length > 0 || upserts.length > 0
+  const { messages, history } = rehydrateTranscript(
+    conversation,
+    transcriptToMessages(items, conversation.id, { working }),
+    page,
+    upserts,
+    { sessionId: conversation.id, working },
+  )
   const hydrated: Conversation = {
     ...conversation,
-    messages: mergeHydratedTranscript(
-      transcriptToMessages(items, conversation.id, { working }),
-      conversation.messages,
-      upserts,
-      { sessionId: conversation.id, working },
-    ),
+    messages,
+    history,
     started,
     hydrated: true,
   }
@@ -1119,6 +1296,54 @@ export function mergeHydratedConversation(
  * instead of remaining in the initializing state indefinitely. */
 export function completeFailedHydration(c: Conversation): Conversation {
   return c.hydrated ? c : { ...c, hydrated: true }
+}
+
+/** Remembered once the worker has answered that it lacks the paging reader,
+ *  so every later hydration goes straight to the full read. */
+let tailReaderUnavailable = false
+
+// A lost response must reach the hydration retry path promptly even while the
+// socket stays connected. The SDK's 30s default leaves the chat loading until
+// then; use a shorter deadline for these interactive, read-only requests.
+const HYDRATION_READ_TIMEOUT_MS = 5_000
+
+/**
+ * The page a chat opens on: the newest `TRANSCRIPT_TAIL_PAGE_LIMIT` blocks.
+ * A session-manager that predates `session::messages-tail` answers
+ * `function_not_found`; the console then reads the whole transcript as it
+ * always did and reports nothing above it, so an old worker keeps working
+ * with the old (unpaged) behaviour.
+ */
+async function fetchHydrationPage(
+  sessionId: string,
+): Promise<{ items: TranscriptItem[]; page: HydrationPage }> {
+  if (!tailReaderUnavailable) {
+    try {
+      const tail = await fetchTranscriptTail(sessionId, {
+        limit: TRANSCRIPT_TAIL_PAGE_LIMIT,
+        timeoutMs: HYDRATION_READ_TIMEOUT_MS,
+      })
+      return {
+        items: tail.items,
+        page: {
+          hasMore: tail.hasMore,
+          ...(tail.oldestEntryId ? { oldestEntryId: tail.oldestEntryId } : {}),
+        },
+      }
+    } catch (err) {
+      if (!isMissingFunctionError(err)) throw err
+      tailReaderUnavailable = true
+      if (import.meta.env.DEV) {
+        console.warn(
+          '[conversations] session::messages-tail is not registered; reading whole transcripts (older session-manager)',
+        )
+      }
+    }
+  }
+  const items = await fetchTranscript(sessionId, {
+    timeoutMs: HYDRATION_READ_TIMEOUT_MS,
+  })
+  return { items, page: { hasMore: false } }
 }
 
 export function useConversations(
@@ -1190,8 +1415,16 @@ export function useConversations(
      `conversation.draftText`, so the in-tab value (which knows about sends
      and edits) always wins over the boot snapshot. */
   const draftTextsRef = useRef(new Map<string, string>())
-  const lastSavedDraftRef = useRef(new Map<string, string>())
-  const pendingDraftRef = useRef<{ id: string; text: string } | null>(null)
+  /* The chips, same idea: one live list per conversation, so the composer is
+     re-seeded with the very objects it held (a `File` and its thumbnail are
+     not persisted anywhere else). For server-backed sessions each chip is
+     uploaded as it lands and the parked list is saved with the text. */
+  const draftAttachmentsRef = useRef(createDraftAttachmentStore())
+  /** Per-session tail of the chip uploads, so two attach gestures in a row
+      store their files one at a time and the list is saved once, after. */
+  const draftUploadChainRef = useRef(new Map<string, Promise<void>>())
+  const lastSavedDraftRef = useRef(new Map<string, SavedDraft>())
+  const pendingDraftRef = useRef<PendingDraft | null>(null)
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Per-session tail of the in-flight `session::set-draft` writes: saves
       chain so an older save can never land after (and clobber) a newer one
@@ -1777,8 +2010,8 @@ export function useConversations(
       }
       runs.set(sessionId, run)
       hydrationBuffersRef.current.set(sessionId, upserts)
-      void fetchTranscript(sessionId)
-        .then((items) => {
+      void fetchHydrationPage(sessionId)
+        .then(({ items, page }) => {
           if (
             run.cancelled ||
             run.connectionEpoch !== hydrationEpochRef.current ||
@@ -1788,7 +2021,7 @@ export function useConversations(
             return
           }
           patchConversation(sessionId, (conversation) =>
-            mergeHydratedConversation(conversation, items, upserts),
+            mergeHydratedConversation(conversation, items, upserts, page),
           )
           const retryTimer = hydrationRetryTimersRef.current.get(sessionId)
           if (retryTimer) clearTimeout(retryTimer)
@@ -2074,6 +2307,8 @@ export function useConversations(
       hydrationRetryTimersRef.current.delete(id)
       revisionsRef.current.delete(id)
       draftTextsRef.current.delete(id)
+      draftAttachmentsRef.current.delete(id)
+      draftUploadChainRef.current.delete(id)
       lastSavedDraftRef.current.delete(id)
       if (pendingDraftRef.current?.id === id) pendingDraftRef.current = null
       setActiveId((current) => (current === id ? null : current))
@@ -2254,6 +2489,131 @@ export function useConversations(
     [patchConversation],
   )
 
+  /* One page-up per conversation at a time. The list's sentinel re-arms as
+     soon as `loadingOlder` clears, so the set is what stops a second request
+     from racing the first while React has not yet re-rendered the flag. */
+  const olderLoadsRef = useRef(new Set<string>())
+
+  const loadOlderMessages = useCallback(
+    async (id: string, opts?: { untilEntryId?: string }) => {
+      if (!serverEnabled || olderLoadsRef.current.has(id)) return
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      const history = conv?.history
+      if (!conv || conv.draft || !history?.hasMore || !history.oldestEntryId)
+        return
+      const before = history.oldestEntryId
+      olderLoadsRef.current.add(id)
+      patchConversation(id, (c) =>
+        c.history
+          ? {
+              ...c,
+              history: { ...c.history, loadingOlder: true, error: undefined },
+            }
+          : c,
+      )
+      try {
+        const page = await fetchTranscriptTail(id, {
+          limit: TRANSCRIPT_OLDER_PAGE_LIMIT,
+          beforeEntryId: before,
+          ...(opts?.untilEntryId ? { untilEntryId: opts.untilEntryId } : {}),
+        })
+        patchConversation(id, (c) => {
+          // The window moved under the read (a re-hydration reset its
+          // anchor): this page no longer joins onto what is held.
+          if (c.history?.oldestEntryId !== before) return c
+          return {
+            ...c,
+            messages: prependTranscript(c.messages, page.items, id),
+            history: {
+              hasMore: page.hasMore,
+              oldestEntryId: page.oldestEntryId ?? before,
+            },
+          }
+        })
+      } catch (err) {
+        if (isInvalidCursorError(err)) {
+          // A deep-link anchor that is not on the path is a miss, not a moved
+          // leaf: the request is best-effort and its owner gives up on its
+          // own. Only a plain page-up whose anchor vanished reloads.
+          if (opts?.untilEntryId) {
+            patchConversation(id, (c) =>
+              c.history
+                ? { ...c, history: { ...c.history, loadingOlder: false } }
+                : c,
+            )
+          } else {
+            patchConversation(id, (c) => ({
+              ...c,
+              hydrated: false,
+              history: undefined,
+            }))
+          }
+        } else {
+          patchConversation(id, (c) =>
+            c.history
+              ? {
+                  ...c,
+                  history: {
+                    ...c.history,
+                    loadingOlder: false,
+                    error: errText(err),
+                  },
+                }
+              : c,
+          )
+        }
+        if (import.meta.env.DEV) {
+          console.warn('[conversations] older page failed', id, err)
+        }
+      } finally {
+        olderLoadsRef.current.delete(id)
+      }
+    },
+    [serverEnabled, patchConversation],
+  )
+
+  /** Entry ids a range read is fetching, per conversation. */
+  const activityLoadsRef = useRef(new Map<string, Set<string>>())
+
+  const loadActivityEntries = useCallback(
+    async (id: string, entryIds: string[]) => {
+      if (!serverEnabled || entryIds.length === 0) return
+      let inflight = activityLoadsRef.current.get(id)
+      if (!inflight) {
+        inflight = new Set()
+        activityLoadsRef.current.set(id, inflight)
+      }
+      const wanted: string[] = []
+      for (const entryId of new Set(entryIds)) {
+        if (inflight.has(entryId)) continue
+        inflight.add(entryId)
+        wanted.push(entryId)
+      }
+      if (wanted.length === 0) return
+      try {
+        const items = await fetchTranscriptRange(id, { entryIds: wanted })
+        // Whole entries replace their placeholders by entry id; a result
+        // pairs into its row by call id. Nothing here marks running: the
+        // rows are history, and their transient state was settled on read.
+        patchConversation(id, (c) => {
+          let messages = c.messages
+          for (const item of items) {
+            messages = applyEntryUpsert(messages, item, { sessionId: id })
+          }
+          return messages === c.messages ? c : { ...c, messages }
+        })
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn('[conversations] activity entries failed', id, err)
+        }
+      } finally {
+        for (const entryId of wanted) inflight.delete(entryId)
+        if (inflight.size === 0) activityLoadsRef.current.delete(id)
+      }
+    },
+    [serverEnabled, patchConversation],
+  )
+
   const ensureSession = useCallback(
     async (id: string, titleHint?: string) => {
       const conv = conversations.find((c) => c.id === id)
@@ -2321,16 +2681,28 @@ export function useConversations(
     const pending = pendingDraftRef.current
     pendingDraftRef.current = null
     if (!pending) return
-    if (lastSavedDraftRef.current.get(pending.id) === pending.text) return
+    if (
+      draftSaveIsRedundant(lastSavedDraftRef.current.get(pending.id), pending)
+    )
+      return
     const chain = draftSaveChainRef.current
     const tail = (chain.get(pending.id) ?? Promise.resolve())
       .then(async () => {
         // Re-check under the chain: an earlier link may have saved this very
         // value already. The saved-marker moves only AFTER the RPC resolves —
         // a failed save stays eligible for retry on the next flush.
-        if (lastSavedDraftRef.current.get(pending.id) === pending.text) return
-        await setSessionDraft(pending.id, pending.text || null)
-        lastSavedDraftRef.current.set(pending.id, pending.text)
+        const saved = lastSavedDraftRef.current.get(pending.id)
+        if (draftSaveIsRedundant(saved, pending)) return
+        await setSessionDraft(
+          pending.id,
+          pending.text || null,
+          pending.attachmentIds,
+        )
+        lastSavedDraftRef.current.set(pending.id, {
+          text: pending.text,
+          // A text-only save leaves the server's list as it was.
+          attachmentIds: pending.attachmentIds ?? saved?.attachmentIds,
+        })
       })
       .catch((err) => {
         if (import.meta.env.DEV) {
@@ -2343,6 +2715,34 @@ export function useConversations(
     chain.set(pending.id, tail)
   }, [])
 
+  /** Queue one debounced save for a server-backed session. Text and list
+      changes for the same session fold into one pending write: a keystroke
+      keeps a pending list, and a list change keeps the pending text — the
+      case that matters is the post-send clear, where `''` and `[]` arrive
+      back to back and must land in ONE `set-draft` that empties both. */
+  const queueDraftSave = useCallback(
+    (id: string, patch: { text?: string; attachmentIds?: string[] }) => {
+      const pending = pendingDraftRef.current
+      if (pending && pending.id !== id) flushDraft()
+      const carried = pending?.id === id ? pending : undefined
+      const text =
+        patch.text ??
+        carried?.text ??
+        draftTextsRef.current.get(id) ??
+        conversationsRef.current.find((c) => c.id === id)?.draftText ??
+        ''
+      const attachmentIds = patch.attachmentIds ?? carried?.attachmentIds
+      pendingDraftRef.current = {
+        id,
+        text,
+        ...(attachmentIds !== undefined ? { attachmentIds } : {}),
+      }
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+      draftTimerRef.current = setTimeout(flushDraft, DRAFT_SAVE_DEBOUNCE_MS)
+    },
+    [flushDraft],
+  )
+
   const setDraftText = useCallback(
     (id: string, text: string) => {
       draftTextsRef.current.set(id, text)
@@ -2351,14 +2751,9 @@ export function useConversations(
       // Local drafts have no session yet; their text still lives in the ref
       // map so in-tab switches keep it.
       if (!conv || conv.draft) return
-      if (pendingDraftRef.current && pendingDraftRef.current.id !== id) {
-        flushDraft()
-      }
-      pendingDraftRef.current = { id, text }
-      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
-      draftTimerRef.current = setTimeout(flushDraft, DRAFT_SAVE_DEBOUNCE_MS)
+      queueDraftSave(id, { text })
     },
-    [serverEnabled, flushDraft],
+    [serverEnabled, queueDraftSave],
   )
 
   const getDraftText = useCallback((id: string): string | undefined => {
@@ -2366,6 +2761,117 @@ export function useConversations(
     if (live !== undefined) return live || undefined
     return conversationsRef.current.find((c) => c.id === id)?.draftText
   }, [])
+
+  /** Store every chip in the list that has bytes but no server id yet, one
+      at a time and behind any upload already running for the session, then
+      park the list. Runs off the composer's event, never awaited by it. */
+  const storeDraftAttachments = useCallback(
+    (id: string) => {
+      const chain = draftUploadChainRef.current
+      const tail = (chain.get(id) ?? Promise.resolve())
+        .then(async () => {
+          // A chip whose upload failed is left without an id — the send path
+          // stores it then, as it always did — and is not retried in this
+          // run, or a store that is down would loop on it forever.
+          const failed = new Set<string>()
+          for (;;) {
+            // Re-read under the chain: the user may have removed the chip, or
+            // an earlier link may have stored it, while this one waited.
+            const chip = draftAttachmentsRef.current
+              .get(id)
+              ?.find((a) => a.file && !a.attachmentId && !failed.has(a.id))
+            if (!chip) break
+            const stored = await uploadAttachments(id, [chip])
+            const uploaded = stored.uploaded[0]
+            if (!uploaded) {
+              failed.add(chip.id)
+              if (import.meta.env.DEV) {
+                console.warn(
+                  '[conversations] draft attachment upload failed',
+                  stored.failures,
+                )
+              }
+              continue
+            }
+            const patched = draftAttachmentsRef.current.patch(id, chip.id, {
+              attachmentId: uploaded.attachmentId,
+            })
+            if (!patched) {
+              // Removed from the composer while its bytes were in flight:
+              // nothing references the copy, so it goes straight back out.
+              void deleteAttachment({
+                session_id: id,
+                attachment_id: uploaded.attachmentId,
+              }).catch((err) => {
+                if (import.meta.env.DEV) {
+                  console.warn(
+                    '[conversations] orphaned draft attachment delete failed',
+                    err,
+                  )
+                }
+              })
+              continue
+            }
+            // The composer's own chips learn the id through the conversation
+            // record (ChatView feeds it back as `syncedAttachments`), so a
+            // send reuses the stored bytes instead of uploading them again.
+            patchConversation(id, (c) => ({ ...c, draftAttachments: patched }))
+          }
+          const live = draftAttachmentsRef.current.get(id)
+          if (live)
+            queueDraftSave(id, { attachmentIds: draftAttachmentIds(live) })
+        })
+        .finally(() => {
+          if (chain.get(id) === tail) chain.delete(id)
+        })
+      chain.set(id, tail)
+    },
+    [patchConversation, queueDraftSave],
+  )
+
+  const setDraftAttachments = useCallback(
+    (
+      id: string,
+      attachments: Attachment[],
+      change: DraftAttachmentChange = { reason: 'attach' },
+    ) => {
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      const previous =
+        draftAttachmentsRef.current.get(id) ?? conv?.draftAttachments ?? []
+      const next = draftAttachmentsRef.current.set(id, attachments)
+      // The record mirrors the live list so ChatView can hand ids and bytes
+      // learned later back to the composer, and so a not-yet-refreshed
+      // sidebar row reads the same chips this tab shows.
+      patchConversation(id, (c) => ({
+        ...c,
+        draftAttachments: next.length > 0 ? next : undefined,
+      }))
+      if (!serverEnabled) return
+      // Local drafts have no session to store into; their chips wait in the
+      // ref map and are uploaded by the first send, as before.
+      if (!conv || conv.draft) return
+      // Hydration only put bytes behind chips the server already lists.
+      if (change.reason === 'hydrate') return
+      void releaseRemovedDraftAttachments(id, previous, next, change.reason)
+      if (next.some((a) => a.file && !a.attachmentId)) {
+        storeDraftAttachments(id)
+        return
+      }
+      queueDraftSave(id, { attachmentIds: draftAttachmentIds(next) })
+    },
+    [serverEnabled, patchConversation, storeDraftAttachments, queueDraftSave],
+  )
+
+  const getDraftAttachments = useCallback(
+    (id: string): Attachment[] | undefined => {
+      // A recorded empty list is a real answer (the chips went out on a
+      // send); only an unknown conversation falls back to the boot snapshot.
+      const live = draftAttachmentsRef.current.get(id)
+      if (live !== undefined) return live.length > 0 ? live : undefined
+      return conversationsRef.current.find((c) => c.id === id)?.draftAttachments
+    },
+    [],
+  )
 
   /* A hidden tab may be a refresh in progress — flush the pending save so
      the debounce window doesn't swallow the last keystrokes. */
@@ -2401,9 +2907,13 @@ export function useConversations(
     appendMessage,
     updateMessage,
     compactConversation,
+    loadOlderMessages,
+    loadActivityEntries,
     ensureSession,
     setDraftText,
     getDraftText,
+    setDraftAttachments,
+    getDraftAttachments,
   }
 }
 

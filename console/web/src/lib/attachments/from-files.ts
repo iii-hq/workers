@@ -15,9 +15,11 @@ const MAX_PREVIEW_BYTES = 1_000_000
 /**
  * A data URL for the chip, for the two kinds where it is worth having: a
  * thumbnail of an image, and the first bytes of a text file. Never fails a
- * pick — a preview that cannot be read is simply absent.
+ * pick — a preview that cannot be read is simply absent. Exported so a chip
+ * rebuilt from stored bytes (a parked draft after a refresh) gets the same
+ * thumbnail as a fresh pick.
  */
-function readPreview(file: File): Promise<string | undefined> {
+export function readPreview(file: File): Promise<string | undefined> {
   if (file.size > MAX_PREVIEW_BYTES) return Promise.resolve(undefined)
   if (!/^(image|text)\//.test(file.type)) return Promise.resolve(undefined)
   return new Promise((resolve) => {

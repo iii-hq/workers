@@ -6,6 +6,8 @@
  */
 
 import { getIiiClient } from '@/lib/iii-client'
+import { fetchTranscript } from '@/lib/sessions/api'
+import { transcriptToMessages } from '@/lib/sessions/entry-mapper'
 import type {
   Attachment,
   Conversation,
@@ -77,7 +79,9 @@ function renderMessage(message: Message): string {
             ? ' (turn failure)'
             : message.kind === 'working-dir'
               ? ' (working directory)'
-              : ''
+              : message.kind === 'skills'
+                ? ' (skill index)'
+                : ''
       return `## System${tone}${kind}\n${message.content || '_(empty)_'}`
     }
   }
@@ -250,11 +254,49 @@ export function triggerMarkdownDownload(
   window.setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
+/**
+ * The conversation with every message, for a reader that needs all of them.
+ *
+ * The chat holds a WINDOW of the transcript: opening a session loads the
+ * newest page, scrolling up loads more, and collapsed tool-call runs arrive
+ * as placeholders with no arguments or results (`unloaded`). An export from
+ * that window would be a file with a hole at the top and empty calls in the
+ * middle. When the window is partial — pages above it, or a placeholder in
+ * it — the whole active path is read again, pictures included, since a
+ * markdown file cannot fetch a thumbnail later. A window that already holds
+ * everything is used as is, and a failed read falls back to it rather than
+ * failing the download.
+ */
+export async function conversationForExport(
+  conversation: Conversation,
+): Promise<Conversation> {
+  const partial =
+    conversation.history?.hasMore === true ||
+    conversation.messages.some(
+      (m) => m.role === 'function-trigger' && m.unloaded === true,
+    )
+  if (!partial) return conversation
+  try {
+    const items = await fetchTranscript(conversation.id, {
+      includeImageData: true,
+    })
+    return {
+      ...conversation,
+      messages: transcriptToMessages(items, conversation.id),
+    }
+  } catch {
+    return conversation
+  }
+}
+
 export async function downloadConversationAsMarkdown(
   conversation: Conversation,
 ): Promise<string> {
   const workers = await fetchWorkerVersions()
-  const markdown = conversationToMarkdown(conversation, workers)
+  const markdown = conversationToMarkdown(
+    await conversationForExport(conversation),
+    workers,
+  )
   const filename = buildExportFilename(conversation)
   triggerMarkdownDownload(markdown, filename)
   return filename

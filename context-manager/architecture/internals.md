@@ -321,13 +321,20 @@ it is pure and the most invariant-sensitive code in the worker.
 [core/summary.rs](../src/core/summary.rs) builds what the summariser sees and
 renders what the caller gets back.
 
-- **`build_system_prompt(previous_summary)`** — instructs either "Create a new
-  anchored summary" (no prior) or "Update the anchored summary below …"
-  wrapping the prior in `<previous-summary>` tags (anchored). Either way it
-  appends `SUMMARY_TEMPLATE`, the fixed Markdown structure (Goal / Constraints
-  & Preferences / Progress {Done, In Progress, Blocked} / Key Decisions /
-  Actions Taken / Next Steps / Critical Context / Relevant Files). Update mode
-  is how summaries **converge instead of growing**.
+- **`build_system_prompt(previous_summary, instructions)`** — instructs either
+  "Create a new anchored summary" (no prior) or "Update the anchored summary
+  below …" wrapping the prior in `<previous-summary>` tags (anchored). Either
+  way it appends `SUMMARY_TEMPLATE`, the fixed Markdown structure (Goal /
+  Constraints & Preferences / Progress {Done, In Progress, Blocked} / Key
+  Decisions / Actions Taken / Next Steps / Critical Context / Relevant Files).
+  Update mode is how summaries **converge instead of growing**. When the caller
+  passes `options.instructions` (one-shot guidance — what to keep, drop, or
+  emphasise), a "Caller guidance" paragraph plus an `<instructions>` block
+  follows the template; the template and its rules stay authoritative, so
+  guidance steers content, never structure. Guidance is trimmed, blank is
+  dropped, and anything past `MAX_INSTRUCTIONS_CHARS` (2000) is cut with a
+  `... [truncated]` marker. Only `context::compact` threads it through;
+  `assemble`'s inline compaction always passes `None`.
 - **`render_user_prompt(head)`** — the head messages inside a `<conversation>`
   block: text verbatim, `function_call`s as terse `[tool_call] <id> <args>`
   one-liners; other block kinds dropped.

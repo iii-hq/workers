@@ -358,7 +358,15 @@ fn inner(
         if let Some(matcher) = &path_matcher {
             match matcher {
                 PathMatcher::Fuzzy(query) => {
-                    if let Some(score) = fuzzy_path_score(query, &rel) {
+                    // Quick-open ranks the path the caller sees under the
+                    // folder it searched. `rel` is relative to the CONTAINING
+                    // configured root, which can sit inside the walk root (the
+                    // worker's own cwd under the repo a session works in) and
+                    // then drops the leading folder for those entries only;
+                    // one anchor for the whole walk keeps the ranking, and the
+                    // highlight a UI derives from it, consistent.
+                    let seen = relative_to(&walk_root, abs).unwrap_or_else(|| rel.clone());
+                    if let Some(score) = fuzzy_path_score(query, &seen) {
                         fuzzy_seen += 1;
                         fuzzy_candidates.push(std::cmp::Reverse(FuzzyCandidate {
                             score,
@@ -2321,5 +2329,53 @@ mod tests {
             out.truncated,
             "more candidates than the cap must flag truncation"
         );
+    }
+
+    /// REGRESSION: the worker's configured root can sit INSIDE the folder a
+    /// session searches (its own cwd under the repo the chat works in).
+    /// Entries under that root were scored on the root-relative form — the
+    /// leading folder dropped — so a quick-open query naming that folder
+    /// (`shellpage` for `shell/ui/page.tsx`) matched nothing while the same
+    /// shape of query found every file outside it. Ranking runs on the path
+    /// as the caller sees it under the searched folder.
+    #[tokio::test]
+    async fn fuzzy_paths_rank_relative_to_the_searched_folder() {
+        let outer = tempdir().unwrap();
+        let inner = outer.path().join("shell");
+        std::fs::create_dir_all(inner.join("ui")).unwrap();
+        std::fs::write(inner.join("ui/page.tsx"), "x").unwrap();
+        std::fs::create_dir_all(outer.path().join("a2ui")).unwrap();
+        std::fs::write(outer.path().join("a2ui/Cargo.toml"), "x").unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![inner.clone()],
+            non_accessible_globs: vec!["**/.env".to_string()],
+            unjailed: true,
+            max_read_bytes: 1024 * 1024,
+            search_default_max_matches: 1000,
+            search_default_max_line_bytes: 4096,
+            ..CoderConfig::default()
+        });
+        let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
+        let out = handle(
+            resolver,
+            cfg,
+            SearchInput {
+                path: outer.path().display().to_string(),
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                include_hidden: true,
+                ..base_input("shellpage")
+            },
+        )
+        .await
+        .unwrap();
+        let expected = std::fs::canonicalize(&inner)
+            .unwrap()
+            .join("ui/page.tsx")
+            .display()
+            .to_string();
+        let paths: Vec<&str> = out.path_matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, vec![expected.as_str()]);
     }
 }

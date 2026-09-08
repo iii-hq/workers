@@ -22,6 +22,7 @@ import {
   cancelHydrationRunsForSessions,
   completeFailedHydration,
   completePreSendMetaUpdate,
+  draftSaveIsRedundant,
   type HydrationRun,
   type HydrationUpsert,
   isUntouchedDraft,
@@ -36,6 +37,7 @@ import {
   metadataForWrite,
   missingGenerationForDirectoryRefresh,
   preSendMetaUpdate,
+  rehydrateTranscript,
   resolveActiveConversationId,
   shouldAcceptReconnectDirectoryRow,
 } from './use-conversations'
@@ -140,6 +142,48 @@ describe('applyCatalogModelFallback', () => {
   })
 })
 
+describe('draftSaveIsRedundant', () => {
+  it('skips a save the server already holds and never a first list', () => {
+    // Nothing saved yet: everything goes.
+    expect(draftSaveIsRedundant(undefined, { id: 'c', text: '' })).toBe(false)
+    // Same text, text-only save: the server's list is untouched either way.
+    expect(
+      draftSaveIsRedundant(
+        { text: 'a', attachmentIds: ['x'] },
+        { id: 'c', text: 'a' },
+      ),
+    ).toBe(true)
+    // The list has never been sent: even an empty one must go (post-send
+    // clear of a session whose chips were parked by another tab).
+    expect(
+      draftSaveIsRedundant(
+        { text: '' },
+        { id: 'c', text: '', attachmentIds: [] },
+      ),
+    ).toBe(false)
+    // Same text and same list, in order.
+    expect(
+      draftSaveIsRedundant(
+        { text: 'a', attachmentIds: ['x', 'y'] },
+        { id: 'c', text: 'a', attachmentIds: ['x', 'y'] },
+      ),
+    ).toBe(true)
+    expect(
+      draftSaveIsRedundant(
+        { text: 'a', attachmentIds: ['x', 'y'] },
+        { id: 'c', text: 'a', attachmentIds: ['y', 'x'] },
+      ),
+    ).toBe(false)
+    // Text changed: goes regardless of the list.
+    expect(
+      draftSaveIsRedundant(
+        { text: 'a', attachmentIds: [] },
+        { id: 'c', text: 'b', attachmentIds: [] },
+      ),
+    ).toBe(false)
+  })
+})
+
 describe('mergeConversationMeta', () => {
   it('restores the parked composer draft from SessionMeta.draft', () => {
     const next = mergeConversationMeta(
@@ -155,6 +199,49 @@ describe('mergeConversationMeta', () => {
     expect(
       mergeConversationMeta(undefined, sessionMeta({ draft: '' })).draftText,
     ).toBe(undefined)
+  })
+
+  /* The chips take the same route as the text: parked server-side, restored
+     as chips that know their server id (no bytes — ChatView fetches those). */
+  it('restores parked draft attachments as chips with their attachmentId', () => {
+    const parked = {
+      attachment_id: 'a_shot',
+      session_id: 'console-1',
+      name: 'shot.png',
+      mime: 'image/png',
+      size: 42,
+      sha256: 'deadbeef',
+      created_at: 1,
+    }
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({ draft: 'see attached', draft_attachments: [parked] }),
+    )
+    expect(next.draftAttachments).toEqual([
+      {
+        id: 'a_shot',
+        name: 'shot.png',
+        size: 42,
+        type: 'image/png',
+        attachmentId: 'a_shot',
+      },
+    ])
+    expect(
+      mergeConversationMeta(undefined, sessionMeta({})).draftAttachments,
+    ).toBeUndefined()
+
+    // A directory refresh names the same attachment again: the chip this tab
+    // already hydrated (bytes, thumbnail) is kept rather than rebuilt bare.
+    const hydrated = {
+      ...next.draftAttachments?.[0],
+      file: new File(['x'], 'shot.png', { type: 'image/png' }),
+      dataUrl: 'data:image/png;base64,x',
+    } as NonNullable<Conversation['draftAttachments']>[number]
+    const refreshed = mergeConversationMeta(
+      { ...next, draftAttachments: [hydrated], hydrated: true },
+      sessionMeta({ draft_attachments: [parked], updated_at: 3_000 }),
+    )
+    expect(refreshed.draftAttachments?.[0]).toBe(hydrated)
   })
 
   it('restores the session thinking level and defaults older sessions', () => {
@@ -801,6 +888,137 @@ describe('mergeHydratedTranscript', () => {
   })
 })
 
+/* Paged hydration: the read is the newest page, not the whole path. A
+   re-read (reconnect) must keep the pages the reader already scrolled into
+   when the new page joins onto them, and start over when it does not. */
+describe('rehydrateTranscript', () => {
+  const opts = { sessionId: 'console-1', working: false }
+
+  function userItem(entryId: string, text: string): TranscriptItem {
+    return {
+      entry_id: entryId,
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text }],
+        timestamp: 1,
+      },
+    }
+  }
+  const toMessages = (items: TranscriptItem[]) =>
+    transcriptToMessages(items, 'console-1', { working: false })
+
+  it('keeps older loaded pages when the page joins onto the window', () => {
+    const window = toMessages([
+      userItem('e_1', 'one'),
+      userItem('e_2', 'two'),
+      userItem('e_3', 'three'),
+      userItem('e_4', 'four'),
+    ])
+    const current = conversation({
+      messages: window,
+      history: { hasMore: true, oldestEntryId: 'e_1' },
+    })
+    const { messages, history } = rehydrateTranscript(
+      current,
+      toMessages([userItem('e_3', 'three'), userItem('e_4', 'four (edited)')]),
+      { hasMore: true, oldestEntryId: 'e_3' },
+      [],
+      opts,
+    )
+    expect(messages.map((m) => m.id)).toEqual(['e_1', 'e_2', 'e_3', 'e_4'])
+    expect(messages[3]).toMatchObject({ content: 'four (edited)' })
+    // The window still reaches back to where the reader had scrolled.
+    expect(history).toEqual({ hasMore: true, oldestEntryId: 'e_1' })
+  })
+
+  it('keeps live-only rows that sit inside the replaced range', () => {
+    const current = conversation({
+      messages: [
+        ...toMessages([userItem('e_1', 'one'), userItem('e_2', 'two')]),
+        {
+          id: 'notice-local',
+          role: 'system',
+          kind: 'notice',
+          content: 'working dir changed',
+          createdAt: 5,
+        },
+      ],
+      history: { hasMore: false },
+    })
+    const { messages } = rehydrateTranscript(
+      current,
+      toMessages([userItem('e_1', 'one'), userItem('e_2', 'two')]),
+      { hasMore: false, oldestEntryId: 'e_1' },
+      [],
+      opts,
+    )
+    expect(messages.map((m) => m.id)).toEqual(['e_1', 'e_2', 'notice-local'])
+  })
+
+  it('resets when the page does not overlap the window', () => {
+    const current = conversation({
+      messages: [
+        ...toMessages([userItem('e_1', 'one'), userItem('e_2', 'two')]),
+        {
+          id: 'notice-local',
+          role: 'system',
+          kind: 'notice',
+          content: 'kept: not a durable entry',
+          createdAt: 5,
+        },
+      ],
+      history: { hasMore: false, oldestEntryId: 'e_1' },
+    })
+    const { messages, history } = rehydrateTranscript(
+      current,
+      toMessages([userItem('e_40', 'forty'), userItem('e_41', 'forty-one')]),
+      { hasMore: true, oldestEntryId: 'e_40' },
+      [],
+      opts,
+    )
+    // Durable rows above the page are gone (scrolling up reloads them); the
+    // local notice survives the replay as it always has.
+    expect(messages.map((m) => m.id)).toEqual(['e_40', 'e_41', 'notice-local'])
+    expect(history).toEqual({ hasMore: true, oldestEntryId: 'e_40' })
+  })
+
+  /* A brand-new session's first read can answer before the harness wrote
+     anything; the optimistic user row must survive as it did before paging. */
+  it('keeps everything when the page is empty', () => {
+    const current = conversation({
+      messages: toMessages([userItem('e_idem_1', 'first prompt')]),
+    })
+    const { messages, history } = rehydrateTranscript(
+      current,
+      [],
+      { hasMore: false },
+      [],
+      opts,
+    )
+    expect(messages.map((m) => m.id)).toEqual(['e_idem_1'])
+    expect(history).toEqual({ hasMore: false })
+  })
+
+  it('stores the page edge on the conversation through mergeHydratedConversation', () => {
+    const hydrated = mergeHydratedConversation(
+      conversation({}),
+      [userItem('e_7', 'seven')],
+      [],
+      { hasMore: true, oldestEntryId: 'e_7' },
+    )
+    expect(hydrated.history).toEqual({ hasMore: true, oldestEntryId: 'e_7' })
+    expect(hydrated.hydrated).toBe(true)
+    // The full-read fallback (no page) has nothing above it.
+    expect(
+      mergeHydratedConversation(
+        conversation({}),
+        [userItem('e_7', 'seven')],
+        [],
+      ).history,
+    ).toEqual({ hasMore: false })
+  })
+})
+
 describe('completeFailedHydration', () => {
   it('reaches a terminal state without replacing live or optimistic messages', () => {
     const messages: Conversation['messages'] = [
@@ -850,6 +1068,30 @@ describe('appendMessageToConversation', () => {
     expect(next.status).toBe('working')
     expect(next.statusReason).toBeUndefined()
     expect(next.updatedAt).toBe(3_500)
+  })
+
+  it('a client-handled command row never marks the session working', () => {
+    // `/compact` is answered by the console, not the harness: no turn follows,
+    // so no `session::status-changed` would ever clear a `working` flip.
+    const next = appendMessageToConversation(
+      conversation({ status: 'idle', messages: [] }),
+      {
+        id: 'm1',
+        role: 'user',
+        content: '/compact keep the plan',
+        command: true,
+        createdAt: 3_000,
+      },
+      3_500,
+    )
+
+    expect(next.status).toBe('idle')
+    expect(next.messages).toHaveLength(1)
+    expect(next.updatedAt).toBe(3_500)
+    // Nor does it seed the title the way a first real prompt does.
+    expect(next.title).toBe(
+      conversation({ status: 'idle', messages: [] }).title,
+    )
   })
 
   it('upserts a durable lifecycle notice over its live fallback', () => {

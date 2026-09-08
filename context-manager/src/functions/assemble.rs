@@ -526,7 +526,7 @@ async fn try_compact(
         let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
         let stripped = strip_media(head, config.max_output_chars);
         let request = SummarizeRequest {
-            system_prompt: build_system_prompt(previous_summary),
+            system_prompt: build_system_prompt(previous_summary, None),
             user_prompt: render_user_prompt(&stripped),
             model: model.id.clone(),
             provider: model.provider.clone(),

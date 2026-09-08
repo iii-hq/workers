@@ -26,7 +26,8 @@ use session_manager::config::WorkerConfig;
 use session_manager::error::SessionError;
 use session_manager::events::{Emitter, TriggerSets};
 use session_manager::functions::{
-    append, append_many, create, delete, ensure, fork, get, get_message, list, messages,
+    append, append_many, create, delete, delete_attachment, ensure, fork, get, get_attachment,
+    get_message, list, list_attachments, messages, messages_range, messages_tail, put_attachment,
     set_active_leaf, set_draft, set_meta, set_status, update_message, Deps,
 };
 use session_manager::service::SessionService;
@@ -135,12 +136,18 @@ impl SessionWorld {
     /// over the same directory, same ids/clock so the sequence
     /// continues, same emitter/bindings/recorder.
     pub fn reopen_fs(&mut self) {
+        self.reopen_fs_with(WorkerConfig::default());
+    }
+
+    /// Like [`Self::reopen_fs`], with an operator config — the way a
+    /// `configuration::set` of a per-call limit reaches the service.
+    pub fn reopen_fs_with(&mut self, cfg: WorkerConfig) {
         let store = Arc::new(FsStore::new(&self.fs_dir).expect("reopen FsStore"));
         let service = Arc::new(SessionService::with_parts(
             store,
             self.ids.clone(),
             self.clock.clone(),
-            &WorkerConfig::default(),
+            &cfg,
         ));
         self.deps = Arc::new(Deps {
             service,
@@ -262,8 +269,14 @@ pub async fn dispatch(deps: &Deps, function: &str, payload: Value) -> Result<Val
         "session::update-message" => out(update_message::handle(deps, parse(payload)?).await),
         "session::messages" => out(messages::handle(deps, parse(payload)?).await),
         "session::get-message" => out(get_message::handle(deps, parse(payload)?).await),
+        "session::messages-tail" => out(messages_tail::handle(deps, parse(payload)?).await),
+        "session::messages-range" => out(messages_range::handle(deps, parse(payload)?).await),
         "session::fork" => out(fork::handle(deps, parse(payload)?).await),
         "session::set-active-leaf" => out(set_active_leaf::handle(deps, parse(payload)?).await),
+        "session::put-attachment" => out(put_attachment::handle(deps, parse(payload)?).await),
+        "session::get-attachment" => out(get_attachment::handle(deps, parse(payload)?).await),
+        "session::list-attachments" => out(list_attachments::handle(deps, parse(payload)?).await),
+        "session::delete-attachment" => out(delete_attachment::handle(deps, parse(payload)?).await),
         other => Err(format!("unknown function {other}")),
     }
 }

@@ -18,6 +18,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -32,29 +33,42 @@ use crate::functions::append::{AppendRequest, AppendResponse};
 use crate::functions::append_many::{AppendManyRequest, AppendManyResponse};
 use crate::functions::create::{CreateRequest, CreateResponse};
 use crate::functions::delete::{DeleteRequest, DeleteResponse};
+use crate::functions::delete_attachment::{DeleteAttachmentRequest, DeleteAttachmentResponse};
 use crate::functions::ensure::{EnsureRequest, EnsureResponse};
 use crate::functions::fork::{ForkRequest, ForkResponse};
 use crate::functions::get::{GetRequest, GetResponse};
+use crate::functions::get_attachment::{GetAttachmentRequest, GetAttachmentResponse};
 use crate::functions::get_message::{GetMessageRequest, GetMessageResponse};
 use crate::functions::list::{ListOrder, ListRequest, ListResponse};
+use crate::functions::list_attachments::{ListAttachmentsRequest, ListAttachmentsResponse};
 use crate::functions::messages::{MessageItem, MessagesRequest, MessagesResponse};
+use crate::functions::messages_range::{MessagesRangeRequest, MessagesRangeResponse};
+use crate::functions::messages_tail::{MessagesTailRequest, MessagesTailResponse, TailItem};
+use crate::functions::put_attachment::{PutAttachmentRequest, PutAttachmentResponse};
 use crate::functions::set_active_leaf::{SetActiveLeafRequest, SetActiveLeafResponse};
 use crate::functions::set_draft::{SetDraftRequest, SetDraftResponse};
 use crate::functions::set_meta::{SetMetaRequest, SetMetaResponse};
 use crate::functions::set_status::{SetStatusRequest, SetStatusResponse};
 use crate::functions::update_message::{UpdateMessageRequest, UpdateMessageResponse};
+use crate::pagination::{self, BlockKind};
 use crate::store::SessionStore;
 use crate::types::{
-    metadata_matches, AgentMessage, CustomPayload, SessionEntry, SessionMeta, SessionStatus,
+    metadata_matches, AgentMessage, AttachmentMeta, ContentBlock, CustomPayload, SessionEntry,
+    SessionMeta, SessionStatus,
 };
 
 /// Id generation, injected for deterministic tests.
 pub trait IdGen: Send + Sync {
     fn session_id(&self) -> String;
     fn entry_id(&self) -> String;
+    /// Attachment ids (`a_<uuid>`). Defaulted so deterministic test id
+    /// generators that never touch attachments need no change.
+    fn attachment_id(&self) -> String {
+        format!("a_{}", Uuid::new_v4().simple())
+    }
 }
 
-/// Production ids: `s_<uuid>` / `e_<uuid>`.
+/// Production ids: `s_<uuid>` / `e_<uuid>` / `a_<uuid>`.
 pub struct UuidIds;
 
 impl IdGen for UuidIds {
@@ -188,6 +202,7 @@ impl SessionService {
             metadata: req.metadata,
             forked_from: None,
             draft: None,
+            draft_attachments: None,
             created_at: now,
             updated_at: now,
             message_count: 0,
@@ -232,6 +247,7 @@ impl SessionService {
             metadata: req.metadata,
             forked_from: None,
             draft: None,
+            draft_attachments: None,
             created_at: now,
             updated_at: now,
             message_count: 0,
@@ -355,8 +371,16 @@ impl SessionService {
         // Whitespace-only input is "nothing worth keeping" — normalize to a
         // cleared draft so an emptied composer removes the stored record.
         let draft = req.draft.filter(|d| !d.trim().is_empty());
-        if meta.draft == draft {
-            return Ok((SetDraftResponse { draft: meta.draft }, vec![]));
+        // Attachments are parked by id and resolved here, so the stored
+        // metadata is always the store's own (never client-supplied) and a
+        // dangling reference is refused up front. `None` keeps what is parked:
+        // a keystroke-cadence text save must not drop the chips.
+        let draft_attachments = match req.attachment_ids {
+            None => meta.draft_attachments.clone(),
+            Some(ids) => self.resolve_draft_attachments(&req.session_id, ids).await?,
+        };
+        if meta.draft == draft && meta.draft_attachments == draft_attachments {
+            return Ok((draft_response(&meta), vec![]));
         }
 
         // Deliberately no `updated_at` bump and no event: drafts are saved at
@@ -364,8 +388,36 @@ impl SessionService {
         // nor spam meta-updated subscribers. Consumers read the draft back
         // from `session::get` / `session::list`.
         meta.draft = draft;
+        meta.draft_attachments = draft_attachments;
         self.store.put_meta(&meta).await?;
-        Ok((SetDraftResponse { draft: meta.draft }, vec![]))
+        Ok((draft_response(&meta), vec![]))
+    }
+
+    /// Stored metadata for each requested id, request order, duplicates
+    /// dropped; `None` for an empty list. Unknown ids are
+    /// `session/invalid_request`.
+    async fn resolve_draft_attachments(
+        &self,
+        session_id: &str,
+        ids: Vec<String>,
+    ) -> Result<Option<Vec<AttachmentMeta>>, SessionError> {
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        let stored = self.store.list_attachments(session_id).await?;
+        let mut out: Vec<AttachmentMeta> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if out.iter().any(|m| m.attachment_id == id) {
+                continue;
+            }
+            let Some(meta) = stored.iter().find(|m| m.attachment_id == id) else {
+                return Err(SessionError::InvalidRequest(format!(
+                    "unknown attachment {id}; upload it with session::put-attachment first"
+                )));
+            };
+            out.push(meta.clone());
+        }
+        Ok(Some(out))
     }
 
     pub async fn set_status(&self, req: SetStatusRequest) -> ServiceResult<SetStatusResponse> {
@@ -428,6 +480,7 @@ impl SessionService {
 
         self.store.delete_entries(&req.session_id).await?;
         self.store.delete_active_leaf(&req.session_id).await?;
+        self.store.delete_attachments(&req.session_id).await?;
         self.store.delete_meta(&req.session_id).await?;
 
         let event = EmittableEvent {
@@ -840,6 +893,11 @@ impl SessionService {
             None
         };
 
+        // Opt-out, not opt-in: the harness and every existing reader keep
+        // getting inline bytes; only a UI that will fetch lazily asks to
+        // skip them, and only images that have somewhere else to be loaded
+        // from (an `attachment_id`) are blanked.
+        let elide_images = !req.include_image_data.unwrap_or(true);
         let items = page
             .iter()
             .map(|entry| match entry {
@@ -848,12 +906,18 @@ impl SessionService {
                     message,
                     origin,
                     ..
-                } => MessageItem {
-                    entry_id: id.clone(),
-                    message: Some((**message).clone()),
-                    custom: None,
-                    origin: origin.clone(),
-                },
+                } => {
+                    let mut message = (**message).clone();
+                    if elide_images {
+                        ContentBlock::elide_image_data(message.content_mut());
+                    }
+                    MessageItem {
+                        entry_id: id.clone(),
+                        message: Some(message),
+                        custom: None,
+                        origin: origin.clone(),
+                    }
+                }
                 SessionEntry::Custom {
                     id,
                     custom_type,
@@ -884,11 +948,320 @@ impl SessionService {
         &self,
         req: GetMessageRequest,
     ) -> Result<Option<GetMessageResponse>, SessionError> {
+        let Some(mut entry) = self.store.get_entry(&req.session_id, &req.entry_id).await? else {
+            return Ok(None);
+        };
+        // Same opt-out as `session::messages`, so a reader that pages the
+        // transcript without image bytes can refresh one entry the same way.
+        if !req.include_image_data.unwrap_or(true) {
+            if let SessionEntry::Message { message, .. } = &mut entry {
+                ContentBlock::elide_image_data(message.content_mut());
+            }
+        }
+        Ok(Some(GetMessageResponse { entry }))
+    }
+
+    // -----------------------------------------------------------------
+    // Lazy transcript readers (see `pagination`)
+    // -----------------------------------------------------------------
+
+    pub async fn messages_tail(
+        &self,
+        req: MessagesTailRequest,
+    ) -> Result<MessagesTailResponse, SessionError> {
+        self.meta_or_not_found(&req.session_id).await?;
+        let entries = self.store.list_entries(&req.session_id).await?;
+        let by_id: HashMap<&str, &SessionEntry> = entries.iter().map(|e| (e.id(), e)).collect();
+        let Some(leaf) = self.store.get_active_leaf(&req.session_id).await? else {
+            return Ok(MessagesTailResponse {
+                messages: vec![],
+                has_more: false,
+                oldest_entry_id: None,
+            });
+        };
+        // Custom entries default to included here: a transcript reader wants
+        // compaction markers and wake records in place, and dropping them
+        // after blocking would leave a page whose blocks no longer match
+        // what the caller sees.
+        let include_custom = req.include_custom.unwrap_or(true);
+        let path: Vec<&SessionEntry> = active_path(&by_id, &leaf)?
+            .into_iter()
+            .filter(|e| include_custom || e.is_message())
+            .collect();
+        let blocks = pagination::activity_blocks(&path);
+
+        // Both anchors name an entry the caller already holds, so "not on
+        // the path" means the path changed under it (fork, leaf switch):
+        // the same signal `session::messages` gives, so callers share one
+        // reload-from-the-top fallback.
+        let block_of = |entry_id: &str, what: &str| -> Result<usize, SessionError> {
+            let idx = path
+                .iter()
+                .position(|e| e.id() == entry_id)
+                .ok_or_else(|| {
+                    SessionError::InvalidCursor(format!(
+                        "{what} {entry_id} is not on the active path"
+                    ))
+                })?;
+            Ok(pagination::block_index_of(&blocks, idx).expect("every path index lies in a block"))
+        };
+
+        let end = match &req.before_entry_id {
+            Some(id) => block_of(id, "before_entry_id")?,
+            None => blocks.len(),
+        };
+        let limit = self.clamp_limit(req.limit).await;
+        let mut start = end.saturating_sub(limit);
+        if let Some(until) = &req.until_entry_id {
+            // Only ever widens the page: a target inside or newer than the
+            // page is already covered.
+            start = start.min(block_of(until, "until_entry_id")?);
+        }
+
+        let elide_images = !req.include_image_data.unwrap_or(true);
+        let mut messages = Vec::new();
+        for block in &blocks[start..end] {
+            let run = &path[block.start..block.end];
+            let kept = match block.kind {
+                BlockKind::ActivityRun => pagination::kept_in_collapsed_run(run),
+                BlockKind::Single => vec![true; run.len()],
+            };
+            for (entry, keep) in run.iter().zip(kept) {
+                messages.push(tail_item(entry, !keep, elide_images));
+            }
+        }
+        Ok(MessagesTailResponse {
+            has_more: start > 0,
+            oldest_entry_id: messages.first().map(|m| m.entry_id.clone()),
+            messages,
+        })
+    }
+
+    pub async fn messages_range(
+        &self,
+        req: MessagesRangeRequest,
+    ) -> Result<MessagesRangeResponse, SessionError> {
+        self.meta_or_not_found(&req.session_id).await?;
+        let entries = self.store.list_entries(&req.session_id).await?;
+        let by_id: HashMap<&str, &SessionEntry> = entries.iter().map(|e| (e.id(), e)).collect();
+        let path: Vec<&SessionEntry> = match self.store.get_active_leaf(&req.session_id).await? {
+            Some(leaf) => active_path(&by_id, &leaf)?,
+            None => Vec::new(),
+        };
+        // Same two answers as `session::messages` gives for its anchors: an
+        // id nobody ever wrote is `entry_not_found`; one that exists but sits
+        // on another branch is `invalid_cursor`, the reload signal.
+        let position = |entry_id: &str| -> Result<usize, SessionError> {
+            if !by_id.contains_key(entry_id) {
+                return Err(SessionError::EntryNotFound(format!(
+                    "entry {entry_id} does not exist in session {}",
+                    req.session_id
+                )));
+            }
+            path.iter().position(|e| e.id() == entry_id).ok_or_else(|| {
+                SessionError::InvalidCursor(format!("entry {entry_id} is not on the active path"))
+            })
+        };
+
+        // The selection is a sorted, deduplicated list of path positions;
+        // paging then works the same way for a span and for an id list.
+        let selected: Vec<usize> =
+            match (&req.from_entry_id, &req.to_entry_id, &req.entry_ids) {
+                (Some(from), Some(to), None) => {
+                    let (first, last) = (position(from)?, position(to)?);
+                    if first > last {
+                        return Err(SessionError::InvalidRequest(format!(
+                            "from_entry_id {from} comes after to_entry_id {to} on the active path"
+                        )));
+                    }
+                    (first..=last).collect()
+                }
+                (None, None, Some(ids)) => {
+                    let mut positions = ids
+                        .iter()
+                        .map(|id| position(id))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    positions.sort_unstable();
+                    positions.dedup();
+                    positions
+                }
+                _ => return Err(SessionError::InvalidRequest(
+                    "exactly one selector is required: from_entry_id + to_entry_id, or entry_ids"
+                        .into(),
+                )),
+            };
+
+        let start = match &req.cursor {
+            None => 0,
+            Some(raw) => {
+                let cursor: MessagesCursor = decode_cursor(raw)?;
+                let pos = selected
+                    .iter()
+                    .position(|&i| path[i].id() == cursor.id)
+                    .ok_or_else(|| {
+                        SessionError::InvalidCursor(format!(
+                            "cursor entry {} is not in the selection",
+                            cursor.id
+                        ))
+                    })?;
+                pos + 1
+            }
+        };
+        let limit = self.clamp_limit(req.limit).await;
+        let end = (start + limit).min(selected.len());
+        let elide_images = !req.include_image_data.unwrap_or(true);
+        let messages: Vec<TailItem> = selected[start..end]
+            .iter()
+            .map(|&i| tail_item(path[i], false, elide_images))
+            .collect();
+        let next_cursor = if end < selected.len() {
+            messages.last().map(|m| {
+                encode_cursor(&MessagesCursor {
+                    id: m.entry_id.clone(),
+                })
+            })
+        } else {
+            None
+        };
+        Ok(MessagesRangeResponse {
+            messages,
+            next_cursor,
+        })
+    }
+
+    // -----------------------------------------------------------------
+    // Attachments
+    // -----------------------------------------------------------------
+
+    /// Store original bytes for a session. Event-silent: the attachment
+    /// surfaces through the message that embeds the returned `file` block,
+    /// and that append fires `session::message-added` on its own.
+    pub async fn put_attachment(
+        &self,
+        req: PutAttachmentRequest,
+    ) -> Result<PutAttachmentResponse, SessionError> {
+        let name = req.name.trim();
+        if name.is_empty() {
+            return Err(SessionError::InvalidRequest(
+                "attachment name must not be empty".into(),
+            ));
+        }
+        let bytes = BASE64.decode(&req.data).map_err(|e| {
+            SessionError::InvalidRequest(format!("attachment data is not valid base64: {e}"))
+        })?;
+        let max_bytes = self.config.read().await.max_attachment_bytes;
+        if bytes.len() as u64 > max_bytes {
+            return Err(SessionError::AttachmentTooLarge(format!(
+                "attachment {name} is {} bytes; the limit is {max_bytes} bytes",
+                bytes.len()
+            )));
+        }
+
+        let _guard = self.lock_session(&req.session_id).await;
+        self.meta_or_not_found(&req.session_id).await?;
+
+        let mime = req.mime.trim();
+        let meta = AttachmentMeta {
+            attachment_id: self.ids.attachment_id(),
+            session_id: req.session_id.clone(),
+            name: name.to_string(),
+            mime: if mime.is_empty() {
+                "application/octet-stream".to_string()
+            } else {
+                mime.to_string()
+            },
+            size: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            created_at: self.clock.now_ms(),
+        };
+        self.store.put_attachment(&meta, &bytes).await?;
+        Ok(PutAttachmentResponse {
+            block: meta.to_block(),
+            attachment: meta,
+        })
+    }
+
+    /// `None` when the session or attachment is unknown (mirrors
+    /// `get_message`). A metadata-only read never loads the bytes.
+    pub async fn get_attachment(
+        &self,
+        req: GetAttachmentRequest,
+    ) -> Result<Option<GetAttachmentResponse>, SessionError> {
+        if !req.include_data.unwrap_or(true) {
+            let metas = self.store.list_attachments(&req.session_id).await?;
+            return Ok(metas
+                .into_iter()
+                .find(|m| m.attachment_id == req.attachment_id)
+                .map(|attachment| GetAttachmentResponse {
+                    attachment,
+                    data: None,
+                }));
+        }
         Ok(self
             .store
-            .get_entry(&req.session_id, &req.entry_id)
+            .get_attachment(&req.session_id, &req.attachment_id)
             .await?
-            .map(|entry| GetMessageResponse { entry }))
+            .map(|(attachment, bytes)| GetAttachmentResponse {
+                attachment,
+                data: Some(BASE64.encode(bytes)),
+            }))
+    }
+
+    /// Remove one attachment nothing in the transcript points at. A `file`
+    /// block that lost its bytes would be a dead chip forever, so a
+    /// referenced attachment is refused (`session/attachment_in_use`); the
+    /// parked draft, being the only other holder, is updated in place.
+    pub async fn delete_attachment(
+        &self,
+        req: DeleteAttachmentRequest,
+    ) -> Result<DeleteAttachmentResponse, SessionError> {
+        let _guard = self.lock_session(&req.session_id).await;
+        let mut meta = self.meta_or_not_found(&req.session_id).await?;
+
+        let entries = self.store.list_entries(&req.session_id).await?;
+        let holder = entries.iter().find(|entry| match entry {
+            SessionEntry::Message { message, .. } => {
+                ContentBlock::attachment_ids(message.content()).contains(&req.attachment_id)
+            }
+            SessionEntry::Custom { .. } => false,
+        });
+        if let Some(entry) = holder {
+            return Err(SessionError::AttachmentInUse(format!(
+                "attachment {} is referenced by entry {}",
+                req.attachment_id,
+                entry.id()
+            )));
+        }
+
+        let deleted = self
+            .store
+            .delete_attachment(&req.session_id, &req.attachment_id)
+            .await?;
+        if let Some(parked) = meta.draft_attachments.as_mut() {
+            let before = parked.len();
+            parked.retain(|m| m.attachment_id != req.attachment_id);
+            if parked.len() != before {
+                if parked.is_empty() {
+                    meta.draft_attachments = None;
+                }
+                self.store.put_meta(&meta).await?;
+            }
+        }
+        Ok(DeleteAttachmentResponse { deleted })
+    }
+
+    pub async fn list_attachments(
+        &self,
+        req: ListAttachmentsRequest,
+    ) -> Result<ListAttachmentsResponse, SessionError> {
+        self.meta_or_not_found(&req.session_id).await?;
+        let mut attachments = self.store.list_attachments(&req.session_id).await?;
+        attachments.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.attachment_id.cmp(&b.attachment_id))
+        });
+        Ok(ListAttachmentsResponse { attachments })
     }
 
     // -----------------------------------------------------------------
@@ -969,6 +1342,30 @@ impl SessionService {
             self.store.put_entry(&new_session_id, copy).await?;
         }
 
+        // The copied messages keep their `file` blocks verbatim, so every
+        // attachment they point at is copied under the SAME id into the new
+        // session — a fork that dropped them would render dead chips. Only
+        // referenced attachments travel; unreferenced uploads stay behind.
+        for attachment_id in referenced_attachment_ids(&path) {
+            let Some((meta, bytes)) = self
+                .store
+                .get_attachment(&req.session_id, &attachment_id)
+                .await?
+            else {
+                tracing::warn!(
+                    session_id = %req.session_id,
+                    attachment_id = %attachment_id,
+                    "fork: message references an attachment the store does not have; skipping"
+                );
+                continue;
+            };
+            let copy = AttachmentMeta {
+                session_id: new_session_id.clone(),
+                ..meta
+            };
+            self.store.put_attachment(&copy, &bytes).await?;
+        }
+
         let new_leaf = id_map
             .get(&req.entry_id)
             .expect("fork point is on the path")
@@ -988,6 +1385,7 @@ impl SessionService {
             forked_from: Some(req.session_id.clone()),
             // The draft is the SOURCE session's unsent input, not history.
             draft: None,
+            draft_attachments: None,
             created_at: now,
             updated_at: now,
             message_count,
@@ -1060,6 +1458,77 @@ fn active_path<'a>(
 
     path.reverse();
     Ok(path)
+}
+
+/// One `session::messages-tail` / `session::messages-range` item. `elide`
+/// strips the heavy parts of a message inside a collapsed run (see
+/// `pagination::elide_message`); the flag on the wire tells the reader the
+/// entry is a placeholder to fetch later, never a message that was that
+/// small.
+fn tail_item(entry: &SessionEntry, elide: bool, elide_images: bool) -> TailItem {
+    match entry {
+        SessionEntry::Message {
+            id,
+            message,
+            origin,
+            ..
+        } => {
+            let mut message = (**message).clone();
+            if elide {
+                pagination::elide_message(&mut message);
+            }
+            if elide_images {
+                ContentBlock::elide_image_data(message.content_mut());
+            }
+            TailItem {
+                entry_id: id.clone(),
+                message: Some(message),
+                custom: None,
+                origin: origin.clone(),
+                elided: elide.then_some(true),
+            }
+        }
+        SessionEntry::Custom {
+            id,
+            custom_type,
+            data,
+            ..
+        } => TailItem {
+            entry_id: id.clone(),
+            message: None,
+            custom: Some(CustomPayload {
+                custom_type: custom_type.clone(),
+                data: data.clone(),
+            }),
+            origin: None,
+            elided: None,
+        },
+    }
+}
+
+/// The `set-draft` echo of what is parked on `meta`.
+fn draft_response(meta: &SessionMeta) -> SetDraftResponse {
+    SetDraftResponse {
+        draft: meta.draft.clone(),
+        attachments: meta.draft_attachments.clone().unwrap_or_default(),
+    }
+}
+
+/// Every attachment id the messages on `path` reference, in first-seen
+/// order, deduplicated across entries.
+fn referenced_attachment_ids(path: &[&SessionEntry]) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for entry in path {
+        let SessionEntry::Message { message, .. } = entry else {
+            continue;
+        };
+        for id in ContentBlock::attachment_ids(message.content()) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
 }
 
 /// The `session::created` event for a session's metadata. Shared with the

@@ -1,0 +1,274 @@
+{
+  "function_id": "session::put-attachment",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "data": {
+        "description": "The bytes as standard (padded) base64. Decoded size must not exceed the configured `max_attachment_bytes`.",
+        "type": "string"
+      },
+      "mime": {
+        "description": "MIME type; pass `application/octet-stream` when unknown.",
+        "type": "string"
+      },
+      "name": {
+        "description": "Original filename (non-empty).",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "data",
+      "mime",
+      "name",
+      "session_id"
+    ],
+    "title": "PutAttachmentRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AttachmentMeta": {
+        "description": "Metadata of one stored attachment. The bytes live in the session's attachment store (`session::get-attachment`), never inline in the transcript: a message references them through a [`ContentBlock::File`] block carrying the same `attachment_id`.",
+        "properties": {
+          "attachment_id": {
+            "description": "Store-generated id (`a_<uuid>`), unique within the session.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mime": {
+            "description": "MIME type, as uploaded (`application/octet-stream` when unknown).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Original filename, as uploaded.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the bytes.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Decoded byte length.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "created_at",
+          "mime",
+          "name",
+          "session_id",
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      },
+      "ContentBlock": {
+        "description": "The atomic unit of message content. A message's `content` is an ordered array of these.",
+        "oneOf": [
+          {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "attachment_id": {
+                "description": "The stored original this inline copy was made from, when the writer also parked it with `session::put-attachment`. Lets a transcript reader skip the inline bytes and fetch them lazily; model-bound consumers ignore it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "data": {
+                "description": "Base64-encoded image bytes. Empty when the reader asked for `include_image_data: false` and the block carries an `attachment_id`: the original is then one `session::get-attachment` away.",
+                "type": "string"
+              },
+              "mime": {
+                "description": "MIME type, e.g. `image/png`.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "image"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "mime",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reference to an attachment kept in the session's attachment store (`session::put-attachment` / `session::get-attachment`). The bytes are never inline; consumers that hand content to a model drop this block and rely on the text expansion that travels beside it.",
+            "properties": {
+              "attachment_id": {
+                "description": "Id returned by `session::put-attachment`.",
+                "type": "string"
+              },
+              "mime": {
+                "description": "MIME type, e.g. `application/pdf`.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Original filename.",
+                "type": "string"
+              },
+              "size": {
+                "description": "Original byte length.",
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "file"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "mime",
+              "name",
+              "size",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "signature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "thinking"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "arguments": {
+                "default": null,
+                "description": "Model-produced arguments (JSON)."
+              },
+              "function_id": {
+                "description": "The iii function id to invoke.",
+                "type": "string"
+              },
+              "id": {
+                "description": "Unique per call, echoed by the result.",
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "function_call"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "function_id",
+              "id",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "content": {
+                "items": {
+                  "$ref": "#/definitions/ContentBlock"
+                },
+                "type": "array"
+              },
+              "function_call_id": {
+                "type": "string"
+              },
+              "is_error": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "function_result"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "function_call_id",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "attachment": {
+        "$ref": "#/definitions/AttachmentMeta"
+      },
+      "block": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ContentBlock"
+          }
+        ],
+        "description": "Ready-made `type: \"file\"` content block referencing the attachment, to embed in the message's `content`."
+      }
+    },
+    "required": [
+      "attachment",
+      "block"
+    ],
+    "title": "PutAttachmentResponse",
+    "type": "object"
+  }
+}

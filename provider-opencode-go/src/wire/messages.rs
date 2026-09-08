@@ -55,7 +55,7 @@ fn user_content_to_wire(content: &[ContentBlock]) -> Value {
         parts.push(json!({ "type": "text", "text": text }));
     }
     for c in content {
-        if let ContentBlock::Image { mime, data } = c {
+        if let ContentBlock::Image { mime, data, .. } = c {
             parts.push(json!({
                 "type": "image_url",
                 "image_url": { "url": format!("data:{mime};base64,{data}") }
@@ -186,7 +186,9 @@ pub fn to_wire_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<V
                     .content
                     .iter()
                     .filter_map(|c| match c {
-                        ContentBlock::Image { mime, data } => Some((mime.clone(), data.clone())),
+                        ContentBlock::Image { mime, data, .. } => {
+                            Some((mime.clone(), data.clone()))
+                        }
                         _ => None,
                     })
                     .collect();
@@ -267,6 +269,7 @@ mod tests {
                 ContentBlock::Image {
                     mime: "image/png".into(),
                     data: data.into(),
+                    attachment_id: None,
                 },
             ],
             details: json!({}),

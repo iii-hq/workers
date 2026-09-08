@@ -52,6 +52,19 @@ export function activeTab(state: TabsState): OpenTab | null {
   return state.active === null ? null : (findTab(state, state.active) ?? null)
 }
 
+/** The files behind tab ids (a history of visits), distinct and in the
+    given order, at most `limit`: a diff of a file counts as a visit to
+    that file; an id no tab has any more is skipped. */
+export function tabFilePaths(state: TabsState, ids: readonly string[], limit: number): string[] {
+  const out: string[] = []
+  for (const id of ids) {
+    if (out.length >= limit) break
+    const path = findTab(state, id)?.target.path
+    if (path !== undefined && !out.includes(path)) out.push(path)
+  }
+  return out
+}
+
 /** Single click: activate if open, else open as the (single) preview tab —
     replacing the current preview in place, never touching pinned tabs. */
 export function openPreview(state: TabsState, target: TabTarget): TabsState {

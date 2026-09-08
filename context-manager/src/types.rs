@@ -77,6 +77,24 @@ pub enum ContentBlock {
         mime: String,
         /// Base64-encoded image bytes.
         data: String,
+        /// Optional link to the stored original in the session-manager
+        /// attachment store. Transcript bookkeeping for lazy readers; the
+        /// context manager neither reads nor strips it — it only has to ride
+        /// through compaction untouched, and stay absent on the wire when the
+        /// block never carried one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attachment_id: Option<String>,
+    },
+    /// Reference to an attachment kept in the session-manager's attachment
+    /// store. Carries no bytes and no model-visible text; the harness strips
+    /// these before assembling context, so here it only has to deserialize
+    /// (a transcript with attachments must never fail `count-tokens`). It
+    /// contributes nothing to estimates, pruning or summaries.
+    File {
+        attachment_id: String,
+        name: String,
+        mime: String,
+        size: u64,
     },
     Thinking {
         text: String,
@@ -358,6 +376,52 @@ mod tests {
         let round = serde_json::to_value(&blocks).unwrap();
         assert_eq!(round[0], json!({ "type": "text", "text": "hi" }));
         assert_eq!(round[3]["function_id"], "f::g");
+        // A legacy image (no link) never gains an `attachment_id` key.
+        assert_eq!(
+            round[1],
+            json!({ "type": "image", "mime": "image/png", "data": "aGk=" })
+        );
+    }
+
+    #[test]
+    fn image_attachment_id_round_trips_untouched_and_defaults_to_none() {
+        let linked = json!({
+            "type": "image",
+            "mime": "image/png",
+            "data": "aGk=",
+            "attachment_id": "a_9c1d"
+        });
+        let block: ContentBlock = serde_json::from_value(linked.clone()).unwrap();
+        assert_eq!(
+            block,
+            ContentBlock::Image {
+                mime: "image/png".into(),
+                data: "aGk=".into(),
+                attachment_id: Some("a_9c1d".into()),
+            }
+        );
+        assert_eq!(serde_json::to_value(&block).unwrap(), linked);
+
+        let legacy: ContentBlock =
+            serde_json::from_value(json!({ "type": "image", "mime": "image/png", "data": "aGk=" }))
+                .unwrap();
+        assert!(matches!(
+            legacy,
+            ContentBlock::Image {
+                attachment_id: None,
+                ..
+            }
+        ));
+
+        // Inside a user message the link survives a message-level round trip.
+        let msg: AgentMessage = serde_json::from_value(json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": "look" }, linked],
+            "timestamp": 1
+        }))
+        .unwrap();
+        let round = serde_json::to_value(&msg).unwrap();
+        assert_eq!(round["content"][1]["attachment_id"], "a_9c1d");
     }
 
     #[test]

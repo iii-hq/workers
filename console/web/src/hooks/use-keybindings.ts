@@ -80,6 +80,11 @@ export function allowsWhileTyping(
   return allow.split(/[\s,]+/).includes(actionId)
 }
 
+/** Nothing has the focus: the browser parked it on the body. */
+function focusLost(target: EventTarget | null): boolean {
+  return target === null || target === globalThis.document?.body
+}
+
 export type DispatchEvent = KeyEventLike &
   Pick<KeyboardEvent, 'isComposing' | 'repeat' | 'target'> & {
     defaultPrevented?: boolean
@@ -117,6 +122,14 @@ export function createKeyDispatcher(
   getPaneCommands: PaneCommandsSource = paneCommands,
 ) {
   let pending: PendingChord | null = null
+  // The pane focus was last inside. A chord that unmounts the focused
+  // element (the terminal it closes) drops focus on the body, and the same
+  // chord pressed again has to reach the same pane to undo it.
+  let lastPaneId: string | null = null
+  const onFocusIn = (target: EventTarget | null): void => {
+    const paneId = paneRootOf(target)?.dataset.workspacePaneId
+    if (paneId) lastPaneId = paneId
+  }
   const cancel = () => {
     if (pending) clearTimeout(pending.timer)
     pending = null
@@ -197,8 +210,12 @@ export function createKeyDispatcher(
 
     // The focused pane's own commands come after the console's keys, so a
     // page can never shadow a global chord, and only while focus is inside
-    // that pane, so two panes of the same page never both answer.
-    const paneId = paneRootOf(event.target)?.dataset.workspacePaneId
+    // that pane (or fell to the body from it), so two panes of the same page
+    // never both answer.
+    onFocusIn(event.target)
+    const paneId =
+      paneRootOf(event.target)?.dataset.workspacePaneId ??
+      (focusLost(event.target) ? lastPaneId : undefined)
     for (const entry of paneId ? getPaneCommands(paneId) : []) {
       const { command } = entry
       const guard = {
@@ -240,7 +257,7 @@ export function createKeyDispatcher(
       arm(prefixed, 1)
     }
   }
-  return { onKeyDown, cancel }
+  return { onKeyDown, onFocusIn, cancel }
 }
 
 export function useKeybindings(handlers: KeybindingHandlers): void {
@@ -253,9 +270,12 @@ export function useKeybindings(handlers: KeybindingHandlers): void {
     if (typeof window === 'undefined') return
     const dispatcher = createKeyDispatcher(() => handlersRef.current)
     const onKeyDown = (event: KeyboardEvent) => dispatcher.onKeyDown(event)
+    const onFocusIn = (event: FocusEvent) => dispatcher.onFocusIn(event.target)
     window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('focusin', onFocusIn)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('focusin', onFocusIn)
       dispatcher.cancel()
     }
   }, [])

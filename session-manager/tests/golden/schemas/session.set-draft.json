@@ -3,8 +3,18 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
+      "attachment_ids": {
+        "description": "Attachments parked with the draft, by id (uploaded beforehand with `session::put-attachment`; an unknown id is `session/invalid_request`). Omit to leave the parked attachments unchanged — a text-only save must not drop them — or send `[]` to clear them.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
       "draft": {
-        "description": "The unsent input to park. Omit, or send empty/whitespace-only text, to clear the stored draft.",
+        "description": "The unsent input to park. Omit, or send empty/whitespace-only text, to clear the stored draft text.",
         "type": [
           "string",
           "null"
@@ -22,15 +32,72 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AttachmentMeta": {
+        "description": "Metadata of one stored attachment. The bytes live in the session's attachment store (`session::get-attachment`), never inline in the transcript: a message references them through a [`ContentBlock::File`] block carrying the same `attachment_id`.",
+        "properties": {
+          "attachment_id": {
+            "description": "Store-generated id (`a_<uuid>`), unique within the session.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mime": {
+            "description": "MIME type, as uploaded (`application/octet-stream` when unknown).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Original filename, as uploaded.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the bytes.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Decoded byte length.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "created_at",
+          "mime",
+          "name",
+          "session_id",
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      }
+    },
     "properties": {
+      "attachments": {
+        "description": "The parked attachments as stored after this call, in request order.",
+        "items": {
+          "$ref": "#/definitions/AttachmentMeta"
+        },
+        "type": "array"
+      },
       "draft": {
-        "description": "The draft as stored after this call (`null` when cleared).",
+        "description": "The draft text as stored after this call (`null` when cleared).",
         "type": [
           "string",
           "null"
         ]
       }
     },
+    "required": [
+      "attachments"
+    ],
     "title": "SetDraftResponse",
     "type": "object"
   }

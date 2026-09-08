@@ -42,6 +42,15 @@ fn directory_seed_separates_agent_and_skill_roots() {
         seed["agents_folder"],
         serde_json::json!(layout.agents_dir().to_string_lossy())
     );
+    // Personal skills and profiles must not change the scripted transcript.
+    for key in [
+        "agents_skills_folder",
+        "global_agents_skills_folder",
+        "global_agents_folder",
+    ] {
+        let path = PathBuf::from(seed[key].as_str().expect("isolated directory root"));
+        assert!(path.is_absolute() && path.starts_with(&layout.root));
+    }
 }
 
 #[test]

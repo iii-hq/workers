@@ -14,6 +14,13 @@
 //! write — and stops a grace window after the turn completes, letting the
 //! last coalesced burst land. Git internals, this worker's own temp files,
 //! the turn store itself, and gitignored paths stay out of the record.
+//!
+//! Two chats working in one workspace watch the same files, and a watch
+//! cannot tell who wrote. So a write is recorded under a session only when
+//! it can be its own: a path a hooked call of another session just touched
+//! belongs to that call (`TurnLog::claimed_by_other`), and where another
+//! session's watch covers the same path, only a session with a hooked call
+//! running or just finished takes the write (`TurnLog::is_working`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -154,6 +161,57 @@ impl TurnObservers {
             }
         });
     }
+
+    /// The changes of a batch this session may call its own. A write only
+    /// this session's watch covers is the session's. When another
+    /// top-level session's watch covers the same path — two chats working
+    /// in one workspace — the write is recorded here only while this
+    /// session, a sub-agent of it included, has a hooked call running or
+    /// just finished: an idle chat did not make it. A path a hooked call
+    /// of another session just touched is dropped later, by the log.
+    fn own_changes(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        changes: Vec<(String, &'static str)>,
+    ) -> Vec<(String, &'static str)> {
+        let target = self.log.resolve_root(session_id, turn_id);
+        if self.log.is_working(&target.session_id) {
+            return changes;
+        }
+        let other_roots: Vec<PathBuf> = {
+            let entries = self.lock();
+            entries
+                .iter()
+                .filter(|(other, entry)| {
+                    other.as_str() != session_id
+                        && self.log.resolve_root(other, &entry.turn_id).session_id
+                            != target.session_id
+                })
+                .map(|(_, entry)| entry.root.clone())
+                .collect()
+        };
+        if other_roots.is_empty() {
+            return changes;
+        }
+        let before = changes.len();
+        let kept: Vec<(String, &'static str)> = changes
+            .into_iter()
+            .filter(|(path, _)| {
+                !other_roots
+                    .iter()
+                    .any(|root| Path::new(path).starts_with(root))
+            })
+            .collect();
+        if kept.len() < before {
+            tracing::debug!(
+                session_id,
+                dropped = before - kept.len(),
+                "turn observe: shared-workspace writes left to the session at work"
+            );
+        }
+        kept
+    }
 }
 
 /// Coalesce raw events and fold each batch into the session's current turn.
@@ -225,6 +283,7 @@ async fn pump(
                 Some((path, kind))
             })
             .collect();
+        let changes = observers.own_changes(&session_id, &turn_id, changes);
         if changes.is_empty() {
             continue;
         }
@@ -252,4 +311,111 @@ async fn ignored_set<'a>(root: &Path, paths: impl Iterator<Item = &'a String>) -
         .filter(|(rel, _)| ignored.contains(rel))
         .map(|(_, abs)| abs.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::turns::TurnStore;
+
+    fn observers_in(dir: &Path) -> Arc<TurnObservers> {
+        let log = Arc::new(TurnLog::new(TurnStore::new(dir.join("turns"), 1024 * 1024)));
+        TurnObservers::new(log, dir.join("turns"))
+    }
+
+    /// A live watch entry without the OS watcher behind it.
+    fn watch(observers: &Arc<TurnObservers>, session_id: &str, turn_id: &str, root: &Path) {
+        observers.lock().insert(
+            session_id.to_string(),
+            ObserverEntry {
+                turn_id: turn_id.to_string(),
+                root: root.to_path_buf(),
+                task: tokio::spawn(async {}),
+            },
+        );
+    }
+
+    fn change(path: &str) -> Vec<(String, &'static str)> {
+        vec![(path.to_string(), "modified")]
+    }
+
+    #[tokio::test]
+    async fn a_lone_watch_keeps_what_it_sees() {
+        let dir = tempfile::tempdir().unwrap();
+        let observers = observers_in(dir.path());
+        watch(&observers, "s1", "t1", Path::new("/w"));
+        assert_eq!(
+            observers.own_changes("s1", "t1", change("/w/a.rs")).len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_session_leaves_a_shared_workspace_write_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let observers = observers_in(dir.path());
+        watch(&observers, "s1", "t1", Path::new("/w"));
+        watch(&observers, "s2", "t2", Path::new("/w"));
+        assert!(observers
+            .own_changes("s1", "t1", change("/w/a.rs"))
+            .is_empty());
+        // Only the paths the other watch covers are contested.
+        watch(&observers, "s2", "t2", Path::new("/w/sub"));
+        assert_eq!(
+            observers.own_changes("s1", "t1", change("/w/a.rs")).len(),
+            1
+        );
+        assert!(observers
+            .own_changes("s1", "t1", change("/w/sub/b.rs"))
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_at_work_keeps_a_shared_workspace_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let observers = observers_in(dir.path());
+        watch(&observers, "s1", "t1", Path::new("/w"));
+        watch(&observers, "s2", "t2", Path::new("/w"));
+        observers.log.begin_call("s1");
+        assert_eq!(
+            observers.own_changes("s1", "t1", change("/w/a.rs")).len(),
+            1
+        );
+        assert!(observers
+            .own_changes("s2", "t2", change("/w/a.rs"))
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_parent_and_its_sub_agent_do_not_contest_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let observers = observers_in(dir.path());
+        observers.log.link_parent("child", "parent", "pt");
+        watch(&observers, "parent", "pt", Path::new("/w"));
+        watch(&observers, "child", "ct", Path::new("/w"));
+        assert_eq!(
+            observers
+                .own_changes("child", "ct", change("/w/a.rs"))
+                .len(),
+            1
+        );
+        assert_eq!(
+            observers
+                .own_changes("parent", "pt", change("/w/a.rs"))
+                .len(),
+            1
+        );
+        // The sub-agent's call is the parent's work; the other chat stays out.
+        watch(&observers, "other", "ot", Path::new("/w"));
+        observers.log.begin_call("parent");
+        assert_eq!(
+            observers
+                .own_changes("child", "ct", change("/w/a.rs"))
+                .len(),
+            1
+        );
+        assert!(observers
+            .own_changes("other", "ot", change("/w/a.rs"))
+            .is_empty());
+    }
 }

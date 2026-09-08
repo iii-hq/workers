@@ -124,6 +124,7 @@ describe('lookup', () => {
     expect(shortcutClaimReason('Ctrl+T', 'mac')).toMatch(/New workspace/)
     expect(shortcutClaimReason('Ctrl+G L', 'mac')).toMatch(/starts like/)
     expect(shortcutClaimReason('Ctrl+J', 'mac')).toBeNull()
+    expect(shortcutClaimReason('Ctrl+`', 'other')).toBeNull()
     expect(shortcutClaimReason('Mod+Shift+P', 'mac')).toBeNull()
     expect(shortcutClaimReason('Ctrl+Q L', 'mac')).toBeNull()
     expect(shortcutClaimReason('Escape', 'mac')).toBeNull()

@@ -29,6 +29,13 @@ pub struct MessagesRequest {
     /// Interleave `kind: "custom"` entries at their path position.
     /// Default false.
     pub include_custom: Option<bool>,
+    /// Default true. When false, `image` blocks that carry an
+    /// `attachment_id` come back with `data: ""`; the reader fetches the
+    /// bytes on demand with `session::get-attachment`. Images without a
+    /// stored original are returned inline regardless. Lets a UI open a
+    /// long, picture-heavy transcript without pulling every image first;
+    /// model-bound readers keep the default.
+    pub include_image_data: Option<bool>,
 }
 
 /// One item of the active path: exactly one of `message` / `custom`.

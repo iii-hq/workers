@@ -30,7 +30,7 @@ fn result_images(message: &FunctionResultMessage) -> Vec<(String, String)> {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Image { mime, data } => Some((mime.clone(), data.clone())),
+            ContentBlock::Image { mime, data, .. } => Some((mime.clone(), data.clone())),
             _ => None,
         })
         .collect()
@@ -87,7 +87,7 @@ fn chat_user_content(content: &[ContentBlock]) -> Value {
         parts.push(json!({ "type": "text", "text": text }));
     }
     for block in content {
-        if let ContentBlock::Image { mime, data } = block {
+        if let ContentBlock::Image { mime, data, .. } = block {
             parts.push(chat_image_part(mime, data));
         }
     }
@@ -213,7 +213,7 @@ pub fn chat_messages(messages: &[AgentMessage], system_prompt: &str) -> Vec<Valu
 fn anthropic_content(block: &ContentBlock) -> Option<Value> {
     match block {
         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-        ContentBlock::Image { mime, data } => Some(anthropic_image_block(mime, data)),
+        ContentBlock::Image { mime, data, .. } => Some(anthropic_image_block(mime, data)),
         ContentBlock::FunctionCall {
             id,
             function_id,
@@ -230,7 +230,7 @@ fn anthropic_content(block: &ContentBlock) -> Option<Value> {
         ContentBlock::RedactedThinking { data } => {
             Some(json!({ "type": "redacted_thinking", "data": data }))
         }
-        ContentBlock::FunctionResult { .. } => None,
+        ContentBlock::FunctionResult { .. } | ContentBlock::File { .. } => None,
     }
 }
 
@@ -246,7 +246,7 @@ fn anthropic_result(message: &FunctionResultMessage) -> Value {
             blocks.push(json!({ "type": "text", "text": text }));
         }
         blocks.extend(message.content.iter().filter_map(|block| match block {
-            ContentBlock::Image { mime, data } => Some(anthropic_image_block(mime, data)),
+            ContentBlock::Image { mime, data, .. } => Some(anthropic_image_block(mime, data)),
             _ => None,
         }));
         Value::Array(blocks)
@@ -382,6 +382,38 @@ mod tests {
         UserMessage, UserRoleTag,
     };
 
+    #[test]
+    fn attachment_references_are_not_sent_upstream() {
+        let file = ContentBlock::File {
+            attachment_id: "attachment-1".into(),
+            name: "notes.txt".into(),
+            mime: "text/plain".into(),
+            size: 12,
+        };
+        assert_eq!(anthropic_content(&file), None);
+        assert_eq!(chat_user_content(&[file]), json!(""));
+
+        let image = ContentBlock::Image {
+            mime: "image/png".into(),
+            data: "QUJD".into(),
+            attachment_id: Some("attachment-2".into()),
+        };
+        assert_eq!(
+            anthropic_content(&image),
+            Some(json!({
+                "type": "image",
+                "source": { "type": "base64", "media_type": "image/png", "data": "QUJD" }
+            }))
+        );
+        assert_eq!(
+            chat_user_content(&[image]),
+            json!([{
+                "type": "image_url",
+                "image_url": { "url": "data:image/png;base64,QUJD" }
+            }])
+        );
+    }
+
     fn assistant_calls(ids: &[&str]) -> AgentMessage {
         AgentMessage::Assistant(AssistantMessage {
             role: AssistantRoleTag::Assistant,
@@ -477,6 +509,7 @@ mod tests {
                     ContentBlock::Image {
                         mime: "image/png".into(),
                         data: "QUJD".into(),
+                        attachment_id: None,
                     },
                 ],
             ),

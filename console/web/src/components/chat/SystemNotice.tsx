@@ -1,5 +1,6 @@
 import {
   Ban,
+  BookOpen,
   Check,
   ChevronRight,
   CircleAlert,
@@ -29,6 +30,7 @@ import {
   CardHeader,
   CardHighlight,
 } from '@/components/ui/Surface'
+import { skillUpdateSummary } from '@/lib/skill-update'
 import {
   classifyTurnFailure,
   type TurnFailureCategory,
@@ -36,6 +38,7 @@ import {
 } from '@/lib/turn-failure'
 import { cn } from '@/lib/utils'
 import type {
+  SkillCatalogUpdate,
   SystemMessage,
   SystemNoticeTechnicalDetails,
   WorkingDirScope,
@@ -54,6 +57,10 @@ import {
  * - `working-dir` — a session scope change, in the same activity-row grammar
  *   as function calls and trigger fires (status icon, kind trail, one line,
  *   disclosure), with the folder mark in `workdir`.
+ * - `skills` — the harness re-sent the model its skill index. Same grammar:
+ *   one line saying the index moved and how many skills it holds, the list
+ *   itself behind the disclosure. The model needs the whole block; a reader
+ *   does not.
  * - `turn-failure` — a turn the provider or iii could not finish: the
  *   diagnosis card, which leads with WHO has to act (a chip and one plain
  *   sentence) before what happened and what to do.
@@ -64,6 +71,9 @@ import {
 export function SystemNotice({ message }: { message: SystemMessage }) {
   if (message.kind === 'working-dir' && message.scope) {
     return <WorkingDirMarker message={message} scope={message.scope} />
+  }
+  if (message.kind === 'skills' && message.skills) {
+    return <SkillsMarker message={message} update={message.skills} />
   }
   if (message.kind === 'turn-failure') {
     return <TurnFailureCard message={message} />
@@ -452,6 +462,144 @@ function workingDirCopy(scope: WorkingDirScope): {
             description:
               'Shell and file operations from the next message on run inside this folder. Earlier turns keep the scope they ran in.',
           }
+  }
+}
+
+/* ───────────────────────── skill index rows ────────────────────────── */
+
+function SkillsMarker({
+  message,
+  update,
+}: {
+  message: SystemMessage
+  update: SkillCatalogUpdate
+}) {
+  const [open, setOpen] = useState(false)
+  const copy = skillsCopy(update)
+  return (
+    <article
+      className="w-full"
+      data-message-role="skills"
+      data-message-id={message.id}
+      data-skills-available={update.available}
+      data-skills-count={update.entries.length}
+      data-expanded={open}
+    >
+      <CollapsibleCard
+        open={open}
+        onOpenChange={setOpen}
+        className={cn(
+          '@container trigger-activity-collapsible',
+          !open && 'trigger-activity-collapsible--compact',
+        )}
+      >
+        <CollapsibleCardTrigger
+          className="group trigger-activity-collapsible__trigger select-none"
+          aria-label={`${open ? 'Hide' : 'Show'} the skill index`}
+        >
+          <div className="flex w-full min-w-0 items-center gap-2">
+            <span
+              aria-hidden="true"
+              className="activity-status-icon"
+              data-status={update.available ? 'done' : 'error'}
+            >
+              <span data-activity-status-layer="error">
+                <CircleAlert strokeWidth={2.5} className="size-4 stroke-warn" />
+              </span>
+              <span data-activity-status-layer="done">
+                <Check
+                  strokeWidth={2.5}
+                  className="size-4 stroke-muted-foreground"
+                />
+              </span>
+            </span>
+            <TimelineActivityTrail kind="skills" />
+            <div
+              data-message-summary
+              className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground sm:text-[0.8125rem]"
+              title={copy.title}
+            >
+              <span>Skills </span>
+              {skillUpdateSummary(update)}
+            </div>
+            <TimelineActivityDisclosure />
+          </div>
+        </CollapsibleCardTrigger>
+
+        <CollapsibleCardContent>
+          <div className="flex flex-col gap-4 border-t border-edge p-4 sm:p-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <div
+                className={cn(
+                  'flex size-10 shrink-0 items-center justify-center rounded-md sm:size-9',
+                  update.available ? 'bg-surface' : 'bg-warn-muted',
+                )}
+              >
+                <BookOpen
+                  aria-hidden
+                  className={cn(
+                    'size-5 shrink-0 sm:size-4',
+                    update.available ? 'stroke-ink-faint' : 'stroke-warn',
+                  )}
+                />
+              </div>
+              <div className="flex min-w-0 flex-1 flex-col gap-1 font-sans text-base sm:text-sm">
+                <div className="font-semibold text-ink">{copy.title}</div>
+                <p className="text-pretty wrap-break-word text-ink-faint">
+                  {copy.description}
+                </p>
+              </div>
+            </div>
+            {update.entries.length > 0 ? (
+              <CardHighlight className="p-3">
+                <ul data-skills-list className="flex flex-col gap-2.5 sm:gap-2">
+                  {update.entries.map((entry) => (
+                    <li
+                      key={entry.id}
+                      className="grid min-w-0 grid-cols-1 gap-x-4 gap-y-0.5 @2xl:grid-cols-[minmax(0,14rem)_minmax(0,1fr)]"
+                    >
+                      <span
+                        data-skill-id
+                        className="min-w-0 truncate font-mono text-[12px] leading-5 text-ink"
+                        title={entry.id}
+                      >
+                        {entry.id}
+                      </span>
+                      {entry.description ? (
+                        <span
+                          className="line-clamp-2 min-w-0 font-sans text-[12.5px] leading-5 text-ink-faint"
+                          title={entry.description}
+                        >
+                          {entry.description}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </CardHighlight>
+            ) : null}
+          </div>
+        </CollapsibleCardContent>
+      </CollapsibleCard>
+    </article>
+  )
+}
+
+function skillsCopy(update: SkillCatalogUpdate): {
+  title: string
+  description: string
+} {
+  if (!update.available) {
+    return {
+      title: 'Skill guidance withdrawn',
+      description:
+        'Skill lookup is no longer reachable from this session, so the agent was told not to rely on any skill listed earlier. Turns before this one keep the index they ran with.',
+    }
+  }
+  const n = update.entries.length
+  return {
+    title: 'Skill index updated',
+    description: `The skill directory changed, so the agent was handed a fresh index of ${n} ${n === 1 ? 'skill' : 'skills'}. It replaces the earlier list; a skill is read in full only when a task calls for it.`,
   }
 }
 

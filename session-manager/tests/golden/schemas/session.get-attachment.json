@@ -1,0 +1,105 @@
+{
+  "function_id": "session::get-attachment",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "attachment_id": {
+        "type": "string"
+      },
+      "include_data": {
+        "description": "Include the bytes (`data`, standard base64). Default true; pass false for a metadata-only read.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "attachment_id",
+      "session_id"
+    ],
+    "title": "GetAttachmentRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/GetAttachmentResponse"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "AttachmentMeta": {
+        "description": "Metadata of one stored attachment. The bytes live in the session's attachment store (`session::get-attachment`), never inline in the transcript: a message references them through a [`ContentBlock::File`] block carrying the same `attachment_id`.",
+        "properties": {
+          "attachment_id": {
+            "description": "Store-generated id (`a_<uuid>`), unique within the session.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mime": {
+            "description": "MIME type, as uploaded (`application/octet-stream` when unknown).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Original filename, as uploaded.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the bytes.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Decoded byte length.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "created_at",
+          "mime",
+          "name",
+          "session_id",
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      },
+      "GetAttachmentResponse": {
+        "description": "`null` when the session or attachment is unknown.",
+        "properties": {
+          "attachment": {
+            "$ref": "#/definitions/AttachmentMeta"
+          },
+          "data": {
+            "description": "Standard base64 of the bytes; `null` when `include_data` was false.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "attachment"
+        ],
+        "type": "object"
+      }
+    },
+    "title": "Nullable_GetAttachmentResponse"
+  }
+}

@@ -101,6 +101,38 @@ Feature: context::compact — summarise the head, keep a verbatim tail
     And the summariser system prompt contains "Create a new anchored summary"
     And the summariser system prompt does not contain "<previous-summary>"
 
+  # Prevents: caller guidance (the text after a user's `/compact`) being
+  # silently dropped — it must reach the summariser, tagged so the model
+  # reads it as guidance rather than conversation content, and the fixed
+  # template must still be in force.
+  Scenario: caller instructions reach the summariser as tagged guidance
+    Given the router knows model "big" with context window 200000 and max output 8000
+    And a user message of ~9000 tokens
+    And a user message "q2"
+    And a user message "q3"
+    When I compact the history with model "big" and options:
+      """
+      { "instructions": "keep the migration plan verbatim; drop the CSS discussion" }
+      """
+    Then the response field "status" is "ok"
+    And the summariser system prompt contains "<instructions>"
+    And the summariser system prompt contains "keep the migration plan verbatim; drop the CSS discussion"
+    And the summariser system prompt contains "## Relevant Files"
+
+  # Prevents: an `<instructions>` block appearing on plain compactions —
+  # a blank value must leave the prompt exactly as it was without one.
+  Scenario: blank instructions leave the summariser prompt untouched
+    Given the router knows model "big" with context window 200000 and max output 8000
+    And a user message of ~9000 tokens
+    And a user message "q2"
+    And a user message "q3"
+    When I compact the history with model "big" and options:
+      """
+      { "instructions": "   " }
+      """
+    Then the response field "status" is "ok"
+    And the summariser system prompt does not contain "<instructions>"
+
   # Prevents: "no router" looking like success — the spec maps a
   # missing summariser to overflow so callers treat compaction as
   # unavailable, and the lease must not stay stuck.

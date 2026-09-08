@@ -290,6 +290,13 @@ export async function expandImageAttachments(
       type: 'image',
       mime: converted?.mime ?? mime,
       data: await fileToBase64(payload),
+      // The stored original's id rides on the inline copy so a later
+      // transcript read can leave these bytes out and fetch them on demand.
+      // The two are not the same bytes — this one may be downscaled — but
+      // the original is the better picture to show back anyway.
+      ...(attachment.attachmentId
+        ? { attachment_id: attachment.attachmentId }
+        : {}),
     })
     read.push({
       id: attachment.id,

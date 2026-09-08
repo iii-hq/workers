@@ -38,6 +38,13 @@ pub struct CompactOptions {
     /// message set.
     #[serde(default)]
     pub lease_key: Option<String>,
+    /// One-shot caller guidance for the summariser — what to keep, drop,
+    /// or emphasise (e.g. the text after a user's `/compact`). Applied
+    /// within the fixed summary template, never replacing it. Trimmed;
+    /// blank is ignored; cut past 2000 chars. Not carried forward — pass
+    /// it again to steer a later compaction.
+    #[serde(default)]
+    pub instructions: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -112,13 +119,24 @@ pub async fn handle(deps: &Deps, req: CompactRequest) -> Result<CompactResponse,
         &messages,
         budget,
         tail_turns,
-        options.previous_summary.as_deref(),
+        PromptSteering {
+            previous_summary: options.previous_summary.as_deref(),
+            instructions: options.instructions.as_deref(),
+        },
         estimator,
     )
     .await;
 
     lease::release(leases.as_ref(), &lease_key, &nonce).await;
     Ok(outcome)
+}
+
+/// Caller-controlled steering for the summariser prompt: the anchor a
+/// prior compaction left behind and one-shot guidance for this one.
+#[derive(Debug, Clone, Copy, Default)]
+struct PromptSteering<'a> {
+    previous_summary: Option<&'a str>,
+    instructions: Option<&'a str>,
 }
 
 /// The summarisation pipeline between lease acquire and release.
@@ -128,7 +146,7 @@ async fn summarise(
     messages: &[AgentMessage],
     budget: u64,
     tail_turns: usize,
-    previous_summary: Option<&str>,
+    steering: PromptSteering<'_>,
     estimator: &dyn Estimator,
 ) -> CompactResponse {
     // One estimate per message; select, tokens_before, and tokens_after
@@ -144,7 +162,7 @@ async fn summarise(
     let stripped = strip_media(head, deps.config().await.max_output_chars);
 
     let request = SummarizeRequest {
-        system_prompt: build_system_prompt(previous_summary),
+        system_prompt: build_system_prompt(steering.previous_summary, steering.instructions),
         user_prompt: render_user_prompt(&stripped),
         model: model.id.clone(),
         provider: model.provider.clone(),
@@ -175,6 +193,6 @@ async fn summarise(
         tail_start_index: selection.tail_start_index,
         tokens_before,
         tokens_after,
-        used_prior_summary: previous_summary.is_some(),
+        used_prior_summary: steering.previous_summary.is_some(),
     }
 }

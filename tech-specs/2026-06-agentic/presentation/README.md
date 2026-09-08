@@ -7,7 +7,7 @@ durable execution, governance, and onboarding — with the technical depth
 tucked into expandable datasheets.
 
 Built with Vite + React 19 + Tailwind v4, styled with the
-[iii Schematic design system](../../../console/DESIGN.md).
+[iii Schematic design system](../../../console/skills/design-system.md).
 
 ## Run it
 

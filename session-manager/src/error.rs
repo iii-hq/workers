@@ -38,6 +38,15 @@ pub enum SessionError {
     #[error("session/invalid_request: {0}")]
     InvalidRequest(String),
 
+    /// An attachment exceeds the configured `max_attachment_bytes`.
+    #[error("session/attachment_too_large: {0}")]
+    AttachmentTooLarge(String),
+
+    /// The attachment is referenced by a transcript entry and cannot be
+    /// deleted on its own.
+    #[error("session/attachment_in_use: {0}")]
+    AttachmentInUse(String),
+
     /// A storage backend call failed.
     #[error("session/storage: {0}")]
     Storage(String),
@@ -55,6 +64,8 @@ impl SessionError {
             SessionError::EmptyBatch(_) => "session/empty_batch",
             SessionError::InvalidCursor(_) => "session/invalid_cursor",
             SessionError::InvalidRequest(_) => "session/invalid_request",
+            SessionError::AttachmentTooLarge(_) => "session/attachment_too_large",
+            SessionError::AttachmentInUse(_) => "session/attachment_in_use",
             SessionError::Storage(_) => "session/storage",
         }
     }
@@ -91,6 +102,8 @@ mod tests {
             SessionError::EmptyBatch("m".into()),
             SessionError::InvalidCursor("m".into()),
             SessionError::InvalidRequest("m".into()),
+            SessionError::AttachmentTooLarge("m".into()),
+            SessionError::AttachmentInUse("m".into()),
             SessionError::Storage("m".into()),
         ];
         for v in variants {

@@ -46,7 +46,12 @@ export interface Attachment {
   name: string
   size: number
   type: string
-  /** present only for previewable text/image attachments under ~1MB */
+  /**
+   * Present only for previewable text/image attachments under ~1MB. An image
+   * chip with an `attachmentId` but neither this nor `file` is one whose
+   * bytes stayed in the store: the transcript read left them out, and the
+   * chip fetches its thumbnail when it scrolls into view.
+   */
   dataUrl?: string
   /**
    * The picked file, for attachment kinds a worker reads at send time (PDFs go
@@ -55,6 +60,13 @@ export interface Attachment {
    * chip, not the bytes.
    */
   file?: File
+  /**
+   * The id session-manager keeps the original bytes under. Present once the
+   * send has stored the file, or when the chip was hydrated from a `file`
+   * content block; a chip that has one can hand the original back out, which
+   * `file` above never could after a reload.
+   */
+  attachmentId?: string
 }
 
 interface BaseMessage {
@@ -88,6 +100,12 @@ export interface UserMessage extends BaseMessage {
    * split off by the entry mapper: rendered as collapsible JSON, not prose.
    */
   reactionEvent?: { label: 'event' | 'inputs'; json: string }
+  /**
+   * A console slash command the client handled itself (`/compact`): shown as
+   * what the user typed, but no harness turn follows, so it must never mark
+   * the session working or seed its title.
+   */
+  command?: boolean
 }
 
 export interface AssistantMessage extends BaseMessage {
@@ -172,6 +190,20 @@ export interface FunctionTriggerMessage extends BaseMessage {
     attemptedPath?: string
     errorCode?: string
   }
+  /**
+   * A placeholder from a paged transcript read: the call's arguments and
+   * result were left out of the page (`TranscriptItem.elided`) because it
+   * sits inside a collapsed activity run. The card draws a skeleton in
+   * place of the panes; expanding the group fetches the whole entries and
+   * this flag goes away. `input` is `undefined` while it is set.
+   */
+  unloaded?: boolean
+  /**
+   * The transcript entry id of this call's `function_result`, when a read has
+   * shown it. It is what lets an expand name the exact entries to fetch
+   * instead of guessing at ids.
+   */
+  resultEntryId?: string
 }
 
 /**
@@ -246,7 +278,8 @@ export interface SystemMessage extends BaseMessage {
    * attachment that could not be read, a worktree that landed). `turn-failure`
    * is a turn the provider or iii could not finish and renders as the
    * diagnosis card. `working-dir` marks a session scope change in the same
-   * activity-row grammar as function calls and trigger fires.
+   * activity-row grammar as function calls and trigger fires; `skills` marks
+   * the harness re-sending the model its skill index in that same grammar.
    */
   kind?:
     | 'notice'
@@ -254,6 +287,7 @@ export interface SystemMessage extends BaseMessage {
     | 'trigger-fired'
     | 'turn-failure'
     | 'working-dir'
+    | 'skills'
   /** User-facing remediation supplied by a structured lifecycle record. */
   nextActions?: string[]
   /** Diagnostic context kept behind a collapsed disclosure. */
@@ -262,6 +296,8 @@ export interface SystemMessage extends BaseMessage {
   failure?: SystemNoticeFailure
   /** The scope change behind a `kind: 'working-dir'` marker. */
   scope?: WorkingDirScope
+  /** The skill index behind a `kind: 'skills'` marker. */
+  skills?: SkillCatalogUpdate
   /**
    * Live-only fallback for a durable transcript entry with the same id.
    * It may fill a delivery gap, but must never replace the transcript-backed
@@ -310,6 +346,22 @@ export interface WorkingDirScope {
   cause: 'selected' | 'recovered' | 'unavailable'
 }
 
+/** One row of the skill index the harness handed the model. */
+export interface SkillCatalogEntry {
+  id: string
+  description: string
+}
+
+/**
+ * The skill index a `kind: 'skills'` marker announces. `available: false` is
+ * the harness withdrawing skill guidance altogether (the directory or the
+ * `directory::skills::get` function went away); `entries` is then empty.
+ */
+export interface SkillCatalogUpdate {
+  available: boolean
+  entries: SkillCatalogEntry[]
+}
+
 export type Message =
   | UserMessage
   | AssistantMessage
@@ -341,11 +393,12 @@ export interface MessagePatch {
   }
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'
-  kind?: 'notice' | 'compaction' | 'turn-failure' | 'working-dir'
+  kind?: 'notice' | 'compaction' | 'turn-failure' | 'working-dir' | 'skills'
   nextActions?: string[]
   technicalDetails?: SystemNoticeTechnicalDetails
   failure?: SystemNoticeFailure
   scope?: WorkingDirScope
+  skills?: SkillCatalogUpdate
   summaryText?: string
   tokensBefore?: number
 }
@@ -508,8 +561,29 @@ export interface Conversation {
    * Distinct from `draft` above, which marks a not-yet-created session.
    */
   draftText?: string
+  /**
+   * Composer chips restored from `SessionMeta.draft_attachments` (or the
+   * live list this tab recorded). Restored chips carry `attachmentId` but no
+   * `file`; ChatView hydrates the bytes in the background so a send can
+   * expand them like a fresh attach.
+   */
+  draftAttachments?: Attachment[]
   /** Transcript fetched from session-manager at least once. */
   hydrated?: boolean
+  /**
+   * Where the loaded window of the transcript ends at the top. Hydration
+   * fetches only the newest page; scrolling up asks for the page before
+   * `oldestEntryId` while `hasMore` holds. Absent until the first page lands
+   * (and on backends that never page).
+   */
+  history?: {
+    hasMore: boolean
+    /** The first entry held — the exclusive anchor for the next page up. */
+    oldestEntryId?: string
+    loadingOlder?: boolean
+    /** The last page-up failed; the list offers a retry. */
+    error?: string
+  }
   createdAt: number
   updatedAt: number
 }

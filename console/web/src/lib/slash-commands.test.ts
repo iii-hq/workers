@@ -4,6 +4,7 @@ import {
   fuzzyFilterSlash,
   loadedSkillIds,
   mergeSlashEntries,
+  parseCompactCommand,
   parseSlashBlockHeader,
   parseSlashInvocations,
   SLASH_COMMANDS,
@@ -12,6 +13,32 @@ import {
   slashChip,
   slashCommandLabel,
 } from './slash-commands'
+
+describe('parseCompactCommand', () => {
+  it('the bare command compacts with no guidance', () => {
+    expect(parseCompactCommand('/compact')).toEqual({})
+    expect(parseCompactCommand('  /compact \n')).toEqual({})
+  })
+
+  it('text after the command is one-shot guidance', () => {
+    expect(
+      parseCompactCommand('/compact keep the DB schema; drop the CSS talk'),
+    ).toEqual({ instructions: 'keep the DB schema; drop the CSS talk' })
+    // A newline separates just as well as a space, and the guidance is trimmed.
+    expect(
+      parseCompactCommand('/compact\n  keep the migration plan  '),
+    ).toEqual({
+      instructions: 'keep the migration plan',
+    })
+  })
+
+  it('is not fooled by prose that merely mentions or resembles the command', () => {
+    expect(parseCompactCommand('please /compact this')).toBe(null)
+    expect(parseCompactCommand('/compaction is slow')).toBe(null)
+    expect(parseCompactCommand('/compacted')).toBe(null)
+    expect(parseCompactCommand('')).toBe(null)
+  })
+})
 
 describe('parseSlashInvocations', () => {
   it('leaves a leading /name as ordinary text', () => {
