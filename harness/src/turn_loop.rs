@@ -480,6 +480,10 @@ async fn generate_step(
             )
             .await;
         let text = json!(notice);
+        // Readable from the lean `harness::status`: `completed` with no error
+        // and an unmet goal looked exactly like success to a live
+        // orchestrator polling its children (MOT-4718).
+        record.stop_reason = Some("max_turns".to_string());
         // The cap ends the turn but must not BYPASS the post-turn gate: with
         // no steps left to correct anything, a validator that rejects this
         // residue FAILS the turn — a runaway must never complete as if
@@ -687,7 +691,7 @@ async fn generate_step(
                 session_id = %record.session_id,
                 turn_id = %record.turn_id,
                 patched,
-                "assembled context contained orphaned function_calls; injected elided results (compaction cut a call/result pair)"
+                "assembled context contained orphaned function_calls; injected synthetic results (compaction cut a pair, or a call was interrupted before its result was recorded)"
             );
         }
 
@@ -2541,8 +2545,14 @@ fn retryable_function_result_append_error(error: &HarnessError) -> bool {
         return false;
     };
     let message = message.to_ascii_lowercase();
+    // A timed-out append is retried too: the append is idempotent on
+    // `entry_id`, and a slow session store (cold replay of a large transcript)
+    // is a dependency catching up, not a broken turn — one timeout finalised a
+    // live turn as failed with no retry (Linkly Ch. 7, MOT-4718).
     message.starts_with("session::append:")
-        && (message.contains("function_not_found") || message.contains("not connected"))
+        && (message.contains("function_not_found")
+            || message.contains("not connected")
+            || message.contains("timed out"))
 }
 
 async fn append_interrupted(
@@ -3033,6 +3043,47 @@ fn reassembly_deficit(final_request_tokens: u64, believed_token_count: u64) -> u
     final_request_tokens.saturating_sub(believed_token_count)
 }
 
+/// The synthetic result that closes an orphaned `function_call` in the
+/// assembled context. Built from the typed message so it is guaranteed to
+/// deserialize as an `AgentMessage` downstream: a hand-written JSON copy that
+/// omitted the required `details` field made llm-router reject EVERY later
+/// generation of a session whose last call had no result ("bad
+/// ProviderStreamInput: data did not match any variant of untagged enum
+/// AgentMessage") — the session was bricked until someone repaired the
+/// transcript by hand (Linkly Ch. 7, MOT-4718).
+///
+/// `at_tail` marks the orphan that sits in the LAST assistant message: that is
+/// not compaction trimming an old pair, it is a call whose result was never
+/// recorded (the process died between dispatch and append), so the model is
+/// told the call ran at most once with an unknown outcome instead of "it
+/// completed earlier".
+fn elided_function_result(call_id: &str, function_id: &str, at_tail: bool) -> Value {
+    use crate::types::message::{FunctionResultMessage, FunctionResultRoleTag};
+    let (text, is_error) = if at_tail {
+        (
+            "result unknown: the harness did not record this call's outcome (it was interrupted \
+             after dispatch); it ran at most once — verify its effect before repeating it",
+            true,
+        )
+    } else {
+        (
+            "result elided from the assembled context (compaction); the call completed in an \
+             earlier turn — consult the transcript if its output matters",
+            false,
+        )
+    };
+    let message = AgentMessage::FunctionResult(FunctionResultMessage {
+        role: FunctionResultRoleTag::FunctionResult,
+        function_call_id: call_id.to_string(),
+        function_id: function_id.to_string(),
+        content: vec![ContentBlock::text(text.to_string())],
+        details: json!({ "error": if at_tail { "interrupted" } else { "elided" } }),
+        is_error,
+        timestamp: AgentMessage::now_ms(),
+    });
+    serde_json::to_value(message).expect("typed message serializes")
+}
+
 fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
     for m in messages.iter() {
@@ -3075,21 +3126,14 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
             }
         }
         let inserted = missing.len();
+        // The last assistant message in the list (checked after the earlier
+        // insertions shifted indices): an orphan there was interrupted, not
+        // compacted.
+        let at_tail = !messages[i + 1..]
+            .iter()
+            .any(|m| m.get("role").and_then(Value::as_str) == Some("assistant"));
         for (off, (id, fid)) in missing.into_iter().enumerate() {
-            messages.insert(
-                i + 1 + off,
-                json!({
-                    "role": "function_result",
-                    "function_call_id": id,
-                    "function_id": fid,
-                    "content": [{
-                        "type": "text",
-                        "text": "result elided from the assembled context (compaction); the call completed in an earlier turn — consult the transcript if its output matters",
-                    }],
-                    "is_error": false,
-                    "timestamp": AgentMessage::now_ms(),
-                }),
-            );
+            messages.insert(i + 1 + off, elided_function_result(&id, &fid, at_tail));
             patched += 1;
         }
         i += 1 + inserted;
@@ -3603,6 +3647,11 @@ mod tests {
         assert!(retryable_function_result_append_error(
             &HarnessError::Dependency("session::append: iii is not connected".into())
         ));
+        // A slow store (cold replay of a large transcript) times the append
+        // out; the append is idempotent on entry_id, so it retries.
+        assert!(retryable_function_result_append_error(
+            &HarnessError::Dependency("session::append: invocation timed out".into())
+        ));
         assert!(!retryable_function_result_append_error(
             &HarnessError::Dependency("session::append: invalid message".into())
         ));
@@ -3991,6 +4040,52 @@ mod tests {
         // Fully paired context is untouched.
         assert_eq!(super::patch_orphaned_calls(&mut msgs), 0);
         assert_eq!(msgs.len(), 5);
+    }
+
+    /// Prevents: the bricked session — a synthetic result that is not a valid
+    /// `AgentMessage` (the hand-written copy lacked `details`) made llm-router
+    /// reject every later generation with "data did not match any variant of
+    /// untagged enum AgentMessage". The patch must round-trip through the
+    /// same type the provider deserializes.
+    #[test]
+    fn patched_results_are_valid_agent_messages_and_flag_an_interrupted_tail_call() {
+        use crate::types::message::AgentMessage;
+        use serde_json::json;
+        let mut msgs = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "function_call", "id": "toolu_old", "function_id": "a::b", "arguments": {}},
+            ]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "later"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "thinking", "text": "restarting"},
+                {"type": "function_call", "id": "toolu_tail", "function_id": "compose::restart", "arguments": {}},
+            ]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "continue"}]}),
+        ];
+        assert_eq!(super::patch_orphaned_calls(&mut msgs), 2);
+        assert_eq!(msgs.len(), 7);
+
+        let old: AgentMessage = serde_json::from_value(msgs[2].clone())
+            .expect("compaction patch deserializes as an AgentMessage");
+        let AgentMessage::FunctionResult(old) = old else {
+            panic!("patch is a function_result");
+        };
+        assert_eq!(old.function_call_id, "toolu_old");
+        assert!(!old.is_error);
+
+        let tail: AgentMessage = serde_json::from_value(msgs[5].clone())
+            .expect("tail patch deserializes as an AgentMessage");
+        let AgentMessage::FunctionResult(tail) = tail else {
+            panic!("patch is a function_result");
+        };
+        assert_eq!(tail.function_call_id, "toolu_tail");
+        assert_eq!(tail.function_id, "compose::restart");
+        assert!(
+            tail.is_error,
+            "an interrupted tail call is reported as unknown/errored"
+        );
+        assert_eq!(tail.details["error"], "interrupted");
     }
 
     #[test]

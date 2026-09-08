@@ -186,6 +186,7 @@
         "type": "object"
       },
       "SubagentColor": {
+        "description": "Closed palette consumed by UIs. A colour outside it (models like to say `orange`) falls back to `neutral` instead of failing the whole spawn on a display-only field — a rejected spawn cost a live orchestrator a step and a re-dispatch (MOT-4718).",
         "enum": [
           "neutral",
           "blue",

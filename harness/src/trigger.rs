@@ -590,6 +590,9 @@ pub async fn invoke_target(
     function_id: &str,
     arguments: &Value,
 ) -> ResultData {
+    if let Some(denied) = project_wide_compose_denial(function_id, arguments) {
+        return denied;
+    }
     match engine.dispatch(function_id, arguments.clone()).await {
         Ok(mut value) => {
             if function_id == "engine::functions::list" {
@@ -612,6 +615,61 @@ pub(crate) fn normalized_result(value: Value) -> ResultData {
         is_error,
         details: value,
     }
+}
+
+/// Compose operations that, without a target, act on EVERY container of the
+/// supervised project — the harness running this turn included. A
+/// project-wide `compose::restart {}` observed live (Linkly Ch. 7, MOT-4718)
+/// took down harness, session-manager and shell mid-turn: the turn was never
+/// resumed and the session was left with a dangling `function_call`. The
+/// prompt asks the model to confirm first; this is the structural guard for
+/// when it does not.
+const PROJECT_WIDE_COMPOSE_OPS: [&str; 5] = [
+    "compose::restart",
+    "compose::down",
+    "compose::stop",
+    "compose::remove",
+    "compose::update",
+];
+
+/// The target fields the compose daemon accepts for scoping one of those
+/// operations to specific containers (`container` and its `worker` alias,
+/// or a `workers` batch).
+const COMPOSE_TARGET_FIELDS: [&str; 3] = ["container", "worker", "workers"];
+
+fn compose_has_target(arguments: &Value) -> bool {
+    COMPOSE_TARGET_FIELDS
+        .iter()
+        .any(|field| match arguments.get(field) {
+            Some(Value::String(s)) => !s.trim().is_empty(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .any(|item| item.as_str().is_some_and(|s| !s.trim().is_empty())),
+            _ => false,
+        })
+}
+
+/// The `is_error` result for a project-wide compose operation issued from
+/// inside a turn. Refused before dispatch: it cannot be undone from the
+/// session it destroys, and the model can always narrow it to one container.
+pub(crate) fn project_wide_compose_denial(
+    function_id: &str,
+    arguments: &Value,
+) -> Option<ResultData> {
+    if !PROJECT_WIDE_COMPOSE_OPS.contains(&function_id) || compose_has_target(arguments) {
+        return None;
+    }
+    let op = function_id.trim_start_matches("compose::");
+    let message = format!(
+        "{function_id} without a target acts on every container in this project, including the \
+         harness running this session: the turn would be lost mid-flight and the session left \
+         with an unanswered call. Pass `container` (or `worker` / `workers`) to {op} one worker, \
+         or ask the user to run `iii trigger {function_id}` from their own terminal."
+    );
+    Some(invocation_error_result(
+        Some("compose_project_scope_denied".to_string()),
+        message,
+    ))
 }
 
 pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> ResultData {
@@ -808,6 +866,64 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         }))
+    }
+
+    /// Prevents: the self-inflicted restart — a project-wide `compose::restart`
+    /// issued from a turn took the harness down with everything else and left
+    /// the session with an unanswered call (Linkly Ch. 7, MOT-4718).
+    #[test]
+    fn project_wide_compose_operations_are_refused_before_dispatch() {
+        use serde_json::json;
+        for op in [
+            "compose::restart",
+            "compose::down",
+            "compose::stop",
+            "compose::remove",
+        ] {
+            for args in [
+                json!({}),
+                json!(null),
+                json!({ "container": "" }),
+                json!({ "workers": [] }),
+            ] {
+                let denied = project_wide_compose_denial(op, &args)
+                    .unwrap_or_else(|| panic!("{op} {args} must be refused"));
+                assert!(denied.is_error);
+                assert_eq!(
+                    denied.details["error"]["code"],
+                    "compose_project_scope_denied"
+                );
+                let text = serde_json::to_string(&denied.content).unwrap();
+                assert!(
+                    text.contains("container"),
+                    "the refusal names the fix: {text}"
+                );
+            }
+        }
+        assert!(project_wide_compose_denial("compose::update", &json!({})).is_some());
+    }
+
+    #[test]
+    fn targeted_compose_operations_and_other_calls_pass_through() {
+        use serde_json::json;
+        assert!(
+            project_wide_compose_denial("compose::restart", &json!({ "container": "link" }))
+                .is_none()
+        );
+        assert!(
+            project_wide_compose_denial("compose::restart", &json!({ "worker": "link" })).is_none()
+        );
+        assert!(
+            project_wide_compose_denial("compose::remove", &json!({ "workers": ["a", "b"] }))
+                .is_none()
+        );
+        // Adds, status, logs and non-compose calls are never in scope.
+        assert!(
+            project_wide_compose_denial("compose::add", &json!({ "worker": "database" })).is_none()
+        );
+        assert!(project_wide_compose_denial("compose::status", &json!({})).is_none());
+        assert!(project_wide_compose_denial("compose::logs", &json!({})).is_none());
+        assert!(project_wide_compose_denial("shell::exec", &json!({})).is_none());
     }
 
     #[test]

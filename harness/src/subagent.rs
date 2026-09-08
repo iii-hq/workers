@@ -201,7 +201,10 @@ fn child_functions(
         // An EMPTY allow is deliberate dispatch-disabled — granting a
         // browse-only catalog to a child that can call nothing helps nobody.
         if !p.allow.is_empty() {
-            for id in policy::CHILD_DISCOVERY_ALLOW {
+            for id in policy::CHILD_DISCOVERY_ALLOW
+                .iter()
+                .chain(policy::CHILD_SKILLS_ALLOW.iter())
+            {
                 // Skip when already covered, and skip a dead entry when a
                 // deny glob claims it — deny wins at dispatch either way.
                 if !policy::glob_covered(id, &p.allow) && !policy::glob_covered(id, &p.deny) {
@@ -756,6 +759,7 @@ mod tests {
             context_snapshot: None,
             result: None,
             result_error: None,
+            stop_reason: None,
             validation_retries: 0,
             transient_resumes: 0,
             created_at: 1,
@@ -1101,6 +1105,9 @@ mod tests {
         assert!(compiled.allows("database::executeBatch"));
         assert!(compiled.allows("engine::functions::list"));
         assert!(compiled.allows("engine::functions::info"));
+        // ...and the skill fetch: without it `skills::effective_view` drops
+        // the whole index and the child runs with zero skill tokens.
+        assert!(compiled.allows("directory::skills::get"));
         // The union grants the metadata plane only — the leaf wall and the
         // whitelist still hold.
         assert!(!compiled.allows("engine::register_trigger"));
@@ -1113,24 +1120,36 @@ mod tests {
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
 
-        // Already covered by a glob: no duplicate entries.
+        // Already covered by a glob: no duplicate entries (the skill fetch is
+        // not covered by `engine::*`, so it is the one entry added).
         let covered = FunctionPolicy {
             allow: vec!["engine::*".into(), "state::set".into()],
             deny: vec![],
             expose: Default::default(),
         };
         let child = child_functions(&cfg, Some(&parent), Some(&covered), false).unwrap();
-        assert_eq!(child.allow, vec!["engine::*", "state::set"]);
+        assert_eq!(
+            child.allow,
+            vec!["engine::*", "state::set", "directory::skills::get"]
+        );
+        let fully_covered = FunctionPolicy {
+            allow: vec!["engine::*".into(), "directory::*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, Some(&parent), Some(&fully_covered), false).unwrap();
+        assert_eq!(child.allow, vec!["engine::*", "directory::*"]);
 
         // Explicitly denied: deny wins, and no dead allow entry is written.
         let denied = FunctionPolicy {
             allow: vec!["database::executeBatch".into()],
-            deny: vec!["engine::functions::*".into()],
+            deny: vec!["engine::functions::*".into(), "directory::*".into()],
             expose: Default::default(),
         };
         let child = child_functions(&cfg, Some(&parent), Some(&denied), false).unwrap();
         assert_eq!(child.allow, vec!["database::executeBatch"]);
         assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::info"));
+        assert!(!policy::CompiledPolicy::from(Some(&child)).allows("directory::skills::get"));
 
         // An EMPTY allow is deliberate dispatch-disabled — it must stay that
         // way, not become a browse-only two-entry whitelist.

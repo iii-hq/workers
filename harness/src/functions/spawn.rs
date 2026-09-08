@@ -29,7 +29,11 @@ pub enum SubagentIcon {
     Design,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Closed palette consumed by UIs. A colour outside it (models like to say
+/// `orange`) falls back to `neutral` instead of failing the whole spawn on a
+/// display-only field — a rejected spawn cost a live orchestrator a step and
+/// a re-dispatch (MOT-4718).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentColor {
     Neutral,
@@ -39,6 +43,22 @@ pub enum SubagentColor {
     Green,
     Amber,
     Rose,
+}
+
+impl<'de> Deserialize<'de> for SubagentColor {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // `#[serde(other)]` is only allowed on tagged enums, so the fallback
+        // is spelled out: any token outside the palette is `neutral`.
+        Ok(match String::deserialize(deserializer)?.as_str() {
+            "blue" => Self::Blue,
+            "purple" => Self::Purple,
+            "teal" => Self::Teal,
+            "green" => Self::Green,
+            "amber" => Self::Amber,
+            "rose" => Self::Rose,
+            _ => Self::Neutral,
+        })
+    }
 }
 
 /// Display-only identity for a spawned child. The name becomes the session
@@ -199,10 +219,22 @@ mod tests {
             "display": { "name": "Unsafe", "icon": "<svg>" }
         }))
         .is_err());
-        assert!(serde_json::from_value::<SpawnRequest>(json!({
+        // Colour is display-only: an unknown token degrades to `neutral`
+        // rather than rejecting the spawn.
+        let off_palette: SpawnRequest = serde_json::from_value(json!({
             "task": "x",
-            "display": { "name": "Unsafe", "color": "#ff00ff" }
+            "display": { "name": "Fallback", "color": "orange" }
         }))
-        .is_err());
+        .unwrap();
+        assert_eq!(
+            off_palette.display.unwrap().color,
+            Some(SubagentColor::Neutral)
+        );
+        let hex: SpawnRequest = serde_json::from_value(json!({
+            "task": "x",
+            "display": { "name": "Fallback", "color": "#ff00ff" }
+        }))
+        .unwrap();
+        assert_eq!(hex.display.unwrap().color, Some(SubagentColor::Neutral));
     }
 }

@@ -583,6 +583,14 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "stop_reason": {
+            "default": null,
+            "description": "Why a `completed` turn stopped when the model did not end it itself (`max_turns`). Present in the lean report too: a poller that reads `completed` with no error must still be able to tell an exhausted budget from a finished task.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "transient_resumes": {
             "format": "uint32",
             "minimum": 0.0,

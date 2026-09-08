@@ -356,6 +356,10 @@ mod tests {
         assert_eq!(agent.identity.name.as_deref(), Some("coder"));
         assert_eq!(agent.skills.as_deref(), Some(&["review".to_string()][..]));
         assert_eq!(agent.icon, None, "unknown token degrades, never errors");
-        assert_eq!(agent.color, None, "unknown color degrades, never errors");
+        assert_eq!(
+            agent.color,
+            Some(SubagentColor::Neutral),
+            "unknown color degrades to neutral, never errors"
+        );
     }
 }

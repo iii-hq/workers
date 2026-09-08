@@ -59,6 +59,12 @@ pub struct StatusReport {
     pub queued: Option<Vec<crate::state::QueuedMessage>>,
     pub result: Option<Value>,
     pub result_error: Option<String>,
+    /// Why a `completed` turn stopped when the model did not end it itself
+    /// (`max_turns`). Present in the lean report too: a poller that reads
+    /// `completed` with no error must still be able to tell an exhausted
+    /// budget from a finished task.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
 }
 
 const LEAN_RESULT_CHAR_LIMIT: usize = 600;
@@ -133,6 +139,7 @@ impl Serialize for StatusReport {
         } else {
             report.serialize_entry("result_error", &self.result_error)?;
         }
+        serialize_optional(&mut report, "stop_reason", &self.stop_reason)?;
 
         report.end()
     }
@@ -232,6 +239,7 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         queued,
         result: record.result.clone(),
         result_error: record.result_error.clone(),
+        stop_reason: record.stop_reason.clone(),
         expects_wake,
         armed_wakes,
     }))
@@ -313,6 +321,18 @@ mod tests {
                 "turn_id": "t_child"
             }])
         );
+    }
+
+    #[test]
+    fn lean_status_reports_a_stop_reason_when_the_turn_cap_ended_the_turn() {
+        let mut report = lean_report(Some(json!("max_turns (6) reached; ending the turn.")));
+        report.stop_reason = Some("max_turns".into());
+
+        let serialized = serde_json::to_value(report).unwrap();
+
+        assert_eq!(serialized["status"], "completed");
+        assert!(serialized["result_error"].is_null());
+        assert_eq!(serialized["stop_reason"], "max_turns");
     }
 
     #[test]

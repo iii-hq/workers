@@ -103,7 +103,11 @@ fn is_transient_step_error(error: &HarnessError) -> bool {
     if message.contains("enqueue harness::turn") {
         return false;
     }
-    message.contains("function_not_found") || message.contains("not connected")
+    // A session-store call that timed out (cold replay of a large transcript)
+    // is the same dependency-catching-up shape: session reads are safe to
+    // repeat and session appends are idempotent on entry_id (MOT-4718).
+    let session_timeout = message.starts_with("session::") && message.contains("timed out");
+    message.contains("function_not_found") || message.contains("not connected") || session_timeout
 }
 
 async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {
@@ -181,6 +185,14 @@ mod tests {
         // wedge (enqueue_step already retried internally).
         assert!(!is_transient_step_error(&HarnessError::Dependency(
             "enqueue harness::turn: remote error (function_not_found): Function not found".into()
+        )));
+        // A session-store timeout is the dependency catching up, not a
+        // broken turn; other timeouts stay terminal.
+        assert!(is_transient_step_error(&HarnessError::Dependency(
+            "session::append: invocation timed out".into()
+        )));
+        assert!(!is_transient_step_error(&HarnessError::Dependency(
+            "router::chat: invocation timed out".into()
         )));
         // Ordinary failures stay terminal.
         assert!(!is_transient_step_error(&HarnessError::Dependency(
