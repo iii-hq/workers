@@ -125,8 +125,12 @@ effects, or an editor outside the engine. Payload:
 `path` relative to `root`, `dir` true for directories (skip those when
 opening files). Events coalesce per path in a short window
 (create + write = `created`; deletion supersedes), `.git` internals are
-filtered, and fan-out is fire-and-forget. Read content on demand via
-`coder::read-file` — the event deliberately carries none.
+filtered, and fan-out is fire-and-forget. Ignored paths (git-ignored, or
+`data/`, `config/`, `.iii/`, `node_modules/` outside a repository) are not
+delivered unless the binding sets `include_ignored: true` — a wake on a
+project root would otherwise fire on the engine's own data writes. Read
+content on demand via `coder::read-file` — the event deliberately carries
+none.
 
 ## Code files (`coder::*`)
 

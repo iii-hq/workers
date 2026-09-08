@@ -269,6 +269,64 @@ fn rel_to(root: &Path, path: &Path) -> Option<String> {
     Some(s.into_owned())
 }
 
+/// How one binding's events reach its function: the registration's stored
+/// `metadata` and `namespace`, echoed on every fire exactly like the engine
+/// does for its own trigger types, plus whether ignored paths are delivered.
+///
+/// The metadata is not optional plumbing. The harness binds every agent wake
+/// as `harness::trigger::deliver` with `metadata: { "__binding": <id> }` and
+/// DROPS any fire that arrives without it. Delivering the bare payload made
+/// every `shell::changed` wake in a live run expire "unfired" while this
+/// worker logged 34 000 successful deliveries (MOT-4719).
+#[derive(Debug, Clone, Default)]
+struct Delivery {
+    metadata: Option<Value>,
+    namespace: Option<String>,
+    /// Deliver paths the root ignores (git-ignored, or the built-in
+    /// engine-owned set outside a repository). Off by default: a wake armed on
+    /// a project root would otherwise fire on the engine's own
+    /// `data/observability` and `data/session-manager` writes — the
+    /// subscriber's own transcript. The workspace UI opts in to count them.
+    include_ignored: bool,
+}
+
+impl Delivery {
+    fn from_config(config: &TriggerConfig) -> Self {
+        Self {
+            metadata: config.metadata.clone(),
+            namespace: config.namespace.clone(),
+            include_ignored: config
+                .config
+                .get("include_ignored")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }
+    }
+
+    /// The fire for one event: the bound function, the event, `Void` routing
+    /// (fire-and-forget), and the binding's metadata/namespace passed through.
+    fn request(
+        &self,
+        function_id: &str,
+        payload: Value,
+    ) -> iii_sdk::protocol::TriggerRequestWithMetadata {
+        let mut request: iii_sdk::protocol::TriggerRequestWithMetadata = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        }
+        .into();
+        if let Some(metadata) = &self.metadata {
+            request = request.metadata(metadata.clone());
+        }
+        if let Some(namespace) = &self.namespace {
+            request = request.namespace(namespace.clone());
+        }
+        request
+    }
+}
+
 /// Consume raw watcher events, coalesce per path, fan out to the bound
 /// function. Owns the watcher: aborting this task tears the watch down.
 async fn pump(
@@ -277,6 +335,7 @@ async fn pump(
     root: PathBuf,
     _watcher: notify::RecommendedWatcher,
     mut rx: tokio::sync::mpsc::Receiver<notify::Event>,
+    delivery: Delivery,
 ) {
     let root_str = root.to_string_lossy().into_owned();
     loop {
@@ -327,6 +386,14 @@ async fn pump(
             };
             let dir = kind != "deleted" && root.join(&path).is_dir();
             let ignored = ignored_paths.contains(&path);
+            if ignored && !delivery.include_ignored {
+                tracing::debug!(
+                    function_id = %function_id,
+                    path = %path,
+                    "shell::changed skipped an ignored path (bind with include_ignored: true to receive it)"
+                );
+                continue;
+            }
             let event = ChangedEvent {
                 path,
                 kind: kind.to_string(),
@@ -344,16 +411,9 @@ async fn pump(
             // "slow subscriber never delays anything" violation.
             let iii = iii.clone();
             let function_id = function_id.clone();
+            let request = delivery.request(&function_id, payload);
             tokio::spawn(async move {
-                if let Err(e) = iii
-                    .trigger(TriggerRequest {
-                        function_id: function_id.clone(),
-                        payload,
-                        action: Some(TriggerAction::Void),
-                        timeout_ms: None,
-                    })
-                    .await
-                {
+                if let Err(e) = iii.trigger(request).await {
                     tracing::warn!(function_id = %function_id, error = %e, "shell::changed fan-out failed");
                 } else {
                     tracing::info!(
@@ -394,12 +454,14 @@ impl TriggerHandler for ChangedTriggerHandler {
             root = %root.display(),
             "watch registered"
         );
+        let delivery = Delivery::from_config(&config);
         let task = tokio::spawn(pump(
             self.iii.clone(),
             config.function_id,
             root,
             watcher,
             rx,
+            delivery,
         ));
         // Poison recovery: the map is plain data — a panic elsewhere must
         // not silently drop this registration (the entry's Drop aborts
@@ -428,7 +490,9 @@ pub fn register_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
         CHANGED,
         "Fires when anything under the watched directory changes, whoever changed \
          it — bind with config: { path } naming the directory (jail-checked like \
-         every coder::* path).",
+         every coder::* path). Ignored paths (git-ignored; outside a repository \
+         data/, config/, .iii/, node_modules/) are skipped unless config also sets \
+         include_ignored: true.",
         ChangedTriggerHandler {
             iii: iii.clone(),
             watches: Arc::new(Mutex::new(HashMap::new())),
@@ -635,6 +699,42 @@ mod tests {
         );
         assert!(rel_to(root, Path::new("/srv/app")).is_none());
         assert!(rel_to(root, Path::new("/elsewhere/b.rs")).is_none());
+    }
+
+    /// Prevents: the wake that never fires — the harness binds
+    /// `harness::trigger::deliver` with `metadata: { "__binding": id }` and
+    /// drops a fire without it; the pump used to send the bare payload
+    /// (MOT-4719, 34k deliveries logged here, 0 fires counted there).
+    #[test]
+    fn deliveries_echo_the_binding_metadata_and_namespace() {
+        let config = TriggerConfig {
+            id: "b1".into(),
+            function_id: "harness::trigger::deliver".into(),
+            config: json!({ "path": "/tmp/x" }),
+            metadata: Some(json!({ "__binding": "sub_abc" })),
+            namespace: Some("project".into()),
+        };
+        let delivery = Delivery::from_config(&config);
+        assert!(!delivery.include_ignored, "ignored paths are opt-in");
+        let request = delivery.request("harness::trigger::deliver", json!({ "path": "a.rs" }));
+        let debug = format!("{request:?}");
+        assert!(debug.contains("__binding"), "{debug}");
+        assert!(debug.contains("sub_abc"), "{debug}");
+        assert!(debug.contains("project"), "{debug}");
+        assert!(debug.contains("Void"), "{debug}");
+
+        // A legacy binding without metadata still fires, without inventing any.
+        let bare = Delivery::from_config(&TriggerConfig {
+            id: "b2".into(),
+            function_id: "probe::on_change".into(),
+            config: json!({ "path": "/tmp/x", "include_ignored": true }),
+            metadata: None,
+            namespace: None,
+        });
+        assert!(bare.include_ignored);
+        let debug = format!("{:?}", bare.request("probe::on_change", json!({})));
+        assert!(debug.contains("metadata: None"), "{debug}");
+        assert!(debug.contains("namespace: None"), "{debug}");
     }
 
     fn resolver_rooted_at(root: &Path) -> PathResolver {

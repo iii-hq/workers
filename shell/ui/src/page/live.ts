@@ -59,7 +59,10 @@ export function useWorkspaceChanges(
     const offTrigger = host.iii.registerTrigger({
       type: 'shell::changed',
       function_id: `${functionId}::${host.iii.browserId}`,
-      config: { path: root },
+      // The workspace view counts ignored churn (build output, engine data)
+      // instead of hiding it, so it opts in; every other subscriber gets
+      // only the changes that matter by default.
+      config: { path: root, include_ignored: true },
     })
     return () => {
       offTrigger()
