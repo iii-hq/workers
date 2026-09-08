@@ -56,9 +56,8 @@ test('shows two traces and exposes function arguments in trace events', async ({
   await expect(group).toHaveAttribute('data-trace-group-count', '2')
   await expect(group).toHaveAttribute('data-trace-group-errors', '0')
   const groupHeader = group.locator(':scope > button')
-  if ((await groupHeader.getAttribute('aria-expanded')) !== 'true') {
-    await groupHeader.click()
-  }
+  // Following the second turn automatically expands its session group.
+  // A conditional click can race that effect and collapse the group again.
   await expect(groupHeader).toHaveAttribute('aria-expanded', 'true')
 
   const traceRows = group.locator('[data-trace-row-id]')
