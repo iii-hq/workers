@@ -95,7 +95,7 @@ export const agentsAdapter: BrowserAdapter = {
   nameRequired: true,
   newTemplate: '---\nname: \ndescription: ""\n---\n\n',
   newTemplateStartsClean: true,
-  extraManagedKeys: ['logo', 'skills', 'model', 'reasoning_effort', 'icon', 'color', 'extends'],
+  extraManagedKeys: ['logo', 'skills', 'functions', 'model', 'reasoning_effort', 'icon', 'color', 'extends'],
   customForm: (ctx) => <AgentForm {...ctx} />,
   customLoading: () => <AgentFormSkeleton />,
   customFormOwnsContent: true,
@@ -103,7 +103,8 @@ export const agentsAdapter: BrowserAdapter = {
   prominentListItems: true,
   onChangeType: 'directory::agents::on-change',
   emptyTitle: 'Select an agent profile',
-  emptyBody: 'Choose an agent profile from the sidebar to edit its identity, default model, system prompt, and skills.',
+  emptyBody:
+    'Choose an agent profile from the sidebar to edit its identity, default model, system prompt, skills, and preloaded functions.',
   async list(host) {
     const out = await host.iii.trigger<{ agents: AgentRow[] }>('directory::agents::list')
     return (out.agents ?? []).map((a) => ({

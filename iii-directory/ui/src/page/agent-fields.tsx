@@ -60,6 +60,25 @@ const fetchSkills = (host: Host) =>
       })),
     )
 
+/** One row of `engine::functions::list` — a first-party engine contract, so
+ * the fields are trusted like `directory::skills::list`'s are in `fetchSkills`. */
+interface EngineFunctionRow {
+  function_id: string
+  description?: string | null
+}
+
+/** The live function registry — what a profile's preloaded functions are
+ * picked from. Ids are the labels: they ARE the contract the model calls. */
+const fetchFunctions = (host: Host): Promise<PickItem[]> =>
+  host.iii.trigger<{ functions?: EngineFunctionRow[] }>('engine::functions::list', {}).then((out) =>
+    (out.functions ?? [])
+      .flatMap((row) => {
+        const id = row.function_id.trim()
+        return id ? [{ id, label: id, desc: row.description?.trim() || undefined }] : []
+      })
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  )
+
 interface AgentCatalogRow {
   id: string
   name: string
@@ -470,29 +489,101 @@ function SystemPromptEditor({ draft, editDraft, readOnly }: Pick<FormContext, 'd
   )
 }
 
-function SkillCheckbox({
+type PickerList = 'selected' | 'available'
+
+type PickerRow = PickItem & { missing?: boolean }
+
+/** Copy for one picker instance (skills or preloaded functions). */
+interface PickerCopy {
+  /** Form field name for the hidden native checkboxes (`skills`, `functions`). */
+  field: string
+  /** Plural noun in messages ("skills", "functions"). */
+  plural: string
+  placeholder: string
+  loadError: string
+  loading: string
+  missing: string
+  emptySelected: (needle: boolean, selectedCount: number) => string
+  emptyAvailable: (needle: boolean) => string
+  /** Render labels in the mono voice (function ids are technical data). */
+  mono?: boolean
+}
+
+const SKILLS_COPY: PickerCopy = {
+  field: 'skills',
+  plural: 'skills',
+  placeholder: 'Filter skills…',
+  loadError: 'The skill catalog could not be loaded. Existing selections will be preserved when you save.',
+  loading: 'Loading skills…',
+  missing: 'This skill is not in the current catalog.',
+  emptySelected: (needle, count) =>
+    needle
+      ? 'No selected skills match.'
+      : count === 0
+        ? 'No filter — sessions using this profile can use every skill.'
+        : 'No skills selected.',
+  emptyAvailable: (needle) => (needle ? 'No available skills match.' : 'All skills selected.'),
+}
+
+const FUNCTIONS_COPY: PickerCopy = {
+  field: 'functions',
+  plural: 'functions',
+  placeholder: 'Filter functions (e.g. coder::)…',
+  loadError: 'The function registry could not be read. Existing selections will be preserved when you save.',
+  loading: 'Loading functions…',
+  missing: 'This function is not registered right now; sessions will be told it is unavailable.',
+  emptySelected: (needle, count) =>
+    needle
+      ? 'No selected functions match.'
+      : count === 0
+        ? 'None — sessions discover every function through search as usual.'
+        : 'No functions selected.',
+  emptyAvailable: (needle) => (needle ? 'No registered functions match.' : 'All registered functions selected.'),
+  mono: true,
+}
+
+function isPrintableKey(event: KeyboardEvent<HTMLElement>) {
+  return event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey
+}
+
+function PickerRowView({
   item,
+  field,
   checked,
   disabled,
+  tabStop,
+  mono,
   missing = false,
   onChange,
+  onFocus,
+  register,
 }: {
   item: PickItem
+  field: string
   checked: boolean
   disabled: boolean
+  /** Roving tabindex: exactly one row per list sits in the Tab order. */
+  tabStop: boolean
+  mono?: boolean
   missing?: boolean
   onChange: () => void
+  onFocus: () => void
+  register: (id: string, element: HTMLInputElement | null) => void
 }) {
   return (
-    <label className="dir-ui-af-skill-row">
+    <label className="dir-ui-af-skill-row" data-mono={mono ? 'true' : undefined}>
       <input
+        ref={(element) => register(item.id, element)}
         type="checkbox"
-        name="skills"
+        name={field}
         value={item.id}
         checked={checked}
         disabled={disabled}
+        tabIndex={tabStop ? 0 : -1}
+        data-picker-row={item.id}
         className="dir-ui-af-skill-native"
         onChange={onChange}
+        onFocus={onFocus}
       />
       <span
         className="dir-ui-af-skill-check t-check"
@@ -517,20 +608,30 @@ function SkillCheckbox({
   )
 }
 
-function SkillList({
+function PickerListView({
   title,
   items,
+  field,
   checked,
   disabled,
   empty,
+  tabStopId,
+  mono,
   onToggle,
+  onRowFocus,
+  register,
 }: {
   title: string
-  items: (PickItem & { missing?: boolean })[]
+  items: PickerRow[]
+  field: string
   checked: boolean
   disabled: boolean
   empty: string
+  tabStopId: string | null
+  mono?: boolean
   onToggle: (id: string) => void
+  onRowFocus: (id: string) => void
+  register: (id: string, element: HTMLInputElement | null) => void
 }) {
   return (
     <div className="dir-ui-af-skill-list-wrap">
@@ -540,18 +641,23 @@ function SkillList({
       </div>
       {/* The explicit role keeps list semantics when host styles remove markers. */}
       {/* biome-ignore lint/a11y/noRedundantRoles: preserve list semantics across embedded hosts */}
-      <ul className="dir-ui-af-skill-list" role="list">
+      <ul className="dir-ui-af-skill-list" role="list" aria-label={title}>
         {items.length === 0 ? (
           <li className="dir-ui-af-skill-empty">{empty}</li>
         ) : (
           items.map((item) => (
             <li key={item.id}>
-              <SkillCheckbox
+              <PickerRowView
                 item={item}
+                field={field}
                 checked={checked}
                 disabled={disabled}
+                tabStop={item.id === tabStopId}
+                mono={mono}
                 missing={item.missing}
                 onChange={() => onToggle(item.id)}
+                onFocus={() => onRowFocus(item.id)}
+                register={register}
               />
             </li>
           ))
@@ -561,7 +667,23 @@ function SkillList({
   )
 }
 
-function SkillsEditor({
+/**
+ * Search + two transfer lists (Selected / Available), fully keyboard
+ * operable:
+ *
+ *   search: ↓/↑ enter the lists · Enter adds the first available match
+ *           (the filter stays, so `coder::` + Enter×N adds one per press) ·
+ *           Esc clears the filter
+ *   rows:   ↓/↑ move (across both lists; ↑ from the top returns to search)
+ *           · Home/End · Space or Enter toggles · Esc returns to search ·
+ *           typing (or Backspace) goes straight back to the search box
+ *
+ * Each list is one Tab stop (roving tabindex), so a long function registry
+ * never becomes hundreds of Tab presses. After a keyboard toggle the focus
+ * stays on the same slot of the same list, so repeated toggles flow.
+ */
+function PickerEditor({
+  copy,
   items,
   error,
   selected,
@@ -570,6 +692,7 @@ function SkillsEditor({
   isSelected,
   onToggle,
 }: {
+  copy: PickerCopy
   items: PickItem[] | null
   error: boolean
   selected: string[]
@@ -579,6 +702,11 @@ function SkillsEditor({
   onToggle: (id: string) => void
 }) {
   const [filter, setFilter] = useState('')
+  const [active, setActive] = useState<Record<PickerList, string | null>>({ selected: null, available: null })
+  const searchRef = useRef<HTMLInputElement>(null)
+  const rowsRef = useRef(new Map<string, HTMLInputElement>())
+  const pendingFocusRef = useRef<{ list: PickerList; index: number } | null>(null)
+  const listsId = useId()
   const needle = filter.trim().toLowerCase()
   const matches = (item: PickItem) =>
     !needle ||
@@ -586,41 +714,165 @@ function SkillsEditor({
     item.label.toLowerCase().includes(needle) ||
     (item.desc ?? '').toLowerCase().includes(needle)
 
+  const available: PickerRow[] = (items ?? []).filter((item) => !isSelected(item.id) && matches(item))
+  const selectedItems: PickerRow[] = [
+    ...(items ?? []).filter((item) => isSelected(item.id) && matches(item)),
+    ...missing.map((id) => ({ id, label: id, desc: copy.missing, missing: true })).filter(matches),
+  ]
+  const rows: Record<PickerList, PickerRow[]> = { selected: selectedItems, available }
+  const order = [...selectedItems, ...available].map((item) => item.id)
+
+  const register = useCallback((id: string, element: HTMLInputElement | null) => {
+    if (element) rowsRef.current.set(id, element)
+    else rowsRef.current.delete(id)
+  }, [])
+
+  const focusRow = (id: string | undefined) => {
+    if (!id) return false
+    const element = rowsRef.current.get(id)
+    if (!element) return false
+    element.focus()
+    element.scrollIntoView?.({ block: 'nearest' })
+    return true
+  }
+  const focusSearch = () => searchRef.current?.focus()
+
+  // After a keyboard toggle the row re-renders under the other list; keep
+  // the focus on the slot it left (or the search box when the list ran dry).
+  useLayoutEffect(() => {
+    const pending = pendingFocusRef.current
+    if (!pending) return
+    pendingFocusRef.current = null
+    const list = rows[pending.list]
+    const next = list[Math.min(pending.index, list.length - 1)]
+    if (!next || !focusRow(next.id)) focusSearch()
+  })
+
+  /** Which list a row sits in right now, and at which slot. */
+  const slotOf = (id: string): { list: PickerList; index: number } => {
+    const list: PickerList = isSelected(id) || missing.includes(id) ? 'selected' : 'available'
+    return { list, index: rows[list].findIndex((item) => item.id === id) }
+  }
+  const toggleFromKeyboard = (id: string) => {
+    if (readOnly) return
+    pendingFocusRef.current = slotOf(id)
+    onToggle(id)
+  }
+
+  const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    switch (event.key) {
+      case 'ArrowDown':
+        if (focusRow(order[0])) event.preventDefault()
+        return
+      case 'ArrowUp':
+        if (focusRow(order[order.length - 1])) event.preventDefault()
+        return
+      case 'Enter': {
+        event.preventDefault()
+        const first = available[0]
+        if (!first || readOnly) return
+        pendingFocusRef.current = null
+        onToggle(first.id)
+        return
+      }
+      case 'Escape':
+        if (filter) {
+          event.preventDefault()
+          event.stopPropagation()
+          setFilter('')
+        }
+        return
+      default:
+        return
+    }
+  }
+
+  const onListsKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement
+    const id = target.dataset?.pickerRow
+    if (!id) return
+    const index = order.indexOf(id)
+    switch (event.key) {
+      case 'ArrowDown':
+        event.preventDefault()
+        focusRow(order[index + 1])
+        return
+      case 'ArrowUp':
+        event.preventDefault()
+        if (index <= 0) focusSearch()
+        else focusRow(order[index - 1])
+        return
+      case 'Home':
+        event.preventDefault()
+        focusRow(order[0])
+        return
+      case 'End':
+        event.preventDefault()
+        focusRow(order[order.length - 1])
+        return
+      case 'Enter':
+        event.preventDefault()
+        toggleFromKeyboard(id)
+        return
+      case ' ':
+        // Space is the checkbox's own toggle (fires on keyup); only arm the
+        // focus follow-up so the row's slot keeps the focus afterwards.
+        if (!readOnly) pendingFocusRef.current = slotOf(id)
+        return
+      case 'Escape':
+        event.preventDefault()
+        event.stopPropagation()
+        focusSearch()
+        return
+      case 'Backspace':
+        event.preventDefault()
+        setFilter((current) => current.slice(0, -1))
+        focusSearch()
+        return
+      default:
+        if (isPrintableKey(event)) {
+          event.preventDefault()
+          setFilter((current) => current + event.key)
+          focusSearch()
+        }
+    }
+  }
+
   if (error) {
     return (
       <div className="dir-ui-af-catalog-message" role="status">
-        The skill catalog could not be loaded. Existing selections will be preserved when you save.
+        {copy.loadError}
       </div>
     )
   }
   if (items === null) {
-    return <div className="dir-ui-af-catalog-message">Loading skills…</div>
+    return <div className="dir-ui-af-catalog-message">{copy.loading}</div>
   }
 
-  const available = items.filter((item) => !isSelected(item.id) && matches(item))
-  const selectedItems: (PickItem & { missing?: boolean })[] = [
-    ...items.filter((item) => isSelected(item.id) && matches(item)),
-    ...missing
-      .map((id) => ({
-        id,
-        label: id,
-        desc: 'This skill is not in the current catalog.',
-        missing: true,
-      }))
-      .filter(matches),
-  ]
+  const tabStopFor = (list: PickerList) => {
+    const current = active[list]
+    if (current && rows[list].some((item) => item.id === current)) return current
+    return rows[list][0]?.id ?? null
+  }
+  const onRowFocus = (list: PickerList) => (id: string) =>
+    setActive((current) => (current[list] === id ? current : { ...current, [list]: id }))
 
   return (
-    <div className="dir-ui-af-skills">
+    <div className="dir-ui-af-skills" data-picker={copy.field}>
       <div className="dir-ui-af-skill-search">
         <SearchIcon className="dir-ui-af-skill-search-icon" />
         <Input
+          ref={searchRef}
           type="search"
-          name="skill_filter"
+          name={`${copy.field}_filter`}
           value={filter}
           onChange={setFilter}
-          placeholder="Filter skills…"
-          aria-label="Filter skills"
+          onKeyDown={onSearchKeyDown}
+          placeholder={copy.placeholder}
+          aria-label={`Filter ${copy.plural}`}
+          aria-controls={listsId}
+          aria-keyshortcuts="ArrowDown ArrowUp Enter Escape"
+          autoComplete="off"
           spellCheck={false}
           className="dir-ui-af-skill-search-input"
         />
@@ -628,39 +880,54 @@ function SkillsEditor({
           <button
             type="button"
             className="dir-ui-af-skill-search-clear"
-            aria-label="Clear skill filter"
-            onClick={() => setFilter('')}
+            aria-label={`Clear ${copy.plural} filter`}
+            tabIndex={-1}
+            onClick={() => {
+              setFilter('')
+              focusSearch()
+            }}
           >
             <XIcon className="dir-ui-af-skill-search-clear-icon" />
           </button>
         ) : null}
       </div>
-      <SkillList
-        title="Selected"
-        items={selectedItems}
-        checked
-        disabled={readOnly}
-        empty={
-          needle
-            ? 'No selected skills match.'
-            : selected.length === 0
-              ? 'No filter — sessions using this profile can use every skill.'
-              : 'No skills selected.'
-        }
-        onToggle={onToggle}
-      />
-      <div className="dir-ui-af-skill-transfer" aria-hidden="true">
-        <span>↓</span>
-        <span>↑</span>
+      <p className="dir-ui-af-picker-hint" aria-hidden="true">
+        <kbd>↑</kbd>
+        <kbd>↓</kbd> browse · <kbd>Enter</kbd> adds the first match · <kbd>Space</kbd> toggles · <kbd>Esc</kbd> back to
+        search
+      </p>
+      <div id={listsId} className="dir-ui-af-picker-lists" onKeyDown={onListsKeyDown}>
+        <PickerListView
+          title="Selected"
+          items={selectedItems}
+          field={copy.field}
+          checked
+          disabled={readOnly}
+          empty={copy.emptySelected(needle.length > 0, selected.length)}
+          tabStopId={tabStopFor('selected')}
+          mono={copy.mono}
+          onToggle={toggleFromKeyboard}
+          onRowFocus={onRowFocus('selected')}
+          register={register}
+        />
+        <div className="dir-ui-af-skill-transfer" aria-hidden="true">
+          <span>↓</span>
+          <span>↑</span>
+        </div>
+        <PickerListView
+          title="Available"
+          items={available}
+          field={copy.field}
+          checked={false}
+          disabled={readOnly}
+          empty={copy.emptyAvailable(needle.length > 0)}
+          tabStopId={tabStopFor('available')}
+          mono={copy.mono}
+          onToggle={toggleFromKeyboard}
+          onRowFocus={onRowFocus('available')}
+          register={register}
+        />
       </div>
-      <SkillList
-        title="Available"
-        items={available}
-        checked={false}
-        disabled={readOnly}
-        empty={needle ? 'No available skills match.' : 'All skills selected.'}
-        onToggle={onToggle}
-      />
     </div>
   )
 }
@@ -743,6 +1010,7 @@ function AgentFormSkeletonLayout() {
         </div>
         <SkeletonDisclosure kind="prompt" />
         <SkeletonDisclosure kind="skills" />
+        <SkeletonDisclosure kind="skills" />
       </div>
     </div>
   )
@@ -777,12 +1045,14 @@ export function AgentForm(ctx: FormContext) {
     entryKey,
   } = ctx
   const skills = readFrontmatterStringList(draft, 'skills').values
+  const functions = readFrontmatterStringList(draft, 'functions').values
   const extendsId = readFrontmatterField(draft, ['extends']).value.trim()
   const model = readFrontmatterField(draft, ['model']).value.trim()
   const reasoningEffort = readFrontmatterField(draft, ['reasoning_effort']).value.trim() || 'default'
   const icon = readFrontmatterField(draft, ['icon']).value.trim()
   const color = readFrontmatterField(draft, ['color']).value.trim()
   const skillCatalog = useCatalog(host, fetchSkills)
+  const functionCatalog = useCatalog(host, fetchFunctions)
   const modelCatalog = useCatalog(host, fetchModels)
   const agentCatalog = useCatalog(host, fetchAgents)
   const derived = useMemo(() => slugify(nameValue), [nameValue])
@@ -843,6 +1113,19 @@ export function AgentForm(ctx: FormContext) {
   }
   const knownSkillIds = new Set((skillCatalog.items ?? []).flatMap((item) => equivalentSkillIds(item.id)))
   const missingSkills = skillCatalog.items === null ? [] : skills.filter((id) => !knownSkillIds.has(id))
+  // Preloaded functions: verbatim engine function ids, no aliasing.
+  const isFunctionSelected = (id: string) => functions.includes(id)
+  const toggleFunction = (id: string) => {
+    const current = draftRef.current
+    const currentFunctions = readFrontmatterStringList(current, 'functions').values
+    const next = currentFunctions.includes(id)
+      ? currentFunctions.filter((fn) => fn !== id)
+      : [...currentFunctions, id]
+    commitDraft(setFrontmatterStringList(current, 'functions', next))
+  }
+  const knownFunctionIds = new Set((functionCatalog.items ?? []).map((item) => item.id))
+  const missingFunctions =
+    functionCatalog.items === null ? [] : functions.filter((id) => !knownFunctionIds.has(id))
   const pickerOptions = useMemo(() => {
     const options = modelCatalog.items ?? []
     if (!model || options.some((option) => option.id === model)) return options
@@ -860,7 +1143,9 @@ export function AgentForm(ctx: FormContext) {
   // the next form mount.
   const inheritanceError = agentCatalog.items?.find((row) => row.id === entryKey)?.inheritance_error ?? null
   const catalogsLoading =
-    (skillCatalog.items === null && !skillCatalog.error) || (modelCatalog.items === null && !modelCatalog.error)
+    (skillCatalog.items === null && !skillCatalog.error) ||
+    (functionCatalog.items === null && !functionCatalog.error) ||
+    (modelCatalog.items === null && !modelCatalog.error)
 
   return (
     <div
@@ -982,10 +1267,11 @@ export function AgentForm(ctx: FormContext) {
 
             <CollapsibleSection
               title="Skills"
-              description="Move skills between the available and selected lists."
+              description="Move skills between the available and selected lists. Empty = sessions see every skill."
               summary={`${skills.length} selected`}
             >
-              <SkillsEditor
+              <PickerEditor
+                copy={SKILLS_COPY}
                 items={skillCatalog.items}
                 error={skillCatalog.error}
                 selected={skills}
@@ -993,6 +1279,23 @@ export function AgentForm(ctx: FormContext) {
                 readOnly={readOnly}
                 isSelected={isSkillSelected}
                 onToggle={toggleSkill}
+              />
+            </CollapsibleSection>
+
+            <CollapsibleSection
+              title="Preloaded functions"
+              description="Functions this profile uses routinely. Their contracts are pre-loaded into the system prompt of every new session, so the model calls them right away instead of searching and fetching each contract first."
+              summary={`${functions.length} selected`}
+            >
+              <PickerEditor
+                copy={FUNCTIONS_COPY}
+                items={functionCatalog.items}
+                error={functionCatalog.error}
+                selected={functions}
+                missing={missingFunctions}
+                readOnly={readOnly}
+                isSelected={isFunctionSelected}
+                onToggle={toggleFunction}
               />
             </CollapsibleSection>
 

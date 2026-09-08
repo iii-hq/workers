@@ -270,9 +270,16 @@ becomes the session's skill selection (an explicit `options.skills` wins), its
 the session, and — when the send also omits
 `options.functions` — the dispatch policy defaults to the configured
 `default_functions` baseline instead of deny-all (an identity picked to DO
-something must be able to dispatch). The
-The frozen name/icon/color/model/effort snapshot is also written to session
-metadata for clients that render established sessions. The frozen identity
+something must be able to dispatch). When the profile declares (or
+inherits) `functions` — its PRELOADED functions, engine function ids it uses
+routinely — the harness renders each one's current description and
+compacted request schema into a `<preloaded_functions>` block appended to the
+frozen prompt (contracts come from the cached registry snapshot, with one
+`engine::functions::info` batch for ids the snapshot cannot vouch for; ids
+the engine does not know are named as unavailable), so the model calls them
+on the first step instead of spending a search and a contract lookup per
+session. The frozen name/icon/color/model/effort/functions snapshot is also
+written to session metadata for clients that render established sessions. The frozen identity
 travels with the prompt-stickiness rule: bare later sends
 inherit it, an explicit prompt field sheds it. Refused on an existing
 session or combined with either prompt field. Directory edits after

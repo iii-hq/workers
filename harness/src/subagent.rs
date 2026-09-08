@@ -1261,6 +1261,7 @@ mod tests {
             },
             prompt: format!("You are {name}. Work."),
             skills: None,
+            functions: Vec::new(),
             model: None,
             reasoning_effort: None,
             name: name.to_string(),

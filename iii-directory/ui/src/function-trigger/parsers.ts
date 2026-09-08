@@ -35,6 +35,8 @@ export const DIRECTORY_FUNCTION_IDS = [
   'directory::agents::get',
   'directory::agents::update',
   'directory::agents::create',
+  'directory::agents::functions::add',
+  'directory::agents::functions::remove',
   'directory::registry::workers::list',
   'directory::registry::workers::info',
 ] as const
@@ -201,6 +203,7 @@ export const agentEntrySchema = z.object({
   description: z.string(),
   logo: z.string().nullable().optional(),
   skill_count: z.number().nullable().optional(),
+  function_count: z.number().optional(),
   model: z.string().nullable().optional(),
   icon: z.string().nullable().optional(),
   color: z.string().nullable().optional(),
@@ -229,6 +232,8 @@ export const agentsGetResponseSchema = z.object({
   system_prompt: z.string(),
   skills: z.array(z.string()),
   unknown_skills: z.array(z.string()),
+  functions: z.array(z.string()).optional(),
+  unknown_functions: z.array(z.string()).optional(),
   model: z.string().nullable().optional(),
   icon: z.string().nullable().optional(),
   color: z.string().nullable().optional(),
@@ -254,6 +259,25 @@ export const agentsUpdateResponseSchema = z.object({
   modified_at: z.string(),
 })
 export type AgentsUpdateResponse = z.infer<typeof agentsUpdateResponseSchema>
+
+/* ---------------- agents::functions::add / remove ---------------- */
+
+export const agentsFunctionsRequestSchema = z.object({
+  id: z.string(),
+  functions: z.array(z.string()),
+})
+export type AgentsFunctionsRequest = z.infer<typeof agentsFunctionsRequestSchema>
+
+export const agentsFunctionsResponseSchema = z.object({
+  id: z.string(),
+  functions: z.array(z.string()),
+  added: z.array(z.string()).optional(),
+  removed: z.array(z.string()).optional(),
+  unchanged: z.boolean().optional(),
+  bytes: z.number(),
+  modified_at: z.string(),
+})
+export type AgentsFunctionsResponse = z.infer<typeof agentsFunctionsResponseSchema>
 
 /* ---------------- registry::workers::list ---------------- */
 

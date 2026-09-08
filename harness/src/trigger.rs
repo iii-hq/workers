@@ -288,7 +288,7 @@ fn compact_contract(item: &mut Value) -> bool {
 
 /// Compact one JSON Schema in place: inline single-use definitions, drop the
 /// ones nothing reaches, and strip boilerplate from every schema node.
-fn compact_schema(schema: &mut Value) -> bool {
+pub(crate) fn compact_schema(schema: &mut Value) -> bool {
     let Some(object) = schema.as_object_mut() else {
         return false;
     };

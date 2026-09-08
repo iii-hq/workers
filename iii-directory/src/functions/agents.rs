@@ -1,20 +1,21 @@
 //! Filesystem-backed agent profiles (`directory::agents::*`).
 //!
 //! An agent profile is a reusable identity selected for a session: a system prompt
-//! (the file body), a display name, a description, an emoji logo, and a
-//! skill filter — one direct `<agents_folder>/<id>.md` file with required
+//! (the file body), a display name, a description, an emoji logo, a skill
+//! filter, and a preloaded-function list (engine function ids whose contracts
+//! the harness pre-loads into the session prompt) — one direct `<agents_folder>/<id>.md` file with required
 //! YAML frontmatter (see `docs/architecture/agent-profile-storage.md`).
 //!
 //! Profiles compose: `extends: <id>` makes a profile's resolved system
 //! prompt its parent's resolved prompt followed by its own body (a blank
 //! body contributes nothing), with
-//! `skills` / `model` / `reasoning_effort` falling back up the chain when
-//! omitted (display fields never inherit). The chain is resolved here, on
+//! `skills` / `functions` / `model` / `reasoning_effort` falling back up the
+//! chain when omitted (display fields never inherit). The chain is resolved here, on
 //! every read, so the harness always receives a finished prompt. The base
 //! of most chains is a bundled profile embedded in this binary — `iii` (the
 //! harness default identity) or `iii-minimal` (the minimal directory-first
 //! identity): always listed, `builtin: true` until a local file with the
-//! same id shadows it. Five filesystem-backed verbs:
+//! same id shadows it. Seven filesystem-backed verbs:
 //!
 //!   * `directory::agents::list`   — metadata-only listing, chain-resolved.
 //!   * `directory::agents::get`    — one agent profile's resolved system
@@ -24,6 +25,10 @@
 //!     can be fixed; the harness refuses to run it).
 //!   * `directory::agents::create` / `update` / `delete` — full-file
 //!     writes, atomic, fanning out `directory::agents::on-change`.
+//!   * `directory::agents::functions::add` / `functions::remove` — targeted
+//!     edits of the profile's OWN `functions:` list that leave every other
+//!     byte of the file alone (no raw round-trip needed), fanning out
+//!     `on-change` as an `update`.
 //!
 //! Not to be confused with the read-only `agents_skills_folder` config
 //! root (`~/.agents/skills`) — that is an external tool's *skills*
@@ -53,6 +58,15 @@ const AGENT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
     "browse agent profile ids",
 )];
 
+/// Recovery pointer attached to a `directory::agents::functions::*` miss.
+const AGENT_FUNCTIONS_NEXT: &[NextAction] = &[
+    NextAction::new(
+        "directory::agents::get",
+        "read the profile's current preloaded functions",
+    ),
+    NextAction::new("directory::agents::list", "browse agent profile ids"),
+];
+
 const AGENT_CREATE_CONFLICT_NEXT: &[NextAction] = &[
     NextAction::new(
         "directory::agents::update",
@@ -79,6 +93,9 @@ pub struct AgentEntry {
     /// Length of the agent profile's skill filter, resolved through
     /// `extends`; `null` = no filter (every skill).
     pub skill_count: Option<usize>,
+    /// Number of preloaded functions (contracts the harness pre-loads into the
+    /// session prompt), resolved through `extends`; `0` = none.
+    pub function_count: usize,
     /// Model id for sessions using this profile, resolved through
     /// `extends`; `null` = the send decides.
     pub model: Option<String>,
@@ -140,6 +157,17 @@ pub struct AgentGetOutput {
     /// Filter entries that resolve to no currently visible skill.
     /// Warnings — the agent profile still loads.
     pub unknown_skills: Vec<String>,
+    /// Preloaded functions, resolved through `extends` (the nearest profile with
+    /// a non-empty list): engine function ids whose contracts the harness
+    /// pre-loads into the system prompt of every session running as this
+    /// profile, so the model calls them without discovery or a contract
+    /// lookup. Empty = none.
+    pub functions: Vec<String>,
+    /// `functions` entries the engine does not currently know (not registered
+    /// right now, or a typo). Warnings — the profile still loads and the
+    /// harness skips them; an empty list also results when the engine could
+    /// not be asked.
+    pub unknown_functions: Vec<String>,
     /// Model id for sessions using this profile, resolved through `extends`;
     /// `null` = the send decides. Served verbatim — resolution against the
     /// live model catalog happens where it is used.
@@ -206,6 +234,35 @@ pub struct AgentWriteOutput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AgentFunctionsInput {
+    /// Existing agent profile id, as returned by `directory::agents::list`.
+    pub id: String,
+    /// Engine function ids (e.g. `coder::tree`), verbatim, one per entry.
+    pub functions: Vec<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AgentFunctionsOutput {
+    pub id: String,
+    /// The profile's OWN `functions:` list after the write (not resolved
+    /// through `extends`), in file order.
+    pub functions: Vec<String>,
+    /// Ids this call actually added (already-present ids are not repeated).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
+    /// Ids this call actually removed (absent ids are ignored).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+    /// True when the request changed nothing; the file was not rewritten.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unchanged: bool,
+    /// Bytes on disk after the call.
+    pub bytes: usize,
+    /// File mtime after the call, RFC 3339.
+    pub modified_at: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentDeleteInput {
     /// Existing agent profile id, as returned by `directory::agents::list`.
     pub id: String,
@@ -229,6 +286,8 @@ pub fn register(
     register_create(iii, cfg, &subs.agents);
     register_update(iii, cfg, &subs.agents);
     register_delete(iii, cfg, &subs.agents);
+    register_functions_add(iii, cfg, &subs.agents);
+    register_functions_remove(iii, cfg, &subs.agents);
 }
 
 fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
@@ -241,9 +300,10 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
         })
         .description(
             "List agent profiles (id, name, description, logo, icon, color, model, \
-             reasoning_effort, skill_count, extends, modified_at) from the agents \
-             folder plus the bundled ones (`builtin: true`). Inherited fields resolve \
-             through `extends`; skill_count null means every skill.",
+             reasoning_effort, skill_count, function_count, extends, modified_at) from \
+             the agents folder plus the bundled ones (`builtin: true`). Inherited fields \
+             resolve through `extends`; skill_count null means every skill, \
+             function_count counts the preloaded functions (contracts injected into new sessions).",
         ),
     );
 }
@@ -260,14 +320,18 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
             let cache = cache_inner.clone();
             async move {
                 let visible = resolve_visible_skills(&cfg, &cache, &iii, false).await;
-                get_agent(&cfg, req, &visible).map_err(Error::Handler)
+                let mut out = get_agent(&cfg, req, &visible).map_err(Error::Handler)?;
+                out.unknown_functions = probe_unknown_functions(&iii, &out.functions).await;
+                Ok::<_, Error>(out)
             }
         })
         .description(
             "Fetch one agent profile by id: the system prompt resolved through its \
-             `extends` chain, display fields, skill filter, model, reasoning_effort, \
-             and `inheritance_error` when the chain does not resolve. Pass raw: true \
-             for the exact on-disk file to edit with directory::agents::update.",
+             `extends` chain, display fields, skill filter, preloaded `functions` (engine \
+             function ids the harness pre-loads into the session prompt) plus \
+             `unknown_functions`, model, reasoning_effort, and `inheritance_error` when \
+             the chain does not resolve. Pass raw: true for the exact on-disk file to \
+             edit with directory::agents::update.",
         ),
     );
 }
@@ -291,9 +355,10 @@ fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
         })
         .description(
             "Create a new agent profile at <agents_folder>/<id>.md from full-file \
-             markdown (frontmatter with a non-empty `name`, emoji-only `logo`; the \
-             body is the system prompt and may be empty). Rejects ids or paths that \
-             already exist; a bundled id is shadowed.",
+             markdown (frontmatter with a non-empty `name`, emoji-only `logo`, optional \
+             `skills:` filter and `functions:` list of engine function ids to pre-load \
+             into sessions; the body is the system prompt and may be empty). Rejects ids \
+             or paths that already exist; a bundled id is shadowed.",
         )
         .metadata(json!({"tool": {"label": "Create agent profile"}})),
     );
@@ -318,9 +383,10 @@ fn register_update(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
         })
         .description(
             "Overwrite one existing agent profile with full-file markdown \
-             (frontmatter with a non-empty `name`, emoji-only `logo`; the body is the \
-             system prompt and may be empty). Updating a bundled profile creates a \
-             local file that shadows it.",
+             (frontmatter with a non-empty `name`, emoji-only `logo`, optional `skills:` \
+             and `functions:` lists; the body is the system prompt and may be empty). \
+             Updating a bundled profile creates a local file that shadows it. To change \
+             only the preloaded functions, prefer directory::agents::functions::add / remove.",
         )
         .metadata(json!({"tool": {"label": "Update agent profile"}})),
     );
@@ -350,6 +416,122 @@ fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
         )
         .metadata(json!({"tool": {"label": "Delete agent profile"}})),
     );
+}
+
+fn register_functions_add(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    subs: &trigger_types::SubscriberSet,
+) {
+    let cfg_inner = cfg.clone();
+    let iii_inner = iii.clone();
+    let subs_inner = subs.clone();
+    iii.register_function(
+        "directory::agents::functions::add",
+        RegisterFunction::new_async(move |req: AgentFunctionsInput| {
+            let cfg = cfg_inner.load_full();
+            let iii = iii_inner.clone();
+            let subs = subs_inner.clone();
+            async move {
+                let out = add_agent_functions(&cfg, &req).map_err(Error::Handler)?;
+                if !out.unchanged {
+                    trigger_types::dispatch(&iii, &subs, json!({ "op": "update", "name": out.id }))
+                        .await;
+                }
+                Ok::<_, Error>(out)
+            }
+        })
+        .description(
+            "Add preloaded functions to one existing agent profile: appends the given engine \
+             function ids (e.g. `coder::tree`) to the profile's own `functions:` list — \
+             the contracts the harness pre-loads into the system prompt of every new \
+             session running as this profile. Ids already present are kept once; the \
+             rest of the file is untouched. Editing a bundled profile creates the local \
+             file that shadows it.",
+        )
+        .metadata(json!({"tool": {"label": "Add agent profile functions"}})),
+    );
+}
+
+fn register_functions_remove(
+    iii: &Arc<IIIClient>,
+    cfg: &SharedConfig,
+    subs: &trigger_types::SubscriberSet,
+) {
+    let cfg_inner = cfg.clone();
+    let iii_inner = iii.clone();
+    let subs_inner = subs.clone();
+    iii.register_function(
+        "directory::agents::functions::remove",
+        RegisterFunction::new_async(move |req: AgentFunctionsInput| {
+            let cfg = cfg_inner.load_full();
+            let iii = iii_inner.clone();
+            let subs = subs_inner.clone();
+            async move {
+                let out = remove_agent_functions(&cfg, &req).map_err(Error::Handler)?;
+                if !out.unchanged {
+                    trigger_types::dispatch(&iii, &subs, json!({ "op": "update", "name": out.id }))
+                        .await;
+                }
+                Ok::<_, Error>(out)
+            }
+        })
+        .description(
+            "Remove preloaded functions from one existing agent profile: drops the given \
+             engine function ids from the profile's own `functions:` list (ids not \
+             present are ignored); the rest of the file is untouched. Only the \
+             profile's OWN list is edited — a list inherited through `extends` is \
+             replaced by setting this profile's list, never edited on the parent.",
+        )
+        .metadata(json!({"tool": {"label": "Remove agent profile functions"}})),
+    );
+}
+
+/// `directory::agents::get` reports the `functions` entries the engine does
+/// not know right now, the way `unknown_skills` reports filter entries that
+/// match no skill. Best effort: a registry call that fails marks nothing
+/// unknown — the field is a warning, and a transient engine hiccup must not
+/// read as "every function is missing".
+async fn probe_unknown_functions(iii: &IIIClient, functions: &[String]) -> Vec<String> {
+    /// The engine's `function_ids` batch cap.
+    const INFO_BATCH_MAX: usize = 32;
+    const INFO_TIMEOUT_MS: u64 = 5_000;
+    let mut unknown = Vec::new();
+    for chunk in functions.chunks(INFO_BATCH_MAX) {
+        let response = iii
+            .trigger(iii_sdk::protocol::TriggerRequest {
+                function_id: "engine::functions::info".into(),
+                payload: json!({ "function_ids": chunk }),
+                action: None,
+                timeout_ms: Some(INFO_TIMEOUT_MS),
+            })
+            .await;
+        let Ok(response) = response else {
+            tracing::warn!("engine::functions::info failed; unknown_functions left empty");
+            return Vec::new();
+        };
+        unknown.extend(unknown_ids_in_info_batch(&response, chunk));
+    }
+    unknown
+}
+
+/// The ids of one `engine::functions::info { function_ids }` batch the engine
+/// answered with a not-found marker (`{ function_id, error: "not_found" }`)
+/// or did not answer at all, in request order.
+fn unknown_ids_in_info_batch(response: &serde_json::Value, requested: &[String]) -> Vec<String> {
+    let Some(items) = response.get("functions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let known: std::collections::HashSet<&str> = items
+        .iter()
+        .filter(|item| item.get("error").is_none())
+        .filter_map(|item| item.get("function_id").and_then(|v| v.as_str()))
+        .collect();
+    requested
+        .iter()
+        .filter(|id| !known.contains(id.as_str()))
+        .cloned()
+        .collect()
 }
 
 // ---------- core helpers (engine-free, reusable in tests) ----------
@@ -429,9 +611,12 @@ fn resolve_chain<'a>(
 
 /// What a profile inherits when it omits a field: the nearest chain member
 /// that sets it wins. `skills` is the first NON-EMPTY filter — an empty
-/// list means "not narrowed here", never "no skills".
+/// list means "not narrowed here", never "no skills" — and `functions`
+/// follows the same rule: the nearest non-empty list replaces (no union),
+/// an empty list means "nothing declared here".
 struct Inherited {
     skills: Vec<String>,
+    functions: Vec<String>,
     model: Option<String>,
     reasoning_effort: Option<String>,
 }
@@ -442,6 +627,11 @@ fn inherit(chain: &[&FsAgent]) -> Inherited {
             .iter()
             .find(|a| !a.skills.is_empty())
             .map(|a| a.skills.clone())
+            .unwrap_or_default(),
+        functions: chain
+            .iter()
+            .find(|a| !a.functions.is_empty())
+            .map(|a| a.functions.clone())
             .unwrap_or_default(),
         model: chain.iter().find_map(|a| a.model.clone()),
         reasoning_effort: chain.iter().find_map(|a| a.reasoning_effort.clone()),
@@ -510,6 +700,7 @@ pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
             AgentEntry {
                 modified_at: fs_modified_at(&a.abs_path),
                 skill_count: (!inherited.skills.is_empty()).then_some(inherited.skills.len()),
+                function_count: inherited.functions.len(),
                 model: inherited.model,
                 reasoning_effort: inherited.reasoning_effort,
                 icon: a.icon.clone(),
@@ -565,6 +756,10 @@ pub fn get_agent(
         system_prompt,
         skills: inherited.skills,
         unknown_skills,
+        functions: inherited.functions,
+        // Filled by the registered handler, which can ask the engine; the
+        // engine-free core serves an empty list.
+        unknown_functions: Vec::new(),
         model: inherited.model,
         reasoning_effort: inherited.reasoning_effort,
         icon: agent.icon.clone(),
@@ -662,6 +857,114 @@ pub fn delete_agent(
     std::fs::remove_file(&agent.abs_path)
         .map_err(|e| format!("delete {}: {e}", agent.abs_path.display()))?;
     Ok(AgentDeleteOutput { id: req.id.clone() })
+}
+
+/// Which way `edit_agent_functions` moves the profile's own `functions:` list.
+#[derive(Debug, Clone, Copy)]
+enum FunctionsEdit {
+    Add,
+    Remove,
+}
+
+pub fn add_agent_functions(
+    cfg: &SkillsConfig,
+    req: &AgentFunctionsInput,
+) -> Result<AgentFunctionsOutput, String> {
+    edit_agent_functions(cfg, req, FunctionsEdit::Add)
+}
+
+pub fn remove_agent_functions(
+    cfg: &SkillsConfig,
+    req: &AgentFunctionsInput,
+) -> Result<AgentFunctionsOutput, String> {
+    edit_agent_functions(cfg, req, FunctionsEdit::Remove)
+}
+
+/// Shared body of `functions::add` / `::remove`: resolve the profile's file
+/// (copy-on-write for a bundled one, exactly like `update`), compute the
+/// next OWN list, rewrite only that frontmatter field, re-validate against
+/// the scanner rules, and write atomically. A request that changes nothing
+/// writes nothing (and never materializes a bundled profile's shadow).
+fn edit_agent_functions(
+    cfg: &SkillsConfig,
+    req: &AgentFunctionsInput,
+    edit: FunctionsEdit,
+) -> Result<AgentFunctionsOutput, String> {
+    validate_name(&req.id)?;
+    for function_id in &req.functions {
+        fs_source::validate_function_id(function_id)
+            .map_err(|e| invalid_input_message("D416", &e, AGENT_FUNCTIONS_NEXT))?;
+    }
+    let requested = fs_source::normalize_function_ids(req.functions.clone());
+    if requested.is_empty() {
+        return Err(invalid_input_message(
+            "D416",
+            "`functions` must name at least one engine function id (e.g. `coder::tree`).",
+            AGENT_FUNCTIONS_NEXT,
+        ));
+    }
+    let catalog = catalog(cfg);
+    let Some(existing) = catalog.iter().find(|a| a.name == req.id) else {
+        return Err(agent_not_found(&catalog, &req.id));
+    };
+    // The profile's OWN list: an inherited list is the parent's to edit.
+    let current = existing.functions.clone();
+    let (next, added, removed) = match edit {
+        FunctionsEdit::Add => {
+            let added: Vec<String> = requested
+                .into_iter()
+                .filter(|id| !current.contains(id))
+                .collect();
+            let mut next = current.clone();
+            next.extend(added.iter().cloned());
+            (next, added, Vec::new())
+        }
+        FunctionsEdit::Remove => {
+            let removed: Vec<String> = requested
+                .into_iter()
+                .filter(|id| current.contains(id))
+                .collect();
+            let next = current
+                .iter()
+                .filter(|id| !removed.contains(id))
+                .cloned()
+                .collect();
+            (next, Vec::new(), removed)
+        }
+    };
+    let raw = read_agent_raw(existing)?;
+    if next == current {
+        return Ok(AgentFunctionsOutput {
+            id: existing.name.clone(),
+            functions: current,
+            added,
+            removed,
+            unchanged: true,
+            bytes: raw.len(),
+            modified_at: fs_modified_at(&existing.abs_path),
+        });
+    }
+    let dest = if existing.builtin {
+        let dest = cfg.resolved_agents_folder().join(format!("{}.md", req.id));
+        if dest.exists() {
+            return Err(skipped_file_conflict(&dest));
+        }
+        dest
+    } else {
+        existing.abs_path.clone()
+    };
+    let content = fs_source::set_frontmatter_string_list(&raw, "functions", &next)?;
+    let agent = validate_agent_content(&req.id, &content, &dest)?;
+    write_file_atomic(&dest, content.as_bytes())?;
+    Ok(AgentFunctionsOutput {
+        id: agent.name.clone(),
+        functions: agent.functions,
+        added,
+        removed,
+        unchanged: false,
+        bytes: content.len(),
+        modified_at: fs_modified_at(&agent.abs_path),
+    })
 }
 
 // ---------- validation ----------
@@ -1462,5 +1765,233 @@ mod tests {
             vec!["known/index".to_string(), "ghost".to_string()]
         );
         assert_eq!(kid.unknown_skills, vec!["ghost".to_string()]);
+    }
+
+    // ── preloaded functions ─────────────────────────────────────────────
+
+    fn functions_req(id: &str, functions: &[&str]) -> AgentFunctionsInput {
+        AgentFunctionsInput {
+            id: id.into(),
+            functions: functions.iter().map(|f| f.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn functions_add_and_remove_edit_only_the_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        let original = "---\nname: Engineer\n# hand-written comment\nskills: [iii-sandbox]\ncolor: blue\n---\nYou write code.\n";
+        write_fixture(tmp.path(), "agents/engineer.md", original);
+        let file = tmp.path().join("agents/engineer.md");
+
+        // Nothing declared yet.
+        let got = get(&cfg, "engineer", false).unwrap();
+        assert!(got.functions.is_empty());
+        assert_eq!(
+            list_agents(&cfg)
+                .agents
+                .iter()
+                .find(|r| r.id == "engineer")
+                .unwrap()
+                .function_count,
+            0
+        );
+
+        // Add: appended in request order, duplicates within the request
+        // collapse, everything else in the file is byte-identical.
+        let out = add_agent_functions(
+            &cfg,
+            &functions_req(
+                "engineer",
+                &["coder::tree", " coder::search ", "coder::tree"],
+            ),
+        )
+        .unwrap();
+        assert_eq!(out.functions, vec!["coder::tree", "coder::search"]);
+        assert_eq!(out.added, vec!["coder::tree", "coder::search"]);
+        assert!(out.removed.is_empty());
+        assert!(!out.unchanged);
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            on_disk,
+            "---\nname: Engineer\n# hand-written comment\nskills: [iii-sandbox]\ncolor: blue\nfunctions:\n  - coder::tree\n  - coder::search\n---\nYou write code.\n"
+        );
+        assert_eq!(out.bytes, on_disk.len());
+
+        // Re-adding a present id changes nothing and writes nothing.
+        let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let out = add_agent_functions(&cfg, &functions_req("engineer", &["coder::tree"])).unwrap();
+        assert!(out.unchanged);
+        assert!(out.added.is_empty());
+        assert_eq!(out.functions, vec!["coder::tree", "coder::search"]);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            before
+        );
+
+        // Adding one more keeps the existing order and appends.
+        let out =
+            add_agent_functions(&cfg, &functions_req("engineer", &["coder::read-file"])).unwrap();
+        assert_eq!(
+            out.functions,
+            vec!["coder::tree", "coder::search", "coder::read-file"]
+        );
+        assert_eq!(out.added, vec!["coder::read-file"]);
+
+        // `get` and `list` serve the new list.
+        let got = get(&cfg, "engineer", false).unwrap();
+        assert_eq!(
+            got.functions,
+            vec!["coder::tree", "coder::search", "coder::read-file"]
+        );
+        assert!(
+            got.unknown_functions.is_empty(),
+            "engine-free core never marks unknown"
+        );
+        assert_eq!(
+            list_agents(&cfg)
+                .agents
+                .iter()
+                .find(|r| r.id == "engineer")
+                .unwrap()
+                .function_count,
+            3
+        );
+
+        // Remove: absent ids are ignored, present ones go, order is kept.
+        let out = remove_agent_functions(
+            &cfg,
+            &functions_req("engineer", &["coder::search", "never::there"]),
+        )
+        .unwrap();
+        assert_eq!(out.functions, vec!["coder::tree", "coder::read-file"]);
+        assert_eq!(out.removed, vec!["coder::search"]);
+        assert!(out.added.is_empty());
+        assert!(!out.unchanged);
+        let out =
+            remove_agent_functions(&cfg, &functions_req("engineer", &["never::there"])).unwrap();
+        assert!(out.unchanged);
+
+        // Removing the last ids drops the field entirely — the file is back
+        // to its original bytes.
+        remove_agent_functions(
+            &cfg,
+            &functions_req("engineer", &["coder::tree", "coder::read-file"]),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    }
+
+    #[test]
+    fn functions_edits_reject_bad_input_and_unknown_profiles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(tmp.path(), "agents/real.md", CAPTAIN);
+
+        let err = add_agent_functions(&cfg, &functions_req("real", &[])).unwrap_err();
+        assert!(err.starts_with("D416 invalid_input:"), "got: {err}");
+        let err = add_agent_functions(&cfg, &functions_req("real", &["  "])).unwrap_err();
+        assert!(err.starts_with("D416 invalid_input:"), "got: {err}");
+        let err = add_agent_functions(&cfg, &functions_req("real", &["coder tree"])).unwrap_err();
+        assert!(err.contains("whitespace"), "got: {err}");
+        let err =
+            remove_agent_functions(&cfg, &functions_req("reel", &["coder::tree"])).unwrap_err();
+        assert!(
+            err.starts_with("D410 not_found: agent profile"),
+            "got: {err}"
+        );
+        // Nothing was written by the rejected calls.
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("agents/real.md")).unwrap(),
+            CAPTAIN
+        );
+    }
+
+    #[test]
+    fn functions_inherit_like_skills_and_edits_stay_on_the_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(
+            tmp.path(),
+            "agents/base.md",
+            "---\nname: Base\nfunctions:\n  - coder::tree\n  - coder::search\n---\nBase.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/kid.md",
+            "---\nname: Kid\nextends: base\n---\nKid.\n",
+        );
+
+        // Omitted on the child → the parent's list, and the count follows.
+        let kid = get(&cfg, "kid", false).unwrap();
+        assert_eq!(kid.functions, vec!["coder::tree", "coder::search"]);
+        let rows = list_agents(&cfg).agents;
+        assert_eq!(
+            rows.iter().find(|r| r.id == "kid").unwrap().function_count,
+            2
+        );
+
+        // Adding on the child edits the CHILD's own list (which then replaces
+        // the parent's — no union), never the parent's file.
+        let out = add_agent_functions(&cfg, &functions_req("kid", &["fp::pipe"])).unwrap();
+        assert_eq!(
+            out.functions,
+            vec!["fp::pipe"],
+            "own list, not parent + fp::pipe"
+        );
+        assert_eq!(get(&cfg, "kid", false).unwrap().functions, vec!["fp::pipe"]);
+        assert_eq!(
+            get(&cfg, "base", false).unwrap().functions,
+            vec!["coder::tree", "coder::search"]
+        );
+        // Emptying the child's own list falls back to the parent again.
+        remove_agent_functions(&cfg, &functions_req("kid", &["fp::pipe"])).unwrap();
+        assert_eq!(
+            get(&cfg, "kid", false).unwrap().functions,
+            vec!["coder::tree", "coder::search"]
+        );
+    }
+
+    #[test]
+    fn functions_add_on_bundled_profile_copy_on_writes_the_shadow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        let local = tmp.path().join("agents/iii.md");
+
+        // Removing from a bundled profile that declares nothing changes
+        // nothing — and materializes nothing.
+        let out = remove_agent_functions(&cfg, &functions_req("iii", &["coder::tree"])).unwrap();
+        assert!(out.unchanged);
+        assert!(!local.exists());
+
+        let out = add_agent_functions(&cfg, &functions_req("iii", &["coder::tree"])).unwrap();
+        assert_eq!(out.functions, vec!["coder::tree"]);
+        assert!(local.is_file(), "the shadow file now exists");
+        let got = get(&cfg, "iii", true).unwrap();
+        assert!(!got.builtin);
+        assert_eq!(got.functions, vec!["coder::tree"]);
+        // The shadow is the bundled file plus the list — the doctrine body
+        // travelled with it.
+        assert!(got.system_prompt.starts_with(III_DOCTRINE_OPENER));
+        assert!(got.raw.unwrap().contains("functions:\n  - coder::tree\n"));
+    }
+
+    #[test]
+    fn unknown_ids_are_the_not_found_markers_and_the_unanswered() {
+        let requested = vec![
+            "coder::tree".to_string(),
+            "nope::missing".to_string(),
+            "silent::one".to_string(),
+        ];
+        let response = serde_json::json!({ "functions": [
+            { "function_id": "coder::tree", "description": "Tree.", "request_schema": { "type": "object" } },
+            { "function_id": "nope::missing", "error": "not_found" },
+        ]});
+        assert_eq!(
+            unknown_ids_in_info_batch(&response, &requested),
+            vec!["nope::missing".to_string(), "silent::one".to_string()]
+        );
+        // A malformed response marks nothing (warning semantics).
+        assert!(unknown_ids_in_info_batch(&serde_json::json!({}), &requested).is_empty());
     }
 }

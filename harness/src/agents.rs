@@ -1,13 +1,21 @@
 //! Agent-profile resolution (`directory::agents::*`): `options.agent` on
 //! `harness::send` and `agent` on `harness::spawn` name a filesystem-backed
 //! profile served by the iii-directory worker. The profile is fetched ONCE
-//! here and frozen onto the turn (identity, prompt, skills, model, display) —
-//! later directory edits never reach a live session, matching the skills
-//! baseline freeze. The directory serves the prompt already resolved
-//! (`extends` chains composed root-first), and under a profile that prompt
-//! IS the session identity: nothing built-in sits underneath it.
+//! here and frozen onto the turn (identity, prompt, skills, preloaded functions,
+//! model, display) — later directory edits never reach a live session,
+//! matching the skills baseline freeze. The directory serves the prompt
+//! already resolved (`extends` chains composed root-first), and under a
+//! profile that prompt IS the session identity: nothing built-in sits
+//! underneath it.
+//!
+//! A profile's `functions` — its PRELOADED functions — are engine function ids
+//! whose contracts the session should not have to discover: this module
+//! renders each one's current description and compacted request schema into
+//! a `<preloaded_functions>` block appended to the frozen prompt, so the model
+//! calls them on the first step instead of spending a search and a contract
+//! lookup per session (see [`render_preloaded_functions`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -22,6 +30,9 @@ use crate::types::model::ThinkingLevel;
 use crate::types::turn::AgentIdentity;
 
 const AGENTS_GET_ID: &str = "directory::agents::get";
+const FUNCTIONS_INFO_ID: &str = "engine::functions::info";
+/// The engine's `function_ids` batch cap (`engine::functions::info`).
+const INFO_BATCH_MAX: usize = 32;
 
 /// The wire subset of `directory::agents::get` the harness consumes; unknown
 /// fields are ignored so directory additions never break resolution.
@@ -31,6 +42,10 @@ struct AgentGetWire {
     system_prompt: String,
     #[serde(default)]
     skills: Vec<String>,
+    /// Preloaded function ids, already resolved through `extends` by the
+    /// directory; older directories omit the field.
+    #[serde(default)]
+    functions: Vec<String>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
@@ -55,6 +70,11 @@ pub struct ResolvedAgent {
     pub prompt: String,
     /// `None` when the profile filters nothing (every skill).
     pub skills: Option<Vec<String>>,
+    /// The profile's preloaded function ids, in declaration order — the
+    /// contracts rendered into `prompt` by [`resolve`] (ids the engine did
+    /// not know at resolution are still listed here; the prompt names them
+    /// as unavailable). Empty = the profile declares none.
+    pub functions: Vec<String>,
     /// Authoritative model for sessions running as this agent when present.
     pub model: Option<String>,
     /// Provider-native reasoning effort paired with the profile model.
@@ -92,7 +112,204 @@ pub async fn resolve(
         HarnessError::Dependency(format!("{AGENTS_GET_ID}: malformed response: {e}"))
     })?;
     check_resolvable(&wire)?;
-    Ok(normalize(id, wire))
+    let mut agent = normalize(id, wire);
+    attach_preloaded_functions(deps, &mut agent).await;
+    Ok(agent)
+}
+
+/// One preloaded function as rendered into the prompt: the current description
+/// and request schema (compacted the way `engine::functions::info` results
+/// are compacted for the model — see `trigger::compact_schema`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreloadedContract {
+    pub function_id: String,
+    pub description: Option<String>,
+    pub request_schema: Option<Value>,
+}
+
+impl PreloadedContract {
+    fn new(function_id: &str, description: Option<&str>, request_schema: Option<Value>) -> Self {
+        let mut request_schema = request_schema.filter(|schema| !schema.is_null());
+        if let Some(schema) = request_schema.as_mut() {
+            crate::trigger::compact_schema(schema);
+        }
+        Self {
+            function_id: function_id.to_string(),
+            description: description
+                .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|text| !text.is_empty()),
+            request_schema,
+        }
+    }
+}
+
+/// Freeze the profile's preloaded functions onto the prompt. Contracts come
+/// from the cached registry snapshot (already hydrated with schemas, no
+/// round-trip) and, for ids the snapshot cannot vouch for — not listed, or
+/// listed without a schema — from one `engine::functions::info` batch per
+/// 32 ids. Ids the engine does not know are named in the block as
+/// unavailable so the model never dials them blind. Best effort: a profile
+/// whose registry lookups all fail still runs, with its declared ids listed
+/// as unavailable. Resolved ONCE, like the rest of the identity — a worker
+/// that re-registers with a new contract mid-session is what the
+/// registry-changed notice covers.
+async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
+    if agent.functions.is_empty() {
+        return;
+    }
+    let snapshot = deps.functions().await;
+    let mut contracts: HashMap<String, PreloadedContract> = HashMap::new();
+    let mut pending: Vec<String> = Vec::new();
+    for id in &agent.functions {
+        match snapshot
+            .functions
+            .iter()
+            .find(|descriptor| descriptor.function_id == *id)
+        {
+            Some(descriptor) if descriptor.parameters.is_some() => {
+                contracts.insert(
+                    id.clone(),
+                    PreloadedContract::new(
+                        id,
+                        descriptor.description.as_deref(),
+                        descriptor.parameters.clone(),
+                    ),
+                );
+            }
+            _ => pending.push(id.clone()),
+        }
+    }
+    let cfg = deps.cfg().await;
+    for chunk in pending.chunks(INFO_BATCH_MAX) {
+        let response = deps
+            .iii
+            .trigger(TriggerRequest {
+                function_id: FUNCTIONS_INFO_ID.into(),
+                payload: json!({ "function_ids": chunk }),
+                action: None,
+                timeout_ms: Some(cfg.dispatch_timeout_ms),
+            })
+            .await;
+        match response {
+            Ok(response) => {
+                for contract in contracts_in_info_batch(&response) {
+                    contracts.insert(contract.function_id.clone(), contract);
+                }
+            }
+            Err(error) => tracing::warn!(
+                agent = %agent.identity.id,
+                %error,
+                "preloaded function contracts could not be fetched; those ids render as unavailable"
+            ),
+        }
+    }
+    let mut ordered = Vec::with_capacity(agent.functions.len());
+    let mut unavailable = Vec::new();
+    for id in &agent.functions {
+        match contracts.remove(id) {
+            Some(contract) => ordered.push(contract),
+            None => unavailable.push(id.clone()),
+        }
+    }
+    if !unavailable.is_empty() {
+        tracing::warn!(
+            agent = %agent.identity.id,
+            unavailable = ?unavailable,
+            "agent profile names preloaded functions the engine does not know"
+        );
+    }
+    agent.prompt = append_block(
+        &agent.prompt,
+        &render_preloaded_functions(&ordered, &unavailable),
+    );
+}
+
+/// The contracts one `engine::functions::info { function_ids }` batch
+/// returned — not-found markers (`{ function_id, error }`) are skipped, so
+/// an id absent from the result is exactly an id the engine does not know.
+fn contracts_in_info_batch(response: &Value) -> Vec<PreloadedContract> {
+    response
+        .get("functions")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item.get("error").is_none())
+                .filter_map(|item| {
+                    let id = item.get("function_id").and_then(Value::as_str)?;
+                    Some(PreloadedContract::new(
+                        id,
+                        item.get("description").and_then(Value::as_str),
+                        item.get("request_schema")
+                            .or_else(|| item.get("request_format"))
+                            .or_else(|| item.get("parameters"))
+                            .cloned(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The prompt followed by a blank line and the block; a profile with no
+/// prompt of its own serves the block alone.
+fn append_block(prompt: &str, block: &str) -> String {
+    let head = prompt.trim_end_matches('\n');
+    if head.is_empty() {
+        block.to_string()
+    } else {
+        format!("{head}\n\n{block}")
+    }
+}
+
+/// The `<preloaded_functions>` block: an instruction paragraph, then one
+/// section per contract — id, one-line description, compact JSON request
+/// schema — in the profile's declaration order, then the ids the engine does
+/// not know. Read against the doctrine's Step 1 / Step 2: a contract in this
+/// block is "pre-verified", so the model skips discovery and
+/// `engine::functions::info` for it and calls it on the first step.
+pub(crate) fn render_preloaded_functions(
+    contracts: &[PreloadedContract],
+    unavailable: &[String],
+) -> String {
+    let mut body = format!(
+        "<preloaded_functions>\nThese functions are preloaded for this agent profile: the contracts below are \
+         pre-verified and already in context. Call each one directly through `{tool}` with a \
+         `payload` object matching its request schema — skip `directory::search_functions` and \
+         `engine::functions::info` for these ids (fetch a contract again only after an \
+         `invalid_arguments` error or a registry-change notice). Every other function still goes \
+         through normal discovery.",
+        tool = crate::policy::AGENT_TRIGGER_NAME,
+    );
+    for contract in contracts {
+        body.push_str("\n\n### `");
+        body.push_str(&contract.function_id);
+        body.push('`');
+        if let Some(description) = &contract.description {
+            body.push('\n');
+            body.push_str(description);
+        }
+        body.push_str("\nrequest_schema: ");
+        match &contract.request_schema {
+            Some(schema) => body.push_str(&schema.to_string()),
+            None => body.push_str("(none published — call with an empty object `{}` unless the description says otherwise)"),
+        }
+    }
+    if !unavailable.is_empty() {
+        body.push_str("\n\nDeclared by the profile but NOT registered right now — do not call: ");
+        body.push_str(
+            &unavailable
+                .iter()
+                .map(|id| format!("`{id}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        body.push_str(
+            ". If the task needs one of them, say so rather than improvising a substitute.",
+        );
+    }
+    body.push_str("\n</preloaded_functions>");
+    body
 }
 
 /// A profile whose `extends` chain is broken is served with its own body
@@ -155,6 +372,12 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
         },
         prompt: wire.system_prompt,
         skills: (!wire.skills.is_empty()).then_some(wire.skills),
+        functions: wire
+            .functions
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect(),
         model: wire.model,
         reasoning_effort: wire.reasoning_effort,
         name,
@@ -226,6 +449,17 @@ impl ResolvedAgent {
             object.insert(
                 "reasoning_effort".into(),
                 Value::String(reasoning_effort.clone()),
+            );
+        }
+        if !self.functions.is_empty() {
+            object.insert(
+                "functions".into(),
+                Value::Array(
+                    self.functions
+                        .iter()
+                        .map(|id| Value::String(id.clone()))
+                        .collect(),
+                ),
             );
         }
         value
@@ -357,5 +591,104 @@ mod tests {
         assert_eq!(agent.skills.as_deref(), Some(&["review".to_string()][..]));
         assert_eq!(agent.icon, None, "unknown token degrades, never errors");
         assert_eq!(agent.color, None, "unknown color degrades, never errors");
+    }
+
+    #[test]
+    fn normalize_carries_preloaded_function_ids_into_metadata() {
+        let agent = normalize(
+            "engineer",
+            wire(serde_json::json!({
+                "name": "Engineer",
+                "system_prompt": "Write code.",
+                "functions": ["coder::tree", " coder::search ", ""],
+            })),
+        );
+        assert_eq!(agent.functions, vec!["coder::tree", "coder::search"]);
+        assert_eq!(
+            agent.session_metadata()["functions"],
+            serde_json::json!(["coder::tree", "coder::search"])
+        );
+        // Absent on the wire (older directory) → empty, and no metadata key.
+        let plain = normalize(
+            "plain",
+            wire(serde_json::json!({ "name": "Plain", "system_prompt": "Hi." })),
+        );
+        assert!(plain.functions.is_empty());
+        assert!(plain.session_metadata().get("functions").is_none());
+    }
+
+    #[test]
+    fn info_batch_yields_contracts_and_skips_not_found_markers() {
+        let response = serde_json::json!({ "functions": [
+            {
+                "function_id": "coder::tree",
+                "description": "Show a  directory\n tree.",
+                "request_schema": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "title": "TreeRequest",
+                    "type": "object",
+                    "properties": { "path": { "type": "string", "default": "." } }
+                },
+                "response_schema": { "type": "object" },
+                "worker_name": "coder"
+            },
+            { "function_id": "nope::missing", "error": "not_found" },
+            { "function_id": "bare", "description": "No schema." }
+        ]});
+        let contracts = contracts_in_info_batch(&response);
+        assert_eq!(contracts.len(), 2, "the marker is not a contract");
+        assert_eq!(contracts[0].function_id, "coder::tree");
+        assert_eq!(
+            contracts[0].description.as_deref(),
+            Some("Show a directory tree."),
+            "whitespace collapsed"
+        );
+        let schema = contracts[0].request_schema.as_ref().unwrap();
+        assert!(schema.get("$schema").is_none(), "boilerplate stripped");
+        assert!(schema.get("title").is_none());
+        assert_eq!(schema["properties"]["path"]["type"], "string");
+        assert_eq!(
+            schema["properties"]["path"]["default"], ".",
+            "real defaults survive"
+        );
+        assert_eq!(contracts[1].function_id, "bare");
+        assert!(contracts[1].request_schema.is_none());
+        assert!(contracts_in_info_batch(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn preloaded_functions_block_lists_contracts_in_order_and_names_the_unavailable() {
+        let contracts = vec![
+            PreloadedContract::new(
+                "coder::tree",
+                Some("Show a directory tree."),
+                Some(
+                    serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+                ),
+            ),
+            PreloadedContract::new("bare", None, None),
+        ];
+        let block = render_preloaded_functions(&contracts, &["gone::away".to_string()]);
+        assert!(block.starts_with("<preloaded_functions>\n"));
+        assert!(block.ends_with("\n</preloaded_functions>"));
+        assert!(block.contains("pre-verified"));
+        assert!(block.contains("through `agent_trigger`"));
+        let tree = block.find("### `coder::tree`").expect("first contract");
+        let bare = block.find("### `bare`").expect("second contract");
+        assert!(tree < bare, "declaration order is kept");
+        assert!(block.contains(
+            "### `coder::tree`\nShow a directory tree.\nrequest_schema: {\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}"
+        ));
+        assert!(block.contains("### `bare`\nrequest_schema: (none published"));
+        assert!(block.contains("NOT registered right now — do not call: `gone::away`."));
+
+        // Nothing unavailable → no such paragraph.
+        let clean = render_preloaded_functions(&contracts, &[]);
+        assert!(!clean.contains("NOT registered"));
+
+        // The block follows the identity after one blank line, or stands
+        // alone for a prompt-less profile.
+        assert_eq!(append_block("You lead.\n\n", "<b/>"), "You lead.\n\n<b/>");
+        assert_eq!(append_block("", "<b/>"), "<b/>");
     }
 }

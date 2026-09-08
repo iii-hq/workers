@@ -2320,6 +2320,7 @@ mod tests {
             },
             prompt: "You are Tech Leader.\n\nDelegate everything.".into(),
             skills: Some(vec!["review".into()]),
+            functions: Vec::new(),
             model: model.map(str::to_string),
             reasoning_effort: None,
             name: "Tech Leader".into(),

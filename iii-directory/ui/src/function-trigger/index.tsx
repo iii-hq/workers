@@ -15,7 +15,7 @@ import type {
   FunctionTriggerRenderer,
 } from '@iii-dev/console-ui'
 import { isErrorOutput, unwrapEnvelope } from '../lib/envelope'
-import { AgentsGetView, AgentsListView, AgentsUpdateView } from './AgentsViews'
+import { AgentsFunctionsView, AgentsGetView, AgentsListView, AgentsUpdateView } from './AgentsViews'
 import { SkillsDownloadView } from './DownloadView'
 import { isDirectoryFunction } from './parsers'
 import {
@@ -137,6 +137,10 @@ function render(
           verb="created"
         />
       )
+    case 'directory::agents::functions::add':
+      return <AgentsFunctionsView input={input} output={output} running={running} verb="add" />
+    case 'directory::agents::functions::remove':
+      return <AgentsFunctionsView input={input} output={output} running={running} verb="remove" />
     case 'directory::registry::workers::list':
       return (
         <RegistryWorkersListView
