@@ -87,6 +87,21 @@ fn identity_line_and_agent_trigger_preserved() {
 }
 
 #[test]
+fn default_prompt_enforces_efficiency_discipline() {
+    let out = default_prompt();
+    assert!(out.contains("# Efficiency discipline"));
+    assert!(out.contains("Use the fewest turns and calls"));
+    assert!(out.contains("at most one call with"));
+    assert!(out.contains("large or multiline payload"));
+    assert!(out.contains("After the required deliverable exists"));
+    assert!(out.contains("do not replay successful work"));
+    assert!(
+        out.len() <= 26_000,
+        "default prompt grew to {} bytes",
+        out.len()
+    );
+}
+#[test]
 fn default_discovery_prefers_search_functions_then_falls_back() {
     let out = default_prompt().replace('\n', " ");
     let step_one = out
