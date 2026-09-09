@@ -126,9 +126,17 @@ pub fn decode_session_id(stem: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// Test seam: runs on the blocking thread after a replay has read its file
+/// and before the result reaches the cache, so a test can park one replay
+/// while another caller gets there first.
+#[cfg(test)]
+type ReplayHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 pub struct FsStore {
     dir: PathBuf,
     cache: Mutex<HashMap<String, LoadedSession>>,
+    #[cfg(test)]
+    after_replay: Option<ReplayHook>,
 }
 
 impl FsStore {
@@ -140,6 +148,8 @@ impl FsStore {
         Ok(Self {
             dir,
             cache: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            after_replay: None,
         })
     }
 
@@ -202,9 +212,18 @@ impl FsStore {
         if !self.lock().contains_key(session_id) {
             let path = self.file_path(session_id);
             let id = session_id.to_string();
-            let loaded = tokio::task::spawn_blocking(move || Self::replay_file(&path, &id))
-                .await
-                .map_err(|e| StoreError(format!("replay {session_id}: {e}")))??;
+            #[cfg(test)]
+            let after_replay = self.after_replay.clone();
+            let loaded = tokio::task::spawn_blocking(move || {
+                let loaded = Self::replay_file(&path, &id);
+                #[cfg(test)]
+                if let Some(hook) = &after_replay {
+                    hook(&id);
+                }
+                loaded
+            })
+            .await
+            .map_err(|e| StoreError(format!("replay {session_id}: {e}")))??;
             // A concurrent caller may have replayed (and mutated) the same
             // session while we were off the lock; its state stays.
             self.lock().entry(session_id.to_string()).or_insert(loaded);
@@ -535,6 +554,8 @@ fn read_attachment_meta(path: &Path) -> Result<Option<AttachmentMeta>, StoreErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
     use crate::types::{AgentMessage, ContentBlock, SessionStatus};
 
     fn meta(session_id: &str, title: &str) -> SessionMeta {
@@ -737,6 +758,148 @@ mod tests {
         assert!(store.get_meta("nope").await.unwrap().is_none());
         assert!(store.list_entries("nope").await.unwrap().is_empty());
         assert!(store.get_active_leaf("nope").await.unwrap().is_none());
+    }
+
+    /// Write a session file directly: one meta line, then `entries`
+    /// message entries. Big enough that a cold replay takes real time.
+    fn seed_session_file(dir: &Path, session_id: &str, title: &str, entries: usize) {
+        let mut text = serde_json::to_string(&Record::Meta {
+            meta: meta(session_id, title),
+        })
+        .unwrap();
+        text.push('\n');
+        for i in 0..entries {
+            text.push_str(
+                &serde_json::to_string(&Record::Entry {
+                    entry: entry(&format!("e_seed_{i}"), None, "seed", 0),
+                })
+                .unwrap(),
+            );
+            text.push('\n');
+        }
+        let path = dir.join(format!("{}.jsonl", encode_session_id(session_id)));
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// The replay runs off the lock, so two callers can miss the cache and
+    /// both replay the same session. Whoever inserts first wins; the other's
+    /// replay is dropped (`entry().or_insert`). A plain `insert` would let a
+    /// replay that read the file BEFORE the winner appended overwrite the
+    /// winner's state, losing that entry from the cache until a restart.
+    /// The seam parks the first replay between its read and its insert so
+    /// the interleaving is exact, not a matter of timing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replay_that_loses_the_race_does_not_clobber_the_winner() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Arc};
+
+        let dir = tempfile::tempdir().unwrap();
+        seed_session_file(dir.path(), "s_1", "busy", 10);
+
+        let (parked_tx, parked_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(Some(release_rx));
+        let first = AtomicBool::new(true);
+        let mut store = FsStore::new(dir.path()).unwrap();
+        store.after_replay = Some(Arc::new(move |_id: &str| {
+            // Only the first replay parks; the winner's passes straight through.
+            if first.swap(false, Ordering::SeqCst) {
+                parked_tx.send(()).unwrap();
+                if let Some(rx) = release_rx.lock().unwrap().take() {
+                    rx.recv().unwrap();
+                }
+            }
+        }));
+        let store = Arc::new(store);
+
+        // The loser: reads the 10-entry file, then parks before inserting.
+        let loser = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.list_entries("s_1").await.unwrap().len() }
+        });
+        tokio::task::spawn_blocking(move || parked_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("the first replay reached the seam");
+
+        // The winner: appends to disk, replays (its own entry included), and
+        // lands in the cache while the loser is still parked.
+        store
+            .put_entry("s_1", &entry("e_new", None, "new", 0))
+            .await
+            .unwrap();
+        assert!(store.get_entry("s_1", "e_new").await.unwrap().is_some());
+
+        release_tx.send(()).unwrap();
+        let seen_by_loser = loser.await.unwrap();
+
+        // The loser's stale replay must not have replaced the winner's state;
+        // its own read runs against the cache, so it sees the new entry too.
+        assert!(
+            store.get_entry("s_1", "e_new").await.unwrap().is_some(),
+            "a losing replay clobbered an entry appended while it ran"
+        );
+        assert_eq!(store.list_entries("s_1").await.unwrap().len(), 11);
+        assert_eq!(seen_by_loser, 11);
+    }
+
+    /// Cold loads of different sessions run side by side on the blocking
+    /// pool; each lands in the cache under its own key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn many_cold_sessions_load_concurrently() {
+        let dir = tempfile::tempdir().unwrap();
+        const SESSIONS: usize = 32;
+        for i in 0..SESSIONS {
+            seed_session_file(dir.path(), &format!("s_{i}"), &format!("title {i}"), 50);
+        }
+
+        let store = std::sync::Arc::new(FsStore::new(dir.path()).unwrap());
+        let mut tasks = tokio::task::JoinSet::new();
+        for i in 0..SESSIONS {
+            let store = std::sync::Arc::clone(&store);
+            tasks.spawn(async move {
+                let id = format!("s_{i}");
+                let title = store.get_meta(&id).await.unwrap().unwrap().title;
+                let entries = store.list_entries(&id).await.unwrap().len();
+                (i, title, entries)
+            });
+        }
+        while let Some(joined) = tasks.join_next().await {
+            let (i, title, entries) = joined.unwrap();
+            assert_eq!(title, format!("title {i}"));
+            assert_eq!(entries, 50);
+        }
+        assert_eq!(store.lock().len(), SESSIONS);
+    }
+
+    /// A replay that fails (here: the session path is a directory, so the
+    /// read errors with something other than NotFound) surfaces as an error
+    /// and leaves nothing in the cache, so a later successful write is not
+    /// shadowed by a poisoned or empty cached state.
+    #[tokio::test]
+    async fn failed_replay_errors_and_is_not_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        let path = dir
+            .path()
+            .join(format!("{}.jsonl", encode_session_id("s_1")));
+        std::fs::create_dir(&path).unwrap();
+
+        let err = store.get_meta("s_1").await.unwrap_err();
+        assert!(err.to_string().contains("s_1"), "{err}");
+        assert!(store.list_entries("s_1").await.is_err());
+        assert!(
+            store.lock().is_empty(),
+            "a failed replay must not be cached"
+        );
+
+        // The operator fixes the disk; the next touch replays for real.
+        std::fs::remove_dir(&path).unwrap();
+        store.put_meta(&meta("s_1", "recovered")).await.unwrap();
+        assert_eq!(
+            store.get_meta("s_1").await.unwrap().unwrap().title,
+            "recovered"
+        );
     }
 
     fn attachment(session_id: &str, id: &str, name: &str, bytes: &[u8]) -> AttachmentMeta {
