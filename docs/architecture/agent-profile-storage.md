@@ -82,9 +82,9 @@ functions }` drops the ones present. Both rewrite just the `functions:`
 frontmatter field in block style, leave every other byte of the file alone,
 write atomically, copy-on-write a bundled profile's shadow like `update`,
 and fan out `directory::agents::on-change` as an `update` — a request that
-changes nothing writes nothing. They edit the profile's OWN list: a list
-inherited through `extends` is replaced by setting the child's list, never
-edited on the parent.
+changes nothing writes nothing. They edit the profile's OWN list: ids
+inherited through `extends` stay in the resolved union and are removed on
+the parent that declares them.
 
 ## Inheritance
 
@@ -97,12 +97,18 @@ serve resolved values, the harness never composes:
   profile with no prompt of its own serves its parent chain unchanged (and
   the empty string when it has no parent). A profile with a non-blank body and
   no `extends` serves that body byte-for-byte.
-- `skills`, `functions`, `model` and `reasoning_effort` fall back to the
-  nearest ancestor that sets them when the profile omits them. A non-empty
-  `skills` list replaces the parent's filter (no union); an empty list means
-  "not narrowed here", never "no skills". `functions` follows the same rule:
-  the nearest non-empty list wins outright (no union), an empty list means
-  "nothing declared here".
+- `model` and `reasoning_effort` fall back to the nearest ancestor that
+  sets them when the profile omits them.
+- `skills` and `functions` inherit ADDITIVELY: the resolved list is the
+  union of every list along the chain, root first, first occurrence kept —
+  a child extends what its parents allow / preload instead of replacing it.
+  An empty list means "adds nothing here", never "no skills" / "no
+  functions"; a chain whose lists are all empty resolves to empty. To drop
+  something a parent declares, edit the parent or stop extending it.
+  `skills` are PRELOADED skills, the skill-shaped twin of `functions`: the
+  harness freezes each id's body into the session prompt (see
+  [Compatibility with harness](#compatibility-with-harness)). They never
+  narrow what the session's skills index shows.
 - `name`, `description`, `logo`, `icon` and `color` are always the
   profile's own.
 
@@ -204,7 +210,12 @@ When the profile declares (or inherits) `functions`, the harness appends the
 request schema, taken from its cached registry snapshot with one
 `engine::functions::info` batch for ids the snapshot cannot vouch for — to
 that frozen prompt; ids the engine does not know are named as unavailable.
-The declared ids also travel in `SessionMeta.metadata.agent_profile.functions`. A profile served with
+The declared ids also travel in `SessionMeta.metadata.agent_profile.functions`.
+When the profile declares (or inherits) `skills`, the harness appends a
+`<preloaded_skills>` block after it — one `<skill id="…">` section per id
+with the body `directory::skills::get` serves, fetched once at resolution;
+ids the directory cannot serve are named as unavailable — and the ids travel
+in `SessionMeta.metadata.agent_profile.skills`. A profile served with
 `inheritance_error` is refused as an invalid request. When a profile declares
 (or inherits) a model, that model and its effort are authoritative for the
 session.

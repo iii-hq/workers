@@ -8,9 +8,10 @@
 //!
 //! Profiles compose: `extends: <id>` makes a profile's resolved system
 //! prompt its parent's resolved prompt followed by its own body (a blank
-//! body contributes nothing), with
-//! `skills` / `functions` / `model` / `reasoning_effort` falling back up the
-//! chain when omitted (display fields never inherit). The chain is resolved here, on
+//! body contributes nothing), with `model` / `reasoning_effort` falling back
+//! up the chain when omitted and `skills` / `functions` inheriting
+//! ADDITIVELY (the union of the chain's lists, root first); display fields
+//! never inherit. The chain is resolved here, on
 //! every read, so the harness always receives a finished prompt. The base
 //! of most chains is a bundled profile embedded in this binary — `iii` (the
 //! harness default identity) or `iii-minimal` (the minimal directory-first
@@ -90,8 +91,8 @@ pub struct AgentEntry {
     pub description: String,
     /// Emoji logo, `null` when the agent profile has none.
     pub logo: Option<String>,
-    /// Length of the agent profile's skill filter, resolved through
-    /// `extends`; `null` = no filter (every skill).
+    /// Number of preloaded skills (bodies the harness pre-loads into the
+    /// session prompt), resolved through `extends`; `null` = none.
     pub skill_count: Option<usize>,
     /// Number of preloaded functions (contracts the harness pre-loads into the
     /// session prompt), resolved through `extends`; `0` = none.
@@ -151,11 +152,14 @@ pub struct AgentGetOutput {
     /// `extends` serves `""`. A profile that has a body and no `extends`
     /// serves that body verbatim.
     pub system_prompt: String,
-    /// The skill filter, resolved through `extends` (the nearest profile
-    /// with a non-empty filter). Empty = every skill.
+    /// Preloaded skills, resolved through `extends` (the union of the
+    /// chain's lists, root first): skill ids whose bodies the harness
+    /// pre-loads into the system prompt of every session running as this
+    /// profile. Empty = none. Never a filter on the skills index.
     pub skills: Vec<String>,
-    /// Filter entries that resolve to no currently visible skill.
-    /// Warnings — the agent profile still loads.
+    /// `skills` entries that resolve to no currently visible skill.
+    /// Warnings — the agent profile still loads and the harness renders
+    /// them as unavailable.
     pub unknown_skills: Vec<String>,
     /// Preloaded functions, resolved through `extends` (the nearest profile with
     /// a non-empty list): engine function ids whose contracts the harness
@@ -302,7 +306,7 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
             "List agent profiles (id, name, description, logo, icon, color, model, \
              reasoning_effort, skill_count, function_count, extends, modified_at) from \
              the agents folder plus the bundled ones (`builtin: true`). Inherited fields \
-             resolve through `extends`; skill_count null means every skill, \
+             resolve through `extends`; skill_count null means no preloaded skills, \
              function_count counts the preloaded functions (contracts injected into new sessions).",
         ),
     );
@@ -327,7 +331,8 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
         })
         .description(
             "Fetch one agent profile by id: the system prompt resolved through its \
-             `extends` chain, display fields, skill filter, preloaded `functions` (engine \
+             `extends` chain, display fields, preloaded `skills` (skill ids whose bodies \
+             the harness pre-loads into the session prompt) plus `unknown_skills`, preloaded `functions` (engine \
              function ids the harness pre-loads into the session prompt) plus \
              `unknown_functions`, model, reasoning_effort, and `inheritance_error` when \
              the chain does not resolve. Pass raw: true for the exact on-disk file to \
@@ -480,8 +485,8 @@ fn register_functions_remove(
             "Remove preloaded functions from one existing agent profile: drops the given \
              engine function ids from the profile's own `functions:` list (ids not \
              present are ignored); the rest of the file is untouched. Only the \
-             profile's OWN list is edited — a list inherited through `extends` is \
-             replaced by setting this profile's list, never edited on the parent.",
+             profile's OWN list is edited; ids inherited through `extends` stay (the \
+             resolved list is the union of the chain) and are removed on the parent.",
         )
         .metadata(json!({"tool": {"label": "Remove agent profile functions"}})),
     );
@@ -609,11 +614,14 @@ fn resolve_chain<'a>(
     (chain, None)
 }
 
-/// What a profile inherits when it omits a field: the nearest chain member
-/// that sets it wins. `skills` is the first NON-EMPTY filter — an empty
-/// list means "not narrowed here", never "no skills" — and `functions`
-/// follows the same rule: the nearest non-empty list replaces (no union),
-/// an empty list means "nothing declared here".
+/// What a profile inherits through its `extends` chain. `model` and
+/// `reasoning_effort` are single values: the nearest chain member that sets
+/// one wins. `skills` and `functions` are lists and inherit ADDITIVELY: the
+/// resolved list is the union of every list along the chain, root first and
+/// first occurrence kept, so a child extends what its parents allow / preload
+/// instead of replacing it — an empty list means "adds nothing here", never
+/// "no skills" / "no functions". A chain where every list is empty resolves
+/// to empty.
 struct Inherited {
     skills: Vec<String>,
     functions: Vec<String>,
@@ -623,19 +631,24 @@ struct Inherited {
 
 fn inherit(chain: &[&FsAgent]) -> Inherited {
     Inherited {
-        skills: chain
-            .iter()
-            .find(|a| !a.skills.is_empty())
-            .map(|a| a.skills.clone())
-            .unwrap_or_default(),
-        functions: chain
-            .iter()
-            .find(|a| !a.functions.is_empty())
-            .map(|a| a.functions.clone())
-            .unwrap_or_default(),
+        skills: union_root_first(chain.iter().rev().map(|a| a.skills.as_slice())),
+        functions: union_root_first(chain.iter().rev().map(|a| a.functions.as_slice())),
         model: chain.iter().find_map(|a| a.model.clone()),
         reasoning_effort: chain.iter().find_map(|a| a.reasoning_effort.clone()),
     }
+}
+
+/// Concatenate the chain's lists in the order given (callers pass root first)
+/// and drop later repeats — the order the harness renders preloaded
+/// contracts in: the base profile's routine functions, then each
+/// specialization's additions.
+fn union_root_first<'a>(lists: impl Iterator<Item = &'a [String]>) -> Vec<String> {
+    let mut seen: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    lists
+        .flatten()
+        .filter(|id| seen.insert(id.as_str()))
+        .cloned()
+        .collect()
 }
 
 fn bundled_raw(agent: &FsAgent) -> Result<&'static str, String> {
@@ -1510,8 +1523,8 @@ mod tests {
         );
         assert_eq!(
             narrow.skills,
-            vec!["c".to_string()],
-            "a non-empty filter replaces, no union"
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "lists inherit additively: the base filter, then the child's additions"
         );
         assert_eq!(narrow.model.as_deref(), Some("m2"));
         assert_eq!(
@@ -1908,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn functions_inherit_like_skills_and_edits_stay_on_the_child() {
+    fn functions_inherit_additively_and_edits_stay_on_the_child() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = cfg_for(tmp.path());
         write_fixture(
@@ -1931,15 +1944,41 @@ mod tests {
             2
         );
 
-        // Adding on the child edits the CHILD's own list (which then replaces
-        // the parent's — no union), never the parent's file.
+        // Adding on the child edits the CHILD's own list, never the parent's
+        // file; the resolved list is the union, parent first.
         let out = add_agent_functions(&cfg, &functions_req("kid", &["fp::pipe"])).unwrap();
         assert_eq!(
             out.functions,
             vec!["fp::pipe"],
-            "own list, not parent + fp::pipe"
+            "the write output is the profile's OWN list"
         );
-        assert_eq!(get(&cfg, "kid", false).unwrap().functions, vec!["fp::pipe"]);
+        assert_eq!(
+            get(&cfg, "kid", false).unwrap().functions,
+            vec!["coder::tree", "coder::search", "fp::pipe"],
+            "resolved = parent's list, then the child's additions"
+        );
+        assert_eq!(
+            list_agents(&cfg)
+                .agents
+                .iter()
+                .find(|r| r.id == "kid")
+                .unwrap()
+                .function_count,
+            3
+        );
+        // A repeat of a parent's id on the child is not rendered twice, and a
+        // grandchild that declares nothing inherits the whole union.
+        add_agent_functions(&cfg, &functions_req("kid", &["coder::tree"])).unwrap();
+        write_fixture(
+            tmp.path(),
+            "agents/grandkid.md",
+            "---\nname: Grandkid\nextends: kid\n---\nGrandkid.\n",
+        );
+        assert_eq!(
+            get(&cfg, "grandkid", false).unwrap().functions,
+            vec!["coder::tree", "coder::search", "fp::pipe"]
+        );
+        remove_agent_functions(&cfg, &functions_req("kid", &["coder::tree"])).unwrap();
         assert_eq!(
             get(&cfg, "base", false).unwrap().functions,
             vec!["coder::tree", "coder::search"]

@@ -450,15 +450,12 @@ async fn seed_child(
     } else {
         None
     };
-    // A profile's skill filter counts as an explicit request: it must survive
-    // terminal-session reuse (the rebase pass otherwise restores the prior
-    // turn's filter), which also means an agent-spawn into an ACTIVE reused
-    // session fails the no-mid-turn-skill-change guard — acceptable.
+    // A profile's skills are PRELOADED into its prompt (agents.rs), never a
+    // filter: only an explicit `options.skills` narrows the child's index.
     let requested_skills = req
         .options
         .as_ref()
-        .and_then(|options| options.skills.as_deref())
-        .or_else(|| agent.as_ref().and_then(|a| a.skills.as_deref()));
+        .and_then(|options| options.skills.as_deref());
     crate::functions::send::validate_active_skill_request(
         previous_child
             .as_ref()
@@ -1260,7 +1257,7 @@ mod tests {
                 color: None,
             },
             prompt: format!("You are {name}. Work."),
-            skills: None,
+            skills: Vec::new(),
             functions: Vec::new(),
             model: None,
             reasoning_effort: None,

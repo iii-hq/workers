@@ -520,7 +520,7 @@ const SKILLS_COPY: PickerCopy = {
     needle
       ? 'No selected skills match.'
       : count === 0
-        ? 'No filter — sessions using this profile can use every skill.'
+        ? 'None — sessions using this profile fetch skills on demand.'
         : 'No skills selected.',
   emptyAvailable: (needle) => (needle ? 'No available skills match.' : 'All skills selected.'),
 }
@@ -1267,7 +1267,7 @@ export function AgentForm(ctx: FormContext) {
 
             <CollapsibleSection
               title="Skills"
-              description="Move skills between the available and selected lists. Empty = sessions see every skill."
+              description="Move skills between the available and selected lists. Selected skills are preloaded into every session's prompt; empty = none."
               summary={`${skills.length} selected`}
             >
               <PickerEditor

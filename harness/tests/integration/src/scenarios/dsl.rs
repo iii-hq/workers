@@ -66,6 +66,7 @@ pub(super) struct Scenario {
     traces_override: Option<usize>,
     intervention: Option<ScenarioIntervention>,
     agent_files: Vec<(String, String)>,
+    skill_files: Vec<(String, String)>,
     match_any: bool,
 }
 
@@ -97,6 +98,7 @@ impl Scenario {
             traces_override: None,
             intervention: None,
             agent_files: Vec::new(),
+            skill_files: Vec::new(),
             match_any: false,
         }
     }
@@ -299,6 +301,15 @@ impl Scenario {
         self
     }
 
+    /// Write a skill under the run's skills dir before stack boot — the
+    /// directory scans `<skills_folder>/<ns>/<name>.md` into the id
+    /// `<ns>/<name>`.
+    pub(super) fn skill_file(mut self, path: &str, content: &str) -> Self {
+        self.skill_files
+            .push((path.to_string(), content.to_string()));
+        self
+    }
+
     pub(super) fn build(self) -> ScenarioFixture {
         let send = self.send.expect("scenario send is required");
         let allowed_functions = send.allowed_functions.clone();
@@ -346,6 +357,7 @@ impl Scenario {
             traces_override: self.traces_override,
             intervention: self.intervention,
             agent_files: self.agent_files,
+            skill_files: self.skill_files,
         }
     }
 }
@@ -395,7 +407,7 @@ impl Send {
     }
 
     /// Run the session as a directory agent profile (`options.agent`),
-    /// resolved server-side from the run's `skills/agents/*.md` fixtures.
+    /// resolved server-side from the run's `agents/*.md` fixtures.
     pub(super) fn agent(mut self, id: &str) -> Self {
         self.agent = Some(id.to_string());
         self

@@ -13,7 +13,12 @@
 //! renders each one's current description and compacted request schema into
 //! a `<preloaded_functions>` block appended to the frozen prompt, so the model
 //! calls them on the first step instead of spending a search and a contract
-//! lookup per session (see [`render_preloaded_functions`]).
+//! lookup per session (see [`render_preloaded_functions`]). A profile's
+//! `skills` are PRELOADED the same way: each id's body is fetched once from
+//! `directory::skills::get` and frozen into a `<preloaded_skills>` block of
+//! `<skill id="…">` sections (see [`render_preloaded_skills`]) — the skill is
+//! already in context, never something the model has to look up. Both lists
+//! arrive from the directory already unioned root-first through `extends`.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -31,6 +36,7 @@ use crate::types::turn::AgentIdentity;
 
 const AGENTS_GET_ID: &str = "directory::agents::get";
 const FUNCTIONS_INFO_ID: &str = "engine::functions::info";
+const SKILLS_GET_ID: &str = crate::skills::SKILLS_GET_ID;
 /// The engine's `function_ids` batch cap (`engine::functions::info`).
 const INFO_BATCH_MAX: usize = 32;
 
@@ -46,6 +52,11 @@ struct AgentGetWire {
     /// directory; older directories omit the field.
     #[serde(default)]
     functions: Vec<String>,
+    /// `skills` entries the directory already knows it cannot serve — they
+    /// render as unavailable without a `directory::skills::get` round-trip
+    /// (which would fail, and paint an error span on the session's send).
+    #[serde(default)]
+    unknown_skills: Vec<String>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
@@ -68,8 +79,13 @@ pub struct ResolvedAgent {
     /// The profile's resolved system prompt, verbatim — the whole identity
     /// of a session running as this agent (nothing built-in underneath).
     pub prompt: String,
-    /// `None` when the profile filters nothing (every skill).
-    pub skills: Option<Vec<String>>,
+    /// The profile's preloaded skill ids, in declaration order (the
+    /// directory's root-first union through `extends`) — the bodies rendered
+    /// into `prompt` by [`resolve`] (ids the directory could not serve are
+    /// still listed here; the prompt names them as unavailable). Empty = the
+    /// profile declares none. Never a filter: the session's skill index
+    /// stays whole, only an explicit `options.skills` narrows it.
+    pub skills: Vec<String>,
     /// The profile's preloaded function ids, in declaration order — the
     /// contracts rendered into `prompt` by [`resolve`] (ids the engine did
     /// not know at resolution are still listed here; the prompt names them
@@ -112,9 +128,147 @@ pub async fn resolve(
         HarnessError::Dependency(format!("{AGENTS_GET_ID}: malformed response: {e}"))
     })?;
     check_resolvable(&wire)?;
+    let unknown_skills = wire.unknown_skills.clone();
     let mut agent = normalize(id, wire);
     attach_preloaded_functions(deps, &mut agent).await;
+    attach_preloaded_skills(deps, &mut agent, &unknown_skills).await;
     Ok(agent)
+}
+
+/// One preloaded skill as rendered into the prompt: the directory's current
+/// body for the id (`directory::skills::get` serves it with the frontmatter
+/// already stripped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreloadedSkill {
+    pub id: String,
+    pub body: String,
+}
+
+/// Freeze the profile's preloaded skills onto the prompt: one
+/// `directory::skills::get` per id, rendered as `<skill id="…">` sections of
+/// a `<preloaded_skills>` block after the identity (and after the preloaded
+/// functions). Ids the directory cannot serve — the ones it already reported
+/// in `unknown_skills` (skipped without a call), a hidden or renamed id, or
+/// a failed call — are named in the block as unavailable so the model never
+/// hunts for them. Best effort and resolved ONCE, like the rest of the
+/// identity: a skill edited mid-session reaches the next session, not this
+/// one.
+// ponytail: one sequential bus call per id — a profile preloads a handful; batch in the directory if that stops being true
+async fn attach_preloaded_skills(
+    deps: &Deps,
+    agent: &mut ResolvedAgent,
+    unknown_skills: &[String],
+) {
+    if agent.skills.is_empty() {
+        return;
+    }
+    let cfg = deps.cfg().await;
+    let mut loaded = Vec::with_capacity(agent.skills.len());
+    let mut unavailable = Vec::new();
+    for id in &agent.skills {
+        if unknown_skills.contains(id) {
+            unavailable.push(id.clone());
+            continue;
+        }
+        let response = deps
+            .iii
+            .trigger(TriggerRequest {
+                function_id: SKILLS_GET_ID.into(),
+                payload: json!({ "id": id }),
+                action: None,
+                timeout_ms: Some(cfg.dispatch_timeout_ms),
+            })
+            .await;
+        match response {
+            Ok(value) => match skill_in_get_response(id, &value) {
+                Some(skill) => loaded.push(skill),
+                None => unavailable.push(id.clone()),
+            },
+            Err(error) => {
+                tracing::warn!(
+                    agent = %agent.identity.id,
+                    skill_id = %id,
+                    %error,
+                    "preloaded skill could not be fetched; it renders as unavailable"
+                );
+                unavailable.push(id.clone());
+            }
+        }
+    }
+    if !unavailable.is_empty() {
+        tracing::warn!(
+            agent = %agent.identity.id,
+            unavailable = ?unavailable,
+            "agent profile names preloaded skills the directory does not serve"
+        );
+    }
+    agent.prompt = append_block(
+        &agent.prompt,
+        &render_preloaded_skills(&loaded, &unavailable),
+    );
+}
+
+/// The skill one `directory::skills::get { id }` response carries for the
+/// DECLARED id, or `None` when the directory answered with something else —
+/// its miss recovery serves a worker or engine overview under a different
+/// id, and an overview is not the skill the profile asked to preload. The
+/// served id may be the declared one canonicalized (`iii://` prefix and
+/// `.md` suffix dropped); the block keeps the profile's spelling, which is
+/// what the skills index shows too.
+fn skill_in_get_response(id: &str, response: &Value) -> Option<PreloadedSkill> {
+    let served = response.get("id").and_then(Value::as_str)?;
+    let canonical = id.trim_start_matches("iii://").trim_end_matches(".md");
+    if served != id && served != canonical {
+        tracing::warn!(
+            skill_id = %id,
+            served = %served,
+            "directory::skills::get answered with a different skill; treating the declared id as unavailable"
+        );
+        return None;
+    }
+    let body = response.get("body").and_then(Value::as_str)?.trim();
+    (!body.is_empty()).then(|| PreloadedSkill {
+        id: id.to_string(),
+        body: body.to_string(),
+    })
+}
+
+/// The `<preloaded_skills>` block: an instruction line, then one
+/// `<skill id="…">` section per loaded skill in the profile's declaration
+/// order, then the ids the directory could not serve. The `<skill id>` shape
+/// is the one the skills index already describes as "already loaded", so
+/// the two blocks agree on what the model must not fetch again.
+pub(crate) fn render_preloaded_skills(skills: &[PreloadedSkill], unavailable: &[String]) -> String {
+    let mut body = String::from(
+        "<preloaded_skills>\nThese skills are preloaded for this agent profile: every `<skill id=\"...\">` \
+         block below is already in context — follow it directly and do not call \
+         `directory::skills::get` for these ids. Every other skill still goes through the skills \
+         index and `directory::skills::get`.",
+    );
+    for skill in skills {
+        body.push_str("\n\n<skill id=\"");
+        body.push_str(&skill.id);
+        body.push_str("\">\n");
+        body.push_str(&skill.body);
+        body.push_str("\n</skill>");
+    }
+    if !unavailable.is_empty() {
+        body.push_str(
+            "\n\nDeclared by the profile but NOT available right now — do not look for them: ",
+        );
+        body.push_str(
+            &unavailable
+                .iter()
+                .map(|id| format!("`{id}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        body.push_str(
+            ". If the task needs one of them, say so rather than improvising a substitute.",
+        );
+    }
+    body.push_str("\n</preloaded_skills>");
+    body
 }
 
 /// One preloaded function as rendered into the prompt: the current description
@@ -371,7 +525,12 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
             }),
         },
         prompt: wire.system_prompt,
-        skills: (!wire.skills.is_empty()).then_some(wire.skills),
+        skills: wire
+            .skills
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect(),
         functions: wire
             .functions
             .into_iter()
@@ -451,16 +610,13 @@ impl ResolvedAgent {
                 Value::String(reasoning_effort.clone()),
             );
         }
-        if !self.functions.is_empty() {
-            object.insert(
-                "functions".into(),
-                Value::Array(
-                    self.functions
-                        .iter()
-                        .map(|id| Value::String(id.clone()))
-                        .collect(),
-                ),
-            );
+        for (key, ids) in [("skills", &self.skills), ("functions", &self.functions)] {
+            if !ids.is_empty() {
+                object.insert(
+                    key.into(),
+                    Value::Array(ids.iter().map(|id| Value::String(id.clone())).collect()),
+                );
+            }
         }
         value
     }
@@ -536,7 +692,10 @@ mod tests {
             agent.prompt, "Delegate everything.",
             "the directory's resolved prompt is the identity — no prefix"
         );
-        assert_eq!(agent.skills, None, "empty filter means every skill");
+        assert!(
+            agent.skills.is_empty(),
+            "no skills declared, none preloaded"
+        );
         assert_eq!(agent.identity.id, "tech-leader");
         assert_eq!(agent.identity.name.as_deref(), Some("Tech Leader"));
         assert_eq!(agent.identity.icon.as_deref(), Some("agent"));
@@ -588,7 +747,7 @@ mod tests {
         );
         assert_eq!(agent.prompt, "Write code.");
         assert_eq!(agent.identity.name.as_deref(), Some("coder"));
-        assert_eq!(agent.skills.as_deref(), Some(&["review".to_string()][..]));
+        assert_eq!(agent.skills, vec!["review"]);
         assert_eq!(agent.icon, None, "unknown token degrades, never errors");
         assert_eq!(agent.color, None, "unknown color degrades, never errors");
     }
@@ -601,12 +760,18 @@ mod tests {
                 "name": "Engineer",
                 "system_prompt": "Write code.",
                 "functions": ["coder::tree", " coder::search ", ""],
+                "skills": [" review ", "", "deploy"],
             })),
         );
         assert_eq!(agent.functions, vec!["coder::tree", "coder::search"]);
+        assert_eq!(agent.skills, vec!["review", "deploy"]);
         assert_eq!(
             agent.session_metadata()["functions"],
             serde_json::json!(["coder::tree", "coder::search"])
+        );
+        assert_eq!(
+            agent.session_metadata()["skills"],
+            serde_json::json!(["review", "deploy"])
         );
         // Absent on the wire (older directory) → empty, and no metadata key.
         let plain = normalize(
@@ -615,6 +780,70 @@ mod tests {
         );
         assert!(plain.functions.is_empty());
         assert!(plain.session_metadata().get("functions").is_none());
+        assert!(plain.session_metadata().get("skills").is_none());
+    }
+
+    #[test]
+    fn skill_get_response_yields_the_declared_skill_only() {
+        let served = serde_json::json!({
+            "id": "harness/alpha",
+            "title": "Alpha",
+            "body": "\n# Alpha\n\nGreet first.\n\n",
+            "path": "/skills/harness/alpha.md"
+        });
+        let skill = skill_in_get_response("harness/alpha", &served).unwrap();
+        assert_eq!(skill.id, "harness/alpha");
+        assert_eq!(
+            skill.body, "# Alpha\n\nGreet first.",
+            "trimmed, frontmatter-free body"
+        );
+        // The declared spelling is kept even when the directory canonicalizes it.
+        let canonical = skill_in_get_response("iii://harness/alpha.md", &served).unwrap();
+        assert_eq!(canonical.id, "iii://harness/alpha.md");
+        // A miss-recovery answer (another id's body) is not the declared skill.
+        let overview = serde_json::json!({ "id": "iii/index", "body": "Engine overview." });
+        assert!(skill_in_get_response("harness/gone", &overview).is_none());
+        // A blank body preloads nothing.
+        let blank = serde_json::json!({ "id": "harness/empty", "body": "  \n" });
+        assert!(skill_in_get_response("harness/empty", &blank).is_none());
+        assert!(skill_in_get_response("harness/alpha", &serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn preloaded_skills_block_lists_bodies_in_order_and_names_the_unavailable() {
+        let skills = vec![
+            PreloadedSkill {
+                id: "harness/alpha".into(),
+                body: "# Alpha\n\nGreet first.".into(),
+            },
+            PreloadedSkill {
+                id: "harness/beta".into(),
+                body: "Checksum last.".into(),
+            },
+        ];
+        let block = render_preloaded_skills(&skills, &["harness/missing".to_string()]);
+        assert!(block.starts_with("<preloaded_skills>\n"));
+        assert!(block.ends_with("\n</preloaded_skills>"));
+        assert!(block.contains("already in context"));
+        assert!(block.contains("do not call `directory::skills::get` for these ids"));
+        let alpha = block
+            .find("<skill id=\"harness/alpha\">")
+            .expect("first skill");
+        let beta = block
+            .find("<skill id=\"harness/beta\">")
+            .expect("second skill");
+        assert!(alpha < beta, "declaration order is kept");
+        assert!(block.contains(
+            "<skill id=\"harness/alpha\">\n# Alpha\n\nGreet first.\n</skill>\n\n<skill id=\"harness/beta\">\nChecksum last.\n</skill>"
+        ));
+        assert!(
+            block.contains("NOT available right now — do not look for them: `harness/missing`.")
+        );
+
+        // Nothing unavailable → no such paragraph; the block still explains itself.
+        let clean = render_preloaded_skills(&skills, &[]);
+        assert!(!clean.contains("NOT available"));
+        assert_eq!(clean.matches("</skill>").count(), 2);
     }
 
     #[test]

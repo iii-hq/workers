@@ -55,7 +55,7 @@ export function AgentsListView({ output, running }: ViewProps) {
               <span className="dir-ui-id">{[a.logo, a.name || a.id].filter(Boolean).join(' ')}</span>
               {a.description ? <div className="dir-ui-desc">{a.description}</div> : null}
               <span className="dir-ui-fine">
-                {a.skill_count != null ? `${a.skill_count} skills · ` : 'all skills · '}
+                {a.skill_count != null ? `${a.skill_count} skills · ` : 'no skills · '}
                 {a.function_count ? `${a.function_count} preloaded functions · ` : ''}
                 {formatRelativeTime(a.modified_at)}
               </span>

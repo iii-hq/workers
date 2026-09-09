@@ -98,7 +98,9 @@ the pattern for bulk code results: `coder::search` → `fp::get {path:"/content_
 `fp::map {path:"/path"}` → `fp::uniq` → `state::set`, one call, nothing through the chat.
 Caveat: a path-access rejection inside a pipe just fails
 the step — only a DIRECT call offers the access-grant prompt.
-Trigger-control, session/approval, credential/config, LLM-routing, and
+Session READS (`session::get-attachment`, `session::messages-tail`, …) ride a pipe too — the way
+to move an attachment's bytes somewhere without them passing through you.
+Trigger-control, session-write/approval, credential/config, LLM-routing, and
 turn-control steps are excluded — call those directly."#;
 
 /// The `pre_generate` hook envelope slice we read; the generation context is nested

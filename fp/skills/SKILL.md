@@ -41,10 +41,11 @@ for small values).
   approval by default; the pure transforms are (see iii-permissions.yaml).
 - Refused as steps: `shell::*`/`coder::*`, trigger control
   (`engine::register_trigger`/`engine::unregister_trigger`), nested pipes,
-  and the agent-policy hard-denied classes (`session::*`/`approval::*`,
+  and the agent-policy hard-denied classes (session writes/`approval::*`,
   credentials via `configuration::*`/`oauth::*`, model spend via
   `router::*`/`provider::*`, turn control via `harness::*`/`run::*`, bus
-  internals) — call those directly; `state::*` stays allowed on purpose.
+  internals) — call those directly. Session reads (`session::get-attachment`,
+  `session::messages-tail`, …) and `state::*` stay allowed on purpose.
 - The first pipe step receives no threaded value — start with a producer
   (a fetch, `state::get`) or seed a leading transform via `payload.value`.
 - 1–12 steps, 120 s per bus step; the whole pipe must fit the caller's

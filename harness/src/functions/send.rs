@@ -302,14 +302,15 @@ async fn start_with_delivery_lock(
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
     }
+    // A profile's skills are PRELOADED into its prompt (agents.rs), never a
+    // filter: only an explicit `options.skills` narrows the skills index.
     prepare_skill_context(
         deps,
         &mut options,
         prev.as_ref().map(|record| &record.options),
         req.options
             .as_ref()
-            .and_then(|options| options.skills.as_deref())
-            .or_else(|| agent.as_ref().and_then(|a| a.skills.as_deref())),
+            .and_then(|options| options.skills.as_deref()),
     )
     .await?;
 
@@ -2319,7 +2320,7 @@ mod tests {
                 color: None,
             },
             prompt: "You are Tech Leader.\n\nDelegate everything.".into(),
-            skills: Some(vec!["review".into()]),
+            skills: vec!["review".into()],
             functions: Vec::new(),
             model: model.map(str::to_string),
             reasoning_effort: None,
