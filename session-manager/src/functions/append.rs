@@ -46,15 +46,19 @@ const SLOW_APPEND: Duration = Duration::from_secs(1);
 pub async fn handle(deps: &Deps, req: AppendRequest) -> Result<AppendResponse, SessionError> {
     let session_id = req.session_id.clone();
     let started = Instant::now();
-    let (resp, events) = deps.service.append(req).await?;
+    // Timed before `?`: a store that took seconds to fail is the same
+    // signal as one that took seconds to succeed.
+    let result = deps.service.append(req).await;
     let elapsed = started.elapsed();
     if elapsed > SLOW_APPEND {
         tracing::warn!(
             session_id,
             elapsed_ms = elapsed.as_millis() as u64,
+            ok = result.is_ok(),
             "slow session::append"
         );
     }
+    let (resp, events) = result?;
     deps.sink.publish_all(&events).await;
     Ok(resp)
 }

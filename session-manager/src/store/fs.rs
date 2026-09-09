@@ -204,12 +204,24 @@ impl FsStore {
     /// The replay runs on the blocking pool and outside the cache lock: a
     /// multi-MB transcript parsed on the async thread while holding the
     /// `std::Mutex` stalled every other session's append behind it.
+    ///
+    /// Because the replay is off the lock, a caller's replay can overlap
+    /// another caller's mutation of the same session. Two rules keep that
+    /// safe. Insert is `entry().or_insert`: whoever publishes first wins,
+    /// and a replay that read the file earlier is dropped rather than
+    /// overwriting state appended since. And cache entries are never
+    /// evicted: a deleted session keeps an empty entry until restart, so a
+    /// replay that read the file before the delete finds the entry taken
+    /// and cannot resurrect the deleted state (a per-session generation
+    /// check is the upgrade if the empty entries ever matter).
     async fn with_loaded<T>(
         &self,
         session_id: &str,
         f: impl FnOnce(&mut LoadedSession) -> T,
     ) -> Result<T, StoreError> {
-        if !self.lock().contains_key(session_id) {
+        let replayed = if self.lock().contains_key(session_id) {
+            None
+        } else {
             let path = self.file_path(session_id);
             let id = session_id.to_string();
             #[cfg(test)]
@@ -224,14 +236,15 @@ impl FsStore {
             })
             .await
             .map_err(|e| StoreError(format!("replay {session_id}: {e}")))??;
-            // A concurrent caller may have replayed (and mutated) the same
-            // session while we were off the lock; its state stays.
-            self.lock().entry(session_id.to_string()).or_insert(loaded);
-        }
+            Some(loaded)
+        };
         let mut cache = self.lock();
-        let loaded = cache
-            .get_mut(session_id)
-            .expect("session state inserted just above");
+        let loaded = match replayed {
+            Some(replayed) => cache.entry(session_id.to_string()).or_insert(replayed),
+            None => cache
+                .get_mut(session_id)
+                .expect("cache entries are never evicted"),
+        };
         Ok(f(loaded))
     }
 
@@ -351,9 +364,6 @@ impl SessionStore for FsStore {
                 s.clone()
             })
             .await?;
-        if snapshot.is_empty() {
-            self.lock().remove(session_id);
-        }
         self.persist_snapshot(session_id, &snapshot)
     }
 
@@ -399,9 +409,6 @@ impl SessionStore for FsStore {
                 s.clone()
             })
             .await?;
-        if snapshot.is_empty() {
-            self.lock().remove(session_id);
-        }
         self.persist_snapshot(session_id, &snapshot)
     }
 
@@ -425,9 +432,6 @@ impl SessionStore for FsStore {
                 s.clone()
             })
             .await?;
-        if snapshot.is_empty() {
-            self.lock().remove(session_id);
-        }
         self.persist_snapshot(session_id, &snapshot)
     }
 
@@ -841,6 +845,74 @@ mod tests {
         );
         assert_eq!(store.list_entries("s_1").await.unwrap().len(), 11);
         assert_eq!(seen_by_loser, 11);
+    }
+
+    /// A cold replay that read the file BEFORE a delete must not publish
+    /// that state afterwards. The delete leaves an empty cache entry behind
+    /// (entries are never evicted), so the late replay finds the slot taken
+    /// and its stale state is dropped; its callback runs on the emptied
+    /// session, exactly as if it had arrived after the delete.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_delete_that_overlaps_a_cold_replay_is_not_undone() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Arc};
+
+        let dir = tempfile::tempdir().unwrap();
+        seed_session_file(dir.path(), "s_1", "doomed", 3);
+        let path = dir
+            .path()
+            .join(format!("{}.jsonl", encode_session_id("s_1")));
+
+        let (parked_tx, parked_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(Some(release_rx));
+        let first = AtomicBool::new(true);
+        let mut store = FsStore::new(dir.path()).unwrap();
+        store.after_replay = Some(Arc::new(move |_id: &str| {
+            if first.swap(false, Ordering::SeqCst) {
+                parked_tx.send(()).unwrap();
+                if let Some(rx) = release_rx.lock().unwrap().take() {
+                    rx.recv().unwrap();
+                }
+            }
+        }));
+        let store = Arc::new(store);
+
+        // The reader replays the live file, then parks before publishing.
+        let reader = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.get_meta("s_1").await.unwrap() }
+        });
+        tokio::task::spawn_blocking(move || parked_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("the first replay reached the seam");
+
+        // The service's delete order runs to completion meanwhile.
+        store.delete_entries("s_1").await.unwrap();
+        store.delete_active_leaf("s_1").await.unwrap();
+        store.delete_meta("s_1").await.unwrap();
+        assert!(!path.exists());
+
+        release_tx.send(()).unwrap();
+        assert!(
+            reader.await.unwrap().is_none(),
+            "the reader's callback ran on the emptied session"
+        );
+        assert!(
+            store.get_meta("s_1").await.unwrap().is_none(),
+            "a late replay resurrected a deleted session"
+        );
+        assert!(store.list_entries("s_1").await.unwrap().is_empty());
+        assert!(!path.exists(), "a late replay must not bring the file back");
+
+        // The id is reusable: the next write starts a fresh file.
+        store.put_meta(&meta("s_1", "reborn")).await.unwrap();
+        assert_eq!(
+            store.get_meta("s_1").await.unwrap().unwrap().title,
+            "reborn"
+        );
+        assert!(path.exists());
     }
 
     /// Cold loads of different sessions run side by side on the blocking
