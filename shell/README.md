@@ -319,6 +319,17 @@ crate). A subscriber names the directory in its binding config:
 { "type": "shell::changed", "config": { "path": "/some/dir" } }
 ```
 
+Paths the root ignores — git-ignored inside a repository; `data/`,
+`config/`, `.iii/`, `node_modules/` and the root `.gitignore` outside one —
+are **not delivered** unless the binding also sets `include_ignored: true`.
+A watch on a project root would otherwise fire on the engine's own
+`data/observability` and `data/session-manager` writes, i.e. on the
+subscriber's own transcript. The workspace UI opts in to count them.
+
+Every fire carries the binding's registered `metadata` and `namespace`
+back to the bound function, the same way the engine's own trigger types
+do — the harness relies on it to match a wake to its `__binding`.
+
 Each registration starts one recursive watcher; unregistering (or the
 console GC'ing a closed tab's binding) tears it down. `config.path` goes
 through the same path policy as every `coder::*` call — jail containment
