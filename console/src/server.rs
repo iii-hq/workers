@@ -284,6 +284,18 @@ pub fn bind_host() -> std::net::IpAddr {
         .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
 }
 
+/// `preferred` when it is free, else the next free port above it. Another
+/// console (or anything else) already on the seed port must not keep this one
+/// from starting; the chosen port is what `local_addr` and the port cell report.
+pub async fn free_port_from(preferred: u16) -> u16 {
+    for port in preferred..=u16::MAX {
+        if bind_listener(port).await.is_ok() {
+            return port;
+        }
+    }
+    preferred
+}
+
 /// Bind `<bind_host>:<http_port>` without changing any live server state.
 /// Rebinds use this bind-new-before-stop-old step so a failed port change
 /// leaves the existing Console listener untouched.

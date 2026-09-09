@@ -133,6 +133,15 @@ async fn main() -> Result<()> {
         }
     };
     cfg.http_port = runtime_config.http_port;
+    let free_port = server::free_port_from(cfg.http_port).await;
+    if free_port != cfg.http_port {
+        tracing::warn!(
+            configured = cfg.http_port,
+            chosen = free_port,
+            "configured console port is in use; serving on the next free port"
+        );
+        cfg.http_port = free_port;
+    }
 
     tracing::info!(
         http_port = cfg.http_port,
