@@ -672,6 +672,22 @@ pub(crate) struct TurnLineage {
     pub dispatch_only_functions: Vec<String>,
 }
 
+impl TurnLineage {
+    /// The lineage a turn that CONTINUES `record`'s session inherits (the
+    /// finalize-drain reseed). Every lineage field is copied, deliberately as
+    /// one unit: `record.options` keeps the injected child grants in its allow
+    /// list, so dropping `dispatch_only_functions` here would turn those
+    /// grants into native tools on the continued turn.
+    pub(crate) fn continuing(record: &TurnRecord) -> Self {
+        Self {
+            depth: record.depth,
+            parent: record.parent.clone(),
+            display_parent_session_id: record.display_parent_session_id.clone(),
+            dispatch_only_functions: record.dispatch_only_functions.clone(),
+        }
+    }
+}
+
 /// One message on its way into a session: what to append, how to mark it, and
 /// the lineage the seeded turn inherits. Bundled so every seeding path takes
 /// the same shape.
@@ -1806,6 +1822,31 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn continuing_lineage_keeps_dispatch_only_grants_hidden() {
+        let mut record = terminal_record_with_skill_state(1, true);
+        record.depth = 2;
+        record.parent = Some(ParentLink {
+            session_id: "s_parent".into(),
+            turn_id: "t_parent".into(),
+            function_call_id: "fc_1".into(),
+        });
+        record.display_parent_session_id = Some("s_display".into());
+        record.dispatch_only_functions = vec!["directory::skills::get".into()];
+
+        let lineage = TurnLineage::continuing(&record);
+        assert_eq!(lineage.depth, 2);
+        assert_eq!(lineage.parent, record.parent);
+        assert_eq!(
+            lineage.display_parent_session_id,
+            record.display_parent_session_id
+        );
+        assert_eq!(
+            lineage.dispatch_only_functions, record.dispatch_only_functions,
+            "a reseeded child must not expose its injected grants as native tools"
+        );
     }
 
     #[test]

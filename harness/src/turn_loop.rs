@@ -1708,12 +1708,7 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
     // Carry the finalized turn's lineage onto the reseeded one: it is the same
     // session continuing, so its depth still counts against the spawn budget
     // and its console nesting must not flatten.
-    let lineage = crate::functions::send::TurnLineage {
-        dispatch_only_functions: Vec::new(),
-        depth: record.depth,
-        parent: record.parent.clone(),
-        display_parent_session_id: record.display_parent_session_id.clone(),
-    };
+    let lineage = crate::functions::send::TurnLineage::continuing(record);
     if let Err(e) = crate::functions::send::seed_new(
         deps,
         &cfg,
