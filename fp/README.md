@@ -130,10 +130,14 @@ fp::pipe { through: [
   the step; only a direct call offers the access-grant ladder.
 - Statically refused as steps: `engine::register_trigger`/`engine::unregister_trigger`
   (need the harness trusted-session stamp), nested pipes, and every class the
-  agent policy hard-denies — `session::*`/`approval::*`,
-  `configuration::*`/`oauth::*` (credentials), `router::*`/`provider::*`
-  (model spend), `harness::*`/`run::*` (turn control), `stream::*` and bus
-  internals, `*::on-config-change` — because steps run with worker authority
-  and must not ride past those denies. `state::*` is the deliberate
-  exception: persisting the threaded value is the pipe's purpose, and the
-  pipe call itself is the approval surface.
+  agent policy hard-denies — session writes and `session::store::*`,
+  `approval::*`, `configuration::*`/`oauth::*` (credentials),
+  `router::*`/`provider::*` (model spend), `harness::*`/`run::*` (turn
+  control), `stream::*` and bus internals, `*::on-config-change` — because
+  steps run with worker authority and must not ride past those denies.
+  Session READS (`session::get`/`list`/`messages*`/`get-message`/
+  `get-attachment`/`list-attachments`) are allowed, like `database::query`:
+  the policy only gates them behind approval, and the pipe call is that
+  surface — pulling an attachment out of the session and threading it on is
+  exactly what a pipe is for. `state::*` is the deliberate exception on the
+  write side: persisting the threaded value is the pipe's purpose.

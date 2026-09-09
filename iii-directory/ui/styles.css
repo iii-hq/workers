@@ -2700,6 +2700,42 @@
   width: 16px;
   height: 16px;
 }
+[data-iii-ui="iii-directory"] .dir-ui-af-picker-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: -2px 0 0;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-picker-hint kbd {
+  display: inline-flex;
+  min-width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  background: var(--color-panel-raised);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-picker-lists {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-skill-row[data-mono="true"] .dir-ui-af-skill-name {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 500;
+}
 [data-iii-ui="iii-directory"] .dir-ui-af-skill-list-wrap {
   overflow: hidden;
   border: 1px solid var(--color-edge);
@@ -2786,6 +2822,14 @@
   .dir-ui-af-skill-row:has(.dir-ui-af-skill-native:focus-visible)
   .dir-ui-af-skill-check {
   box-shadow: 0 0 0 2px var(--color-rule-focus);
+}
+/* Keyboard focus lights the whole row, not only the check glyph: arrow-key
+   browsing must be followable at a glance. */
+[data-iii-ui="iii-directory"]
+  .dir-ui-af-skill-row:has(.dir-ui-af-skill-native:focus-visible) {
+  background: var(--color-surface-hover);
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
 }
 [data-iii-ui="iii-directory"] .dir-ui-af-skill-check svg {
   width: 12px;

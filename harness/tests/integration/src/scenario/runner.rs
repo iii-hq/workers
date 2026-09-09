@@ -223,6 +223,10 @@ impl<'a> ScenarioRunner<'a> {
             let error = RunError::runner(RunPhase::Allocate, "write fixture agent files", error);
             return Err(self.finish_without_stack(error));
         }
+        if let Err(error) = write_fixture_files(&paths.skills_dir(), &self.fixture.skill_files) {
+            let error = RunError::runner(RunPhase::Allocate, "write fixture skill files", error);
+            return Err(self.finish_without_stack(error));
+        }
         let mut stack = match Stack::boot(self.bins, paths).await {
             Ok(stack) => stack,
             Err(failure) => {

@@ -30,8 +30,8 @@ pub const PIPE_DESC: &str =
 // steps need the harness-stamped fs_scope and database writes are refused while
 // `approval::gate` is registered — both surface as step errors.
 
-/// ponytail: remaining ceilings — no nested pipes, no trigger-control or
-/// session/approval steps, 120s per bus step, and a held (approval) release
+/// ponytail: remaining ceilings — no nested pipes, no trigger-control,
+/// session-write or approval steps, 120s per bus step, and a held (approval) release
 /// re-runs steps from scratch is unsupported: the pipe call itself is what
 /// approvers review. shell::*/coder::* steps ride the harness-forwarded
 /// fs_scope stamp (see `bus_step_args`) and are refused without one.
@@ -44,6 +44,19 @@ const MAX_PREVIEW_CHARS: usize = 8_000;
 /// Per-step bus budget. The WHOLE pipe must also fit the caller's own
 /// dispatch timeout on `fp::pipe`.
 const STEP_TIMEOUT_MS: u64 = 120_000;
+/// The read-only session-manager surface — every `session::*` id that
+/// iii-permissions.yaml leaves at the needs_approval default instead of
+/// hard-denying. The only `session::*` steps a pipe accepts.
+const SESSION_READS: &[&str] = &[
+    "session::get",
+    "session::list",
+    "session::messages",
+    "session::messages-range",
+    "session::messages-tail",
+    "session::get-message",
+    "session::get-attachment",
+    "session::list-attachments",
+];
 
 // NOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects
 // a `_caller_worker_id` field into every dispatched call's payload (see
@@ -149,10 +162,18 @@ fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'st
     if function_id == "engine::register_trigger" || function_id == "engine::unregister_trigger" {
         return Some("trigger control calls are not supported in a pipe — call them directly");
     }
-    if function_id.starts_with("session::") || function_id.starts_with("approval::") {
+    // Session READS are only needs_approval for agents (the policy hard-denies
+    // the writes and the raw `session::store::*` protocol), and the pipe call
+    // is that approval surface — so, like `database::query`, they may ride a
+    // pipe. Writes and approval::* stay refused.
+    if (function_id.starts_with("session::") && !SESSION_READS.contains(&function_id))
+        || function_id.starts_with("approval::")
+    {
         return Some(
-            "session/approval functions are not supported in a pipe — steps run with worker \
-             authority, which would bypass the agent-level deny on them",
+            "only read-only session functions (session::get/list/messages*/get-message/\
+             get-attachment/list-attachments) are supported in a pipe — session writes and \
+             approval functions run with worker authority, which would bypass the agent-level \
+             deny on them",
         );
     }
     if function_id.starts_with("configuration::") || function_id.starts_with("oauth::") {
@@ -619,6 +640,9 @@ mod tests {
             ("fp::pipe", "nest"),
             ("engine::register_trigger", "trigger control"),
             ("session::append", "worker"),
+            ("session::put-attachment", "worker"),
+            ("session::store::get-attachment", "worker"),
+            ("session::config-status", "worker"),
             ("approval::resolve", "worker"),
             ("configuration::get", "credential"),
             ("oauth::anthropic::login", "credential"),
@@ -645,6 +669,17 @@ mod tests {
         ]}))
         .unwrap();
         assert!(validate(&ok).is_ok());
+
+        // Session READS are needs_approval, not hard-denied, so they ride a
+        // pipe: pull an attachment out of the own session and thread it on.
+        let reads = parse(json!({ "through": [
+            { "function": "session::get-attachment",
+              "payload": { "session_id": "s", "attachment_id": "a" } },
+            { "function": "fp::get", "payload": { "path": "/data" } },
+            { "function": "session::messages-tail", "payload": { "session_id": "s", "n": 5 } },
+        ]}))
+        .unwrap();
+        assert!(validate(&reads).is_ok());
 
         let empty = parse(json!({ "through": [] })).unwrap();
         assert!(validate(&empty).is_err());

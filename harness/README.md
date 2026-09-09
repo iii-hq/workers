@@ -264,22 +264,35 @@ the full iii doctrine followed by the tech-lead body — IS the session
 identity. Nothing built-in sits underneath it and no prefix is added; the
 usual per-step runtime context (session id, working directory, policy aid,
 skills index, hook injections) follows it. A profile whose `extends` chain does not resolve is refused as an
-invalid request with the directory's D415 text. The profile's skill filter
-becomes the session's skill selection (an explicit `options.skills` wins), its
+invalid request with the directory's D415 text. The profile's `skills` are
+PRELOADED: each id's body is fetched once from `directory::skills::get` and
+frozen into a `<preloaded_skills>` block of `<skill id="…">` sections
+appended to the prompt (ids the directory cannot serve are named as
+unavailable), so the skill is in context on the first step; the session's
+skills index is never narrowed by a profile — only an explicit
+`options.skills` does that. Its
 `model` and optional provider-native `reasoning_effort` are authoritative for
 the session, and — when the send also omits
 `options.functions` — the dispatch policy defaults to the configured
 `default_functions` baseline instead of deny-all (an identity picked to DO
-something must be able to dispatch). The
-The frozen name/icon/color/model/effort snapshot is also written to session
-metadata for clients that render established sessions. The frozen identity
+something must be able to dispatch). When the profile declares (or
+inherits) `functions` — its PRELOADED functions, engine function ids it uses
+routinely — the harness renders each one's current description and
+compacted request schema into a `<preloaded_functions>` block appended to the
+frozen prompt (contracts come from the cached registry snapshot, with one
+`engine::functions::info` batch for ids the snapshot cannot vouch for; ids
+the engine does not know are named as unavailable), so the model calls them
+on the first step instead of spending a search and a contract lookup per
+session. The `<preloaded_functions>` block comes first, `<preloaded_skills>`
+after it. The frozen name/icon/color/model/effort/skills/functions snapshot is also
+written to session metadata for clients that render established sessions. The frozen identity
 travels with the prompt-stickiness rule: bare later sends
 inherit it, an explicit prompt field sheds it. Refused on an existing
 session or combined with either prompt field. Directory edits after
 resolution never reach a live session — start a new one to pick them up.
 
 `harness::spawn` takes the same id as a top-level `agent` field: the profile's
-resolved prompt is the child's whole identity, its skills/model/effort slot in the same way
+resolved prompt (preloaded functions and skills included) is the child's whole identity, its model/effort slot in the same way
 (model precedence profile → explicit `model` → parent, without dragging the parent's
 provider onto a foreign model), and its name and icon become the display
 defaults. Which agent profile a spawn names is the prompt's decision — the profile
@@ -295,10 +308,10 @@ experimental registry release, asking before every irreversible step. It is
 published in the harness skills payload as `agents/worker-builder.md`, which
 `directory::skills::download { worker: "harness" }` routes into the
 directory's `agents_folder`; copying the file there by hand works the same.
-Its skill filter names the six knowledge skills from
+Its `skills` preload the six knowledge skills from
 [`iii-hq/iii/skills`](https://github.com/iii-hq/iii/tree/main/skills)
-(`npx skills add iii-hq/iii/skills`); missing ones are warnings, not
-failures. Then `harness::send { options: { agent: "worker-builder" } }` (or
+(`npx skills add iii-hq/iii/skills`) into every session's prompt; missing
+ones are named as unavailable, not failures. Then `harness::send { options: { agent: "worker-builder" } }` (or
 the console's agent picker) runs it.
 
 New sessions also freeze a names-and-descriptions-only skill index into the
@@ -309,7 +322,8 @@ the previous filter while an explicit empty list resets to all; explicit
 changes are rejected while its turn is active.
 This is curation, not authorization: the turn's function policy must still
 allow `directory::skills::get`, and the function must exist in the live
-registry. Skill bodies enter context only when the model calls that function.
+registry. Skill bodies enter context when the model calls that function — or
+up front, as `<skill id="…">` sections, when an agent profile preloads them.
 Catalog changes are appended as durable user-role corrections, leaving the
 frozen prefix unchanged. Legacy sessions keep their already-frozen prompt;
 start a new session to apply an id filter to one.

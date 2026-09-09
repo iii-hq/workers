@@ -449,6 +449,10 @@ pub struct FsAgent {
     pub logo: Option<String>,
     /// Skill-id filter. Empty = every skill.
     pub skills: Vec<String>,
+    /// Preloaded function ids: engine functions whose contracts the harness pre-loads into the
+    /// system prompt of every session running as this profile — verbatim
+    /// engine function ids such as `coder::tree`. Empty = none.
+    pub functions: Vec<String>,
     /// Model id for sessions running as this agent (a router
     /// model id, e.g. `codex/gpt-5.4-mini`). `None` = the send decides.
     /// Stored verbatim — whether the id resolves is checked where it is
@@ -488,6 +492,8 @@ pub struct AgentFrontmatter {
     pub logo: Option<String>,
     #[serde(default)]
     pub skills: Vec<String>,
+    #[serde(default)]
+    pub functions: Vec<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -563,6 +569,9 @@ pub fn parse_agent_frontmatter(content: &str) -> Result<AgentFrontmatter, String
             ));
         }
     }
+    for function_id in &fm.functions {
+        validate_function_id(function_id)?;
+    }
     Ok(fm)
 }
 
@@ -585,6 +594,116 @@ pub fn validate_agent_logo(logo: &str) -> Result<(), String> {
         return Err("`logo` may not contain path separators or whitespace — emoji only".into());
     }
     Ok(())
+}
+
+/// Function ids are stored verbatim (`worker::name`, or a bare id for the
+/// few workers that register without a prefix). The only hard rule is the
+/// one that makes an id unusable on the bus: non-empty and no whitespace.
+/// Whether the id is REGISTERED is checked where it is used (`get` reports
+/// `unknown_functions`, the harness skips ids the engine does not know) —
+/// a profile never fails to load over a worker that is not running.
+pub fn validate_function_id(function_id: &str) -> Result<(), String> {
+    let trimmed = function_id.trim();
+    if trimmed.is_empty() {
+        return Err("`functions` entries must be non-empty function ids".into());
+    }
+    if trimmed.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "`functions` entry {function_id:?} may not contain whitespace — one engine \
+             function id per entry (e.g. `coder::tree`)"
+        ));
+    }
+    Ok(())
+}
+
+/// Trim and dedupe a `functions` list, first occurrence wins — the order the
+/// author wrote is the order the harness renders the contracts in.
+pub(crate) fn normalize_function_ids(ids: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty() && seen.insert(id.clone()))
+        .collect()
+}
+
+/// One YAML scalar for a list item: bare when YAML cannot misread it (ids
+/// like `coder::tree` qualify — a `:` not followed by a space is plain
+/// text), double-quoted JSON otherwise (valid YAML, round-trips exactly).
+fn yaml_list_scalar(value: &str) -> String {
+    let bare = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':'))
+        && !value.starts_with(['-', '.', ':', '/'])
+        && !value.ends_with(':');
+    if bare {
+        value.to_string()
+    } else {
+        serde_json::to_string(value).expect("a string always serializes")
+    }
+}
+
+/// Rewrite ONE top-level string-list field of a frontmatter block, leaving
+/// every other byte of the file — other keys, comments, the body — exactly
+/// as it was. The field is written in block style (`key:` + `  - item`
+/// lines), replacing the existing field in place whatever style it used,
+/// appended to the block when absent, and removed entirely when `values`
+/// is empty. Requires a frontmatter block (every agent profile has one).
+/// This is what `directory::agents::functions::add` / `::remove` write
+/// with, so a targeted edit never disturbs the rest of the author's file.
+pub fn set_frontmatter_string_list(
+    content: &str,
+    key: &str,
+    values: &[String],
+) -> Result<String, String> {
+    let (fm_text, body) = split_frontmatter(content);
+    let Some(fm_text) = fm_text else {
+        return Err("missing YAML frontmatter (expected --- ... --- block at file start)".into());
+    };
+    let eol = if content.starts_with("---\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut lines: Vec<String> = fm_text
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r').to_string())
+        .collect();
+    // `key:` / `key :` at column 0 — never `key_other:`.
+    let is_header = |line: &str| {
+        line.strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+    };
+    // The header plus its indented or blank continuation lines (block list
+    // items, wrapped flow lists); trailing blank lines stay with the block.
+    let range = lines.iter().position(|line| is_header(line)).map(|start| {
+        let mut end = start + 1;
+        while end < lines.len()
+            && (lines[end].trim().is_empty() || lines[end].starts_with([' ', '\t']))
+        {
+            end += 1;
+        }
+        while end > start + 1 && lines[end - 1].trim().is_empty() {
+            end -= 1;
+        }
+        (start, end)
+    });
+    let mut replacement: Vec<String> = Vec::new();
+    if !values.is_empty() {
+        replacement.push(format!("{key}:"));
+        replacement.extend(
+            values
+                .iter()
+                .map(|value| format!("  - {}", yaml_list_scalar(value))),
+        );
+    }
+    match range {
+        Some((start, end)) => {
+            lines.splice(start..end, replacement);
+        }
+        None => lines.extend(replacement),
+    }
+    Ok(format!("---{eol}{}{eol}---{eol}{body}", lines.join(eol)))
 }
 
 /// Normalize parsed frontmatter into an [`FsAgent`] row — the one place the
@@ -615,6 +734,7 @@ pub(crate) fn agent_from_frontmatter(
             .to_string(),
         logo: fm.logo.map(|l| l.trim().to_string()),
         skills: fm.skills,
+        functions: normalize_function_ids(fm.functions),
         model: trimmed(fm.model),
         reasoning_effort: trimmed(fm.reasoning_effort),
         icon: trimmed(fm.icon),
@@ -1024,6 +1144,75 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, contents).unwrap();
+    }
+
+    // ── set_frontmatter_string_list ──────────────────────────────────
+
+    #[test]
+    fn string_list_rewrite_inserts_replaces_and_removes_in_place() {
+        let original = "---\nname: X\n# keep me\nskills: [a, b]\ncolor: blue\n---\nBody.\n";
+        // Absent → appended to the block, block style, body untouched.
+        let added = set_frontmatter_string_list(
+            original,
+            "functions",
+            &["coder::tree".to_string(), "needs#quote".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            added,
+            "---\nname: X\n# keep me\nskills: [a, b]\ncolor: blue\nfunctions:\n  - coder::tree\n  - \"needs#quote\"\n---\nBody.\n"
+        );
+        let fm = parse_agent_frontmatter(&added).unwrap();
+        assert_eq!(fm.skills, vec!["a", "b"]);
+        assert_eq!(fm.functions, vec!["coder::tree", "needs#quote"]);
+
+        // Present (block style) → replaced in place, neighbours untouched.
+        let replaced =
+            set_frontmatter_string_list(&added, "functions", &["fp::pipe".to_string()]).unwrap();
+        assert_eq!(
+            replaced,
+            "---\nname: X\n# keep me\nskills: [a, b]\ncolor: blue\nfunctions:\n  - fp::pipe\n---\nBody.\n"
+        );
+        // Present (flow style, mid-block) → replaced in place too.
+        let flow = set_frontmatter_string_list(&replaced, "skills", &["c".to_string()]).unwrap();
+        assert_eq!(
+            flow,
+            "---\nname: X\n# keep me\nskills:\n  - c\ncolor: blue\nfunctions:\n  - fp::pipe\n---\nBody.\n"
+        );
+        // Empty → the field disappears.
+        let removed = set_frontmatter_string_list(&flow, "functions", &[]).unwrap();
+        assert_eq!(
+            removed,
+            "---\nname: X\n# keep me\nskills:\n  - c\ncolor: blue\n---\nBody.\n"
+        );
+        // A key that merely shares a prefix is not the field.
+        let prefixed = "---\nname: X\nfunctions_extra: [z]\n---\n";
+        let out =
+            set_frontmatter_string_list(prefixed, "functions", &["a::b".to_string()]).unwrap();
+        assert_eq!(
+            out,
+            "---\nname: X\nfunctions_extra: [z]\nfunctions:\n  - a::b\n---\n"
+        );
+        assert!(set_frontmatter_string_list("no frontmatter\n", "functions", &[]).is_err());
+    }
+
+    #[test]
+    fn agent_functions_are_validated_trimmed_and_deduped() {
+        let fm = parse_agent_frontmatter(
+            "---\nname: X\nfunctions:\n  - coder::tree\n  - \" coder::search \"\n  - coder::tree\n---\n",
+        )
+        .unwrap();
+        let agent = agent_from_frontmatter("x".into(), fm, PathBuf::from("/x.md"), false);
+        assert_eq!(agent.functions, vec!["coder::tree", "coder::search"]);
+
+        let err = parse_agent_frontmatter("---\nname: X\nfunctions: [\"coder tree\"]\n---\n")
+            .unwrap_err();
+        assert!(err.contains("whitespace"), "got: {err}");
+        let err = parse_agent_frontmatter("---\nname: X\nfunctions: [\"\"]\n---\n").unwrap_err();
+        assert!(err.contains("non-empty"), "got: {err}");
+        // Absent stays an empty list — never a load failure.
+        let fm = parse_agent_frontmatter("---\nname: X\n---\n").unwrap();
+        assert!(fm.functions.is_empty());
     }
 
     // ── split_frontmatter ────────────────────────────────────────────

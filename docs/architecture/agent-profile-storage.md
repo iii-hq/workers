@@ -52,8 +52,39 @@ underscore validation.
 The current required frontmatter validation stays in place; the body — the
 system prompt — may be empty. Unknown frontmatter keys remain harmless, so fields that iii does not
 consume do not prevent a profile from loading. The keys iii consumes are
-`name`, `description`, `logo`, `skills`, `model`, `reasoning_effort`, `icon`,
-`color` and `extends`.
+`name`, `description`, `logo`, `skills`, `functions`, `model`,
+`reasoning_effort`, `icon`, `color` and `extends`.
+
+## Preloaded functions
+
+`functions:` is a list of engine function ids (`coder::tree`,
+`coder::search`, …) the profile uses routinely — its *preloaded* functions.
+The harness resolves their contracts once, when the session starts as this
+profile, and freezes them into the system prompt as a `<preloaded_functions>`
+block (id, one-line description, compacted request schema), so the model
+calls them on the first step instead of spending a
+`directory::search_functions` and an `engine::functions::info` round-trip
+per session. Every other function still goes through normal discovery.
+
+The directory stores the ids verbatim; the only validation at write time is
+that each entry is a non-empty id without whitespace (duplicates collapse,
+first occurrence wins, order is preserved — it is the order the block is
+rendered in). Whether an id is *registered* is checked where it is used:
+`get` reports the ids the engine does not currently know in
+`unknown_functions` (a warning, like `unknown_skills`; empty when the engine
+could not be asked), and the harness renders such ids as unavailable
+instead of failing the session. `list` carries `function_count`.
+
+Besides the full-file `create`/`update`, two targeted verbs edit only this
+field: `directory::agents::functions::add { id, functions }` appends ids the
+profile's own list lacks, `directory::agents::functions::remove { id,
+functions }` drops the ones present. Both rewrite just the `functions:`
+frontmatter field in block style, leave every other byte of the file alone,
+write atomically, copy-on-write a bundled profile's shadow like `update`,
+and fan out `directory::agents::on-change` as an `update` — a request that
+changes nothing writes nothing. They edit the profile's OWN list: ids
+inherited through `extends` stay in the resolved union and are removed on
+the parent that declares them.
 
 ## Inheritance
 
@@ -66,10 +97,18 @@ serve resolved values, the harness never composes:
   profile with no prompt of its own serves its parent chain unchanged (and
   the empty string when it has no parent). A profile with a non-blank body and
   no `extends` serves that body byte-for-byte.
-- `skills`, `model` and `reasoning_effort` fall back to the nearest ancestor
-  that sets them when the profile omits them. A non-empty `skills` list
-  replaces the parent's filter (no union); an empty list means "not narrowed
-  here", never "no skills".
+- `model` and `reasoning_effort` fall back to the nearest ancestor that
+  sets them when the profile omits them.
+- `skills` and `functions` inherit ADDITIVELY: the resolved list is the
+  union of every list along the chain, root first, first occurrence kept —
+  a child extends what its parents allow / preload instead of replacing it.
+  An empty list means "adds nothing here", never "no skills" / "no
+  functions"; a chain whose lists are all empty resolves to empty. To drop
+  something a parent declares, edit the parent or stop extending it.
+  `skills` are PRELOADED skills, the skill-shaped twin of `functions`: the
+  harness freezes each id's body into the session prompt (see
+  [Compatibility with harness](#compatibility-with-harness)). They never
+  narrow what the session's skills index shows.
 - `name`, `description`, `logo`, `icon` and `color` are always the
   profile's own.
 
@@ -162,10 +201,21 @@ events and suppress the corresponding external-write event.
 
 Harness remains storage-agnostic. `harness::send` and `harness::spawn` pass a
 flat agent profile id to `directory::agents::get` and freeze its resolved
-prompt, skills, model, reasoning effort, display name, icon, and color. The
-resolved prompt IS the session identity — the harness puts no built-in prompt
-underneath it and adds no prefix; only the per-send `mode` paragraph goes in
-front, then the usual per-step runtime context. A profile served with
+prompt, skills, preloaded functions, model, reasoning effort, display name,
+icon, and color. The resolved prompt IS the session identity — the harness
+puts no built-in prompt underneath it and adds no prefix; only the per-send
+`mode` paragraph goes in front, then the usual per-step runtime context.
+When the profile declares (or inherits) `functions`, the harness appends the
+`<preloaded_functions>` block — each id's current description and compacted
+request schema, taken from its cached registry snapshot with one
+`engine::functions::info` batch for ids the snapshot cannot vouch for — to
+that frozen prompt; ids the engine does not know are named as unavailable.
+The declared ids also travel in `SessionMeta.metadata.agent_profile.functions`.
+When the profile declares (or inherits) `skills`, the harness appends a
+`<preloaded_skills>` block after it — one `<skill id="…">` section per id
+with the body `directory::skills::get` serves, fetched once at resolution;
+ids the directory cannot serve are named as unavailable — and the ids travel
+in `SessionMeta.metadata.agent_profile.skills`. A profile served with
 `inheritance_error` is refused as an invalid request. When a profile declares
 (or inherits) a model, that model and its effort are authoritative for the
 session.

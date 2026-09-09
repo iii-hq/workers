@@ -19,8 +19,8 @@ import {
  *
  * The picker stores only the id (`choice: { named: 'agent:<id>' }`); the
  * first send carries it as `harness::send` `options.agent` and the harness
- * resolves the profile server-side (MOT-4485) — prompt, skill filter, and
- * default model all come from the frozen profile.
+ * resolves the profile server-side (MOT-4485) — prompt, preloaded skills and
+ * functions, and default model all come from the frozen profile.
  */
 
 export { AGENT_CHOICE_PREFIX }

@@ -32,9 +32,10 @@ describe('AgentFormSkeleton', () => {
     expect(classes).toContain('dir-ui-af-model-row')
     expect(classes).toContain('dir-ui-af-prompt dir-ui-af-skeleton-prompt')
     expect(classes).toContain('dir-ui-af-skills')
+    // Two pickers (skills, preloaded functions) × two lists (selected, available).
     expect(
       classes.filter((name) => name === 'dir-ui-af-skill-list-wrap'),
-    ).toHaveLength(2)
+    ).toHaveLength(4)
   })
 })
 

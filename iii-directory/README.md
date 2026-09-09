@@ -9,7 +9,7 @@ into five surfaces (all MCP-agnostic):
 |---|---|---|
 | **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, function_id, disable_model_invocation, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, function_id, disable_model_invocation, path, body, modified_at }` (the full body instead of the list teaser), and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). Authored by `create`, edited by `update`, removed by `delete`. `title` prefers the YAML frontmatter `title:` (then `name:`) over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. System-installed agent skills under the read-only `agents_skills_folder` are served too (see [On-disk layout](#on-disk-layout)). | Orientation: "when and why to use my worker's tools" |
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts listed by `list`, read by `get`, authored by `create`, edited by `update`, and removed by `delete`. The list response keeps its `prompts` field name. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
-| **Agent Profiles** (`directory::agents::*`) | Reusable session identities whose file body is the system prompt, with display `name`, emoji `logo`, a `skills` filter, and optional `model` + `reasoning_effort` in required frontmatter. `list` rows carry the display/configuration metadata and `get` adds `system_prompt` and `unknown_skills`. Stored as direct `<agents_folder>/<id>.md` files. See [Agent profile storage](../docs/architecture/agent-profile-storage.md). | A named identity selected with `harness::send { options: { agent } }` |
+| **Agent Profiles** (`directory::agents::*`) | Reusable session identities whose file body is the system prompt, with display `name`, emoji `logo`, preloaded `skills` and `functions` (bodies and contracts the harness freezes into every session's prompt), and optional `model` + `reasoning_effort` in required frontmatter. `list` rows carry the display/configuration metadata and `get` adds `system_prompt` and `unknown_skills`. Stored as direct `<agents_folder>/<id>.md` files. See [Agent profile storage](../docs/architecture/agent-profile-storage.md). | A named identity selected with `harness::send { options: { agent } }` |
 | **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. | "Which functions do I call for this task?" |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
@@ -316,14 +316,32 @@ A few rules:
   its own contributes only its parent chain (if any) and its non-prompt
   settings. Unknown `skills` ids are
   warnings surfaced by `get`, never load failures.
+- **Agent profiles declare preloaded functions.** `functions:` lists engine
+  function ids (`coder::tree`, `coder::search`, …) the profile uses
+  routinely. The harness resolves their contracts once, when a session
+  starts as this profile, and freezes them into the system prompt as a
+  `<preloaded_functions>` block (id, description, compacted request schema), so
+  the model calls them on the first step instead of spending a
+  `directory::search_functions` + `engine::functions::info` round-trip per
+  session; everything else still goes through discovery. Ids are stored
+  verbatim (non-empty, no whitespace; duplicates collapse, order kept);
+  `get` reports ids the engine does not currently know in
+  `unknown_functions` (a warning — the harness renders them as unavailable),
+  `list` carries `function_count`. `directory::agents::functions::add` /
+  `::remove { id, functions }` edit only that frontmatter field — the rest
+  of the file stays byte-identical — and fan out `on-change` as an update.
+  The console's profile editor picks them from the live registry with the
+  same keyboard-first search + Selected/Available lists as skills.
 - **Agent profiles inherit.** `extends: <id>` names one parent profile
   (chains allowed, at most 8 hops). The resolved system prompt served by
   `get` is the parent's resolved prompt followed by a blank line and this
   file's body — a blank body contributes nothing, so a profile with no
-  prompt of its own serves its parent chain unchanged; `skills`, `model` and `reasoning_effort` fall back to the
-  nearest ancestor that sets them when omitted (a non-empty `skills` list
-  replaces, never unions); `name`, `description`, `logo`, `icon` and
-  `color` are always the profile's own. A chain that does not resolve
+  prompt of its own serves its parent chain unchanged; `model` and
+  `reasoning_effort` fall back to the nearest ancestor that sets them when
+  omitted, while `skills` and `functions` inherit ADDITIVELY (the union of
+  the chain's lists, root first, no duplicates — a child adds to what its
+  parents allow / preload, it cannot remove); `name`, `description`, `logo`,
+  `icon` and `color` are always the profile's own. A chain that does not resolve
   (unknown parent, loop, too deep) is reported by `list`/`get` as
   `inheritance_error` (`D415` text) while the profile still serves its own
   file (so the editor can fix it); the harness refuses to run it.
@@ -399,6 +417,8 @@ other adapter.
 | `directory::agents::update` | Overwrite one EXISTING agent profile file with new full-file content: `{ id, content }`. Same rules the scanner enforces (required frontmatter with non-empty `name`, emoji-only `logo`; the body — the system prompt — may be empty); the id stays the file stem. Updating a bundled profile creates the local file that shadows it. Atomic write; fans out `directory::agents::on-change` with `op: "update"`. |
 | `directory::agents::create` | Create a NEW agent profile at `<agents_folder>/<id>.md` from full-file content: `{ id, content }`. Refuses an `id` that already exists in the configured agent-profile root, and a target path that already exists on disk even if the scanner would skip it; creating a bundled id shadows the bundled copy. Atomic write; fans out `directory::agents::on-change` with `op: "create"`. Returns `{ id, name, description, logo, bytes, modified_at }`. |
 | `directory::agents::delete` | Permanently remove one EXISTING agent profile file by `{ id }`. Resolves against the same configured root as `list`/`get`, fans out `directory::agents::on-change` with `op: "delete"`, and returns `{ id }`. Deleting the local shadow of a bundled profile falls back to the bundled copy; a bundled profile with no local file has nothing to delete (`D414`). Sessions already using the profile are unaffected; profiles extending it stop resolving until fixed. |
+| `directory::agents::functions::add` | `{ id, functions: ["coder::tree", …] }` — append engine function ids to one EXISTING profile's OWN `functions:` list (its *preloaded* functions: the contracts the harness pre-loads into the system prompt of every new session running as the profile). Ids already present are kept once; only that frontmatter field is rewritten (block style), every other byte of the file is untouched; writes atomically, copy-on-writes a bundled profile's shadow, fans out `on-change` with `op: "update"`. Returns `{ id, functions, added, unchanged?, bytes, modified_at }` — `unchanged: true` means nothing was written. `D416` for a request with no valid ids (entries must be non-empty and whitespace-free). |
+| `directory::agents::functions::remove` | `{ id, functions }` — drop ids from one EXISTING profile's OWN `functions:` list (absent ids are ignored; the field disappears when the list empties). Same write semantics and `D416`; returns `{ id, functions, removed, unchanged?, bytes, modified_at }`. Neither verb touches ids inherited through `extends` — those stay in the resolved union and are removed on the parent that declares them. |
 
 ### Engine introspection (native, plus one wrapper)
 
