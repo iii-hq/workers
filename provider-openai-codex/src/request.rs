@@ -11,8 +11,12 @@ use serde_json::{json, Value};
 /// Codex client version whose Responses contract this worker mirrors.
 ///
 /// The ChatGPT backend uses this header to gate newly released models. Omitting
-/// it makes supported models such as GPT-5.6 Luna fail as "Model not found".
-pub(crate) const CODEX_COMPAT_VERSION: &str = "0.144.1";
+/// it makes supported models such as GPT-5.6 Luna fail as "Model not found",
+/// and the `/models` catalog drops models the version is too old for (e.g.
+/// `gpt-6-astra` needs >= 0.153.0). Bump to the installed `codex --version`
+/// when the CLI lists a model this provider does not; the configuration UI
+/// shows the current value.
+pub(crate) const CODEX_COMPAT_VERSION: &str = "0.153.4";
 
 const SUMMARY_UNSUPPORTED_MODEL: &str = "gpt-5.3-codex-spark";
 

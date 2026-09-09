@@ -5,6 +5,9 @@ import {
 } from '@iii-dev/console-ui'
 import { useState } from 'react'
 
+/** Replaced by the worker at serve time with its `CODEX_COMPAT_VERSION`. */
+const COMPAT_VERSION = '__CODEX_COMPAT_VERSION__'
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : 'Could not connect to Codex.'
 }
@@ -51,6 +54,12 @@ function CodexProviderForm({
         <p>
           This provider uses your ChatGPT subscription. Do not enter an API key
           here; API keys belong to the OpenAI provider.
+        </p>
+        <p>
+          Mirrors Codex CLI <code>{COMPAT_VERSION}</code>. ChatGPT hides
+          newer models from older clients, so a model your <code>codex</code>{' '}
+          CLI offers but this list lacks means this provider needs a version
+          bump.
         </p>
         <ol>
           <li>Open a terminal on the machine running the provider.</li>
