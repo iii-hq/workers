@@ -115,14 +115,10 @@ mod tests {
         for id in ["iii", "iii-minimal"] {
             let (_, body) = fs_source::split_frontmatter(bundled_agent_raw(id).unwrap());
             let body = body.replace('\n', " ");
-            assert!(
-                body.contains("Use the language of the user's latest task message"),
-                "{id}"
-            );
-            assert!(
-                body.contains("Keep that language across tool results and event notifications"),
-                "{id}"
-            );
+            assert!(body.contains("Use the user's latest task language"), "{id}");
+            assert!(body.contains("Search capabilities stay in English"), "{id}");
+            assert!(body.contains("Use the fewest turns and calls"), "{id}");
+            assert!(body.contains("at most one call with"), "{id}");
         }
         assert!(bundled_system_prompt("nope").is_none());
     }
