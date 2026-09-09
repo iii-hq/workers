@@ -42,6 +42,7 @@ export default function setup(host: Host) {
   host.configForms.register('grok', configurationForm('grok'))
   host.configForms.register('harness', configurationForm('harness'))
   host.configForms.register('http', configurationForm('http'))
+  host.configForms.register('iii-observability', configurationForm('iii-observability'))
   host.configForms.register('memory', configurationForm('memory'))
   host.configForms.register('memory-consolidate', configurationForm('memory-consolidate'))
   host.configForms.register('opencode', configurationForm('opencode'))

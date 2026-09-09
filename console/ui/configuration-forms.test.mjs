@@ -21,6 +21,7 @@ const EXPECTED_IDS = [
   'grok',
   'harness',
   'http',
+  'iii-observability',
   'memory',
   'memory-consolidate',
   'opencode',
@@ -110,11 +111,11 @@ async function loadConfigurationValues() {
   return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 }
 
-test('manifest covers the 39 worker-owned configuration entries', async () => {
+test('manifest covers the 40 worker-owned configuration entries', async () => {
   const manifest = await loadManifest()
   assert.doesNotThrow(() => manifest.validateWorkerConfigurationManifest())
-  assert.equal(manifest.workerConfigurationManifest.length, 39)
-  assert.equal(new Set(manifest.workerConfigurationIds).size, 39)
+  assert.equal(manifest.workerConfigurationManifest.length, 40)
+  assert.equal(new Set(manifest.workerConfigurationIds).size, 40)
   assert.deepEqual([...manifest.workerConfigurationIds].sort(), EXPECTED_IDS)
   assert.equal(manifest.workerConfigurationIds.includes('shell-ui'), false)
 })

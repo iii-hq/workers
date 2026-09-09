@@ -1,6 +1,7 @@
 import { agentCollectionWorkerSpecs } from './specs/collections-agents'
 import { serviceCollectionWorkerSpecs } from './specs/collections-services'
 import { nestedWorkerSpecs } from './specs/nested'
+import { observabilityWorkerSpec } from './specs/observability'
 import { scalarWorkerSpecs } from './specs/scalar'
 import type { FormFieldSpec, WorkerConfigurationSpec } from './types'
 
@@ -9,6 +10,7 @@ export const workerConfigurationManifest = [
   ...nestedWorkerSpecs,
   ...agentCollectionWorkerSpecs,
   ...serviceCollectionWorkerSpecs,
+  observabilityWorkerSpec,
 ] as const satisfies readonly WorkerConfigurationSpec[]
 
 export const workerConfigurationIds = workerConfigurationManifest.map((spec) => spec.id)
@@ -71,8 +73,8 @@ export function declaredFields(spec: WorkerConfigurationSpec): string[] {
 }
 
 export function validateWorkerConfigurationManifest(): void {
-  if (workerConfigurationManifest.length !== 39) {
-    throw new Error(`Expected 39 worker configuration forms, found ${workerConfigurationManifest.length}`)
+  if (workerConfigurationManifest.length !== 40) {
+    throw new Error(`Expected 40 worker configuration forms, found ${workerConfigurationManifest.length}`)
   }
 
   const ids = new Set<string>()
