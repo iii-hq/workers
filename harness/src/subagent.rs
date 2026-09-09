@@ -178,15 +178,18 @@ pub async fn spawn_child(
 /// the shared medium; it cannot spawn, message sessions, or touch trigger
 /// registrations, whatever its prompt says. Denies union through subsetting,
 /// so a leaf's own children stay leaves. Any real whitelist then keeps the
-/// contract-discovery pair ([`policy::CHILD_DISCOVERY_ALLOW`]): the sub-agent
-/// contract makes a `functions::info` round mandatory, so an allow-list of
-/// just the work functions quietly starves an obedient child.
+/// contract-discovery pair ([`policy::CHILD_DISCOVERY_ALLOW`]) and the skills
+/// fetch ([`policy::CHILD_SKILLS_ALLOW`]): the sub-agent contract makes a
+/// `functions::info` round mandatory, so an allow-list of just the work
+/// functions quietly starves an obedient child. Those grants are
+/// dispatch-level only — callable by id, reported in `dispatch_only` and kept
+/// out of the child's native toolset, which stays exactly its work functions.
 fn child_functions(
     cfg: &WorkerConfig,
     parent_record: Option<&TurnRecord>,
     requested: Option<&FunctionPolicy>,
     orchestrator: bool,
-) -> Option<FunctionPolicy> {
+) -> ChildFunctions {
     let mut functions = match parent_record {
         Some(p) => policy::subset_policy(p.options.functions.as_ref(), requested),
         None => requested.cloned().or_else(|| cfg.default_functions.clone()),
@@ -197,20 +200,37 @@ fn child_functions(
                 .extend(policy::CONTROL_PLANE_DENY.iter().map(|s| s.to_string()));
         }
     }
+    let mut dispatch_only = Vec::new();
     if let Some(p) = functions.as_mut() {
         // An EMPTY allow is deliberate dispatch-disabled — granting a
         // browse-only catalog to a child that can call nothing helps nobody.
         if !p.allow.is_empty() {
-            for id in policy::CHILD_DISCOVERY_ALLOW {
+            for id in policy::CHILD_DISCOVERY_ALLOW
+                .iter()
+                .chain(policy::CHILD_SKILLS_ALLOW.iter())
+            {
                 // Skip when already covered, and skip a dead entry when a
                 // deny glob claims it — deny wins at dispatch either way.
                 if !policy::glob_covered(id, &p.allow) && !policy::glob_covered(id, &p.deny) {
                     p.allow.push(id.to_string());
+                    dispatch_only.push(id.to_string());
                 }
             }
         }
     }
-    functions
+    ChildFunctions {
+        policy: functions,
+        dispatch_only,
+    }
+}
+
+/// A child's dispatch policy plus the ids [`child_functions`] injected into
+/// it. The injected ids are grants, not tools: `TurnRecord::dispatch_only_functions`
+/// keeps them out of the native toolset (INT-015/INT-020 pin that toolset to
+/// the work functions alone).
+struct ChildFunctions {
+    policy: Option<FunctionPolicy>,
+    dispatch_only: Vec<String>,
 }
 
 /// Seed a child session + turn and enqueue its first step. When
@@ -290,7 +310,10 @@ async fn seed_child(
         .and_then(|o| o.orchestrator)
         .unwrap_or(false);
 
-    let functions = child_functions(
+    let ChildFunctions {
+        policy: functions,
+        dispatch_only,
+    } = child_functions(
         cfg,
         parent_record,
         req.options.as_ref().and_then(|o| o.functions.as_ref()),
@@ -472,6 +495,7 @@ async fn seed_child(
 
     let lineage = TurnLineage {
         depth,
+        dispatch_only_functions: dispatch_only,
         parent: parent.cloned(),
         // Self-parent is dropped: a reaction delivered INTO session X (e.g. a
         // reporter posting into the chat) must not carry X as its display
@@ -753,6 +777,8 @@ mod tests {
             context_snapshot: None,
             result: None,
             result_error: None,
+            stop_reason: None,
+            dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
             created_at: 1,
@@ -994,13 +1020,13 @@ mod tests {
         // applies as-is, and no request falls back to the configured default
         // (`*` as shipped).
         let cfg = WorkerConfig::default();
-        let explicit = child_functions(&cfg, None, Some(&broad_policy()), false);
+        let explicit = child_functions(&cfg, None, Some(&broad_policy()), false).policy;
         assert!(policy::CompiledPolicy::from(explicit.as_ref()).allows("state::set"));
-        let defaulted = child_functions(&cfg, None, None, false);
+        let defaulted = child_functions(&cfg, None, None, false).policy;
         assert!(policy::CompiledPolicy::from(defaulted.as_ref()).allows("state::set"));
 
         // A narrowed operator default is what a parentless child falls back to.
-        let narrowed = child_functions(&narrowed_cfg(), None, None, false);
+        let narrowed = child_functions(&narrowed_cfg(), None, None, false).policy;
         let compiled = policy::CompiledPolicy::from(narrowed.as_ref());
         assert!(compiled.allows("state::get"));
         assert!(!compiled.allows("state::set"));
@@ -1013,7 +1039,7 @@ mod tests {
         let cfg = WorkerConfig::default();
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
-        let leaf = child_functions(&cfg, Some(&parent), None, false);
+        let leaf = child_functions(&cfg, Some(&parent), None, false).policy;
         let compiled = policy::CompiledPolicy::from(leaf.as_ref());
         assert!(compiled.allows("state::set"), "data-plane must survive");
         for id in [
@@ -1032,7 +1058,7 @@ mod tests {
         let cfg = WorkerConfig::default();
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
-        let orch = child_functions(&cfg, Some(&parent), None, true);
+        let orch = child_functions(&cfg, Some(&parent), None, true).policy;
         let compiled = policy::CompiledPolicy::from(orch.as_ref());
         assert!(compiled.allows("harness::spawn"));
         assert!(compiled.allows("engine::register_trigger"));
@@ -1043,7 +1069,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         });
-        let capped = child_functions(&cfg, Some(&parent), None, true);
+        let capped = child_functions(&cfg, Some(&parent), None, true).policy;
         assert!(!policy::CompiledPolicy::from(capped.as_ref()).allows("harness::spawn"));
     }
 
@@ -1058,7 +1084,7 @@ mod tests {
             .deny
             .extend(policy::CONTROL_PLANE_DENY.iter().map(|s| s.to_string()));
         leaf_parent.options.functions = Some(leaf_policy);
-        let child = child_functions(&cfg, Some(&leaf_parent), None, true);
+        let child = child_functions(&cfg, Some(&leaf_parent), None, true).policy;
         assert!(!policy::CompiledPolicy::from(child.as_ref()).allows("harness::spawn"));
     }
 
@@ -1072,7 +1098,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child = child_functions(&cfg, Some(&parent), Some(&narrow), false);
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), false).policy;
         let compiled = policy::CompiledPolicy::from(child.as_ref());
         assert!(compiled.allows("state::set"));
         assert!(!compiled.allows("state::get"));
@@ -1093,11 +1119,14 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child = child_functions(&cfg, Some(&parent), Some(&narrow), false);
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), false).policy;
         let compiled = policy::CompiledPolicy::from(child.as_ref());
         assert!(compiled.allows("database::executeBatch"));
         assert!(compiled.allows("engine::functions::list"));
         assert!(compiled.allows("engine::functions::info"));
+        // ...and the skill fetch: without it `skills::effective_view` drops
+        // the whole index and the child runs with zero skill tokens.
+        assert!(compiled.allows("directory::skills::get"));
         // The union grants the metadata plane only — the leaf wall and the
         // whitelist still hold.
         assert!(!compiled.allows("engine::register_trigger"));
@@ -1110,24 +1139,42 @@ mod tests {
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
 
-        // Already covered by a glob: no duplicate entries.
+        // Already covered by a glob: no duplicate entries (the skill fetch is
+        // not covered by `engine::*`, so it is the one entry added).
         let covered = FunctionPolicy {
             allow: vec!["engine::*".into(), "state::set".into()],
             deny: vec![],
             expose: Default::default(),
         };
-        let child = child_functions(&cfg, Some(&parent), Some(&covered), false).unwrap();
-        assert_eq!(child.allow, vec!["engine::*", "state::set"]);
+        let child = child_functions(&cfg, Some(&parent), Some(&covered), false)
+            .policy
+            .unwrap();
+        assert_eq!(
+            child.allow,
+            vec!["engine::*", "state::set", "directory::skills::get"]
+        );
+        let fully_covered = FunctionPolicy {
+            allow: vec!["engine::*".into(), "directory::*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, Some(&parent), Some(&fully_covered), false)
+            .policy
+            .unwrap();
+        assert_eq!(child.allow, vec!["engine::*", "directory::*"]);
 
         // Explicitly denied: deny wins, and no dead allow entry is written.
         let denied = FunctionPolicy {
             allow: vec!["database::executeBatch".into()],
-            deny: vec!["engine::functions::*".into()],
+            deny: vec!["engine::functions::*".into(), "directory::*".into()],
             expose: Default::default(),
         };
-        let child = child_functions(&cfg, Some(&parent), Some(&denied), false).unwrap();
+        let child = child_functions(&cfg, Some(&parent), Some(&denied), false)
+            .policy
+            .unwrap();
         assert_eq!(child.allow, vec!["database::executeBatch"]);
         assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::info"));
+        assert!(!policy::CompiledPolicy::from(Some(&child)).allows("directory::skills::get"));
 
         // An EMPTY allow is deliberate dispatch-disabled — it must stay that
         // way, not become a browse-only two-entry whitelist.
@@ -1136,9 +1183,45 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child = child_functions(&cfg, None, Some(&disabled), false).unwrap();
+        let child = child_functions(&cfg, None, Some(&disabled), false)
+            .policy
+            .unwrap();
         assert!(child.allow.is_empty());
         assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::list"));
+    }
+
+    #[test]
+    fn injected_grants_are_dispatch_only_and_covered_ones_are_not() {
+        let cfg = WorkerConfig::default();
+        let mut parent = parent_record(None);
+        parent.options.functions = Some(broad_policy());
+
+        let narrow = FunctionPolicy {
+            allow: vec!["db::x".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), false);
+        assert_eq!(
+            child.dispatch_only,
+            vec![
+                "engine::functions::list",
+                "engine::functions::info",
+                "directory::skills::get"
+            ]
+        );
+
+        // Covered by the requested allow: a real tool, not a grant.
+        let covered = FunctionPolicy {
+            allow: vec!["db::x".into(), "directory::*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        };
+        let child = child_functions(&cfg, Some(&parent), Some(&covered), false);
+        assert_eq!(
+            child.dispatch_only,
+            vec!["engine::functions::list", "engine::functions::info"]
+        );
     }
 
     #[test]

@@ -337,6 +337,17 @@ pub struct TurnRecord {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_error: Option<String>,
+    /// Why a `completed` turn stopped when it was not the model's own
+    /// end-of-turn: `max_turns` when the step cap ended it. Absent for an
+    /// ordinary completion, so `status: completed` alone never hides an
+    /// exhausted budget from a lean `harness::status` reader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    /// Function ids the spawn granted at dispatch level only (the discovery
+    /// pair, the skills fetch): callable by id, never surfaced as native
+    /// tools, so a narrowed child's toolset stays exactly its work functions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dispatch_only_functions: Vec<String>,
     #[serde(default)]
     pub validation_retries: u32,
     #[serde(default)]
@@ -442,6 +453,8 @@ mod tests {
             context_snapshot: None,
             result: None,
             result_error: None,
+            stop_reason: None,
+            dispatch_only_functions: Vec::new(),
             validation_retries: 0,
             transient_resumes: 0,
             created_at: 1,
