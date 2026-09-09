@@ -11,6 +11,7 @@ import {
   workerListResponseSchema,
 } from '@/components/chat/worker/parsers'
 import { errText } from '@/lib/errors'
+import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient } from '@/lib/iii-client'
 import type { ComposeAction } from '../types'
 
@@ -81,6 +82,12 @@ export async function fetchEngineWorkerInfo(
 }
 
 export async function fetchSupervisorWorkersList(): Promise<WorkerListResponse> {
+  // `worker::list` is the legacy supervisor surface; a compose-managed engine
+  // has no provider for it. The caller already tolerates the miss, but the
+  // engine logged `Function not found` on every Workers-page refresh.
+  if (!(await functionRegistered(WORKERS_RPC.supervisorList))) {
+    return { workers: [] }
+  }
   const client = await getIiiClient()
   const raw = await client.trigger<unknown>(WORKERS_RPC.supervisorList, {})
   const parsed = workerListResponseSchema.safeParse(raw)

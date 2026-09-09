@@ -18,6 +18,12 @@ vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({ trigger: triggerMock }),
 }))
 
+// The shell presence gate reads the function catalog through the same client;
+// these tests exercise the working-dir plumbing with shell present.
+vi.mock('@/lib/function-presence', () => ({
+  functionRegistered: async () => true,
+}))
+
 beforeEach(() => {
   triggerMock.mockReset()
   resetDefaultWorkingDirForTests()

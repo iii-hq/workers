@@ -7,6 +7,7 @@
  */
 
 import { listHarnessProjects } from '@/lib/backend/projects'
+import { functionRegistered } from '@/lib/function-presence'
 import { getIiiClient } from '@/lib/iii-client'
 import type { WorkingDirScope } from '@/types/chat'
 
@@ -104,6 +105,16 @@ export function workingDirScopeNotice(scope: WorkingDirScope): {
 export async function validateWorkspaceDir(
   dir: string,
 ): Promise<WorkspaceValidation> {
+  // The picker UI is gated on shell presence, but this helper also runs on
+  // every new chat and working-dir activation; without shell the call only
+  // adds a `Function not found` line to the engine log.
+  if (!(await functionRegistered(WORKSPACE_VALIDATE_FUNCTION_ID))) {
+    return {
+      ok: false,
+      error:
+        'the shell worker is not connected, so working directories cannot be validated',
+    }
+  }
   try {
     const client = await getIiiClient()
     const res = await client.trigger<WorkspaceValidateResult>(

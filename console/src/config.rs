@@ -20,10 +20,19 @@ pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ConsoleConfig {
+    /// Interface the HTTP listener binds. Loopback by default: the console
+    /// proxies the engine WebSocket and serves worker UIs, so exposing it on
+    /// every interface is an opt-in (`0.0.0.0`), like `http` and `rbac-proxy`.
+    #[serde(default = "default_http_host")]
+    pub http_host: String,
     #[serde(default = "default_http_port")]
     pub http_port: u16,
     #[serde(default = "default_injectable_ui")]
     pub injectable_ui: bool,
+}
+
+fn default_http_host() -> String {
+    "127.0.0.1".to_string()
 }
 
 fn default_http_port() -> u16 {
@@ -37,6 +46,7 @@ fn default_injectable_ui() -> bool {
 impl Default for ConsoleConfig {
     fn default() -> Self {
         Self {
+            http_host: default_http_host(),
             http_port: default_http_port(),
             injectable_ui: default_injectable_ui(),
         }
@@ -56,8 +66,15 @@ mod tests {
     #[test]
     fn defaults_from_empty_yaml() {
         let cfg: ConsoleConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(cfg.http_host, "127.0.0.1");
         assert_eq!(cfg.http_port, 3113);
         assert!(cfg.injectable_ui);
+    }
+
+    #[test]
+    fn http_host_is_an_explicit_opt_in_to_all_interfaces() {
+        let cfg: ConsoleConfig = serde_yaml::from_str("http_host: 0.0.0.0\n").unwrap();
+        assert_eq!(cfg.http_host, "0.0.0.0");
     }
 
     #[test]

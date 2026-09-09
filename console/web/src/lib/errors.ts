@@ -67,6 +67,20 @@ function unwrap(body: ErrorBody): ErrorBody {
   return current
 }
 
+/**
+ * Whether a rejected `iii.trigger` says the function is not registered at
+ * all — the worker that owns it is not installed (or not up yet). Callers
+ * use it to stop a retry ladder: a missing worker does not come back on a
+ * timer, it comes back through the `worker` lifecycle trigger. Read from the
+ * outer code first, then from a `handler error: {json}` wrapper.
+ */
+export function isFunctionNotFound(err: unknown): boolean {
+  const body = bodyOf(err)
+  if (!body) return false
+  const code = unwrap(body).code ?? body.code
+  return code?.toLowerCase() === 'function_not_found'
+}
+
 export function errText(err: unknown): string {
   if (err instanceof Error) return err.message
   if (typeof err === 'string') return err

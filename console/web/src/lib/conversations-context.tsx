@@ -22,6 +22,10 @@ import {
 } from '@/hooks/use-harness-status'
 import { isMemoryAvailable, useMemoryStatus } from '@/hooks/use-memory-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
+import {
+  isSessionManagerAvailable,
+  useSessionManagerStatus,
+} from '@/hooks/use-session-manager-status'
 import { isShellAvailable, useShellStatus } from '@/hooks/use-shell-status'
 import {
   isWorktreeAvailable,
@@ -149,11 +153,18 @@ export function ConversationsProvider({
     refresh,
   } = useModelPickerSource(backend.id, harnessAvailable)
   // Conversations are backed by the session-manager worker on the real
-  // backend; mocks stay in-memory.
+  // backend; mocks stay in-memory. A real backend WITHOUT session-manager
+  // (an engine + console with no agent stack) stays in-memory too: every
+  // `session::*` read there is a guaranteed `Function not found`, and the
+  // store's retry timers turned that into ~30 engine error lines a minute
+  // per open conversation. Presence flips live when the worker is added.
+  const sessionManagerAvailable = isSessionManagerAvailable(
+    useSessionManagerStatus(backend.id === 'real'),
+  )
   const api = useConversations(
     catalogKeys,
     !catalogLoading,
-    backend.id === 'real',
+    backend.id === 'real' && sessionManagerAvailable,
   )
 
   const [refreshingModels, setRefreshingModels] = useState(false)

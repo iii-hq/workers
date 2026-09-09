@@ -10,6 +10,7 @@
  * is lossless, and when the editor worker is not installed the call fails
  * quietly and chat behaves exactly as before.
  */
+import { functionRegistered } from './function-presence'
 import { getIiiClient } from './iii-client'
 
 const OPEN_FUNCTION_ID = 'editor::workspace::open'
@@ -30,6 +31,10 @@ export async function syncEditorWorkspace(
   trigger?: TriggerFn,
 ): Promise<boolean> {
   if (!root || root === lastSyncedRoot) return false
+  // Quiet failure is the contract, but "quiet" must include the engine log:
+  // without the editor worker every root change wrote a `Function not found`
+  // line there. An injected `trigger` (tests) bypasses the catalog check.
+  if (!trigger && !(await functionRegistered(OPEN_FUNCTION_ID))) return false
   const call =
     trigger ??
     (async (functionId: string, payload: Record<string, unknown>) => {

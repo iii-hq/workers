@@ -1,9 +1,10 @@
 //! HTTP server: routes `/`, `/assets/*`, `/ws` (WebSocket proxy), and —
 //! when injectable UI is enabled — `/ui`, `/ui/*`, and `/vendor/*`.
 //!
-//! Binds `0.0.0.0:<http_port>` so the worker is reachable from
-//! containers/LAN by default; tighten with a reverse proxy when
-//! exposing publicly.
+//! Binds `<http_host>:<http_port>` — loopback unless the operator opts into
+//! `0.0.0.0` (`http_host` in the seed config or `--http-host`), the same
+//! default as the `http` and `rbac-proxy` workers. Front it with a reverse
+//! proxy when exposing it beyond the host.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -263,11 +264,31 @@ pub async fn start(http_port: u16, state: AppState) -> anyhow::Result<ServerHand
     })
 }
 
-/// Bind `0.0.0.0:<http_port>` without changing any live server state. Rebinds
-/// use this bind-new-before-stop-old step so a failed port change leaves the
-/// existing Console listener untouched.
+/// The interface every listener binds. Set once at boot from `http_host`
+/// (config seed or `--http-host`); loopback until then. The console used to
+/// bind `0.0.0.0` unconditionally, exposing the engine WebSocket proxy on every
+/// interface by default while `http` and `rbac-proxy` stay on loopback.
+static BIND_HOST: std::sync::OnceLock<std::net::IpAddr> = std::sync::OnceLock::new();
+
+/// Pin the bind interface for this process. A second call is ignored: the
+/// interface is a boot-time decision, only the port hot-reloads.
+pub fn set_bind_host(host: std::net::IpAddr) {
+    let _ = BIND_HOST.set(host);
+}
+
+/// The interface listeners bind — the pinned host, else loopback.
+pub fn bind_host() -> std::net::IpAddr {
+    BIND_HOST
+        .get()
+        .copied()
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+}
+
+/// Bind `<bind_host>:<http_port>` without changing any live server state.
+/// Rebinds use this bind-new-before-stop-old step so a failed port change
+/// leaves the existing Console listener untouched.
 pub async fn bind_listener(http_port: u16) -> anyhow::Result<TcpListener> {
-    let addr: SocketAddr = (std::net::Ipv4Addr::UNSPECIFIED, http_port).into();
+    let addr = SocketAddr::new(bind_host(), http_port);
     TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding TCP listener on {addr}"))
@@ -451,5 +472,27 @@ mod tests {
                 ))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bind_host_tests {
+    /// Prevents: the console silently listening on every interface. The bind
+    /// host is loopback unless the operator pins another one at boot.
+    #[test]
+    fn listeners_bind_loopback_unless_pinned() {
+        // `OnceLock` is process-global, so this test only asserts the default
+        // when nothing in this test binary pinned a host yet, and that a pin
+        // sticks (a second pin is ignored by design).
+        let before = super::bind_host();
+        assert!(before.is_loopback() || before.is_unspecified());
+        super::set_bind_host(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        assert!(super::bind_host().is_loopback() || super::bind_host() == before);
+        super::set_bind_host(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        assert_eq!(
+            super::bind_host(),
+            super::bind_host(),
+            "second pin never flips the host"
+        );
     }
 }

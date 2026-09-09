@@ -1,5 +1,35 @@
 import { describe, expect, it } from 'vitest'
-import { errText } from './errors'
+import { errText, isFunctionNotFound } from './errors'
+
+describe('isFunctionNotFound', () => {
+  it('recognises the engine code on the outer envelope', () => {
+    expect(
+      isFunctionNotFound({
+        code: 'function_not_found',
+        message: 'Function session::get not found in namespace default.',
+      }),
+    ).toBe(true)
+  })
+
+  it('recognises the code inside a handler-error wrapper, case-insensitively', () => {
+    expect(
+      isFunctionNotFound({
+        code: 'invocation_failed',
+        message:
+          'handler error: {"code":"FUNCTION_NOT_FOUND","message":"Function x::y not found"}',
+      }),
+    ).toBe(true)
+  })
+
+  it('is false for every other failure shape', () => {
+    expect(isFunctionNotFound({ code: 'timeout', message: 'timed out' })).toBe(
+      false,
+    )
+    expect(isFunctionNotFound(new Error('function_not_found'))).toBe(false)
+    expect(isFunctionNotFound('function_not_found')).toBe(false)
+    expect(isFunctionNotFound(null)).toBe(false)
+  })
+})
 
 describe('errText', () => {
   it('renders the wire error object a rejected trigger throws', () => {
