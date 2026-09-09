@@ -1,5 +1,7 @@
 //! `session::append` — append one entry, idempotent on `entry_id`.
 
+use std::time::{Duration, Instant};
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -36,8 +38,27 @@ pub struct AppendResponse {
     pub timestamp: i64,
 }
 
+/// Callers (the harness turn loop) time out an append at ~10s and fail the
+/// turn; log well before that so the slow store shows up in the worker's
+/// log next to the caller's timeout instead of only on the caller.
+const SLOW_APPEND: Duration = Duration::from_secs(1);
+
 pub async fn handle(deps: &Deps, req: AppendRequest) -> Result<AppendResponse, SessionError> {
-    let (resp, events) = deps.service.append(req).await?;
+    let session_id = req.session_id.clone();
+    let started = Instant::now();
+    // Timed before `?`: a store that took seconds to fail is the same
+    // signal as one that took seconds to succeed.
+    let result = deps.service.append(req).await;
+    let elapsed = started.elapsed();
+    if elapsed > SLOW_APPEND {
+        tracing::warn!(
+            session_id,
+            elapsed_ms = elapsed.as_millis() as u64,
+            ok = result.is_ok(),
+            "slow session::append"
+        );
+    }
+    let (resp, events) = result?;
     deps.sink.publish_all(&events).await;
     Ok(resp)
 }
