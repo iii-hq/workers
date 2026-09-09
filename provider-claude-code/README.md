@@ -37,15 +37,17 @@ This worker is a **dumb token consumer** — login and refresh live out-of-band:
    `{ type: "oauth", access_token, refresh_token?, expires_at?(seconds),
    provider_extra: { subscription_type?, scopes? }, refresh_fn:
    "oauth::claude-code::refresh" }`.
-2. **Local dev fallback:** when no vault is running, the worker reads
-   `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json` directly (read-only —
-   the `claude` CLI owns that file's refresh, including rotating the refresh
-   token). The file's `claudeAiOauth.expiresAt` is epoch **milliseconds**;
-   it is stored as seconds in the vault shape. Requires host access to that
-   path, so it does not apply to sandboxed/microVM-managed workers, and **macOS
-   is not covered** (Claude Code stores credentials in the Keychain there, not a
-   file). On boot the worker also does a one-time, read-only import of that file
-   into the vault when the vault is present but empty (never written back).
+2. **Local dev fallback:** when no vault is running, the worker reads the
+   `claude` CLI's own credential (read-only — the CLI owns its refresh,
+   including rotating the refresh token): `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json`
+   and, on macOS, the "Claude Code-credentials" login Keychain item (via
+   `security find-generic-password`), taking whichever expires later — the
+   macOS CLI stops updating the file once it uses the Keychain. The
+   `claudeAiOauth.expiresAt` is epoch **milliseconds**; it is stored as seconds
+   in the vault shape. Requires host access to those stores, so it does not
+   apply to sandboxed/microVM-managed workers. On boot the worker also does a
+   one-time, read-only import of that credential into the vault when the vault
+   is present but empty (never written back).
 
 API-key credentials are rejected — they belong on `provider-anthropic` under
 provider id `anthropic`.
@@ -86,7 +88,7 @@ or `III_URL`), `--manifest` (print the registry manifest and exit), `--config`
 (accepted but ignored — this worker has no file-based config).
 
 ```bash
-# ensure `claude` has signed in so ~/.claude/.credentials.json exists (dev)
+# ensure `claude` has signed in (dev): ~/.claude/.credentials.json or, on macOS, the Keychain
 cargo run -- --url ws://127.0.0.1:49134
 ```
 
@@ -104,10 +106,10 @@ Regenerate the wire-schema goldens with `UPDATE_GOLDENS=1 cargo test`.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `not configured: sign in with Claude Code …` | no vault credential and no readable `~/.claude/.credentials.json` | run the `oauth-claude-code` sign-in, or `claude` (login) so `~/.claude/.credentials.json` exists; on macOS the Keychain store is not read |
-| local fallback is used on each request | `auth-credentials` vault not running | start the vault for shared/refreshing credentials, or keep relying on the local `~/.claude/.credentials.json` fallback |
+| `not configured: sign in with Claude Code …` | no vault credential and no local `claude` credential (`~/.claude/.credentials.json`, or the Keychain on macOS) | run the `oauth-claude-code` sign-in, or `claude` (login) |
+| local fallback is used on each request | `auth-credentials` vault not running | start the vault for shared/refreshing credentials, or keep relying on the local `claude` credential fallback |
 | `requires a Claude Pro/Max OAuth login … API keys belong on provider-anthropic` | credential is an API key | this provider is OAuth-only; use `provider-anthropic` for keys |
-| `auth_expired` on every request | the local `.credentials.json` token expired and no refresh worker is registered | run `claude` once to refresh the file, or register the `oauth-claude-code` refresh flow |
+| `auth_expired` on every request | the local `claude` token expired and no refresh worker is registered | run `claude` once to refresh it, or register the `oauth-claude-code` refresh flow |
 | catalog shows only the curated fallback models | `GET /v1/models` rejected the OAuth bearer, or the models endpoint is unreachable | expected — the subscription token may not be accepted on `/v1/models`; streaming still works, and the live list returns once the endpoint accepts the token |
 | upstream 401 despite a valid token | the request no longer resembles Claude Code | keep the identity system block first and the `anthropic-beta: oauth-2025-04-20` header; a future backend change may require a `user-agent` compat header |
 | model routes ambiguously | a `claude-code/*` id collided with another provider | keep ids namespaced; or pin `provider: "claude-code"` |

@@ -31,6 +31,10 @@
   margin: 0;
 }
 
+[data-iii-ui='provider-openai-codex'] .codex-provider-card p + p {
+  margin-top: 8px;
+}
+
 [data-iii-ui='provider-openai-codex'] .codex-provider-card ol {
   margin: 12px 0;
   padding-left: 22px;
