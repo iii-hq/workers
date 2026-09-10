@@ -12,9 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ide::code::config::CoderConfig;
-use ide::code::functions::create_file::{
-    handle as create_handle, CreateFileInput, CreateFileSpec,
-};
+use ide::code::functions::create_file::{handle as create_handle, CreateFileInput, CreateFileSpec};
 use ide::code::functions::delete_file::{handle as delete_handle, DeleteFileInput};
 use ide::code::functions::read_file::{handle as read_handle, ReadFileInput};
 use ide::code::path::PathResolver;

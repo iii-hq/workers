@@ -23,10 +23,7 @@ use ide::fs::{ReadArgs, StatArgs};
 /// Build a jailed runtime over `root` with the given code-surface globs.
 /// A stub engine address is fine: the protection check fires in
 /// `validate_path` BEFORE any channel is created.
-fn runtime_for(
-    root: &std::path::Path,
-    code_globs: Vec<&str>,
-) -> ide::configuration::ShellRuntime {
+fn runtime_for(root: &std::path::Path, code_globs: Vec<&str>) -> ide::configuration::ShellRuntime {
     let cfg = ShellConfig {
         fs: FsConfig {
             host_roots: vec![root.to_path_buf()],

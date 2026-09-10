@@ -15,8 +15,8 @@ host_home=$HOME
 # `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh` puts it).
 WORKER_SRC="${WORKER_SRC:-$(cd "$ROOT_DIR/../.." && pwd)}"
 III_BIN="${III_BIN:-$(command -v iii 2>/dev/null || echo "$HOME/.local/bin/iii")}"
-WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/shell}"
-# The engine resolves binaries by registered worker name (`shell` per
+WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/ide}"
+# The engine resolves binaries by registered worker name (`ide` per
 # worker-compose.yaml), not by cargo bin name. If the engine actually looks up
 # by binary name, override with WORKER_BIN_LINK=$HOME/.iii/workers/ide.
 worker_bin_link_override=${WORKER_BIN_LINK:-}

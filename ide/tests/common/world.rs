@@ -5,9 +5,6 @@ use std::{
 };
 
 use cucumber::World;
-use iii_sdk::{protocol::TriggerRequest, IIIClient};
-use serde::Serialize;
-use serde_json::Value;
 use ide::code::{
     config::CoderConfig,
     functions::{
@@ -16,6 +13,9 @@ use ide::code::{
     },
     path::PathResolver,
 };
+use iii_sdk::{protocol::TriggerRequest, IIIClient};
+use serde::Serialize;
+use serde_json::Value;
 use tempfile::TempDir;
 
 #[derive(World)]
