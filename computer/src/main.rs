@@ -26,7 +26,7 @@ struct Cli {
     /// configuration registration.
     #[arg(long)]
     config: Option<String>,
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
     #[arg(long)]
     manifest: bool,
@@ -168,4 +168,26 @@ async fn main() -> Result<()> {
     sessions.stop_all().await;
     iii.shutdown_async().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn cli_reads_iii_url_from_environment() {
+        let previous = std::env::var_os("III_URL");
+        std::env::set_var("III_URL", "ws://127.0.0.1:49234");
+
+        let cli = Cli::try_parse_from(["computer"]).expect("parse computer CLI");
+
+        if let Some(value) = previous {
+            std::env::set_var("III_URL", value);
+        } else {
+            std::env::remove_var("III_URL");
+        }
+
+        assert_eq!(cli.url, "ws://127.0.0.1:49234");
+    }
 }
