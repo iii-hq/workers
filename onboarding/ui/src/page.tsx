@@ -1,14 +1,38 @@
-import { type Host, PageBody, PageHeader, PageMain, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
+import {
+  Button,
+  type Host,
+  PageBody,
+  PageHeader,
+  PageMain,
+  type PageRenderProps,
+  PageShell,
+  uiClasses,
+} from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bindCondition, type Condition, type Fired } from './conditions'
 import { disposeSpotlight, hideSpotlight, showSpotlight } from './spotlight'
 
 /**
- * One list, one open step. Rows are hand-rolled elements over the console's
- * design tokens rather than shared card components: the tour has to render on
- * whatever console build is in front of the operator, including ones older
- * than the component it would otherwise import.
+ * One list, one open step.
+ *
+ * Styling is the console's own: its utility classes and the `uiClasses`
+ * recipes (`card`, `listItem`, `chip`), so the page inherits the house
+ * spacing, edges and hover states. The stylesheet next door carries only what
+ * those cannot express — the spotlight box, the status dot, the progress bar,
+ * and the caret.
+ *
+ * The MARKUP is hand-rolled rather than built from shared components: the page
+ * has to render on whatever console build is in front of the operator,
+ * including ones older than a component it would otherwise import.
  */
+
+/** Console class recipes, with a literal fallback for an older build that
+    does not publish them. */
+const ui = uiClasses ?? {
+  card: 'iii-ui-card',
+  listItem: 'iii-ui-list-item',
+  chip: 'iii-ui-chip',
+}
 
 interface Step {
   id: string
@@ -40,7 +64,7 @@ interface ProgressResponse {
 
 type StepState = 'complete' | 'active' | 'pending'
 
-export function TourPage({ host }: { host: Host } & PageRenderProps) {
+export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
@@ -142,14 +166,14 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
   if (error) {
     return (
       <Frame>
-        <p className="ob-error">{error}</p>
+        <p className="m-0 text-base text-alert">{error}</p>
       </Frame>
     )
   }
   if (!tour) {
     return (
       <Frame>
-        <p className="ob-muted">Loading the tour…</p>
+        <p className="m-0 text-base text-ink-faint">Loading onboarding…</p>
       </Frame>
     )
   }
@@ -159,7 +183,7 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
 
   return (
     <Frame title={tour.title} description={tour.description}>
-      <div className="ob-summary">
+      <div className="flex items-center gap-4">
         <div
           className="ob-bar"
           role="progressbar"
@@ -169,15 +193,15 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
         >
           <span style={{ width: `${(done / tour.steps.length) * 100}%` }} />
         </div>
-        <span className="ob-count">
+        <span className="shrink-0 text-base text-ink-faint tabular-nums">
           {done} of {tour.steps.length} done
         </span>
-        <button type="button" className="ob-link" onClick={reset} disabled={done === 0}>
+        <Button variant="ghost" size="sm" onClick={reset} disabled={done === 0}>
           Restart
-        </button>
+        </Button>
       </div>
 
-      <ol className="ob-steps">
+      <ol className="ob-steps m-0 flex list-none flex-col gap-2 p-0">
         {tour.steps.map((step, index) => {
           const record = records[step.id]
           const state: StepState =
@@ -187,26 +211,26 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
           const locked = state === 'pending'
           const isOpen = open === step.id
           return (
-            <li key={step.id} className="ob-step" data-state={state} data-open={isOpen || undefined}>
+            <li key={step.id} className={`ob-step ${ui.card}`} data-state={state} data-open={isOpen || undefined}>
               <button
                 type="button"
-                className="ob-step-head"
+                className={`${ui.listItem} px-4 py-3 hover:bg-surface-hover`}
                 aria-expanded={isOpen}
                 disabled={locked}
                 onClick={() => setOpen(isOpen ? null : step.id)}
               >
-                <span className="ob-dot" data-state={state} aria-hidden="true" />
-                <span className="ob-step-index">{index + 1}</span>
-                <span className="ob-step-title">{step.title}</span>
-                <span className="ob-step-state">{stateLabel(state, step)}</span>
+                <span className="ob-dot shrink-0" data-state={state} aria-hidden="true" />
+                <span className="shrink-0 font-mono text-base text-ink-faint tabular-nums">{index + 1}</span>
+                <span className="min-w-0 flex-1 text-lg font-medium">{step.title}</span>
+                <span className="shrink-0 text-sm text-ink-faint">{stateLabel(state, step)}</span>
               </button>
               {isOpen ? (
-                <div className="ob-step-body">
-                  <p className="ob-copy">{step.body}</p>
+                <div className="ob-open flex flex-col gap-3 px-4 pb-4 pl-11">
+                  <p className="m-0 text-base leading-relaxed text-ink text-pretty">{step.body}</p>
                   {state !== 'complete' && !step.condition ? (
-                    <button type="button" className="ob-button" onClick={() => complete(step.id)}>
+                    <Button className="self-start" onClick={() => complete(step.id)}>
                       Got it
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
               ) : null}
@@ -214,7 +238,7 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
                   after it is done. Ahead of the front it is hidden: the row
                   would give away what the step is about to ask for. */}
               {step.condition && state !== 'pending' ? (
-                <ol className="ob-subs">
+                <ol className="m-0 list-none px-4 pb-4 pl-11">
                   <ConditionRow
                     condition={step.condition}
                     fired={record?.fired ?? null}
@@ -249,31 +273,43 @@ function ConditionRow({
 }) {
   const hasConfig = Object.keys(condition.config ?? {}).length > 0
   return (
-    <li className="ob-sub" data-state={fired ? 'fired' : 'waiting'}>
-      <button type="button" className="ob-sub-head" aria-expanded={open} onClick={onToggle}>
-        <span className="ob-caret" data-open={open || undefined} aria-hidden="true">
+    <li className={`ob-sub ${ui.card}`} data-state={fired ? 'fired' : 'waiting'}>
+      <button
+        type="button"
+        className={`${ui.listItem} px-3 py-2 hover:bg-surface-hover`}
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <span className="ob-caret shrink-0 text-ink-faint" data-open={open || undefined} aria-hidden="true">
           ›
         </span>
-        <span className="ob-chip" data-tone={fired ? 'ok' : 'wait'}>
+        <span className={`${ui.chip} shrink-0 ${fired ? 'bg-ok-muted text-ok' : 'bg-accent-muted text-accent'}`}>
           {fired ? 'trigger fired' : <span className="ob-pulse" aria-hidden="true" />}
           {fired ? null : 'waiting'}
         </span>
-        <code className="ob-code">{fired?.trigger_type ?? condition.type}</code>
-        <span className="ob-sub-meta">{fired ? when(fired.at) : condition.label}</span>
+        <code className="shrink-0 rounded-sm bg-panel px-2 py-1 font-mono text-sm">
+          {fired?.trigger_type ?? condition.type}
+        </code>
+        <span className="min-w-0 flex-1 truncate text-sm text-ink-faint">
+          {fired ? when(fired.at) : condition.label}
+        </span>
       </button>
       {open ? (
-        <div className="ob-sub-details">
+        <div className="ob-open flex flex-col gap-2 px-3 pb-3 pl-8">
           {hasConfig ? (
-            <p className="ob-muted">
-              binding <code className="ob-code">{JSON.stringify(condition.config)}</code>
+            <p className="m-0 text-sm text-ink-faint">
+              binding{' '}
+              <code className="rounded-sm bg-panel px-2 py-1 font-mono text-sm">
+                {JSON.stringify(condition.config)}
+              </code>
             </p>
           ) : null}
           {fired ? (
-            <pre className="ob-payload">{format(fired.payload)}</pre>
+            <pre className="ob-pre">{format(fired.payload)}</pre>
           ) : (
             <>
-              <p className="ob-muted">{condition.label}</p>
-              {condition.hint ? <pre className="ob-hint">{condition.hint}</pre> : null}
+              <p className="m-0 text-base text-ink-faint">{condition.label}</p>
+              {condition.hint ? <pre className="ob-pre select-all text-ink">{condition.hint}</pre> : null}
             </>
           )}
         </div>
@@ -283,7 +319,7 @@ function ConditionRow({
 }
 
 function Frame({
-  title = 'Tour',
+  title = 'onboarding',
   description,
   children,
 }: {
@@ -296,7 +332,10 @@ function Frame({
       <PageMain>
         <PageHeader title={title} description={description} />
         <PageBody>
-          <div className="ob-page">{children}</div>
+          {/* Centred column: the pane is often narrow beside a chat, but a
+              page wide enough to be a whole tab should not leave the list
+              stranded on one edge. */}
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-6">{children}</div>
         </PageBody>
       </PageMain>
     </PageShell>

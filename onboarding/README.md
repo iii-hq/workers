@@ -1,6 +1,10 @@
 # onboarding
 
-The guided console tour. Three parts:
+The guided console tour. The page and its tab are called **onboarding**; a
+"tour" is one unit of content inside it, so a second tour can be added
+without renaming anything.
+
+Three parts:
 
 | Part | Lives in | Owns |
 | --- | --- | --- |
@@ -44,6 +48,16 @@ box still lands on a console build older than the anchor classes.
 The spotlight is one fixed box in `document.body` that follows the anchor's
 rectangle, animated with CSS transitions on the console's motion tokens (see
 `ui/src/spotlight.ts`). No animation library: it is one moving rectangle.
+
+## Styling
+
+The page is styled with the console's OWN CSS — its utility classes and the
+`uiClasses` recipes (`card`, `listItem`, `chip`) — so it inherits the house
+spacing, edges and hover states, and follows the theme. `ui/styles.css` holds
+only what those cannot express: the spotlight box, the status dot, the
+progress bar, the caret, and the payload block. The markup stays hand-rolled
+rather than built from shared components, so the page renders on a console
+build older than a component it would otherwise import.
 
 ## Build
 
