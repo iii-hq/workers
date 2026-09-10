@@ -14,8 +14,9 @@ pub struct BodyArgs {
     pub system_prompt: String,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentFunction>,
-    /// Pre-resolved `thinking.type` ("enabled"); None omits the param so the
-    /// model's own default applies (V4: thinking on at high effort).
+    /// Pre-resolved `thinking.type` ("enabled" | "disabled"); None omits the
+    /// param so the model's own default applies (V4: thinking on at high
+    /// effort).
     pub thinking: Option<&'static str>,
     /// Pre-resolved effort string; None omits the param.
     pub reasoning_effort: Option<&'static str>,
@@ -154,6 +155,19 @@ mod tests {
         let body = build_body(&args());
         assert!(body.get("thinking").is_none());
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn disabled_thinking_rides_alone_without_an_effort() {
+        let mut a = args();
+        a.thinking = Some("disabled");
+        a.reasoning_effort = None;
+        let body = build_body(&a);
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "nothing to grade when thinking is off"
+        );
     }
 
     #[test]
