@@ -39,18 +39,22 @@ function parseWorkerEvent(payload: unknown): WorkerEvent | null {
   return parsed.success ? parsed.data : null
 }
 
-/** Loose match: is this lifecycle event about the named worker? */
-function eventMatchesWorker(evt: WorkerEvent, workerName: string): boolean {
-  const needle = workerName.toLowerCase()
-  const w = typeof evt.worker === 'string' ? evt.worker.toLowerCase() : ''
-  if (w === needle || w.includes(needle)) {
-    return true
-  }
+/**
+ * Is this lifecycle event about the named worker? `worker` / `source` may
+ * carry a label around the name (`workers/ide`, `ide@0.3`), so the name is
+ * matched as a whole token, never as a substring: `ide` must not match
+ * `provider-openai`, nor `memory` match `memory-consolidate`.
+ */
+export function eventMatchesWorker(
+  evt: Pick<WorkerEvent, 'worker' | 'source'>,
+  workerName: string,
+): boolean {
+  const escaped = workerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const token = new RegExp(`(^|[^a-z0-9_-])${escaped}(?=$|[^a-z0-9_-])`, 'i')
+  if (typeof evt.worker === 'string' && token.test(evt.worker)) return true
   if (evt.source != null) {
     try {
-      if (JSON.stringify(evt.source).toLowerCase().includes(needle)) {
-        return true
-      }
+      return token.test(JSON.stringify(evt.source))
     } catch {
       // non-serialisable source; fall through
     }

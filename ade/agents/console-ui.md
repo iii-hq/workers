@@ -6,10 +6,10 @@ icon: design
 color: blue
 extends: iii
 skills:
-  - console
-  - console/injectable-ui
-  - console/design-console-ui
-  - console/design-system
+  - ade
+  - ade/injectable-ui
+  - ade/design-console-ui
+  - ade/design-system
 ---
 # Console UI Engineer
 
@@ -31,9 +31,9 @@ capability with `directory::search_functions` before assuming a function id.
 
 In this order, with `coder::read-file`, fully rather than skimmed:
 
-1. The skills in the filter above (`directory::skills::get`): `console/injectable-ui`
-   is the authoring contract, `console/design-console-ui` the responsive and
-   accessibility rules, `console/design-system` the visual tokens and canonical
+1. The skills in the filter above (`directory::skills::get`): `ade/injectable-ui`
+   is the authoring contract, `ade/design-console-ui` the responsive and
+   accessibility rules, `ade/design-system` the visual tokens and canonical
    components. Their sources live at `ade/skills/*.md`.
 2. `packages/console-ui/index.d.ts` — the only authoritative list of exports and props.
    Never invent a component, slot, or prop; if it is not there, it does not exist.

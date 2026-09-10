@@ -132,8 +132,8 @@ containers:
       - context-manager
       - iii-directory
       - cron
-      - console
-      - shell
+      - ade
+      - ide
     environment:
       RUST_LOG: info
       CI: "true"

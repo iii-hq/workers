@@ -98,7 +98,7 @@ containers:
     scripts: { run: cargo run --locked --bin document }
   editor:
     worker: path://../editor
-    start_after: [shell, state]
+    start_after: [ide, state]
     scripts: { run: cargo run --locked --bin editor }
   email:
     worker: path://../email
@@ -213,7 +213,7 @@ containers:
     scripts: { run: cargo run --locked --bin workflow }
   worktree:
     worker: path://../worktree
-    start_after: [shell, state]
+    start_after: [ide, state]
     scripts: { run: cargo run --locked --bin worktree }
   acp:
     worker: path://../acp
@@ -234,13 +234,13 @@ containers:
     scripts: { run: cargo run --locked --bin ade }
   harness:
     worker: path://../harness
-    start_after: [state, queue, session-manager, llm-router, provider-openai-codex, provider-openai, provider-anthropic, context-manager, iii-directory, cron, console, shell]
+    start_after: [state, queue, session-manager, llm-router, provider-openai-codex, provider-openai, provider-anthropic, context-manager, iii-directory, cron, ade, ide]
     config_name: harness-minilm-production
     config_override: {}
     scripts: { run: cargo run --locked --bin harness }
   kanban:
     worker: path://../kanban
-    start_after: [console, state, harness, worktree]
+    start_after: [ade, state, harness, worktree]
     scripts: { run: pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts && pnpm build:bundle && node dist/bundle/index.mjs }
   http:
     worker: path://../http

@@ -5,16 +5,17 @@ import {
 } from './use-worker-presence'
 
 /**
- * Presence probe for the `shell` worker. Shell owns the chat's working-directory
- * surface: the `shell::workspace::*` picker control plane and the `shell::*` /
- * `coder::*` calls the chosen dir scopes. It is
- * OPTIONAL, so the console gates the working-directory picker + banner on its
- * presence rather than rendering controls that would call functions that don't
- * exist. Thin wrapper over the generic worker-presence probe.
+ * Presence probe for the `ide` worker (formerly `shell`; its function ids are
+ * still `shell::*`). It owns the chat's working-directory surface: the
+ * `shell::workspace::*` picker control plane and the `shell::*` / `coder::*`
+ * calls the chosen dir scopes. It is OPTIONAL, so the console gates the
+ * working-directory picker + banner on its presence rather than rendering
+ * controls that would call functions that don't exist. Thin wrapper over the
+ * generic worker-presence probe.
  */
 
-/** Engine worker name for the shell worker. */
-const SHELL_WORKER_NAME = 'shell'
+/** Engine worker name (`engine::workers::list` → `name`) of the ide worker. */
+const SHELL_WORKER_NAME = 'ide'
 /** Base id for the browser-local handler bound to the `worker` trigger. */
 const SHELL_WATCH_FN = 'console::shell-watch'
 

@@ -34,8 +34,8 @@ stack; traces need the engine's OpenTelemetry export.
 ## When to Use
 
 - A worker must ship a console page, renderer, or configuration form — read
-  `console/injectable-ui` first, then `console/design-console-ui`, then the
-  design system in `console/design-system`.
+  `ade/injectable-ui` first, then `ade/design-console-ui`, then the
+  design system in `ade/design-system`.
 - You changed a worker's UI and must prove it is loadable: read
   `console::ui-manifest` and require an empty `warnings` array.
 - The user should watch something in the console: `console::workspace::open`
@@ -96,13 +96,13 @@ register the content function and the two triggers directly.
 
 ## Skills shipped with this worker
 
-- `console/injectable-ui` — the authoring contract for worker UI: project
+- `ade/injectable-ui` — the authoring contract for worker UI: project
   layout, `setup(host)` slots, the shared component library, scoped CSS,
   esbuild externals, Rust and Node registration, hot reload, debugging, and the
   definition of done.
-- `console/design-console-ui` — responsive Console UX: pane-width (not
+- `ade/design-console-ui` — responsive Console UX: pane-width (not
   viewport) breakpoints, phone drill-in flows, touch and keyboard
   accessibility, configuration and provider forms, state integrity, and the
   validation checklist.
-- `console/design-system` — the iii Schematic design system: tokens, surface
+- `ade/design-system` — the iii Schematic design system: tokens, surface
   ramp, typography, radius, elevation, motion, and the canonical components.
