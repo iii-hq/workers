@@ -16,14 +16,14 @@ runtime:
 
 scripts:
   # npm and esbuild only. The guest gets the worker directory alone, so the
-  # asset build must not need the repo's pnpm workspace: `pnpm --dir ui build`
-  # adds `tsc --noEmit` against `@iii-dev/console-ui`, which lives in that
+  # build must not need the repo's pnpm workspace: `pnpm --dir ui build` adds
+  # `tsc --noEmit` against `@iii-dev/console-ui`, which lives in that
   # workspace and is types-only anyway (esbuild treats it as external).
-  install: npm install && npm run build:assets
-  # The page assets are built at start, not only at install: `install` runs
-  # once per prepared guest, and `ui/dist` is not in the guest image the next
-  # boot. esbuild takes milliseconds, so every boot can afford it.
-  start: npm run build:assets && node ./src/index.mjs
+  install: npm install && npm run build:bundle
+  # A published artifact already carries `dist/bundle`, so it starts as it is.
+  # A source checkout builds first: `install` runs once per prepared guest,
+  # and the build output is not in the guest the next boot.
+  start: (test -f dist/bundle/index.mjs || npm run build:bundle) && node ./dist/bundle/index.mjs
 
 dependencies:
   console: "^1.9.11"

@@ -11,7 +11,7 @@
  * so there is no private console bridge to keep in step.
  */
 
-import { watch } from 'node:fs'
+import { existsSync, watch } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -255,12 +255,17 @@ const uiAssets = {
 }
 
 /**
- * Assets are read from `ui/dist` at call time rather than inlined at build
- * time, so the watcher below is the same code path as production.
+ * Assets are read from disk at call time rather than inlined at build time, so
+ * the watcher below is the same code path as production.
+ *
+ * Two layouts hold them: beside the published `dist/bundle/index.mjs`, and in
+ * `ui/dist` in a source checkout. The first one that has the page wins.
  */
+const here = dirname(fileURLToPath(import.meta.url))
 const uiDir =
   process.env.III_ONBOARDING_UI_DIR ??
-  join(dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'dist')
+  [here, join(here, '..', 'ui', 'dist')].find((candidate) => existsSync(join(candidate, 'page.js'))) ??
+  join(here, '..', 'ui', 'dist')
 
 iii.registerFunction(
   'onboarding::ui-content',
