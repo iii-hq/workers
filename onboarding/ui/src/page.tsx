@@ -210,7 +210,10 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
                   ) : null}
                 </div>
               ) : null}
-              {step.condition ? (
+              {/* A step's trigger appears once the step is reached, and stays
+                  after it is done. Ahead of the front it is hidden: the row
+                  would give away what the step is about to ask for. */}
+              {step.condition && state !== 'pending' ? (
                 <ol className="ob-subs">
                   <ConditionRow
                     condition={step.condition}
