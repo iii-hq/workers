@@ -95,7 +95,7 @@ targets:
   - armv7-unknown-linux-gnueabihf
 ```
 
-See [`shell/iii.worker.yaml`](../../shell/iii.worker.yaml).
+See [`ide/iii.worker.yaml`](../../ide/iii.worker.yaml).
 
 ## Validation
 

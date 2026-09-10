@@ -24,7 +24,7 @@ result_model_id=gpt-5.6-luna
 result_marker=QUICKSTART_OPENAI_NEW_CHAT_OK
 capability_function=shell::exec
 capability_output_marker=HARNESS_FIRST_CAPABILITY_OUTPUT
-playwright_bin=${HARNESS_QUICKSTART_PLAYWRIGHT_BIN:-"$repo_root/console/web/node_modules/.bin/playwright"}
+playwright_bin=${HARNESS_QUICKSTART_PLAYWRIGHT_BIN:-"$repo_root/ade/web/node_modules/.bin/playwright"}
 
 if [[ -n "${III_CHANNEL:-}" ]]; then
   echo "III_CHANNEL was split into III_CLI_CHANNEL and III_WORKER_TAG" >&2
@@ -441,7 +441,7 @@ record_browser_video() {
   local playwright_status video_source
   local output_dir="$artifact_dir/slack-evidence"
   export HARNESS_QUICKSTART_CONSOLE_URL="http://127.0.0.1:$console_port/"
-  export NODE_PATH="$repo_root/console/web/node_modules${NODE_PATH:+:$NODE_PATH}"
+  export NODE_PATH="$repo_root/ade/web/node_modules${NODE_PATH:+:$NODE_PATH}"
   set +e
   "$playwright_bin" test \
     --config "$script_dir/playwright.config.ts" \

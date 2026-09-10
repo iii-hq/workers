@@ -19,6 +19,6 @@ dependencies:
   configuration: "0.x"
   # The terminal half: shell::pty runs the CLI, shell::exec installs it and
   # equips the workspace, coder::read-file reads the files back.
-  shell: "^0.12.0"
+  ide: "^0.12.0"
   # The page this worker injects.
-  console: "^1.9.11"
+  ade: "^1.9.11"

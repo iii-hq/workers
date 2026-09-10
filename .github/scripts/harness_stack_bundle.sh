@@ -11,7 +11,7 @@ readonly STACK_BINARIES=(
   database
   harness
   harness-integration
-  console
+  ade
 )
 
 usage() {

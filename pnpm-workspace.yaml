@@ -8,8 +8,8 @@
 packages:
   - iii-directory/ui
   - packages/*
-  - console/web
-  - console/ui
+  - ade/web
+  - ade/ui
   - context-manager/ui
   - browser/ui
   - web/ui
@@ -27,7 +27,7 @@ packages:
   - state/ui
   - storage/ui
   - cron/ui
-  - shell/ui
+  - ide/ui
   - claude-code/ui
   - pi/ui
   - worktree/ui

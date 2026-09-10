@@ -6,7 +6,7 @@
  * pattern doesn't compile — or when `isRegex` is false, since the query
  * is then a literal and regex metacharacters must not fire.
  *
- * Ported from console/web/src/components/chat/sandbox/highlight.tsx;
+ * Ported from ade/web/src/components/chat/sandbox/highlight.tsx;
  * the only change is the highlight span's class (`cr-fam-hl`, styled in
  * styles/family.css) replacing the console's Tailwind utilities.
  */

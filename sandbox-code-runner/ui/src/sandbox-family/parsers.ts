@@ -4,7 +4,7 @@ import { unwrapEnvelope } from '../lib/payload'
 /* Zod schemas mirroring the sandbox::* request/response shapes from
    the engine's sandbox daemon and the shared `iii-shell-proto`
    (FsEntry, FsMatch, FsSedFileResult). Ported from the console's
-   first-party sandbox renderer family (console/web/src/components/
+   first-party sandbox renderer family (ade/web/src/components/
    chat/sandbox/parsers.ts) so this worker renders the daemon calls
    its own runtimes are built from.
 

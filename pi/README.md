@@ -268,7 +268,7 @@ won.
 
 Every extension event carries the identity keys an agent harness stamps, so the
 console's trace views group and label a pi session with no knowledge of pi
-(`console/docs/timeline-span-tags.md`):
+(`ade/docs/timeline-span-tags.md`):
 
 | Key | Value here |
 | --- | --- |

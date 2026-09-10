@@ -1,0 +1,2381 @@
+//! `coder::search` — combined path + content search.
+//!
+//! Walks the resolved folder with `walkdir`, filtering by include/exclude
+//! globs (matched against the path relative to its containing root) and
+//! skipping non-accessible files entirely so the search can't reveal
+//! their content. Noise paths matching `default_exclude_globs` are also
+//! skipped by default — descent into matching directories is suppressed
+//! and matching files are omitted; opt out per call with
+//! `use_default_excludes: false`. That filter is hide-only and
+//! independent of the `is_non_accessible` access control (REDACTION
+//! INVARIANT) — never merge the two. Path matches and content matches are
+//! reported in separate arrays of one response; result paths are
+//! canonical-absolute.
+//!
+//! Each content match can carry `before`/`after` context lines (same
+//! file only, capped at [`CONTEXT_LINES_CAP`]). The whole response is
+//! bounded by `search_response_budget_bytes`, accounted in converted
+//! wire bytes like `batch_read_budget_bytes`: when the next match would
+//! exceed the budget, accumulation stops and `truncated` is set — the
+//! search degrades, it never fails.
+
+use std::sync::Arc;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::code::config::CoderConfig;
+use crate::code::error::{err_to_string, CoderError};
+use crate::code::path::PathResolver;
+
+// examples are wire-contract; goldens pin them.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(example = "example_search_input")]
+pub struct SearchInput {
+    /// Pattern to search for. Treated as a regex when `regex: true`,
+    /// otherwise as a literal substring. May be empty only when
+    /// `search_content` is false: a path-only search with no query lists
+    /// every path (with `fuzzy_paths`, shallow and short paths first).
+    pub query: String,
+    /// Folder to search (default `.`); globs match relative to its root, result
+    /// paths are absolute.
+    #[serde(default = "default_path")]
+    pub path: String,
+    #[serde(default)]
+    pub regex: bool,
+    #[serde(default)]
+    pub ignore_case: bool,
+    /// Root-relative glob patterns paths must match; empty = everything.
+    #[serde(default)]
+    pub include_globs: Vec<String>,
+    /// Glob patterns (same relative-to-root matching) that exclude paths.
+    #[serde(default)]
+    pub exclude_globs: Vec<String>,
+    /// Optional explicit cap. Falls back to config when unset.
+    #[serde(default)]
+    pub max_matches: Option<u32>,
+    /// Bytes per line to consider when scanning content; longer lines are
+    /// truncated for the match snippet.
+    #[serde(default)]
+    pub max_line_bytes: Option<u32>,
+    /// Lines of context before each content match (max 10, C210 above);
+    /// truncated to max_line_bytes and counted in the budget. Default 0.
+    #[serde(default)]
+    pub context_lines_before: Option<u32>,
+    /// Lines of context after each content match; same rules as
+    /// `context_lines_before`.
+    #[serde(default)]
+    pub context_lines_after: Option<u32>,
+    /// Skip paths matching default_exclude_globs (.git, node_modules, …; see
+    /// coder::info) in content and path results; false searches inside them.
+    #[serde(default = "default_true")]
+    pub use_default_excludes: bool,
+    /// Search file contents (default true).
+    #[serde(default = "default_true")]
+    pub search_content: bool,
+    /// Search file paths (default true).
+    #[serde(default = "default_true")]
+    pub search_paths: bool,
+    /// Honour `.gitignore`/`.ignore` rules (inside a Git repository) while
+    /// walking, the way an editor's search does; default false keeps every
+    /// non-excluded file searchable.
+    #[serde(default)]
+    pub respect_gitignore: bool,
+    /// Rank path matches by fuzzy subsequence score (quick-open style)
+    /// instead of substring/regex matching; `path_matches` then comes back
+    /// best first. Content matching is unaffected.
+    #[serde(default)]
+    pub fuzzy_paths: bool,
+    /// Walk dot-files and dot-folders (`.github`, `.env`, …); default true.
+    /// `false` leaves them out, the way an editor's quick open does.
+    #[serde(default = "default_true")]
+    pub include_hidden: bool,
+    /// Internal harness filesystem scope; omitted from published schema.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub fs_scope: Option<crate::fs::FsScope>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_path() -> String {
+    ".".to_string()
+}
+
+// examples are wire-contract; goldens pin them.
+fn example_search_input() -> serde_json::Value {
+    serde_json::json!({
+        "query": "fn handle",
+        "path": "src",
+        "include_globs": ["**/*.rs"],
+        "context_lines_before": 2,
+        "context_lines_after": 2,
+        "search_content": true,
+        "search_paths": false
+    })
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ContentMatch {
+    /// Absolute path under the canonical parent; symlinks at the entry
+    /// itself are not resolved. Operations on it re-validate through the
+    /// jail.
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+    /// Matched line; truncated to `max_line_bytes` and never spans newlines.
+    pub text: String,
+    /// Context lines immediately before the matched line — same file
+    /// only, in file order, each truncated to `max_line_bytes`. Omitted
+    /// when empty (no `context_lines_before` requested, or the match is
+    /// at the start of the file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<Vec<String>>,
+    /// Context lines immediately after the matched line — same file
+    /// only, in file order, each truncated to `max_line_bytes`. Omitted
+    /// when empty (no `context_lines_after` requested, or the match is
+    /// at the end of the file).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PathMatch {
+    /// Absolute path under the canonical parent; symlinks at the entry
+    /// itself are not resolved. Operations on it re-validate through the
+    /// jail.
+    pub path: String,
+    /// What matched: `file` or `dir`. Directories match by NAME only —
+    /// content search never reads them.
+    pub kind: PathMatchKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PathMatchKind {
+    File,
+    Dir,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SearchOutput {
+    pub content_matches: Vec<ContentMatch>,
+    pub path_matches: Vec<PathMatch>,
+    /// True if results were cut off — either match list hit the
+    /// `max_matches` cap, or the response hit the
+    /// `search_response_budget_bytes` byte budget. When true, refine the
+    /// query or add include_globs rather than paginate.
+    pub truncated: bool,
+}
+
+pub async fn handle(
+    resolver: Arc<PathResolver>,
+    cfg: Arc<CoderConfig>,
+    req: SearchInput,
+) -> Result<SearchOutput, String> {
+    // Offload the synchronous recursive content/path scan to a blocking thread
+    // so a large search can't stall the shared runtime (shell::exec/jobs/reload).
+    tokio::task::spawn_blocking(move || inner(&resolver, &cfg, req).map_err(err_to_string))
+        .await
+        .map_err(|e| format!("search task join failed: {e}"))?
+}
+
+fn inner(
+    resolver: &Arc<PathResolver>,
+    cfg: &CoderConfig,
+    req: SearchInput,
+) -> Result<SearchOutput, CoderError> {
+    if req.query.is_empty() && req.search_content {
+        return Err(CoderError::BadInput("query must not be empty".into()));
+    }
+    if !req.search_content && !req.search_paths {
+        return Err(CoderError::BadInput(
+            "at least one of search_content / search_paths must be true".into(),
+        ));
+    }
+    let max_matches = req.max_matches.unwrap_or(cfg.search_default_max_matches) as usize;
+    let max_line_bytes = req
+        .max_line_bytes
+        .unwrap_or(cfg.search_default_max_line_bytes) as usize;
+    let ctx_before = validate_context_lines("context_lines_before", req.context_lines_before)?;
+    let ctx_after = validate_context_lines("context_lines_after", req.context_lines_after)?;
+
+    // Use `resolve` rather than `require_writable` so a search rooted at
+    // a folder that *contains* non-accessible children still works; the
+    // per-file `is_non_accessible` filter below still guards their bytes.
+    let walk_root = resolver.resolve_scope(req.fs_scope.as_ref(), &req.path)?;
+    // NotFound is intercepted with the wire path in scope so the C211
+    // message names the path the caller supplied (standardized wording —
+    // REDACTION INVARIANT: identical to the glob-denied message).
+    let md = std::fs::metadata(&walk_root).map_err(|e| CoderError::io_for_path(e, &req.path))?;
+    if !md.is_dir() {
+        return Err(CoderError::BadInput(format!(
+            "not a directory: {}",
+            req.path
+        )));
+    }
+
+    // Glob/path matching runs on the form relative to the CONTAINING root.
+    // In unjailed mode the walk root can sit outside every configured root
+    // (the harness stamps a session scope anywhere on the host), where no
+    // root-relative form exists — every entry would be dropped and the
+    // search would return a false empty. Fall back to the same anchor that
+    // resolved the wire path: the session scope when it contains the walk
+    // root, else the walk root itself.
+    let match_anchor = crate::fs::scope_anchor(req.fs_scope.as_ref())
+        .and_then(|root| resolver.session_root(root))
+        .filter(|scope| walk_root.starts_with(scope))
+        .unwrap_or_else(|| walk_root.clone());
+
+    let include = build_globset(&req.include_globs)?;
+    let exclude = build_globset(&req.exclude_globs)?;
+
+    let content_matcher = if req.search_content {
+        Some(build_content_matcher(
+            &req.query,
+            req.regex,
+            req.ignore_case,
+        )?)
+    } else {
+        None
+    };
+    let path_matcher = if req.search_paths {
+        Some(build_path_matcher(
+            &req.query,
+            req.regex,
+            req.ignore_case,
+            req.fuzzy_paths,
+        )?)
+    } else {
+        None
+    };
+
+    // Explicitly naming an excluded folder as the walk root expresses
+    // the caller's intent to see inside it: the default-exclude filter
+    // is disabled for that ENTIRE walk (mirrors coder::tree's behavior).
+    let use_default_excludes =
+        req.use_default_excludes && !resolver.is_default_excluded_dir(&walk_root);
+
+    let mut content_matches: Vec<ContentMatch> = Vec::new();
+    let mut path_matches: Vec<PathMatch> = Vec::new();
+    let mut truncated = false;
+    // CONVERTED WIRE BYTES accounting (same philosophy as
+    // batch_read_budget_bytes in read_file.rs): charge the strings that
+    // will actually be serialized. Monotone bounding of the payload
+    // STRINGS only, not the JSON envelope — actual wire bytes can exceed
+    // the budget by structural overhead (keys, quotes, commas, line/column
+    // numbers) plus escape expansion. Exhaustion sets `truncated` — never
+    // an error.
+    let mut budget_remaining: u64 = cfg.search_response_budget_bytes;
+    let mut budget_exhausted = false;
+
+    // The walk itself is sequential and name-sorted, so the file order — and
+    // therefore every cap and budget cutoff below — is deterministic. Content
+    // scanning of the collected files fans out across threads afterwards
+    // (see `scan_files_in_order`) while results are still consumed in walk
+    // order.
+    let mut walker = ignore::WalkBuilder::new(&walk_root);
+    walker
+        .follow_links(false)
+        // Dot entries stay searchable unless the caller opts out;
+        // `.gitignore` rules apply only on request.
+        .hidden(!req.include_hidden)
+        .parents(req.respect_gitignore)
+        .ignore(req.respect_gitignore)
+        .git_ignore(req.respect_gitignore)
+        .git_global(req.respect_gitignore)
+        .git_exclude(req.respect_gitignore)
+        .require_git(true)
+        .sort_by_file_name(|a, b| a.cmp(b));
+    // Suppress descent into default-excluded DIRECTORIES at the dir
+    // boundary (dir-companion set; files merely NAMED like an excluded
+    // directory are unaffected). Excluded FILES are skipped in the loop
+    // body below.
+    let filter_resolver = resolver.clone();
+    walker.filter_entry(move |e| {
+        !(use_default_excludes
+            && e.file_type().is_some_and(|t| t.is_dir())
+            && filter_resolver.is_default_excluded_dir(e.path()))
+    });
+
+    // Files that survive every filter, in walk order, for content scanning.
+    let mut content_files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    // Fuzzy path ranking needs the complete candidate set before it can
+    // order anything, so it collects (bounded to the top `max_matches`)
+    // and charges the budget after the walk.
+    let mut fuzzy_candidates: std::collections::BinaryHeap<std::cmp::Reverse<FuzzyCandidate>> =
+        std::collections::BinaryHeap::new();
+    let mut fuzzy_seen: usize = 0;
+
+    for entry in walker.build().filter_map(|e| e.ok()) {
+        // Directories participate in PATH matching (a folder is findable
+        // by name); only files go on to content matching. Symlinks and
+        // special files stay out of both lists, as before.
+        let file_type = entry.file_type();
+        let is_dir = file_type.is_some_and(|t| t.is_dir());
+        let is_file = file_type.is_some_and(|t| t.is_file());
+        if !is_file && !is_dir {
+            continue;
+        }
+        let abs = entry.path();
+        let Some(rel) = resolver
+            .relative(abs)
+            .or_else(|| relative_to(&match_anchor, abs))
+        else {
+            continue;
+        };
+        if rel.is_empty() {
+            continue;
+        }
+        // Access control (REDACTION INVARIANT): denied files are wholly
+        // absent from both result lists. Independent of the hide-only
+        // default-exclude filter below — keep the two checks separate.
+        if resolver.is_non_accessible(abs) {
+            continue;
+        }
+        // Noise hiding: default-excluded FILES (configured globs only —
+        // the dir-boundary companions never apply to files).
+        if use_default_excludes && resolver.is_default_excluded(abs) {
+            continue;
+        }
+        if let Some(set) = &include {
+            if !set.is_match(&rel) {
+                continue;
+            }
+        }
+        if let Some(set) = &exclude {
+            if set.is_match(&rel) {
+                continue;
+            }
+        }
+
+        // Matching runs on the root-relative form; emitted paths are the
+        // canonical absolute form (decision D2-eng).
+        let abs_wire = abs.display().to_string();
+
+        if let Some(matcher) = &path_matcher {
+            match matcher {
+                PathMatcher::Fuzzy(query) => {
+                    // Quick-open ranks the path the caller sees under the
+                    // folder it searched. `rel` is relative to the CONTAINING
+                    // configured root, which can sit inside the walk root (the
+                    // worker's own cwd under the repo a session works in) and
+                    // then drops the leading folder for those entries only;
+                    // one anchor for the whole walk keeps the ranking, and the
+                    // highlight a UI derives from it, consistent.
+                    let seen = relative_to(&walk_root, abs).unwrap_or_else(|| rel.clone());
+                    if let Some(score) = fuzzy_path_score(query, &seen) {
+                        fuzzy_seen += 1;
+                        fuzzy_candidates.push(std::cmp::Reverse(FuzzyCandidate {
+                            score,
+                            path: abs_wire.clone(),
+                            is_dir,
+                        }));
+                        if fuzzy_candidates.len() > max_matches {
+                            fuzzy_candidates.pop();
+                        }
+                    }
+                }
+                PathMatcher::Exact(matcher) => {
+                    if matcher.is_match(&rel) {
+                        if path_matches.len() >= max_matches {
+                            truncated = true;
+                        } else if charge(&mut budget_remaining, abs_wire.len()) {
+                            path_matches.push(PathMatch {
+                                path: abs_wire.clone(),
+                                kind: if is_dir {
+                                    PathMatchKind::Dir
+                                } else {
+                                    PathMatchKind::File
+                                },
+                            });
+                        } else {
+                            truncated = true;
+                            budget_exhausted = true;
+                        }
+                    }
+                }
+            }
+        }
+        if budget_exhausted {
+            break;
+        }
+        if is_dir {
+            continue;
+        }
+        if content_matcher.is_some() {
+            content_files.push((abs.to_path_buf(), abs_wire));
+        }
+    }
+
+    if !fuzzy_candidates.is_empty() {
+        let mut ranked: Vec<FuzzyCandidate> = fuzzy_candidates
+            .into_iter()
+            .map(|std::cmp::Reverse(candidate)| candidate)
+            .collect();
+        // Best first; equal scores keep the walk's name order.
+        ranked.sort_by(|a, b| b.cmp(a));
+        if fuzzy_seen > ranked.len() {
+            truncated = true;
+        }
+        for candidate in ranked {
+            if !budget_exhausted && charge(&mut budget_remaining, candidate.path.len()) {
+                path_matches.push(PathMatch {
+                    path: candidate.path,
+                    kind: if candidate.is_dir {
+                        PathMatchKind::Dir
+                    } else {
+                        PathMatchKind::File
+                    },
+                });
+            } else {
+                truncated = true;
+                budget_exhausted = true;
+                break;
+            }
+        }
+    }
+
+    if let (Some(matcher), false) = (&content_matcher, budget_exhausted) {
+        let scan = ScanOptions {
+            max_line_bytes,
+            ctx_before,
+            ctx_after,
+            max_read_bytes: cfg.max_read_bytes,
+            // One more than the cap tells a full file from a capped one
+            // without letting a single pathological file flood memory.
+            per_file_cap: max_matches.saturating_add(1),
+        };
+        let mut consume = |file_matches: Vec<ContentMatch>| -> bool {
+            for m in file_matches {
+                if content_matches.len() >= max_matches {
+                    truncated = true;
+                    return false;
+                }
+                let cost = m.path.len()
+                    + m.text.len()
+                    + m.before.iter().flatten().map(String::len).sum::<usize>()
+                    + m.after.iter().flatten().map(String::len).sum::<usize>();
+                if !charge(&mut budget_remaining, cost) {
+                    truncated = true;
+                    return false;
+                }
+                content_matches.push(m);
+            }
+            true
+        };
+        scan_files_in_order(&content_files, matcher, &scan, &mut consume);
+    }
+
+    Ok(SearchOutput {
+        content_matches,
+        path_matches,
+        truncated,
+    })
+}
+
+/// Per-file scan knobs shared by every worker thread.
+struct ScanOptions {
+    max_line_bytes: usize,
+    ctx_before: usize,
+    ctx_after: usize,
+    max_read_bytes: u64,
+    per_file_cap: usize,
+}
+
+/// Scan `files` for `matcher` across a small thread pool, handing each
+/// file's matches to `consume` IN FILE ORDER. `consume` returns false to stop
+/// early (a cap or the budget was hit): later files are then skipped and the
+/// pool winds down, so the cutoff is a pure function of the ordered results —
+/// the same input always truncates at the same place, threads or not.
+fn scan_files_in_order(
+    files: &[(std::path::PathBuf, String)],
+    matcher: &regex::bytes::Regex,
+    options: &ScanOptions,
+    consume: &mut dyn FnMut(Vec<ContentMatch>) -> bool,
+) {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc;
+
+    if files.is_empty() {
+        return;
+    }
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 8)
+        .min(files.len());
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let (tx, rx) = mpsc::channel::<(usize, Vec<ContentMatch>)>();
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let next = &next;
+            let stop = &stop;
+            scope.spawn(move || loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some((abs, abs_wire)) = files.get(index) else {
+                    break;
+                };
+                let matches = scan_file(abs, abs_wire, matcher, options);
+                if tx.send((index, matches)).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(tx);
+
+        let mut pending: BTreeMap<usize, Vec<ContentMatch>> = BTreeMap::new();
+        let mut expected = 0usize;
+        'receive: for (index, matches) in rx {
+            pending.insert(index, matches);
+            while let Some(matches) = pending.remove(&expected) {
+                expected += 1;
+                if !consume(matches) {
+                    stop.store(true, Ordering::Relaxed);
+                    break 'receive;
+                }
+            }
+        }
+        // Dropping `rx` here fails every later `send`, so workers exit as
+        // soon as their current file is done.
+    });
+}
+
+/// Content matches of one file: first match per line, in line order, with
+/// context slices from the same buffer. The whole file is matched as one
+/// byte string so the regex engine scans it with its fastest strategy
+/// instead of restarting per line.
+fn scan_file(
+    abs: &std::path::Path,
+    abs_wire: &str,
+    matcher: &regex::bytes::Regex,
+    options: &ScanOptions,
+) -> Vec<ContentMatch> {
+    // Skip files larger than max_read_bytes during a search — we don't
+    // want to load multi-GB blobs into memory by accident.
+    match std::fs::metadata(abs) {
+        Ok(md) if md.len() > options.max_read_bytes => return Vec::new(),
+        Ok(_) => {}
+        Err(_) => return Vec::new(),
+    }
+    let Ok(bytes) = std::fs::read(abs) else {
+        return Vec::new();
+    };
+    // Cheap binary heuristic: presence of any NUL byte. Skip binary files
+    // so the response stays human-readable.
+    if bytes.contains(&0) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    // The buffer-wide scan only nominates lines: `\s` and friends can reach
+    // across a newline in multi-line mode, so every candidate is confirmed
+    // against its own (clipped) line, which keeps the per-line contract —
+    // one match per line, column inside the reported text — exactly.
+    let mut pos = 0usize;
+    while pos <= bytes.len() {
+        let Some(m) = matcher.find_at(&bytes, pos) else {
+            break;
+        };
+        let line_start = line_start_at(&bytes, m.start());
+        let line_end = line_end_at(&bytes, m.start());
+        let text = clip_line(
+            &lossy_line(&bytes[line_start..line_end]),
+            options.max_line_bytes,
+        )
+        .to_string();
+        if let Some(lm) = matcher.find(text.as_bytes()) {
+            // Context slices over the same buffer, clipped at the file edges;
+            // overlap between adjacent matches is duplicated, not merged. Same
+            // per-line truncation as the matched text.
+            let before = context_before(
+                &bytes,
+                line_start,
+                options.ctx_before,
+                options.max_line_bytes,
+            );
+            let after = context_after(&bytes, line_end, options.ctx_after, options.max_line_bytes);
+            out.push(ContentMatch {
+                path: abs_wire.to_string(),
+                line: count_lines_before(&bytes, line_start) + 1,
+                column: lm.start() as u32 + 1,
+                text,
+                // None when empty so the wire omits the field (schema-wire
+                // consistency: nullable, not required-but-sometimes-absent).
+                before: (!before.is_empty()).then_some(before),
+                after: (!after.is_empty()).then_some(after),
+            });
+            if out.len() >= options.per_file_cap {
+                break;
+            }
+        }
+        // Only the FIRST match per line is reported (one content match per
+        // matching line) — long-standing wire behavior: resume on the
+        // next line.
+        pos = line_end + 1;
+    }
+    out
+}
+
+fn line_start_at(bytes: &[u8], offset: usize) -> usize {
+    bytes[..offset]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+fn line_end_at(bytes: &[u8], offset: usize) -> usize {
+    bytes[offset..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|i| offset + i)
+        .unwrap_or(bytes.len())
+}
+
+/// 1-based line numbers count newline bytes before the line start; kept as
+/// a running scan per match, which stays cheap because matches are
+/// reported once per line and files are bounded by max_read_bytes.
+fn count_lines_before(bytes: &[u8], line_start: usize) -> u32 {
+    bytes[..line_start].iter().filter(|&&b| b == b'\n').count() as u32
+}
+
+/// A line body as text, without its `\r` terminator (mirrors `str::lines`).
+fn lossy_line(line: &[u8]) -> String {
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    String::from_utf8_lossy(line).into_owned()
+}
+
+fn context_before(
+    bytes: &[u8],
+    line_start: usize,
+    count: usize,
+    max_line_bytes: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut end = line_start;
+    while lines.len() < count && end > 0 {
+        // `end` sits just past the previous line's '\n'.
+        let prev_end = end - 1;
+        let prev_start = line_start_at(bytes, prev_end);
+        lines
+            .push(clip_line(&lossy_line(&bytes[prev_start..prev_end]), max_line_bytes).to_string());
+        end = prev_start;
+    }
+    lines.reverse();
+    lines
+}
+
+fn context_after(
+    bytes: &[u8],
+    line_end: usize,
+    count: usize,
+    max_line_bytes: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = line_end;
+    while lines.len() < count && start < bytes.len() {
+        // `start` sits on the current line's '\n'.
+        start += 1;
+        if start >= bytes.len() {
+            break;
+        }
+        let end = line_end_at(bytes, start);
+        lines.push(clip_line(&lossy_line(&bytes[start..end]), max_line_bytes).to_string());
+        start = end;
+    }
+    lines
+}
+
+/// A ranked quick-open candidate. Ordering is score first, then the
+/// lexically earlier path, so the bounded heap keeps the best entries and
+/// ties resolve the way the sorted walk produced them.
+#[derive(Debug, PartialEq, Eq)]
+struct FuzzyCandidate {
+    score: i32,
+    path: String,
+    is_dir: bool,
+}
+
+impl Ord for FuzzyCandidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .cmp(&other.score)
+            .then_with(|| other.path.cmp(&self.path))
+    }
+}
+
+impl PartialOrd for FuzzyCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// A lowercase query prepared once per search.
+pub(crate) struct FuzzyQuery {
+    chars: Vec<char>,
+    text: String,
+}
+
+fn is_path_separator(c: char) -> bool {
+    matches!(c, '/' | '\\' | '-' | '_' | '.' | ' ')
+}
+
+/// Quick-open style subsequence scoring: every query character must appear
+/// in order; contiguous runs, segment starts and a basename hit score
+/// higher, long paths score slightly lower. `None` when the query is not a
+/// subsequence of the path.
+pub(crate) fn fuzzy_path_score(query: &FuzzyQuery, rel: &str) -> Option<i32> {
+    if query.chars.is_empty() {
+        // List mode: nothing to match against, so rank by where a person
+        // looks first — shallow, short paths ahead of deep, long ones.
+        let depth = rel.matches('/').count() as i32;
+        let len = rel.chars().count().min(999) as i32;
+        return Some(-(depth * 1000) - len);
+    }
+    let lower = rel.to_lowercase();
+    let hay: Vec<char> = lower.chars().collect();
+    let basename_start = lower.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let basename_start_chars = lower[..basename_start].chars().count();
+    let mut score: i32 = 0;
+    let mut qi = 0usize;
+    let mut last: Option<usize> = None;
+    for (i, &c) in hay.iter().enumerate() {
+        if qi >= query.chars.len() {
+            break;
+        }
+        if c != query.chars[qi] {
+            continue;
+        }
+        score += 10;
+        match last {
+            Some(prev) if prev + 1 == i => score += 8,
+            Some(prev) => score -= ((i - prev - 1) as i32).min(10),
+            None => {}
+        }
+        if i == 0 || is_path_separator(hay[i - 1]) {
+            score += 8;
+        }
+        if i >= basename_start_chars {
+            // A character matched inside the file name outweighs one that
+            // merely hit a folder above it.
+            score += 6;
+        }
+        last = Some(i);
+        qi += 1;
+    }
+    if qi < query.chars.len() {
+        return None;
+    }
+    let basename = &lower[basename_start..];
+    if basename.contains(query.text.as_str()) {
+        score += 60;
+        if basename.starts_with(query.text.as_str()) {
+            score += 20;
+        }
+    } else if lower.contains(query.text.as_str()) {
+        score += 25;
+    } else if last.is_some_and(|end| end >= basename_start_chars) {
+        // Matches that end inside the basename read as "this file", not a
+        // folder somewhere above it.
+        score += 10;
+    }
+    score -= (hay.len() as i32) / 8;
+    Some(score)
+}
+/// Per-request cap on `context_lines_before` / `context_lines_after`.
+/// Larger windows belong to `coder::read-file` line windows, not search.
+const CONTEXT_LINES_CAP: u32 = 10;
+
+/// Validate one context-lines knob against [`CONTEXT_LINES_CAP`].
+/// `None` means 0 (no context).
+fn validate_context_lines(field: &str, value: Option<u32>) -> Result<usize, CoderError> {
+    let v = value.unwrap_or(0);
+    if v > CONTEXT_LINES_CAP {
+        return Err(CoderError::BadInput(format!(
+            "{field} is {v} but the maximum is {CONTEXT_LINES_CAP}. \
+             Re-call with {field} <= {CONTEXT_LINES_CAP}; for a wider view \
+             read the file with coder::read-file line_from/line_to."
+        )));
+    }
+    Ok(v as usize)
+}
+
+/// Per-line truncation to `max_line_bytes` — one rule for the matched
+/// line and its context lines. The clip point is floored to the nearest
+/// UTF-8 char boundary (a mid-character byte slice panics), so a clipped
+/// line can come out up to 3 bytes short of the cap — never over it.
+/// (`str::floor_char_boundary` is nightly-only; walk back on stable.)
+fn clip_line(line: &str, max_line_bytes: usize) -> &str {
+    if line.len() <= max_line_bytes {
+        return line;
+    }
+    let mut end = max_line_bytes;
+    while end > 0 && !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
+}
+
+/// `abs` relative to `anchor` as a forward-slash string — the fallback
+/// matching form for entries that live outside every configured root, where
+/// `PathResolver::relative` has no root to strip. `None` when `abs` isn't
+/// under `anchor` (the entry has no expressible relative form and is
+/// skipped, as before).
+fn relative_to(anchor: &std::path::Path, abs: &std::path::Path) -> Option<String> {
+    abs.strip_prefix(anchor)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+}
+
+/// Charge `cost` wire bytes against the remaining response budget.
+/// Returns false (charging nothing) when the cost would overdraw — the
+/// caller stops accumulating and sets `truncated`; the search degrades,
+/// it never errors.
+fn charge(remaining: &mut u64, cost: usize) -> bool {
+    let cost = cost as u64;
+    if cost > *remaining {
+        return false;
+    }
+    *remaining -= cost;
+    true
+}
+
+fn build_globset(patterns: &[String]) -> Result<Option<globset::GlobSet>, CoderError> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+    let mut b = globset::GlobSetBuilder::new();
+    for p in patterns {
+        let g = globset::Glob::new(p)
+            .map_err(|e| CoderError::BadInput(format!("bad glob {p:?}: {e}")))?;
+        b.add(g);
+    }
+    let set = b
+        .build()
+        .map_err(|e| CoderError::BadInput(format!("globset build failed: {e}")))?;
+    Ok(Some(set))
+}
+
+/// Path matching: a substring/regex test per path, or quick-open style
+/// fuzzy ranking over the whole candidate set.
+enum PathMatcher {
+    Exact(Matcher),
+    Fuzzy(FuzzyQuery),
+}
+
+fn build_path_matcher(
+    query: &str,
+    regex: bool,
+    ignore_case: bool,
+    fuzzy: bool,
+) -> Result<PathMatcher, CoderError> {
+    if fuzzy {
+        let text = query.to_lowercase();
+        return Ok(PathMatcher::Fuzzy(FuzzyQuery {
+            chars: text.chars().collect(),
+            text,
+        }));
+    }
+    build_matcher(query, regex, ignore_case).map(PathMatcher::Exact)
+}
+
+/// Content matching runs over the raw file bytes with one compiled regex —
+/// a literal query is escaped into the same engine, so both paths get its
+/// prefilter/SIMD acceleration and the Unicode-aware case folding the
+/// per-line lowercase compare used to approximate.
+fn build_content_matcher(
+    query: &str,
+    regex: bool,
+    ignore_case: bool,
+) -> Result<regex::bytes::Regex, CoderError> {
+    let pattern = if regex {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    regex::bytes::RegexBuilder::new(&pattern)
+        .case_insensitive(ignore_case)
+        // `^`/`$` bind to line boundaries: the buffer is scanned whole, but
+        // the contract is per line.
+        .multi_line(true)
+        // Bytes mode: invalid UTF-8 (lossy on the way out) must not abort
+        // a scan of an otherwise-readable file.
+        .unicode(true)
+        .build()
+        .map_err(|e| CoderError::BadInput(format!("bad regex {query:?}: {e}")))
+}
+
+/// Lightweight path matcher — a `Regex` or a literal substring test.
+enum Matcher {
+    Regex(regex::Regex),
+    Literal { needle: String, ignore_case: bool },
+}
+
+impl Matcher {
+    fn is_match(&self, hay: &str) -> bool {
+        match self {
+            Matcher::Regex(re) => re.is_match(hay),
+            Matcher::Literal {
+                needle,
+                ignore_case,
+            } => {
+                if *ignore_case {
+                    hay.to_lowercase().contains(&needle.to_lowercase())
+                } else {
+                    hay.contains(needle.as_str())
+                }
+            }
+        }
+    }
+}
+
+fn build_matcher(query: &str, regex: bool, ignore_case: bool) -> Result<Matcher, CoderError> {
+    if regex {
+        let mut builder = regex::RegexBuilder::new(query);
+        builder.case_insensitive(ignore_case);
+        let re = builder
+            .build()
+            .map_err(|e| CoderError::BadInput(format!("bad regex {query:?}: {e}")))?;
+        Ok(Matcher::Regex(re))
+    } else {
+        Ok(Matcher::Literal {
+            needle: query.to_string(),
+            ignore_case,
+        })
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn setup() -> (tempfile::TempDir, Arc<PathResolver>, Arc<CoderConfig>) {
+        let tmp = tempdir().unwrap();
+        let cfg = CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            non_accessible_globs: vec!["**/.env".to_string()],
+            max_read_bytes: 1024 * 1024,
+            search_default_max_matches: 1000,
+            search_default_max_line_bytes: 4096,
+            ..CoderConfig::default()
+        };
+        let cfg = Arc::new(cfg);
+        let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
+        (tmp, resolver, cfg)
+    }
+
+    /// Expected wire path: responses carry canonical absolute paths.
+    fn abs(tmp: &tempfile::TempDir, rel: &str) -> String {
+        std::fs::canonicalize(tmp.path())
+            .unwrap()
+            .join(rel)
+            .display()
+            .to_string()
+    }
+
+    fn write(tmp: &tempfile::TempDir, rel: &str, body: &str) {
+        let p = tmp.path().join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(p, body).unwrap();
+    }
+
+    /// Path search finds FOLDERS by name, not just files — and flags
+    /// each match's kind so a UI can render and act on them differently.
+    /// Content search must never list a directory.
+    #[tokio::test]
+    async fn path_search_matches_directories_with_kind() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir_all(tmp.path().join("needle-dir/sub")).unwrap();
+        write(&tmp, "needle.txt", "no content hit");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: true,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        let dir_abs = abs(&tmp, "needle-dir");
+        let file_abs = abs(&tmp, "needle.txt");
+        let dir_match = out
+            .path_matches
+            .iter()
+            .find(|m| m.path == dir_abs)
+            .expect("directory must appear in path matches");
+        assert!(matches!(dir_match.kind, PathMatchKind::Dir));
+        let file_match = out
+            .path_matches
+            .iter()
+            .find(|m| m.path == file_abs)
+            .expect("file must appear in path matches");
+        assert!(matches!(file_match.kind, PathMatchKind::File));
+        assert!(
+            out.content_matches.iter().all(|m| m.path != dir_abs),
+            "a directory must never produce a content match"
+        );
+    }
+
+    #[tokio::test]
+    async fn literal_content_match_returns_line_column() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "alpha\nbeta needle here\ngamma\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let m = &out.content_matches[0];
+        assert_eq!(m.path, abs(&tmp, "a.txt"));
+        assert_eq!(m.line, 2);
+        assert_eq!(m.column, 6);
+    }
+
+    /// Pins the SKILL.md "poor-man's outline" recipe: matching is
+    /// PER-LINE, so `^` anchors at each line start and a leading `\s*`
+    /// catches indented declarations (impl/class methods). `path` scopes
+    /// the walk to a folder; the root-relative include glob pins the one
+    /// file. The pattern consumes the indentation, so `column` stays 1
+    /// even for indented hits.
+    #[tokio::test]
+    async fn outline_recipe_returns_indented_declarations() {
+        let (tmp, r, c) = setup();
+        write(
+            &tmp,
+            "src/lib.rs",
+            "pub struct Config {}\n\nimpl Config {\n    pub fn load() -> Self {\n        \
+             Self {}\n    }\n\n    fn validate(&self) -> bool {\n        true\n    }\n}\n",
+        );
+        write(&tmp, "src/other.rs", "fn excluded_by_glob() {}\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: r"^\s*(pub |fn |class |def |func |impl |interface )".into(),
+                path: "src".into(),
+                regex: true,
+                ignore_case: false,
+                include_globs: vec!["src/lib.rs".into()],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        let hits: Vec<(u32, u32, &str)> = out
+            .content_matches
+            .iter()
+            .map(|m| (m.line, m.column, m.text.as_str()))
+            .collect();
+        assert_eq!(
+            hits,
+            vec![
+                (1, 1, "pub struct Config {}"),
+                (3, 1, "impl Config {"),
+                (4, 1, "    pub fn load() -> Self {"),
+                (8, 1, "    fn validate(&self) -> bool {"),
+            ],
+            "outline must include the indented impl methods (lines 4 and 8)"
+        );
+        assert!(
+            !out.content_matches
+                .iter()
+                .any(|m| m.path.ends_with("other.rs")),
+            "include_globs must pin the single file"
+        );
+    }
+
+    #[tokio::test]
+    async fn regex_content_match() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "fn foo() {}\nfn Bar() {}\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "^fn [A-Z]".into(),
+                path: ".".into(),
+                regex: true,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].line, 2);
+    }
+
+    #[tokio::test]
+    async fn path_match_returns_paths() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "src/foo.rs", "x");
+        write(&tmp, "src/bar.ts", "x");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "foo".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: false,
+                search_paths: true,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        let paths: Vec<_> = out.path_matches.iter().map(|p| p.path.as_str()).collect();
+        assert!(paths.contains(&abs(&tmp, "src/foo.rs").as_str()));
+        assert!(!paths.contains(&abs(&tmp, "src/bar.ts").as_str()));
+    }
+
+    #[tokio::test]
+    async fn non_accessible_files_skipped() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".env", "API_KEY=needle");
+        write(&tmp, "a.txt", "needle here");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: true,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        // The .env file must not appear in either match list.
+        let env_abs = abs(&tmp, ".env");
+        for m in &out.content_matches {
+            assert_ne!(m.path, env_abs, "non-accessible file leaked content");
+        }
+        for m in &out.path_matches {
+            assert_ne!(m.path, env_abs, "non-accessible file leaked path");
+        }
+    }
+
+    #[tokio::test]
+    async fn include_and_exclude_globs() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "src/a.rs", "needle");
+        write(&tmp, "src/b.ts", "needle");
+        write(&tmp, "build/c.rs", "needle");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec!["**/*.rs".into()],
+                exclude_globs: vec!["build/**".into()],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        let paths: Vec<_> = out
+            .content_matches
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        assert_eq!(paths, vec![abs(&tmp, "src/a.rs")]);
+    }
+
+    #[tokio::test]
+    async fn truncation_flag_when_cap_hit() {
+        let (tmp, r, _c) = setup();
+        for i in 0..5 {
+            write(&tmp, &format!("f{i}.txt"), "needle\n");
+        }
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            non_accessible_globs: vec![],
+            search_default_max_matches: 1000,
+            max_read_bytes: 1024 * 1024,
+            ..CoderConfig::default()
+        });
+        let out = handle(
+            r,
+            cfg,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: Some(2),
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 2);
+        assert!(out.truncated);
+    }
+
+    #[tokio::test]
+    async fn empty_query_rejected() {
+        let (_tmp, r, c) = setup();
+        let err = handle(
+            r,
+            c,
+            SearchInput {
+                query: "".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: true,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("C210"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn rejects_when_nothing_to_search() {
+        // Disabling BOTH search_content and search_paths leaves nothing to
+        // do; the guard must reject with C210 rather than silently return an
+        // empty result. This branch was previously asserted only by the
+        // now-dropped BDD suite.
+        let (_tmp, r, c) = setup();
+        let err = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: false,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("C210"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn ignore_case_literal() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "NEEDLE here");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: true,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn skips_binary_files() {
+        let (tmp, r, c) = setup();
+        std::fs::write(tmp.path().join("blob.bin"), [0u8, 1, 2, 3, b'n', b'e']).unwrap();
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "ne".into(),
+                path: ".".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.content_matches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn path_scopes_walk_to_subdir() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a/x.txt", "needle here");
+        write(&tmp, "b/y.txt", "needle here");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                query: "needle".into(),
+                path: "a".into(),
+                regex: false,
+                ignore_case: false,
+                include_globs: vec![],
+                exclude_globs: vec![],
+                max_matches: None,
+                max_line_bytes: None,
+                context_lines_before: None,
+                context_lines_after: None,
+                use_default_excludes: true,
+                search_content: true,
+                search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
+                include_hidden: true,
+                fs_scope: None,
+            },
+        )
+        .await
+        .unwrap();
+        let paths: Vec<_> = out
+            .content_matches
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        assert_eq!(paths, vec![abs(&tmp, "a/x.txt")]);
+    }
+
+    // -----------------------------------------------------------------
+    // S2 (v0.4.0): context lines, response byte budget, default excludes.
+    // -----------------------------------------------------------------
+
+    /// Request with serde defaults for everything but `query` — the same
+    /// defaults a wire caller gets.
+    fn base_input(query: &str) -> SearchInput {
+        SearchInput {
+            query: query.into(),
+            path: ".".into(),
+            regex: false,
+            ignore_case: false,
+            include_globs: vec![],
+            exclude_globs: vec![],
+            max_matches: None,
+            max_line_bytes: None,
+            context_lines_before: None,
+            context_lines_after: None,
+            use_default_excludes: true,
+            search_content: true,
+            search_paths: false,
+            respect_gitignore: false,
+            fuzzy_paths: false,
+            include_hidden: true,
+            fs_scope: None,
+        }
+    }
+
+    /// Expected wire context: `Some` of owned lines (the wire omits the
+    /// field entirely when no context exists — `None`, never `Some([])`).
+    fn ctx(lines: &[&str]) -> Option<Vec<String>> {
+        Some(lines.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// Jail with an explicit `search_response_budget_bytes`.
+    fn cfg_with_budget(tmp: &tempfile::TempDir, budget: u64) -> Arc<CoderConfig> {
+        Arc::new(CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            non_accessible_globs: vec![],
+            max_read_bytes: 1024 * 1024,
+            search_default_max_matches: 1000,
+            search_default_max_line_bytes: 4096,
+            search_response_budget_bytes: budget,
+            ..CoderConfig::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn context_lines_in_file_order() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "l1\nl2\nl3 needle\nl4\nl5\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                context_lines_before: Some(2),
+                context_lines_after: Some(2),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let m = &out.content_matches[0];
+        assert_eq!(m.before, ctx(&["l1", "l2"]));
+        assert_eq!(m.after, ctx(&["l4", "l5"]));
+    }
+
+    #[tokio::test]
+    async fn context_clipped_at_file_edges_and_duplicated_across_matches() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "needle first\nmid\nneedle last\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                context_lines_before: Some(5),
+                context_lines_after: Some(5),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 2);
+        // First match: nothing before line 1; after clipped at EOF.
+        assert!(out.content_matches[0].before.is_none());
+        assert_eq!(out.content_matches[0].after, ctx(&["mid", "needle last"]));
+        // Second match: overlapping context is duplicated, not merged.
+        assert_eq!(out.content_matches[1].before, ctx(&["needle first", "mid"]));
+        assert!(out.content_matches[1].after.is_none());
+    }
+
+    #[tokio::test]
+    async fn context_never_crosses_file_boundaries() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "needle a\n");
+        write(&tmp, "b.txt", "needle b\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                context_lines_before: Some(3),
+                context_lines_after: Some(3),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 2);
+        for m in &out.content_matches {
+            assert!(m.before.is_none(), "crossed file boundary: {:?}", m.before);
+            assert!(m.after.is_none(), "crossed file boundary: {:?}", m.after);
+        }
+    }
+
+    #[tokio::test]
+    async fn context_lines_over_cap_rejected_c210() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "needle\n");
+        let err = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                context_lines_before: Some(11),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("C210"), "got: {err}");
+        assert!(
+            err.contains("11") && err.contains("10"),
+            "must name the actual value and the cap: {err}"
+        );
+        let err = handle(
+            r,
+            c,
+            SearchInput {
+                context_lines_after: Some(99),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("C210"), "got: {err}");
+        assert!(
+            err.contains("99") && err.contains("10"),
+            "must name the actual value and the cap: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn context_lines_subject_to_max_line_bytes() {
+        let (tmp, r, c) = setup();
+        let long = "x".repeat(100);
+        write(&tmp, "a.txt", &format!("{long}\nneedle\n{long}\n"));
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                max_line_bytes: Some(10),
+                context_lines_before: Some(1),
+                context_lines_after: Some(1),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let m = &out.content_matches[0];
+        assert_eq!(m.before, Some(vec!["x".repeat(10)]));
+        assert_eq!(m.after, Some(vec!["x".repeat(10)]));
+    }
+
+    #[tokio::test]
+    async fn budget_truncates_without_error_deterministically() {
+        let (tmp, r, _c) = setup();
+        write(&tmp, "a.txt", "needle one\nneedle two\n");
+        // Budget fits exactly the first match (path + text), not both.
+        let cost1 = (abs(&tmp, "a.txt").len() + "needle one".len()) as u64;
+        let out = handle(r, cfg_with_budget(&tmp, cost1), base_input("needle"))
+            .await
+            .unwrap();
+        assert_eq!(
+            out.content_matches.len(),
+            1,
+            "deterministic cutoff after the first match"
+        );
+        assert_eq!(out.content_matches[0].text, "needle one");
+        assert!(out.truncated, "budget cutoff must set the truncated flag");
+    }
+
+    #[tokio::test]
+    async fn budget_accounting_includes_context_lines() {
+        let (tmp, r, _c) = setup();
+        write(
+            &tmp,
+            "a.txt",
+            "ctx before\nneedle one\nctx after\nfiller\nneedle two\n",
+        );
+        let path_len = abs(&tmp, "a.txt").len() as u64;
+        // Without context this budget fits both matches exactly…
+        let budget = 2 * (path_len + "needle one".len() as u64);
+        let out = handle(
+            r.clone(),
+            cfg_with_budget(&tmp, budget),
+            base_input("needle"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 2);
+        assert!(!out.truncated);
+        // …but with context lines charged, only the first match fits.
+        let out = handle(
+            r,
+            cfg_with_budget(&tmp, budget),
+            SearchInput {
+                context_lines_before: Some(1),
+                context_lines_after: Some(1),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out.content_matches.len(),
+            1,
+            "context lines must count toward the budget"
+        );
+        assert!(out.truncated);
+    }
+
+    #[tokio::test]
+    async fn budget_applies_to_path_matches_too() {
+        let (tmp, r, _c) = setup();
+        write(&tmp, "needle1.txt", "x");
+        write(&tmp, "needle2.txt", "x");
+        // Both absolute paths have the same length; budget fits one.
+        let p_len = abs(&tmp, "needle1.txt").len() as u64;
+        let out = handle(
+            r,
+            cfg_with_budget(&tmp, p_len),
+            SearchInput {
+                search_content: false,
+                search_paths: true,
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches.len(), 1);
+        assert!(out.truncated);
+    }
+
+    #[tokio::test]
+    async fn default_excludes_skip_node_modules_in_content_and_path_results() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "node_modules/pkg/needle.js", "needle inside");
+        write(&tmp, "src/needle.rs", "needle inside");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                search_paths: true,
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        // No names, counts, or placeholders for excluded entries anywhere.
+        let serialized = serde_json::to_string(&out).unwrap();
+        assert!(
+            !serialized.contains("node_modules"),
+            "excluded dir leaked: {serialized}"
+        );
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].path, abs(&tmp, "src/needle.rs"));
+        assert_eq!(out.path_matches.len(), 1);
+        assert_eq!(out.path_matches[0].path, abs(&tmp, "src/needle.rs"));
+    }
+
+    #[tokio::test]
+    async fn use_default_excludes_false_searches_inside() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "node_modules/pkg/dep.js", "needle inside");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                use_default_excludes: false,
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(
+            out.content_matches[0].path,
+            abs(&tmp, "node_modules/pkg/dep.js")
+        );
+    }
+
+    #[tokio::test]
+    async fn file_named_like_excluded_dir_still_searched() {
+        let (tmp, r, c) = setup();
+        // A FILE named `dist`: dir-boundary companions apply to
+        // directories only, so this must still be scanned.
+        write(&tmp, "dist", "needle in a file named dist");
+        let out = handle(r, c, base_input("needle")).await.unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].path, abs(&tmp, "dist"));
+    }
+
+    #[tokio::test]
+    async fn explicitly_excluded_walk_root_disables_filter() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "node_modules/pkg/dep.js", "needle inside");
+        // Naming the excluded folder as the walk root expresses intent to
+        // see inside it (mirrors coder::tree's S1-reviewed behavior).
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "node_modules".into(),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+    }
+
+    // REDACTION INVARIANT regression: denied files stay wholly absent
+    // from the whole serialized response even with the new options.
+    #[tokio::test]
+    async fn denied_files_wholly_absent_with_context_and_excludes_off() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".env", "API_KEY=needle secret");
+        write(&tmp, "ok.txt", "needle here");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                search_paths: true,
+                context_lines_before: Some(2),
+                context_lines_after: Some(2),
+                use_default_excludes: false,
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        let serialized = serde_json::to_string(&out).unwrap();
+        assert!(
+            !serialized.contains(".env"),
+            "denied path leaked: {serialized}"
+        );
+        assert!(
+            !serialized.contains("API_KEY"),
+            "denied content leaked: {serialized}"
+        );
+        assert_eq!(out.content_matches.len(), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // clip_line UTF-8 boundary regressions: clipping must floor to a
+    // char boundary instead of panicking mid-character (ship-blocker
+    // found in S2 review). Three confirmed panic variants pinned below.
+    // -----------------------------------------------------------------
+
+    // a1: matched-text clip lands mid-'é' (2 bytes straddling the cap).
+    #[tokio::test]
+    async fn clip_mid_char_in_matched_line_does_not_panic() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "abétail\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                max_line_bytes: Some(3),
+                ..base_input("ab")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        // Cap 3 falls inside 'é' (bytes 2..4); floor to the boundary at 2.
+        assert_eq!(out.content_matches[0].text, "ab");
+    }
+
+    // a2: clean ASCII match poisoned by a multibyte CONTEXT neighbor —
+    // the cap lands mid-'😀' (4 bytes) in the before-line.
+    #[tokio::test]
+    async fn clip_mid_char_in_context_line_does_not_panic() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "abc😀x\nhit42\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                max_line_bytes: Some(5),
+                context_lines_before: Some(1),
+                ..base_input("hit")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].text, "hit42");
+        // Cap 5 falls inside '😀' (bytes 3..7); floor to the boundary at 3.
+        assert_eq!(out.content_matches[0].before, ctx(&["abc"]));
+    }
+
+    // a3 (worst): clip_line runs on EVERY scanned line before matching,
+    // so a non-matching over-cap line with a multibyte char straddling
+    // the DEFAULT 4096-byte cap killed the whole handler with zero
+    // caller-supplied knobs — regardless of query.
+    #[tokio::test]
+    async fn clip_mid_char_in_non_matching_scanned_line_does_not_panic() {
+        let (tmp, r, c) = setup();
+        // '😀' occupies bytes 4095..4099: the default
+        // search_default_max_line_bytes (4096) lands mid-character.
+        let line = format!("{}😀tail", "a".repeat(4095));
+        write(&tmp, "big.txt", &format!("{line}\n"));
+        let out = handle(r, c, base_input("zzz-no-match")).await.unwrap();
+        assert!(out.content_matches.is_empty());
+        assert!(!out.truncated);
+    }
+
+    // Wire-shape pin: matches without context carry `None` (never
+    // `Some([])`), so the fields are omitted entirely and context-free
+    // responses keep the pre-S2 shape — matching the nullable,
+    // non-required schema.
+    #[tokio::test]
+    async fn empty_context_omitted_from_wire() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "needle\n");
+        let out = handle(r, c, base_input("needle")).await.unwrap();
+        assert!(out.content_matches[0].before.is_none());
+        assert!(out.content_matches[0].after.is_none());
+        let serialized = serde_json::to_string(&out).unwrap();
+        assert!(
+            !serialized.contains("\"before\"") && !serialized.contains("\"after\""),
+            "empty context must be skipped on the wire: {serialized}"
+        );
+    }
+
+    // Clip-then-charge ordering pin: a line clipped at `max_line_bytes`
+    // must be charged its POST-clip byte length. A budget sized to the
+    // clipped text fits exactly; charging the raw line length would
+    // overdraw and wrongly return zero matches.
+    #[tokio::test]
+    async fn budget_charges_post_clip_length() {
+        let (tmp, r, _c) = setup();
+        write(&tmp, "a.txt", &format!("ab{}\n", "é".repeat(50)));
+        // max_line_bytes 3 falls inside the first 'é' (bytes 2..4); the
+        // stored text floors to "ab" (2 bytes), not the 102-byte raw line.
+        let budget = (abs(&tmp, "a.txt").len() + "ab".len()) as u64;
+        let out = handle(
+            r,
+            cfg_with_budget(&tmp, budget),
+            SearchInput {
+                max_line_bytes: Some(3),
+                ..base_input("ab")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].text, "ab");
+        assert!(!out.truncated);
+    }
+
+    /// Unjailed jail whose configured root is a SIBLING of the session
+    /// scope — the shape a console session gets when the harness stamps a
+    /// working directory outside the worker's own configured roots.
+    fn setup_scoped() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        Arc<PathResolver>,
+        Arc<CoderConfig>,
+    ) {
+        let roots = tempdir().unwrap();
+        let scope = tempdir().unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![roots.path().to_path_buf()],
+            non_accessible_globs: vec!["**/.env".to_string()],
+            unjailed: true,
+            max_read_bytes: 1024 * 1024,
+            search_default_max_matches: 1000,
+            search_default_max_line_bytes: 4096,
+            ..CoderConfig::default()
+        });
+        let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
+        (roots, scope, resolver, cfg)
+    }
+
+    fn scoped_input(query: &str, scope: &tempfile::TempDir) -> SearchInput {
+        SearchInput {
+            fs_scope: Some(crate::fs::FsScope {
+                root: scope.path().display().to_string(),
+                grants: vec![],
+                boundary: crate::fs::FsBoundary::ConfiguredRoots,
+            }),
+            ..base_input(query)
+        }
+    }
+
+    /// REGRESSION: a session scoped outside every configured root walked
+    /// the right tree but had no root-relative form for any entry, so every
+    /// file was dropped — the search returned a FALSE EMPTY instead of
+    /// matches (and never an error, so the caller could not tell).
+    #[tokio::test]
+    async fn scope_outside_configured_roots_still_matches() {
+        let (_roots, scope, r, c) = setup_scoped();
+        std::fs::create_dir_all(scope.path().join("prompts")).unwrap();
+        std::fs::write(scope.path().join("prompts/subagent.txt"), "spawn agents\n").unwrap();
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                include_globs: vec!["**/*.txt".into()],
+                search_paths: true,
+                ..scoped_input("spawn", &scope)
+            },
+        )
+        .await
+        .unwrap();
+        let expected = std::fs::canonicalize(scope.path())
+            .unwrap()
+            .join("prompts/subagent.txt")
+            .display()
+            .to_string();
+        assert_eq!(out.content_matches.len(), 1, "content match dropped");
+        assert_eq!(out.content_matches[0].path, expected);
+        assert_eq!(out.path_matches.len(), 0);
+    }
+
+    /// The fallback anchor is the SESSION ROOT, not the walk root: an
+    /// include glob written relative to the session directory keeps working
+    /// when `path` narrows the walk to a subfolder — same semantics as a
+    /// root-relative glob inside a configured root (see the outline recipe).
+    #[tokio::test]
+    async fn scoped_include_globs_anchor_at_the_session_root() {
+        let (_roots, scope, r, c) = setup_scoped();
+        std::fs::create_dir_all(scope.path().join("src")).unwrap();
+        std::fs::write(scope.path().join("src/lib.rs"), "fn needle() {}\n").unwrap();
+        std::fs::write(scope.path().join("src/other.rs"), "fn needle() {}\n").unwrap();
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                path: "src".into(),
+                include_globs: vec!["src/lib.rs".into()],
+                ..scoped_input("needle", &scope)
+            },
+        )
+        .await
+        .unwrap();
+        let expected = std::fs::canonicalize(scope.path())
+            .unwrap()
+            .join("src/lib.rs")
+            .display()
+            .to_string();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].path, expected);
+    }
+
+    /// Non-accessible protection is unchanged by the fallback anchor:
+    /// secrets outside every configured root stay absent from both lists.
+    #[tokio::test]
+    async fn scoped_search_still_hides_non_accessible_files() {
+        let (_roots, scope, r, c) = setup_scoped();
+        std::fs::write(scope.path().join(".env"), "TOKEN=needle\n").unwrap();
+        std::fs::write(scope.path().join("ok.txt"), "needle\n").unwrap();
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                search_paths: true,
+                ..scoped_input("needle", &scope)
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert!(out.content_matches[0].path.ends_with("ok.txt"));
+        assert!(out.path_matches.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // Scanner rewrite regressions: byte-wise matching, ordered fan-out.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn results_come_back_in_sorted_walk_order_across_many_files() {
+        let (tmp, r, c) = setup();
+        for i in 0..40 {
+            write(&tmp, &format!("dir{}/f{:02}.txt", i % 4, i), "needle\n");
+        }
+        let out = handle(r, c, base_input("needle")).await.unwrap();
+        assert_eq!(out.content_matches.len(), 40);
+        let paths: Vec<&str> = out
+            .content_matches
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(
+            paths, sorted,
+            "matches must arrive in name-sorted walk order"
+        );
+    }
+
+    #[tokio::test]
+    async fn cap_cuts_deterministically_across_files() {
+        let (tmp, r, c) = setup();
+        for i in 0..12 {
+            write(&tmp, &format!("f{:02}.txt", i), "needle a\nneedle b\n");
+        }
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                max_matches: Some(5),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.truncated);
+        assert_eq!(out.content_matches.len(), 5);
+        assert_eq!(out.content_matches[0].path, abs(&tmp, "f00.txt"));
+        assert_eq!(out.content_matches[4].path, abs(&tmp, "f02.txt"));
+        assert_eq!(out.content_matches[4].line, 1);
+    }
+
+    #[tokio::test]
+    async fn crlf_lines_lose_their_carriage_return_and_keep_line_numbers() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "one\r\ntwo needle\r\nthree\r\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                context_lines_before: Some(1),
+                context_lines_after: Some(1),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let m = &out.content_matches[0];
+        assert_eq!(m.line, 2);
+        assert_eq!(m.column, 5);
+        assert_eq!(m.text, "two needle");
+        assert_eq!(m.before.as_deref(), Some(&["one".to_string()][..]));
+        assert_eq!(m.after.as_deref(), Some(&["three".to_string()][..]));
+    }
+
+    #[tokio::test]
+    async fn last_line_without_newline_still_matches() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "first\nlast needle");
+        let out = handle(r, c, base_input("needle")).await.unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].line, 2);
+        assert_eq!(out.content_matches[0].text, "last needle");
+        assert!(out.content_matches[0].after.is_none());
+    }
+
+    #[tokio::test]
+    async fn ignore_case_literal_uses_unicode_folding() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "ÉCOLE needle\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                ignore_case: true,
+                ..base_input("école")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].column, 1);
+    }
+
+    #[tokio::test]
+    async fn respect_gitignore_hides_ignored_files_inside_a_repository() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        write(&tmp, ".gitignore", "build/\n");
+        write(&tmp, "build/out.txt", "needle built");
+        write(&tmp, "src/in.txt", "needle source");
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                respect_gitignore: true,
+                search_paths: true,
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].path, abs(&tmp, "src/in.txt"));
+        assert!(out.path_matches.iter().all(|m| !m.path.contains("build")));
+        // Off by default: the ignored file is still searched.
+        let out = handle(r, c, base_input("needle")).await.unwrap();
+        assert_eq!(out.content_matches.len(), 2);
+    }
+
+    #[test]
+    fn fuzzy_score_prefers_basename_hits_and_segment_starts() {
+        let q = FuzzyQuery {
+            chars: "fltab".chars().collect(),
+            text: "fltab".into(),
+        };
+        let exact = fuzzy_path_score(&q, "ui/src/page/FilesTab.tsx").unwrap();
+        let scattered = fuzzy_path_score(&q, "fixtures/lib/tables/abc.rs").unwrap();
+        assert!(exact > scattered, "{exact} <= {scattered}");
+        assert!(fuzzy_path_score(&q, "src/main.rs").is_none());
+        let short = fuzzy_path_score(&q, "filetab.ts").unwrap();
+        let long = fuzzy_path_score(&q, "a/very/long/nested/folder/filetab.ts").unwrap();
+        assert!(short > long);
+    }
+
+    /// A bare `@` in the console composer lists the workspace: an empty
+    /// query is a path-only search, ranked shallow-and-short first.
+    #[tokio::test]
+    async fn empty_query_lists_paths_shallow_first() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a/very/deep/nested/file.txt", "x");
+        write(&tmp, "README.md", "x");
+        write(&tmp, "src/main.rs", "x");
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                ..base_input("")
+            },
+        )
+        .await
+        .unwrap();
+        let position = |suffix: &str| {
+            out.path_matches
+                .iter()
+                .position(|m| m.path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} missing from {:?}", out.path_matches))
+        };
+        assert!(position("README.md") < position("src/main.rs"));
+        assert!(position("src/main.rs") < position("nested/file.txt"));
+        assert!(!out.truncated);
+        // Content search still needs something to look for.
+        let err = handle(r, c, base_input("")).await.unwrap_err();
+        assert!(err.contains("query must not be empty"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn include_hidden_false_skips_dot_entries() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".github/workflows/ci.yml", "x");
+        write(&tmp, ".hidden.txt", "x");
+        write(&tmp, "shown.txt", "x");
+        let list = |include_hidden: bool| SearchInput {
+            search_content: false,
+            search_paths: true,
+            fuzzy_paths: true,
+            include_hidden,
+            ..base_input("")
+        };
+        let out = handle(r.clone(), c.clone(), list(false)).await.unwrap();
+        let paths: Vec<&str> = out.path_matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, vec![abs(&tmp, "shown.txt")]);
+        let out = handle(r, c, list(true)).await.unwrap();
+        assert!(out.path_matches.iter().any(|m| m.path.ends_with("ci.yml")));
+        assert!(out
+            .path_matches
+            .iter()
+            .any(|m| m.path.ends_with(".hidden.txt")));
+    }
+
+    #[tokio::test]
+    async fn fuzzy_paths_rank_best_first_and_report_overflow() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "src/page/FilesTab.tsx", "x");
+        write(&tmp, "src/lib/format.ts", "x");
+        write(&tmp, "fixtures/tabular.txt", "x");
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                include_hidden: true,
+                ..base_input("filestab")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches[0].path, abs(&tmp, "src/page/FilesTab.tsx"));
+        assert!(!out.truncated);
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                include_hidden: true,
+                max_matches: Some(1),
+                ..base_input("t")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches.len(), 1);
+        assert!(
+            out.truncated,
+            "more candidates than the cap must flag truncation"
+        );
+    }
+
+    /// REGRESSION: the worker's configured root can sit INSIDE the folder a
+    /// session searches (its own cwd under the repo the chat works in).
+    /// Entries under that root were scored on the root-relative form — the
+    /// leading folder dropped — so a quick-open query naming that folder
+    /// (`shellpage` for `ide/ui/page.tsx`) matched nothing while the same
+    /// shape of query found every file outside it. Ranking runs on the path
+    /// as the caller sees it under the searched folder.
+    #[tokio::test]
+    async fn fuzzy_paths_rank_relative_to_the_searched_folder() {
+        let outer = tempdir().unwrap();
+        let inner = outer.path().join("shell");
+        std::fs::create_dir_all(inner.join("ui")).unwrap();
+        std::fs::write(inner.join("ui/page.tsx"), "x").unwrap();
+        std::fs::create_dir_all(outer.path().join("a2ui")).unwrap();
+        std::fs::write(outer.path().join("a2ui/Cargo.toml"), "x").unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![inner.clone()],
+            non_accessible_globs: vec!["**/.env".to_string()],
+            unjailed: true,
+            max_read_bytes: 1024 * 1024,
+            search_default_max_matches: 1000,
+            search_default_max_line_bytes: 4096,
+            ..CoderConfig::default()
+        });
+        let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
+        let out = handle(
+            resolver,
+            cfg,
+            SearchInput {
+                path: outer.path().display().to_string(),
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                include_hidden: true,
+                ..base_input("shellpage")
+            },
+        )
+        .await
+        .unwrap();
+        let expected = std::fs::canonicalize(&inner)
+            .unwrap()
+            .join("ui/page.tsx")
+            .display()
+            .to_string();
+        let paths: Vec<&str> = out.path_matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, vec![expected.as_str()]);
+    }
+}

@@ -271,8 +271,8 @@ mod tests {
     #[test]
     fn parses_worker_references() {
         assert_eq!(
-            parse_worker_ref("path://../console"),
-            (ContainerSource::Path, "../console".to_string())
+            parse_worker_ref("path://../ade"),
+            (ContainerSource::Path, "../ade".to_string())
         );
         assert_eq!(
             parse_worker_ref("package://api.workers.iii.dev/web"),
@@ -298,7 +298,7 @@ engine:
 startup_timeout: 30s
 containers:
   console:
-    worker: path://../console
+    worker: path://../ade
     start_after: [state]
     environment:
       SECRET: hidden
@@ -316,7 +316,7 @@ containers:
         assert_eq!(project.engine_port, Some(49134));
         assert_eq!(project.containers.len(), 2);
         assert_eq!(project.containers[0].source, ContainerSource::Path);
-        assert_eq!(project.containers[0].worker_ref, "../console");
+        assert_eq!(project.containers[0].worker_ref, "../ade");
         assert_eq!(project.containers[0].start_after, ["state"]);
         assert_eq!(project.containers[0].environment, ["SECRET", "PORT"]);
         assert_eq!(project.containers[0].run.as_deref(), Some("cargo run"));

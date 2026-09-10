@@ -189,9 +189,9 @@ containers:
   pubsub:
     worker: path://../pubsub
     scripts: { run: cargo run --locked --bin pubsub }
-  shell:
-    worker: path://../shell
-    scripts: { run: cargo run --locked --bin shell }
+  ide:
+    worker: path://../ide
+    scripts: { run: cargo run --locked --bin ide }
   sandbox-code-runner:
     worker: path://../sandbox-code-runner
     scripts: { run: cargo run --locked --bin sandbox-code-runner }
@@ -227,11 +227,11 @@ containers:
     worker: path://../computer
     start_after: [state]
     scripts: { run: 'cargo run --locked --bin computer -- --url "$III_URL"' }
-  console:
-    worker: path://../console
+  ade:
+    worker: path://../ade
     config_name: console-minilm-production
     config_override: { http_port: 0, injectable_ui: true }
-    scripts: { run: cargo run --locked --bin console }
+    scripts: { run: cargo run --locked --bin ade }
   harness:
     worker: path://../harness
     start_after: [state, queue, session-manager, llm-router, provider-openai-codex, provider-openai, provider-anthropic, context-manager, iii-directory, cron, console, shell]

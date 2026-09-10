@@ -57,7 +57,7 @@ iii trigger compose-ui::project
   "namespace": "my-project",
   "engine_url": "ws://127.0.0.1:49134",
   "containers": [
-    { "name": "console", "source": "path", "ref": "../console", "pid": 27129, "ports": [{ "port": 3113, "address": "*" }] },
+    { "name": "ade", "source": "path", "ref": "../ade", "pid": 27129, "ports": [{ "port": 3113, "address": "*" }] },
     { "name": "web", "source": "package", "ref": "api.workers.iii.dev/web", "version": "1.2.10", "ports": [] }
   ]
 }

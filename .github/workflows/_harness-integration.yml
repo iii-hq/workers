@@ -126,7 +126,7 @@ jobs:
             cron -> target
             iii-directory -> target
             state -> target
-            console -> target
+            ade -> target
             database -> target
 
       - name: Build integration stack once
@@ -135,11 +135,11 @@ jobs:
         run: make -C harness integration-build CARGO_BUILD_FLAGS="--locked --timings"
 
       - name: Install Console web dependencies
-        working-directory: console/web
+        working-directory: ade/web
         run: pnpm install --frozen-lockfile
 
       - name: Build Console web app
-        working-directory: console/web
+        working-directory: ade/web
         run: pnpm build
 
       - name: Build Console worker
@@ -148,7 +148,7 @@ jobs:
         run: >-
           cargo build --locked --release --timings
           --target-dir "$GITHUB_WORKSPACE/target/integration-build"
-          --manifest-path console/Cargo.toml
+          --manifest-path ade/Cargo.toml
 
       - name: Package immutable stack bundle
         run: |
@@ -323,15 +323,15 @@ jobs:
           echo "III_ENGINE_VERSION=$(jq -er '.engine_version' target/harness-stack/manifest.json)" >> "$GITHUB_ENV"
 
       - name: Install Console web dependencies
-        working-directory: console/web
+        working-directory: ade/web
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright Chromium
-        working-directory: console/web
+        working-directory: ade/web
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Typecheck Console E2E tests
-        working-directory: console/web
+        working-directory: ade/web
         run: pnpm typecheck:e2e
 
       - name: Prepare coverage directory
@@ -339,7 +339,7 @@ jobs:
         run: mkdir -p target/coverage/profraw && touch target/coverage/profraw/.keep
 
       - name: Run Console Playwright scenarios
-        working-directory: console/web
+        working-directory: ade/web
         env:
           III_BIN: ${{ github.workspace }}/target/harness-stack/bin/iii
           HARNESS_INTEGRATION_BIN: ${{ github.workspace }}/target/harness-stack/bin/harness-integration

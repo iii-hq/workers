@@ -1,7 +1,7 @@
 /**
  * Canonical public design-token inventory. The Console runtime exposes this
  * exact list as `tokens`; the conformance test verifies that every name is
- * declared by `console/web/src/index.css`.
+ * declared by `ade/web/src/index.css`.
  */
 export const tokenNames = Object.freeze([
   '--font-sans',

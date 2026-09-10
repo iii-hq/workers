@@ -196,7 +196,7 @@ Subscribe a sibling function (audit log, Slack notifier, console inbox) via `reg
 From zero to a fail-closed land on the governed port:
 
 ```bash
-iii trigger compose::add worker=opengantry worker=approval-gate worker=worktree worker=shell
+iii trigger compose::add worker=opengantry worker=approval-gate worker=worktree worker=ide
 iii   # starts the engine + workers
 ```
 

@@ -67,11 +67,11 @@ jobs:
           package-manager-cache: false
 
       - name: Install Console Playwright dependencies
-        working-directory: console/web
+        working-directory: ade/web
         run: pnpm install --frozen-lockfile
 
       - name: Install Chromium and video tooling
-        working-directory: console/web
+        working-directory: ade/web
         run: |
           pnpm exec playwright install --with-deps chromium
           sudo apt-get update

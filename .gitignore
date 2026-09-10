@@ -13,7 +13,7 @@ graphify-out
 node_modules
 yarn.lock
 !iii-database/tests/e2e/workers/harness/package-lock.json
-!shell/tests/e2e/workers/harness/package-lock.json
+!ide/tests/e2e/workers/harness/package-lock.json
 tmp/
 
 # Python

@@ -1,7 +1,7 @@
 /* Pure formatting helpers shared by every sandbox family renderer. No
    React, no DOM access — deterministic transforms over the parsed
    sandbox payloads. Ported from the console's sandbox family
-   (console/web/src/components/chat/sandbox/format.ts) with the
+   (ade/web/src/components/chat/sandbox/format.ts) with the
    exit-reason verdict and the 1 MiB truncation detection added. */
 
 import { formatBytes, quoteShellArg } from '../lib/format'

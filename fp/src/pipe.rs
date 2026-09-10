@@ -60,7 +60,7 @@ const SESSION_READS: &[&str] = &[
 
 // NOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects
 // a `_caller_worker_id` field into every dispatched call's payload (see
-// shell/src/functions/types.rs for the same note), so a strict top-level
+// ide/src/functions/types.rs for the same note), so a strict top-level
 // struct would reject EVERY live call. `PipeStep` below stays strict — the
 // engine never injects inside nested values, and a typo'd step field failing
 // loudly is teachable. (A `//` comment on purpose: a `///` doc comment
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn tolerates_the_engine_injected_caller_worker_id() {
         // The engine stamps `_caller_worker_id` into every dispatched payload
-        // (see shell/src/functions/types.rs) — this is the byte-shape of the
+        // (see ide/src/functions/types.rs) — this is the byte-shape of the
         // live request a stale deny_unknown_fields build rejected 4× in a row
         // (2026-07-16 research-pipeline session), forcing an 18KB
         // bulk-through-chat fallback:

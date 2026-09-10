@@ -71,7 +71,7 @@ const COL_W = 16
 const NODE_R = 4.5
 const PAD_X = 12
 
-/** Wire shape of `shell::exec` (shell/src/functions/types.rs ExecResponse). */
+/** Wire shape of `shell::exec` (ide/src/functions/types.rs ExecResponse). */
 interface ExecResponse {
   exit_code: number | null
   stdout: string

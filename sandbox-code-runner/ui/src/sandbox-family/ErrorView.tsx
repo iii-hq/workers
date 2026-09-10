@@ -1,6 +1,6 @@
 /**
  * The three failure cards for sandbox::* calls, ported from
- * console/web/src/components/chat/sandbox/ErrorView.tsx with two
+ * ade/web/src/components/chat/sandbox/ErrorView.tsx with two
  * family upgrades: the S003 card carries a `slots busy` chip (the
  * daemon serialises execs one-at-a-time per sandbox), and S200's
  * partial exec streams render through the SGR-aware `AnsiOutput`.

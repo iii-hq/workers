@@ -13,4 +13,4 @@ dependencies:
   configuration: "0.x"
   llm-router: "^1.4.12"
   harness: "^1.0.0"
-  shell: "0.x"
+  ide: "0.x"

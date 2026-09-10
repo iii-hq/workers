@@ -15,7 +15,7 @@ listener, while at the boundary it:
 - **rewrites the results of the eight `engine::*` discovery functions** so a
   caller only ever sees the surface it is allowed to invoke.
 
-It is the [`console`](https://github.com/iii-hq/workers/tree/main/console) reverse-proxy pattern (`src/proxy.rs`: one
+It is the [`console`](https://github.com/iii-hq/workers/tree/main/ade) reverse-proxy pattern (`src/proxy.rs`: one
 outbound engine WebSocket per inbound connection) with an RBAC interceptor
 spliced into the pump and a second proxied route for `/ws/channels/{id}`.
 

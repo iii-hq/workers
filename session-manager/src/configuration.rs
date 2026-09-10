@@ -1,7 +1,7 @@
 //! Integration with the `configuration` worker — register the schema,
 //! fetch the authoritative value at boot, and hot-reload it when it
 //! changes. Mirrors [`context-manager`](../../context-manager/src/configuration.rs) /
-//! [`shell`](../../shell/src/configuration.rs) /
+//! [`ide`](../../ide/src/configuration.rs) /
 //! [`storage`](../../storage/src/configuration.rs).
 //!
 //! Every field hot-reloads:
