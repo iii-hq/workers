@@ -100,7 +100,7 @@ def test_required_rust_capture_stages_only_prepared_bytes_with_absolute_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     selected = {
-        "worker": "smoke",
+        "worker": "shell",
         "source_sha": "a" * 40,
         "descriptor_sha256": "b" * 64,
         "interface_capture": "required",
@@ -110,12 +110,12 @@ def test_required_rust_capture_stages_only_prepared_bytes_with_absolute_paths(
         },
         "artifact": {
             "kind": "rust-binary",
-            "binary": "smoke",
+            "binary": "shell",
             "targets": ["x86_64-unknown-linux-gnu"],
             "toolchain": {"name": "rust", "version": "1.97.1"},
         },
         "runtime": {
-            "exec": ["smoke", "--capture-interface"],
+            "exec": ["ide", "--capture-interface"],
             "environment": {},
             "resources": {},
         },
@@ -128,7 +128,7 @@ def test_required_rust_capture_stages_only_prepared_bytes_with_absolute_paths(
     descriptor, prepared = write_archive_prepared_inputs(
         tmp_path,
         selected=selected,
-        member_name="smoke",
+        member_name="ide",
         member_bytes=b"prepared executable",
         unit="rust-x86_64-unknown-linux-gnu",
         role="binary",
@@ -151,6 +151,7 @@ def test_required_rust_capture_stages_only_prepared_bytes_with_absolute_paths(
     assert runtime.is_absolute()
     assert executable.is_absolute()
     assert executable.is_relative_to(runtime)
+    assert executable.name == "ide"
     assert stage["command"][1:] == ["--capture-interface"]
     assert executable.read_bytes() == b"prepared executable"
     assert not (tmp_path / "source-must-not-be-read").exists()

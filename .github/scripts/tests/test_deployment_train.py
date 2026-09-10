@@ -269,6 +269,67 @@ def test_rust_build_uses_deterministic_target_native_archive(
             assert extracted is not None and extracted.read() == binary.read_bytes()
 
 
+@pytest.mark.parametrize(
+    ("target", "archive_name", "source_name", "member_name"),
+    [
+        ("x86_64-unknown-linux-gnu", "shell-x86_64-unknown-linux-gnu.tar.gz", "shell", "ide"),
+        ("x86_64-pc-windows-msvc", "shell-x86_64-pc-windows-msvc.zip", "shell.exe", "ide.exe"),
+    ],
+)
+def test_renamed_rust_worker_packages_the_public_executable_name(
+    tmp_path: Path,
+    monkeypatch,
+    target: str,
+    archive_name: str,
+    source_name: str,
+    member_name: str,
+) -> None:
+    source_sha = "a" * 40
+    worker_dir = tmp_path / "shell"
+    worker_dir.mkdir()
+    (worker_dir / "Cargo.toml").write_text(
+        "[package]\nname='shell'\nversion='0.1.0'\n", encoding="utf-8"
+    )
+    binary = worker_dir / "target" / target / "release" / source_name
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"shell executable\n")
+    binary.chmod(0o755)
+    selected = rust_descriptor("shell", source_sha, [target])
+    selected["registry_projection"]["worker_name"] = "ide"
+    selected["runtime"]["exec"] = ["ide"]
+    seal_descriptor(selected)
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        deployment_train.subprocess, "check_output", lambda *args, **kwargs: source_sha + "\n"
+    )
+    monkeypatch.setattr(deployment_train, "run", lambda *args, **kwargs: None)
+
+    output = tmp_path / "output"
+    build(argparse.Namespace(
+        descriptor=descriptor_path, unit=f"shell-{target}", out=output
+    ))
+
+    archive_path = output / archive_name
+    assert archive_path.is_file()
+    checksum = output / (
+        archive_name.removesuffix(".tar.gz").removesuffix(".zip") + ".sha256"
+    )
+    assert checksum.read_text(encoding="utf-8") == (
+        f"{deployment_train.sha256(archive_path)}  {archive_name}\n"
+    )
+    if archive_name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as archive:
+            assert archive.namelist() == [member_name]
+            assert archive.read(member_name) == binary.read_bytes()
+    else:
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            assert archive.getnames() == [member_name]
+            extracted = archive.extractfile(member_name)
+            assert extracted is not None and extracted.read() == binary.read_bytes()
+
+
 def test_javascript_bundle_preserves_compiler_owned_include_path(tmp_path: Path, monkeypatch) -> None:
     source_sha = "a" * 40
     source = tmp_path / "worker"
@@ -466,5 +527,3 @@ def _init_release_repo(tmp_path: Path, tags: list[str]) -> str:
     return subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True, env=GIT_HERMETIC_ENV
     ).strip()
-
-

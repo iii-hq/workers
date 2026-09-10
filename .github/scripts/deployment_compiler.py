@@ -27,6 +27,7 @@ DEPLOY_KIND = {
     "image": "oci-image",
 }
 DEPLOYMENT_SECTIONS = {"source", "artifact", "publish"}
+DEPLOYMENT_HISTORY = {"previous_names", "previous_source_paths"}
 SECRET_KEYS = {
     "api_key",
     "access_key",
@@ -159,17 +160,50 @@ def validate_public_defaults(value: Any, field: str) -> None:
             fail(f"{field}: secret defaults cannot be released")
 
 
-def normalize_dependencies(value: Any, field: str) -> list[dict[str, str]]:
+def normalize_dependencies(
+    value: Any, field: str, public_names: dict[str, str] | None = None
+) -> list[dict[str, str]]:
     if value is None:
         return []
     if not isinstance(value, dict):
         fail(f"{field} must be a mapping")
     rows: list[dict[str, str]] = []
+    seen: set[str] = set()
     for name, version in value.items():
         if not isinstance(name, str) or not name or not isinstance(version, str):
             fail(f"{field} must map worker names to semver strings")
+        name = (public_names or {}).get(name, name)
+        if name in seen:
+            fail(f"{field} contains multiple names for public worker {name!r}")
+        seen.add(name)
         rows.append({"name": name, "version": version})
     return sorted(rows, key=lambda row: (row["name"], row["version"]))
+
+
+def previous_names(value: Any, current: str, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(
+        not isinstance(name, str) or not WORKER_RE.fullmatch(name) for name in value
+    ):
+        fail(f"{field} must be an array of valid worker names")
+    if current in value or len(set(value)) != len(value):
+        fail(f"{field} must be unique and must not contain the current name")
+    return value
+
+
+def previous_source_paths(value: Any, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(
+        not isinstance(path, str)
+        or not path
+        or Path(path).is_absolute()
+        or ".." in Path(path).parts
+        for path in value
+    ):
+        fail(f"{field} must be an array of safe relative paths")
+    return value
 
 
 def normalize_tags(value: Any, field: str) -> list[str]:
@@ -222,7 +256,7 @@ def normalize_runtime(
     else:
         result["interface_config"] = None
     if kind == "rust-binary":
-        result["exec"] = [str(manifest.get("bin") or worker)]
+        result["exec"] = [str(manifest["name"])]
     elif kind in {"javascript-bundle", "python-bundle"}:
         start = scripts.get("start")
         if not isinstance(start, str) or not start.strip():
@@ -408,13 +442,22 @@ def build_units(worker: str, artifact: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"id": f"{worker}-bundle", "kind": kind}]
 
 
-def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compiler_sha: str) -> dict[str, Any]:
+def compile_worker(
+    root: Path,
+    worker: str,
+    value: Any,
+    source_sha: str,
+    compiler_sha: str,
+    public_names: dict[str, str] | None = None,
+) -> dict[str, Any]:
     if not WORKER_RE.fullmatch(worker) or not isinstance(value, dict):
         fail(f"invalid release worker entry {worker!r}")
-    if set(value) != DEPLOYMENT_SECTIONS:
+    missing = DEPLOYMENT_SECTIONS - set(value)
+    unknown = set(value) - DEPLOYMENT_SECTIONS - DEPLOYMENT_HISTORY
+    if missing or unknown:
         fail(
-            f"workers.{worker} must contain exactly {sorted(DEPLOYMENT_SECTIONS)}; "
-            f"got {sorted(value) if isinstance(value, dict) else type(value).__name__}"
+            f"workers.{worker} sections differ; missing={sorted(missing)} "
+            f"unknown={sorted(unknown)}"
         )
     source = value["source"]
     if not isinstance(source, dict) or set(source) != {"path", "package_manifest"}:
@@ -428,8 +471,13 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
     manifest = read_yaml(public_path)
     if not isinstance(manifest, dict):
         fail(f"{public_path}: expected a mapping")
-    if manifest.get("name") != worker:
-        fail(f"{public_path}: name must be {worker!r}")
+    public_name = manifest.get("name")
+    if not isinstance(public_name, str) or not WORKER_RE.fullmatch(public_name):
+        fail(f"{public_path}: name must be a valid worker name")
+    aliases = previous_names(value.get("previous_names"), public_name, f"{worker}.previous_names")
+    old_paths = previous_source_paths(
+        value.get("previous_source_paths"), f"{worker}.previous_source_paths"
+    )
     if manifest.get("manifest") != manifest_name:
         fail(f"{public_path}: manifest must match the private package_manifest")
     if "interface_smoke" in manifest:
@@ -447,12 +495,14 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
     artifact = validate_artifact(root, worker, worker_dir, value["artifact"], manifest)
     package_manifest_version = read_version(package_manifest)
     projection = {
-        "worker_name": worker,
+        "worker_name": public_name,
         "type": manifest["deploy"],
         "description": str(manifest.get("description") or ""),
         "license": str(manifest.get("license") or ""),
         "tags": normalize_tags(manifest.get("tags"), f"{worker}.tags"),
-        "dependencies": normalize_dependencies(manifest.get("dependencies"), f"{worker}.dependencies"),
+        "dependencies": normalize_dependencies(
+            manifest.get("dependencies"), f"{worker}.dependencies", public_names
+        ),
         "config": normalize_config(worker_dir, manifest),
         "experimental": bool(manifest.get("experimental", False)),
         "readme": (worker_dir / "README.md").read_text(encoding="utf-8")
@@ -478,6 +528,10 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         "build_units": build_units(worker, artifact),
         "registry_projection": projection,
     }
+    if aliases:
+        descriptor["previous_names"] = aliases
+    if old_paths:
+        descriptor["previous_source_paths"] = old_paths
     descriptor["descriptor_sha256"] = json_sha256(descriptor)
     return descriptor
 
@@ -504,11 +558,41 @@ def compile_index(args: argparse.Namespace) -> int:
     output = args.output_dir.resolve()
     if output.exists() and any(output.iterdir()):
         fail(f"{output}: output directory must be absent or empty")
+    publishable = {
+        worker: value
+        for worker, value in document["workers"].items()
+        if not isinstance(value, dict) or value.get("publish") is not False
+    }
+    public_names: dict[str, str] = {}
+    for worker, value in sorted(publishable.items()):
+        if not WORKER_RE.fullmatch(worker) or not isinstance(value, dict):
+            fail(f"invalid release worker entry {worker!r}")
+        source = value.get("source")
+        if not isinstance(source, dict):
+            fail(f"workers.{worker}.source must be a mapping")
+        worker_dir = safe_relative(
+            root, source.get("path"), f"workers.{worker}.source.path", directory=True
+        )
+        manifest = read_yaml(worker_dir / "iii.worker.yaml")
+        if not isinstance(manifest, dict):
+            fail(f"{worker_dir}/iii.worker.yaml: expected a mapping")
+        public_name = manifest.get("name")
+        if not isinstance(public_name, str) or not WORKER_RE.fullmatch(public_name):
+            fail(f"{worker_dir}/iii.worker.yaml: name must be a valid worker name")
+        for name in [
+            public_name,
+            *previous_names(value.get("previous_names"), public_name, f"{worker}.previous_names"),
+        ]:
+            owner = public_names.get(name)
+            if owner is not None:
+                fail(f"public worker name {name!r} is declared by both {owner!r} and {worker!r}")
+            public_names[name] = public_name
+
     descriptors: dict[str, dict[str, Any]] = {}
-    for worker, value in sorted(document["workers"].items()):
-        if isinstance(value, dict) and value.get("publish") is False:
-            continue
-        descriptors[worker] = compile_worker(root, worker, value, args.source_sha, digest)
+    for worker, value in sorted(publishable.items()):
+        descriptors[worker] = compile_worker(
+            root, worker, value, args.source_sha, digest, public_names
+        )
     entries: dict[str, dict[str, Any]] = {}
     for worker, descriptor in descriptors.items():
         relative = f"descriptors/{worker}.json"

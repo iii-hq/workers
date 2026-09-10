@@ -1,5 +1,5 @@
 iii: v1
-name: console
+name: ade
 language: rust
 deploy: binary
 manifest: Cargo.toml

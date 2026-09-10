@@ -44,9 +44,12 @@ workers:
     publish: true
 ```
 
-The slug, folder, Cargo package, binary, runtime executable and registered
-worker identity should match unless an existing package has an explicitly
-tested exception.
+The selector, folder, Cargo package, binary and public worker identity normally
+match. When a public identity changes, `artifact.binary` still names the source
+executable, while the compiler sets `runtime.exec` and the executable entry
+inside release archives to the public `iii.worker.yaml` name. Archive and
+checksum filenames remain based on the source binary so immutable asset naming
+does not change.
 
 ## Crate shape
 

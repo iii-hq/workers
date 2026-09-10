@@ -16,7 +16,10 @@ def test_catalog_has_only_release_build_contract_and_explicit_bundle_files():
     workers = _lib.read_worker_catalog(CATALOG)
     legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke", "registry_interface", "name"}
     for worker_id, worker in workers.items():
-        assert set(worker.raw) == {"source", "artifact", "publish"}
+        assert {"source", "artifact", "publish"}.issubset(worker.raw)
+        assert set(worker.raw) <= {
+            "source", "artifact", "publish", "previous_names", "previous_source_paths"
+        }
         assert not legacy.intersection(worker.raw), worker_id
         for include in worker.artifact.get("include", []):
             assert (worker.path / include).is_file() or include.startswith("dist/"), (

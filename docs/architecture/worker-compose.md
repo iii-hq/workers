@@ -50,9 +50,11 @@ workers:
     publish: true
 ```
 
-Each entry contains exactly `source`, `artifact`, `validation`, and `publish`.
-The worker identity is the mapping key. The selected package-manifest version
-is metadata; Release Control selects the exact deployment target version.
+Each entry contains `source`, `artifact`, and `publish`, plus optional
+`previous_names` and `previous_source_paths` identity history. The mapping key
+is the stable build selector; the public Registry identity comes from
+`iii.worker.yaml` and may differ. The selected package-manifest version is
+metadata; Release Control selects the exact deployment target version.
 
 Public runtime and Registry metadata remain in `<worker>/iii.worker.yaml`:
 identity, deploy kind, package manifest, binary name, description, license,

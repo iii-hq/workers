@@ -14,8 +14,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
 
 
-BINARY_NAME_EXCEPTIONS = frozenset({"acp"})
-
 BUNDLE_PRESET_IMAGES = frozenset({
     "docker.io/iiidev/python:latest",
     "docker.io/iiidev/node:latest",
@@ -33,8 +31,6 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     for key in ("name", "language", "deploy", "manifest"):
         if not manifest.raw.get(key):
             hard(f"{worker}/iii.worker.yaml is missing key: {key}")
-    if manifest.name != worker:
-        hard(f"{worker}/iii.worker.yaml name={manifest.name!r} does not match folder")
     if manifest.language not in {"rust", "node", "python", "javascript"}:
         hard(f"{worker}/iii.worker.yaml has unsupported language={manifest.language!r}")
     if manifest.deploy not in {"binary", "image", "bundle"}:
@@ -77,9 +73,9 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
         hard(f"{worker}/iii.worker.yaml tags must be non-empty when Registry interface publication is enabled")
 
     if manifest.deploy == "binary":
-        executable = manifest.bin or manifest.name
-        if executable != worker and worker not in BINARY_NAME_EXCEPTIONS:
-            hard(f"{worker}/iii.worker.yaml bin={executable!r} must match the worker ID")
+        executable = manifest.bin or worker
+        if executable != (spec.binary or worker):
+            hard(f"{worker}/iii.worker.yaml bin={executable!r} differs from artifact.binary")
     if manifest.deploy == "bundle":
         scripts = manifest.raw.get("scripts") or {}
         if not isinstance(scripts, dict):
@@ -131,9 +127,6 @@ def main(argv: list[str] | None = None) -> int:
         validate_public_manifest(worker, spec, hard)
         if not spec.publish:
             hard(f"{worker}: first-party CI workers must set publish=true")
-        expected_path = pathlib.Path(worker).resolve()
-        if spec.path != expected_path:
-            hard(f"{worker}: source.path must be {worker!r}, got {spec.source.get('path')!r}")
         readme = spec.path / "README.md"
         if not readme.exists():
             soft(f"{worker}/README.md is missing")
@@ -148,13 +141,6 @@ def main(argv: list[str] | None = None) -> int:
         elif spec.validation.get("interface") == "required" and not tags:
             hard(f"{worker}/iii.worker.yaml tags must be non-empty when the PR interface smoke is enabled")
 
-        if spec.artifact_kind == "rust-binary":
-            executable = spec.binary or worker
-            if executable != worker and worker not in BINARY_NAME_EXCEPTIONS:
-                hard(
-                    f"{worker}: artifact.binary={executable!r} must match the worker ID "
-                    "because Registry extraction addresses the worker by ID"
-                )
         if spec.manifest:
             manifest_path = spec.path / spec.manifest
             if not manifest_path.is_file():
@@ -167,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
                     current_version = None
                 try:
                     base_blob = subprocess.check_output(
-                        ["git", "show", f"{args.base_ref}:{worker}/{spec.manifest}"],
+                        ["git", "show", f"{args.base_ref}:{spec.source['path']}/{spec.manifest}"],
                         text=True,
                         stderr=subprocess.DEVNULL,
                     )
