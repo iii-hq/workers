@@ -200,7 +200,7 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
 pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
-        "name": "Shell",
+        "name": "IDE",
         "description": "Command denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },

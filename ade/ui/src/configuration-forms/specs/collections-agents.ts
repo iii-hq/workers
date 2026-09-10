@@ -110,7 +110,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         ],
       },
       {
-        title: 'Console terminal',
+        title: 'ADE terminal',
         fields: [
           object('terminal', 'Terminal', [
             text('executable', 'Terminal executable', 'Claude binary on the terminal host.'),
@@ -298,7 +298,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
   {
     id: 'pi',
     title: 'Pi',
-    description: 'Pi turn defaults, event streams and console terminal setup.',
+    description: 'Pi turn defaults, event streams and ADE terminal setup.',
     sections: [
       {
         title: 'Turn defaults',
@@ -321,7 +321,7 @@ export const agentCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         ],
       },
       {
-        title: 'Console terminal',
+        title: 'ADE terminal',
         fields: [
           object('terminal', 'Terminal', [
             text('executable', 'Terminal executable'),

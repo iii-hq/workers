@@ -61,7 +61,7 @@ const FAMILIES: { match: (typeId: string) => boolean; spec: FamilySpec }[] = [
   },
   {
     match: (t) => t.startsWith('console:'),
-    spec: { family: 'asset', label: 'console asset', tone: 'ink' },
+    spec: { family: 'asset', label: 'ADE asset', tone: 'ink' },
   },
 ]
 

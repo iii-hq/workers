@@ -477,7 +477,7 @@ export function CommandPalette({
               setActive(0)
             }}
             placeholder={placeholderFor(parsed.prefix)}
-            aria-label="Search the console"
+            aria-label="Search the ADE"
             // Under 16px iOS Safari zooms the page on focus, which strands a
             // fixed overlay off screen. Worker and function ids are not prose,
             // so autocorrect and the automatic leading capital both mangle them.

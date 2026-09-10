@@ -1740,7 +1740,7 @@ function Header({
           <button
             type="button"
             onClick={onOpenPalette}
-            aria-label="search the console"
+            aria-label="search the ADE"
             className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
           >
             <Search className="size-6" aria-hidden />
@@ -1814,8 +1814,8 @@ function Header({
             type="button"
             onClick={onToggleSettings}
             aria-pressed={settingsOpen}
-            aria-label="console settings"
-            title="console settings"
+            aria-label="ADE settings"
+            title="ADE settings"
             className={cn(
               'relative flex size-10 items-center justify-center rounded-md border font-sans text-sm',
               settingsOpen
@@ -1862,7 +1862,7 @@ function ConfigurationOverlay({
       <DialogContent className="flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-6xl flex-col overflow-hidden rounded-xl p-0 shadow-floating sm:h-[min(52rem,calc(100dvh-3rem))] sm:max-h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)]">
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
-          Configure the console and registered workers.
+          Configure the ADE and registered workers.
         </DialogDescription>
         <Configuration
           theme={theme}

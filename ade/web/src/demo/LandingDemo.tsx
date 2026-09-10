@@ -414,7 +414,7 @@ function DemoChrome({
   return (
     <div className="relative flex items-center gap-3 border-b border-rule bg-panel px-5 py-2">
       <span className="font-mono text-[12px] lowercase tracking-[0.06em] text-ink">
-        iii console
+        iii ADE
       </span>
       <TryItCta />
       <span className="text-ink-ghost">·</span>
@@ -498,8 +498,7 @@ function MobileNotice() {
         shown ? 'translate-y-0 opacity-100' : '-translate-y-3 opacity-0',
       )}
     >
-      this is a simplified view. the iii console is best viewed on larger
-      screens.
+      this is a simplified view. the iii ADE is best viewed on larger screens.
     </div>
   )
 }

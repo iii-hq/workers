@@ -49,7 +49,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
         fields: [
           toggle(
             'forward_actions',
-            'Forward console actions',
+            'Forward ADE actions',
             'Send actions back to the originating Harness session.',
             { defaultValue: true },
           ),
@@ -447,14 +447,14 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
   {
     id: 'tailscale',
     title: 'Tailscale',
-    description: 'Console sharing through Tailscale Serve and Funnel.',
+    description: 'ADE sharing through Tailscale Serve and Funnel.',
     legacyWrapper: 'tailscale',
     sections: [
       {
         title: 'Connection',
         fields: [
           text('tailscale_binary', 'Tailscale executable'),
-          text('console_url', 'Console URL', 'Must point to a loopback HTTP(S) Console root.'),
+          text('console_url', 'ADE URL', 'Must point to a loopback HTTP(S) ADE root.'),
           number('default_https_port', 'Default HTTPS port', undefined, { min: 1, max: 65535 }),
           number('command_timeout_ms', 'Command timeout (ms)', undefined, { min: 1 }),
         ],

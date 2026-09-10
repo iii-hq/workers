@@ -92,8 +92,8 @@ const DIGITS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const
 export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   {
     id: 'palette.toggle',
-    title: 'Search the console',
-    group: 'Console',
+    title: 'Search the ADE',
+    group: 'ADE',
     scope: 'global',
     bindings: ['Mod+K'],
     firesWhileTyping: true,
@@ -227,7 +227,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   {
     id: 'app.settings',
     title: 'Open settings',
-    group: 'Console',
+    group: 'ADE',
     scope: 'global',
     bindings: { mac: ['Ctrl+,'], other: ['Alt+,'] },
     keywords: ['configuration', 'preferences'],
@@ -334,7 +334,7 @@ export function shortcutClaimReason(
       for (const variant of variants) {
         const ownIdentity = conflictIdentity(variant, platform)
         if (ownIdentity === identity || ownIdentity === head) {
-          return `the console uses it for "${definition.title}"`
+          return `the ADE uses it for "${definition.title}"`
         }
         if (
           isSequence(variant) &&

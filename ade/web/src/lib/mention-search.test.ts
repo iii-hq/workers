@@ -18,9 +18,9 @@ const functions: FunctionEntry[] = [
 ]
 
 const files: FileHit[] = [
-  { path: 'ide/src/main.rs', kind: 'file' },
+  { path: 'shell/src/main.rs', kind: 'file' },
   { path: 'shell/', kind: 'dir' },
-  { path: 'ade/web/src/App.tsx', kind: 'file' },
+  { path: 'console/web/src/App.tsx', kind: 'file' },
 ]
 
 function names(rows: MentionCandidate[]): string[] {
@@ -33,9 +33,9 @@ describe('rankMentions', () => {
       'shell::exec',
       'shell::fs::read',
       'engine::echo',
-      'ide/src/main.rs',
+      'shell/src/main.rs',
       'shell/',
-      'ade/web/src/App.tsx',
+      'console/web/src/App.tsx',
     ])
   })
 
@@ -45,7 +45,7 @@ describe('rankMentions', () => {
       'shell/',
       'shell::exec',
       'shell::fs::read',
-      'ide/src/main.rs',
+      'shell/src/main.rs',
     ])
   })
 
@@ -63,13 +63,13 @@ describe('rankMentions', () => {
       'engine::echo',
     ])
     expect(names(rankMentions('cwsa', functions, files))).toEqual([
-      'ade/web/src/App.tsx',
+      'console/web/src/App.tsx',
     ])
   })
 
   it('is case-insensitive', () => {
     expect(names(rankMentions('APP', functions, files))).toEqual([
-      'ade/web/src/App.tsx',
+      'console/web/src/App.tsx',
     ])
   })
 })
@@ -78,11 +78,11 @@ describe('row labels', () => {
   it('splits files into name and folder, functions into id and description', () => {
     const file: MentionCandidate = {
       kind: 'file',
-      path: 'ade/web/src/App.tsx',
+      path: 'console/web/src/App.tsx',
       isDir: false,
     }
     expect(mentionName(file)).toBe('App.tsx')
-    expect(mentionDetail(file)).toBe('ade/web/src')
+    expect(mentionDetail(file)).toBe('console/web/src')
     const dir: MentionCandidate = { kind: 'file', path: 'shell/', isDir: true }
     expect(mentionName(dir)).toBe('shell')
     expect(mentionDetail(dir)).toBe('')
@@ -94,7 +94,7 @@ describe('row labels', () => {
     expect(mentionName(fn)).toBe('shell::exec')
     expect(mentionDetail(fn)).toBe('run')
     expect(mentionKey(fn)).toBe('fn:shell::exec')
-    expect(mentionKey(file)).toBe('file:ade/web/src/App.tsx')
+    expect(mentionKey(file)).toBe('file:console/web/src/App.tsx')
   })
 })
 

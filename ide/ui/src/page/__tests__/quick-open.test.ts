@@ -48,11 +48,11 @@ describe('normalizeQuickOpenQuery', () => {
 
 describe('fuzzyMatchIndices', () => {
   it('prefers the query inside the file name', () => {
-    expect(fuzzyMatchIndices('index', 'ide/ui/src/page/index.tsx')).toEqual([18, 19, 20, 21, 22])
+    expect(fuzzyMatchIndices('index', 'shell/ui/src/page/index.tsx')).toEqual([18, 19, 20, 21, 22])
   })
 
   it('then the query anywhere in the path', () => {
-    expect(fuzzyMatchIndices('ui/src', 'ide/ui/src/page/index.tsx')).toEqual([6, 7, 8, 9, 10, 11])
+    expect(fuzzyMatchIndices('ui/src', 'shell/ui/src/page/index.tsx')).toEqual([6, 7, 8, 9, 10, 11])
   })
 
   it('then the first subsequence, the way the worker scores it', () => {

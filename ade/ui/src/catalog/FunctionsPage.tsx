@@ -212,7 +212,7 @@ export function FunctionsPage({
         {
           id: 'toggle-internal',
           title: 'Toggle internal functions',
-          detail: 'Show or hide console and worker plumbing functions',
+          detail: 'Show or hide ADE and worker plumbing functions',
           keywords: ['internal', 'plumbing', 'hidden'],
           run: () => setShowInternal((v) => !v),
         },

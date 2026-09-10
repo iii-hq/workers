@@ -148,7 +148,7 @@ export function ConsoleSettingsTab({
       <div className="mx-auto flex max-w-3xl flex-col gap-8 px-4 py-6 sm:px-6 sm:py-8">
         <SettingsSection
           title="Appearance"
-          description="Choose how the console looks in this browser."
+          description="Choose how the ADE looks in this browser."
         >
           <SettingsList>
             <SettingsRow

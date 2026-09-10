@@ -66,12 +66,12 @@ export function FilesystemAccessDialog({
         <DialogDescription className="mt-1">
           {workspaceScoped
             ? 'folders the agent can read and write in this conversation.'
-            : 'the working directory sets where commands start; shell configuration controls access.'}
+            : 'the working directory sets where commands start; IDE configuration controls access.'}
         </DialogDescription>
 
         {!workspaceScoped ? (
           <p className="mt-3 font-mono text-[11px] leading-5 text-ink-faint">
-            filesystem approvals are off. access uses the shell defaults shown
+            filesystem approvals are off. access uses the IDE defaults shown
             below.
           </p>
         ) : null}
@@ -191,7 +191,7 @@ export function FilesystemAccessDialog({
               onClick={() => onOpenChange(false)}
               className="mt-1 inline-block px-2 font-mono text-[11px] lowercase text-accent hover:underline"
             >
-              edit in shell configuration →
+              edit in IDE configuration →
             </a>
           </FolderGroup>
         </div>

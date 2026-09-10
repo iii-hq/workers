@@ -210,7 +210,7 @@ export function FileMentionPill({
       ref={pillRef}
       contentEditable={false}
       data-file-path={formatFileMentionInner({ path, range })}
-      title={openable ? `open ${path} in the shell` : undefined}
+      title={openable ? `open ${path} in the IDE` : undefined}
       className={cn(
         'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle font-mono text-[13px] text-ink select-none transition-colors',
         selected ? 'bg-surface-selected cursor-pointer' : 'bg-surface',

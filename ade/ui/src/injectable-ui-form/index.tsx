@@ -173,7 +173,7 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
       .map((worker) => ({
         worker,
         title: worker,
-        description: 'This worker is not currently registering Console assets.',
+        description: 'This worker is not currently registering ADE assets.',
         assets: 0,
       }))
     return [...workers, ...unavailable].sort((a, b) => a.title.localeCompare(b.title))
@@ -208,12 +208,12 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
 
   return (
     <div className="console-ui-form" ref={rootRef}>
-      <SettingsSection title="Server" description="Connection settings for this Console instance.">
+      <SettingsSection title="Server" description="Connection settings for this ADE instance.">
         <SettingsList>
           <SettingsRow
             data-field="http_port"
             label="HTTP port"
-            description="Serves the Console, injected assets, and the WebSocket proxy. Changes apply without restarting the worker."
+            description="Serves the ADE, injected assets, and the WebSocket proxy. Changes apply without restarting the worker."
             meta="Use 0 to let the operating system choose an available port."
             control={
               <Input
@@ -241,7 +241,7 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
       <SettingsSection
         data-field="traces"
         title="Traces"
-        description="Preferences shared by every browser connected to this Console."
+        description="Preferences shared by every browser connected to this ADE."
       >
         <SettingsList>
           <SettingsRow
@@ -357,7 +357,7 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
       <SettingsSection
         data-field="injectableUi"
         title="Worker interface extensions"
-        description="Choose which workers can add pages, renderers, and configuration forms to the Console. Changes apply to open tabs after saving."
+        description="Choose which workers can add pages, renderers, and configuration forms to the ADE. Changes apply to open tabs after saving."
       >
         {rows === null && loadError === null ? (
           <div className="console-ui-toggle-list" aria-hidden="true">
@@ -371,7 +371,7 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
           </div>
         ) : null}
         {rows?.length === 0 ? (
-          <div className="console-ui-form-empty">No worker is currently registering Console assets.</div>
+          <div className="console-ui-form-empty">No worker is currently registering ADE assets.</div>
         ) : null}
         {rows && rows.length > 0 ? (
           <SettingsList>
@@ -381,7 +381,7 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
                 <SettingsRow
                   key={row.worker}
                   label={row.title}
-                  description={row.description || 'Injected Console interface'}
+                  description={row.description || 'Injected ADE interface'}
                   meta={
                     row.assets > 0 ? `${row.assets} asset${row.assets === 1 ? '' : 's'}` : 'Not currently registered'
                   }

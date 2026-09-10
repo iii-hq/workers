@@ -15,7 +15,7 @@ describe('workers configuration hash helpers', () => {
       '#/configuration/workers/llm-router',
     )
     expect(hashForWorkersConfiguration('shell', ['fs', 'host_roots'])).toBe(
-      '#/configuration/workers/ide/fs/host_roots',
+      '#/configuration/workers/shell/fs/host_roots',
     )
   })
 
@@ -27,7 +27,7 @@ describe('workers configuration hash helpers', () => {
   it('parses canonical workers configuration hashes', () => {
     expect(
       workersConfigurationRouteFromHash(
-        '#/configuration/workers/ide/fs/host_roots',
+        '#/configuration/workers/shell/fs/host_roots',
       ),
     ).toEqual({
       open: true,
@@ -76,9 +76,9 @@ describe('workers configuration hash helpers', () => {
       normalizeWorkersConfigurationHash(
         '#/workers/configuration/shell/fs/host_roots',
       ),
-    ).toBe('#/configuration/workers/ide/fs/host_roots')
+    ).toBe('#/configuration/workers/shell/fs/host_roots')
     expect(
-      normalizeWorkersConfigurationHash('#/configuration/workers/ide'),
+      normalizeWorkersConfigurationHash('#/configuration/workers/shell'),
     ).toBeNull()
   })
 

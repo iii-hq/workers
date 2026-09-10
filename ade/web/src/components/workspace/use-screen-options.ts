@@ -84,7 +84,7 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
   },
   shell: {
     icon: SquareTerminal,
-    description: 'Interactive shell sessions.',
+    description: 'Files, git, search and terminal.',
   },
   state: {
     icon: Database,

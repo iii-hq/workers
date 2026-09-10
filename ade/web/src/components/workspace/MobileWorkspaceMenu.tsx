@@ -53,7 +53,7 @@ export function MobileWorkspaceMenu({
               className="mb-3 flex min-h-12 w-full items-center gap-3 rounded-sm bg-surface px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
             >
               <Search className="size-5" aria-hidden />
-              Search the console
+              Search the ADE
             </button>
 
             <ul className="space-y-1" aria-label="Workspaces">

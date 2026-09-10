@@ -1805,7 +1805,7 @@ export function ShellExplorerPage({
     <PageHeader
       className="shui-page-header"
       icon={<SquareTerminal />}
-      title="Shell"
+      title="IDE"
       description={
         root ? (
           <DirectoryPicker
@@ -1900,7 +1900,7 @@ export function ShellExplorerPage({
       <PageShell>
         {header}
         <div className="shui-side-note warn pad">
-          shell explorer needs the worker's coder surface — coder::info failed: {infoError}
+          the IDE needs the worker's coder surface — coder::info failed: {infoError}
         </div>
       </PageShell>
     )
@@ -1909,7 +1909,7 @@ export function ShellExplorerPage({
     return (
       <PageShell>
         {header}
-        <div className="shui-side-note pad">connecting to shell worker…</div>
+        <div className="shui-side-note pad">connecting to IDE worker…</div>
       </PageShell>
     )
   }

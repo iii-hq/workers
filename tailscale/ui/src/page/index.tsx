@@ -797,7 +797,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
           </TableFrame>
         </TableViewport>
       ) : (
-        <EmptyState icon={QrCode} title="No routes published" description="Create a link above to publish the Console or any local service. Routes the worker did not create are never reset." />
+        <EmptyState icon={QrCode} title="No routes published" description="Create a link above to publish the ADE or any local service. Routes the worker did not create are never reset." />
       )}
     </SectionCard>
   )
@@ -903,8 +903,8 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                     <Input value={path} onChange={setPath} aria-label="Path" />
                   </Field>
                 </div>
-                <Field label="What to publish" hint="Empty publishes the Console. Otherwise a local port, a loopback URL, or an absolute directory.">
-                  <Input value={target} onChange={setTarget} placeholder={configuration ? `${configuration.console_url} (the Console)` : 'the Console'} aria-label="Target" />
+                <Field label="What to publish" hint="Empty publishes the ADE. Otherwise a local port, a loopback URL, or an absolute directory.">
+                  <Input value={target} onChange={setTarget} placeholder={configuration ? `${configuration.console_url} (the ADE)` : 'the ADE'} aria-label="Target" />
                 </Field>
                 <p className="ts-note">
                   {mode === 'serve'
@@ -1432,7 +1432,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
       <PageHeader
         icon={<Globe />}
         title="Tailscale"
-        description={status?.dns_name ? <span className="ts-mono">{status.dns_name}</span> : 'Your tailnet from the Console'}
+        description={status?.dns_name ? <span className="ts-mono">{status.dns_name}</span> : 'Your tailnet from the ADE'}
         actions={
           <>
             {updatedLabel && <span className="ts-updated">{refreshing ? 'refreshing…' : updatedLabel}</span>}

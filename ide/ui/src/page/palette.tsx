@@ -63,13 +63,13 @@ export function registerShellPalette(host: Host): void {
     {
       id: 'open-file',
       title: 'Open file…',
-      detail: 'Find a file by name and open it in the shell',
+      detail: 'Find a file by name and open it in the IDE',
       keywords: ['quick open', 'file', 'go to file', 'path'],
       run: () => host.palette?.open({ query: '#' }),
     },
     {
       id: 'open',
-      title: 'Open the shell',
+      title: 'Open the IDE',
       detail: 'Files, search, changes and a terminal for the working directory',
       keywords: ['terminal', 'explorer', 'files', 'ide'],
       run: () => host.panels?.open({ pageId: 'shell', context: {} }),

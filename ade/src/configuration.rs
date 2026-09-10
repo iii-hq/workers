@@ -89,7 +89,7 @@ fn schema() -> Value {
                 "minimum": 0,
                 "maximum": 65535,
                 "default": 3113,
-                "description": "TCP port for the Console UI, injected assets, and /ws proxy. Changes rebind the listener live."
+                "description": "TCP port for the ADE UI, injected assets, and /ws proxy. Changes rebind the listener live."
             },
             "traces": {
                 "type": "object",
@@ -125,7 +125,7 @@ fn schema() -> Value {
                 "properties": {
                     "disabledWorkers": {
                         "type": "array",
-                        "description": "Workers whose injected console UI is turned off. Their assets are held (not served or loaded in tabs) until removed from this list; changes apply live. The console itself cannot be disabled.",
+                        "description": "Workers whose injected ADE UI is turned off. Their assets are held (not served or loaded in tabs) until removed from this list; changes apply live. The ADE itself cannot be disabled.",
                         "items": { "type": "string" }
                     }
                 },
@@ -198,8 +198,8 @@ pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Re
 
     let mut payload = json!({
         "id": config_id(),
-        "name": "Console",
-        "description": "Console server and UI settings — live HTTP port binding, \
+        "name": "ADE",
+        "description": "ADE server and UI settings — live HTTP port binding, \
                         Traces V2 saved views, and per-worker injectable-UI toggles.",
         "schema": schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
@@ -301,7 +301,7 @@ pub fn register_config_trigger(
             }
         })
         .description(
-            "Internal: re-apply the Console HTTP port and injectable-UI toggles \
+            "Internal: re-apply the ADE HTTP port and injectable-UI toggles \
              when its configuration entry changes.",
         )
         .metadata(json!({ "internal": true })),

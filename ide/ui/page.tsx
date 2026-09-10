@@ -36,7 +36,7 @@ export default function setup(host: Host) {
 
   host.pages.register({
     id: 'shell',
-    title: 'shell',
+    title: 'IDE',
     configurationId: 'shell',
     render: (props: PageRenderProps) => (
       <ShellExplorerPage

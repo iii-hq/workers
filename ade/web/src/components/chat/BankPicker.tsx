@@ -54,7 +54,7 @@ function useBankOptions(value: string | null, conciseLabels: boolean) {
           {
             value,
             label: conciseLabels ? value : `memory: ${value}`,
-            title: 'set outside this console',
+            title: 'set outside this ADE',
           },
         ]
       : []),

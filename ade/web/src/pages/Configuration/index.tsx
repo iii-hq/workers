@@ -1,5 +1,4 @@
 import {
-  AppWindow,
   ArrowLeft,
   BookOpen,
   Bot,
@@ -34,7 +33,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
-  Terminal,
+  SquareTerminal,
   Webhook,
   Workflow,
   X,
@@ -73,7 +72,7 @@ const CONFIGURATION_ICONS: Record<string, LucideIcon> = {
   'code-runner': Code2,
   codex: Bot,
   computer: Monitor,
-  console: AppWindow,
+  console: Settings2,
   'context-manager': BrainCircuit,
   cron: Clock3,
   cursor: Bot,
@@ -103,7 +102,7 @@ const CONFIGURATION_ICONS: Record<string, LucideIcon> = {
   scrapling: Globe2,
   'security-scan': ScanSearch,
   'session-manager': MessagesSquare,
-  shell: Terminal,
+  shell: SquareTerminal,
   slack: MessagesSquare,
   state: Braces,
   storage: HardDrive,
@@ -129,7 +128,7 @@ const CONFIGURATION_NAMES: Record<string, string> = {
   'code-runner': 'Code Runner',
   codex: 'Codex',
   computer: 'Computer',
-  console: 'Console',
+  console: 'ADE',
   'context-manager': 'Context Manager',
   cron: 'Cron',
   cursor: 'Cursor',
@@ -159,7 +158,7 @@ const CONFIGURATION_NAMES: Record<string, string> = {
   scrapling: 'Scrapling',
   'security-scan': 'Security Scan',
   'session-manager': 'Session Manager',
-  shell: 'Shell',
+  shell: 'IDE',
   slack: 'Slack',
   state: 'State',
   storage: 'Storage',
@@ -271,7 +270,7 @@ export function Configuration({
               <SettingsContentHeader
                 icon={Settings2}
                 title="General"
-                description="Console appearance, permissions, providers, and filesystem access."
+                description="ADE appearance, permissions, providers, and filesystem access."
                 onBack={narrow ? showMobileNavigation : undefined}
               />
               <ConsoleSettingsTab theme={theme} onThemeChange={onThemeChange} />
@@ -411,7 +410,7 @@ function SettingsNavigation({
             <SettingsNavItem
               icon={Settings2}
               label="General"
-              description="Console preferences"
+              description="ADE preferences"
               selected={!route.open}
               onClick={onSelectGeneral}
             />

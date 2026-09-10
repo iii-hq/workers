@@ -152,7 +152,7 @@ export function FilesystemAccessPrompt({
           <DialogDescription className="mt-3 text-ink">
             this adds{' '}
             <code className="px-1 bg-paper-2 text-accent">{requestedRoot}</code>{' '}
-            to the permanent allowed folders (shell fs.host_roots) for every
+            to the permanent allowed folders (IDE fs.host_roots) for every
             conversation.
           </DialogDescription>
           <DialogDescription className="mt-2 text-ink-faint">

@@ -216,9 +216,9 @@ function ownershipFor(
     case 'auth':
       return `The credentials configured for ${provider ?? 'this provider'} were refused. This is a problem with the API key or account on the provider side, not with iii or the console.`
     case 'billing':
-      return `The ${provider ?? 'provider'} account has run out of credit or quota. This is a billing limit on the provider side, not an iii or console failure.`
+      return `The ${provider ?? 'provider'} account has run out of credit or quota. This is a billing limit on the provider side, not an iii or ADE failure.`
     case 'configuration':
-      return 'No provider is set up to serve this request. This is a console setup gap on your side, not a provider outage or an iii bug.'
+      return 'No provider is set up to serve this request. This is an ADE setup gap on your side, not a provider outage or an iii bug.'
     case 'context':
       return 'The conversation has outgrown the context window of the selected model. Nothing is broken; the history is simply too large to send.'
     case 'rate-limit':
@@ -228,7 +228,7 @@ function ownershipFor(
     case 'rejected':
       return `${api} rejected this request. Something in the selected model or its provider settings is not accepted on the provider side.`
     case 'send':
-      return 'The console lost contact with iii while sending. This is a connection problem between the console and the iii engine, not a problem with your message.'
+      return 'The ADE lost contact with iii while sending. This is a connection problem between the ADE and the iii engine, not a problem with your message.'
     case 'internal':
       return 'iii could not run this turn. This looks like a problem inside iii rather than with your provider or your request.'
     case 'unknown':

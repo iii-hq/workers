@@ -554,7 +554,7 @@ export const serviceCollectionWorkerSpecs: readonly WorkerConfigurationSpec[] = 
   },
   {
     id: 'shell',
-    title: 'Shell',
+    title: 'IDE',
     description: 'Execution policy, environment, filesystem jail, code surface and turn history.',
     sections: [
       {

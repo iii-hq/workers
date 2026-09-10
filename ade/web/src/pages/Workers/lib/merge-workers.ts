@@ -9,7 +9,7 @@ import {
 } from '../types'
 
 const STOP_REASON = {
-  internal: 'internal engine workers cannot be stopped from the console',
+  internal: 'internal engine workers cannot be stopped from the ADE',
   standalone:
     'standalone workers must be stopped from the process that started them',
   notRunning: 'worker is not running',

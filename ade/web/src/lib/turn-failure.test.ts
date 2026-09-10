@@ -186,7 +186,7 @@ describe('classifyTurnFailure', () => {
     expect(presentation.category).toBe('billing')
     expect(presentation.title).toBe('Provider credit or quota exhausted')
     expect(presentation.ownership).toContain('anthropic account')
-    expect(presentation.ownership).toContain('not an iii or console failure')
+    expect(presentation.ownership).toContain('not an iii or ADE failure')
     expect(presentation.actions[0]).toMatch(/Add credit/)
   })
 

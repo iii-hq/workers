@@ -70,7 +70,7 @@ const LOCAL_ENTRIES: PaletteEntry[] = [
     id: 'action:settings',
     kind: 'action',
     title: 'Open settings',
-    detail: 'Console and worker configuration',
+    detail: 'ADE and worker configuration',
     run: () => {},
   },
   {
@@ -92,7 +92,7 @@ const LOCAL_ENTRIES: PaletteEntry[] = [
   {
     id: 'page:shell',
     kind: 'page',
-    title: 'Shell',
+    title: 'IDE',
     detail: 'A terminal the agent shares',
     icon: Terminal,
     run: () => {},

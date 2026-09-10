@@ -224,7 +224,7 @@ describe('SystemNotice · turn failure', () => {
       /data-message-summary[^>]*>The provider rejected this request\.</,
     )
     expect(out).toMatch(
-      /data-failure-ownership[^>]*>[^<]*not an iii or console failure/,
+      /data-failure-ownership[^>]*>[^<]*not an iii or ADE failure/,
     )
     expect(out.match(/<li>/g)).toHaveLength(2)
     expect(out).toMatch(/<li>Add credit/)

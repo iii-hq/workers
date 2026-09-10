@@ -465,7 +465,7 @@ export function TriggersPage({
               <div className="console-catalog-section console-catalog-plumbing">
                 <GroupHeader
                   label="plumbing"
-                  meta="console + configuration internals"
+                  meta="ADE + configuration internals"
                   count={partitioned.plumbing.length}
                   countLabel="binding"
                   open={groupState.isOpen('__plumbing')}

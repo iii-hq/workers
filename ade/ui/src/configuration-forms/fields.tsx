@@ -1560,7 +1560,7 @@ function VariantField({
     selectOptions.unshift({
       value: selected,
       label: `Unrecognized: ${selected}`,
-      title: 'This adapter is not recognized by this console version.',
+      title: 'This adapter is not recognized by this ADE version.',
     })
   }
 
@@ -1579,7 +1579,7 @@ function VariantField({
           description={
             option?.description ??
             (unknownOption
-              ? `“${selected}” is not recognized by this console version. Its saved value is preserved.`
+              ? `“${selected}” is not recognized by this ADE version. Its saved value is preserved.`
               : undefined)
           }
           meta={
@@ -1627,7 +1627,7 @@ function VariantField({
               label="Adapter settings"
               description={
                 unknownOption
-                  ? 'These settings belong to an adapter this console does not recognize. You can edit them without changing their JSON shape.'
+                  ? 'These settings belong to an adapter this ADE does not recognize. You can edit them without changing their JSON shape.'
                   : `This saved value is not an object, so ${option?.label ?? 'the adapter'} fields cannot be shown. Edit it below or replace it explicitly.`
               }
               action={

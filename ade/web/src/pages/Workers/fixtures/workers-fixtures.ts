@@ -59,7 +59,7 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     status: 'connected',
     stopEnabled: false,
     stopDisabledReason:
-      'internal engine workers cannot be stopped from the console',
+      'internal engine workers cannot be stopped from the ADE',
     composeState: null,
     lastError: null,
   },

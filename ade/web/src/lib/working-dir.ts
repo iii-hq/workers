@@ -112,7 +112,7 @@ export async function validateWorkspaceDir(
     return {
       ok: false,
       error:
-        'the shell worker is not connected, so working directories cannot be validated',
+        'the IDE worker is not connected, so working directories cannot be validated',
     }
   }
   try {
