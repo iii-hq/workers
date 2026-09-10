@@ -5,7 +5,6 @@
 //! **Self-skips** when no engine is available (storage-worker pattern):
 //! set `III_ENGINE_BIN=/path/to/iii` or have `iii` on PATH.
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,7 +12,7 @@ use std::time::{Duration, Instant};
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
+use iii_sdk::{register_worker, IIIClient, RegisterFunction};
 use llm_router::channels::create_router_channel;
 use llm_router::config::entry::{read_entry_value, register_entry, write_entry_value, ENTRY_ID};
 use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
@@ -22,215 +21,12 @@ use llm_router::registry::store::RegistryStore;
 use llm_router::types::router::ProviderDeclaration;
 use serde_json::{json, Value};
 
-// ── engine bootstrap ────────────────────────────────────────────────────────
-
-struct Engine {
-    url: String,
-    child: std::process::Child,
-    state_child: Option<std::process::Child>,
-    dir: std::path::PathBuf,
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        if let Some(state_child) = self.state_child.as_mut() {
-            let _ = state_child.kill();
-            let _ = state_child.wait();
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn engine_bin() -> Option<std::path::PathBuf> {
-    if let Ok(p) = std::env::var("III_ENGINE_BIN") {
-        return Some(p.into());
-    }
-    let on_path = std::process::Command::new("iii")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    on_path.then(|| "iii".into())
-}
-
-fn state_bin() -> Option<std::path::PathBuf> {
-    std::env::var_os("III_STATE_BIN").map(Into::into)
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral port")
-        .local_addr()
-        .expect("local addr")
-        .port()
-}
-
-fn test_init_options() -> InitOptions {
-    static NEXT_WORKER_ID: AtomicU64 = AtomicU64::new(1);
-    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
-    let worker_id = NEXT_WORKER_ID.fetch_add(1, Ordering::Relaxed);
-    metadata.name = format!("{}-test-{worker_id}", metadata.name);
-    InitOptions {
-        metadata: Some(metadata),
-        ..InitOptions::default()
-    }
-}
-
-/// Bare engine mirroring CI's interface-boot smoke (`workers: []`): builtin
-/// daemons only — no external state worker. Port pinned through
-/// iii-worker-manager so parallel tests don't collide on the default port.
-async fn spawn_bare_engine() -> Option<Engine> {
-    let config_for = |port: u16, _dir: &std::path::Path| {
-        format!(
-            r#"workers:
-  - name: iii-worker-manager
-    config:
-      port: {port}
-"#
-        )
-    };
-    spawn_engine_with(config_for).await
-}
-
-/// Spawn a minimal engine plus the standalone state worker; poll until both
-/// are reachable. None = a required binary is unavailable → self-skip.
-async fn spawn_engine() -> Option<Engine> {
-    let state_bin = state_bin()?;
-    let mut engine = spawn_bare_engine().await?;
-    let state_config_path = engine.dir.join("state-config.yaml");
-    std::fs::write(
-        &state_config_path,
-        "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
-    )
-    .expect("write state config");
-
-    let state_child = std::process::Command::new(&state_bin)
-        .arg("--url")
-        .arg(&engine.url)
-        .arg("--config")
-        .arg(&state_config_path)
-        .current_dir(&engine.dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap_or_else(|error| panic!("spawn state worker {}: {error}", state_bin.display()));
-    engine.state_child = Some(state_child);
-
-    let probe = register_worker(&engine.url, test_init_options());
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let ready = probe
-            .trigger(TriggerRequest {
-                function_id: "state::get".into(),
-                payload: json!({ "scope": "llm-router-test", "key": "ready" }),
-                action: None,
-                timeout_ms: Some(1000),
-            })
-            .await
-            .is_ok();
-        if ready {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "state worker did not become ready in 15s"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    probe.shutdown();
-
-    Some(engine)
-}
-
-/// Shared engine bootstrap: pick a port + temp dir, write the config the
-/// caller composes for them, spawn, poll until WS-reachable.
-async fn spawn_engine_with(
-    config_for: impl FnOnce(u16, &std::path::Path) -> String,
-) -> Option<Engine> {
-    let bin = engine_bin()?;
-    let port = free_port();
-    let dir = std::env::temp_dir().join(format!("llm-router-it-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-
-    let config = config_for(port, &dir);
-    let config_path = dir.join("config.yaml");
-    std::fs::File::create(&config_path)
-        .and_then(|mut f| f.write_all(config.as_bytes()))
-        .expect("write config");
-
-    let child = std::process::Command::new(&bin)
-        .arg("--no-update-check")
-        .arg("--config")
-        .arg(&config_path)
-        .current_dir(&dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn engine");
-
-    let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, test_init_options());
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let ready = probe
-            .trigger(TriggerRequest {
-                function_id: "engine::workers::list".into(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(1000),
-            })
-            .await
-            .is_ok();
-        if ready {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "engine did not become ready in 15s"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    probe.shutdown();
-
-    Some(Engine {
-        url,
-        child,
-        state_child: None,
-        dir,
-    })
-}
-
-/// Self-skip macro: returns from the test when no engine is available.
-macro_rules! engine_or_skip {
-    () => {
-        match spawn_engine().await {
-            Some(e) => e,
-            None => {
-                eprintln!(
-                    "skipping: no iii engine/state worker (set III_ENGINE_BIN and III_STATE_BIN)"
-                );
-                return;
-            }
-        }
-    };
-}
-
-/// Same self-skip, for the bare engine without an external state worker.
-macro_rules! bare_engine_or_skip {
-    () => {
-        match spawn_bare_engine().await {
-            Some(e) => e,
-            None => {
-                eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
-                return;
-            }
-        }
-    };
-}
+// ── engine bootstrap ── shared with every provider suite (they include this
+// same file by path); see tests/support/engine_fixture.rs for what it spawns
+// and the skip-vs-fail policy.
+#[path = "support/engine_fixture.rs"]
+mod engine_fixture;
+use engine_fixture::*;
 
 async fn call(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
     iii.trigger(TriggerRequest {
