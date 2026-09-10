@@ -34,15 +34,20 @@ models listing is always read from that endpoint's `/models` sibling.
   Bearer`; v1 performs no OAuth refresh.
 - **Catalog:** `GET /models` owns the id list; `src/curated.rs` supplies what
   the listing does not carry — display names, context windows, output
-  ceilings, and pricing (USD per MTok) from api-docs.deepseek.com. An id the
-  table does not know still lands in the catalog on conservative defaults
-  (64K context, 8K output, no pricing) rather than disappearing, so a model
-  DeepSeek ships tomorrow is routable today. The prices are DeepSeek's
-  regular rates, which is what is billed today, so reported cost is exact.
-  DeepSeek has announced a peak/off-peak policy charging 2x during
-  09:00–12:00 and 14:00–18:00 Beijing time but has not set an effective
-  date; if it lands, cost display becomes a floor during those windows,
-  since a time-of-day multiplier is not something the catalog can express.
+  ceilings, pricing (USD per MTok) and the `reasoning_effort` vocabulary
+  from api-docs.deepseek.com (snapshot 2026-09-10). The live ids are
+  `deepseek-flash` (DeepSeek-V4.1-Flash) and `deepseek-v4-pro`; the retired
+  `deepseek-v4-flash` names are still accepted by the API and get the Flash
+  row's metadata under their own id. An id the table does not know still
+  lands in the catalog on conservative defaults (64K context, 8K output, no
+  pricing) rather than disappearing, so a model DeepSeek ships tomorrow is
+  routable today. Prices are the **peak** rate — DeepSeek's list price;
+  off-peak (every hour outside 01:00–04:00 and 06:00–10:00 UTC, Monday to
+  Friday) is half of it, so reported cost is exact at peak and a 2x ceiling
+  off-peak — a time-of-day multiplier is not something the catalog can
+  express. DeepSeek retires V4 Pro on 2026-09-14 12:00 Beijing time: from
+  then `deepseek-v4-pro` requests are answered by V4.1 Flash and billed at
+  the Flash price until V4.1 Pro ships; the row stays while the id is listed.
 - **Liveness:** `ping` at least every 30s of upstream silence; a failed
   channel write (caller gone / `router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request. DeepSeek holds an overloaded request
@@ -64,13 +69,21 @@ models listing is always read from that endpoint's `/models` sibling.
   `thinking: {type: enabled}` plus the top-level `reasoning_effort` param —
   the router's five levels collapse onto DeepSeek's three-wide vocabulary as
   `minimal`/`low` → `low`, `medium`/`high` → `high`, `xhigh` → `max`
-  (`src/reasoning.rs`). With **no** level both params are omitted, so each
-  model runs its own documented default: the V4 family reasons at `high`
+  (`src/reasoning.rs`; the API would coerce a literal `xhigh` down to `high`,
+  so the mapping is done here). With **no** level both params are omitted, so
+  each model runs its own documented default: the V4 family reasons at `high`
   effort — an unconfigured console chat streams its chain of thought out of
   the box, with reasoning tokens billed as output — while a legacy
   non-thinking alias (`deepseek-chat`) keeps the behavior its name encodes.
-  `disabled` is never sent: the router has no off level to express, and a
-  synthetic off-by-default would blank the console's thinking pane.
+  **Off** is the one knob the ladder cannot express: pass
+  `provider_options: { deepseek: { thinking: "disabled" } }` on the send and
+  the request carries `thinking: {type: disabled}` with no `reasoning_effort`
+  (a `thinking_level` on the same send is reported as ignored). It is never
+  synthesised — an off-by-default would blank the console's thinking pane —
+  and any value other than `enabled`/`disabled` fails the turn instead of
+  silently running at full effort. Each documented catalog row advertises the
+  effort vocabulary as `reasoning_efforts` (`low`, `high`, `max`) so
+  `router::models::get` shows what a level lands on.
   Reasoning models stream their chain of thought as `reasoning_content`
   deltas, which the worker surfaces as `thinking` blocks (`src/sse.rs`), and
   `completion_tokens_details.reasoning_tokens` lands on `usage.reasoning`.

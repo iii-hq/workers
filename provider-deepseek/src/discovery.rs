@@ -155,7 +155,7 @@ mod tests {
         let json = serde_json::json!({
             "object": "list",
             "data": [
-                { "id": "deepseek-v4-flash", "object": "model", "owned_by": "deepseek" },
+                { "id": "deepseek-flash", "object": "model", "owned_by": "deepseek" },
                 { "id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek" },
                 { "id": "", "object": "model" },
                 { "object": "model" },
@@ -163,9 +163,16 @@ mod tests {
         });
         let models = parse_live_models(&json);
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["deepseek-v4-flash", "deepseek-v4-pro"]);
+        assert_eq!(ids, ["deepseek-flash", "deepseek-v4-pro"]);
         assert_eq!(models[1].context_window, 1_000_000);
         assert_eq!(models[1].display_name.as_deref(), Some("DeepSeek V4 Pro"));
+        // The live id is `deepseek-flash`; a row keyed on the retired
+        // `deepseek-v4-flash` left flash on the 65K/8K unknown-model defaults.
+        assert_eq!(models[0].context_window, 1_000_000);
+        assert_eq!(
+            models[0].display_name.as_deref(),
+            Some("DeepSeek V4.1 Flash")
+        );
     }
 
     #[test]
