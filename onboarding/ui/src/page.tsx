@@ -44,6 +44,9 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
+  // Which step's condition row is expanded. Independent of the step rows: a
+  // fired trigger stays readable while the operator reads on.
+  const [openSub, setOpenSub] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -77,6 +80,9 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
   const complete = useCallback(
     (stepId: string, fired?: Fired) => {
       if (!tour) return
+      // A trigger that just fired opens its own row, so the operator sees the
+      // payload arrive rather than having to hunt for it.
+      if (fired) setOpenSub(stepId)
       setRecords((current) =>
         current[stepId]?.status === 'complete'
           ? current
@@ -197,13 +203,22 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
               {isOpen ? (
                 <div className="ob-step-body">
                   <p className="ob-copy">{step.body}</p>
-                  {step.condition ? <ConditionBlock condition={step.condition} fired={record?.fired ?? null} /> : null}
                   {state !== 'complete' && !step.condition ? (
                     <button type="button" className="ob-button" onClick={() => complete(step.id)}>
                       Got it
                     </button>
                   ) : null}
                 </div>
+              ) : null}
+              {step.condition ? (
+                <ol className="ob-subs">
+                  <ConditionRow
+                    condition={step.condition}
+                    fired={record?.fired ?? null}
+                    open={openSub === step.id}
+                    onToggle={() => setOpenSub(openSub === step.id ? null : step.id)}
+                  />
+                </ol>
               ) : null}
             </li>
           )
@@ -214,39 +229,53 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
 }
 
 /**
- * The condition, before and after. Waiting names the trigger type and the
- * binding config; fired shows the trigger and the payload the engine
- * delivered, the way the harness shows a function's own request and response.
+ * A step's condition as its own row under the step: the trigger, its state,
+ * and — once it fires — the payload the engine delivered, the way the harness
+ * shows a function call. Collapsed until the operator wants the detail.
  */
-function ConditionBlock({ condition, fired }: { condition: Condition; fired: StepRecord['fired'] }) {
+function ConditionRow({
+  condition,
+  fired,
+  open,
+  onToggle,
+}: {
+  condition: Condition
+  fired: StepRecord['fired']
+  open: boolean
+  onToggle: () => void
+}) {
   const hasConfig = Object.keys(condition.config ?? {}).length > 0
-  if (fired) {
-    return (
-      <div className="ob-trigger" data-fired="true">
-        <div className="ob-trigger-head">
-          <span className="ob-chip" data-tone="ok">
-            trigger fired
-          </span>
-          <code className="ob-code">{fired.trigger_type ?? condition.type}</code>
-          <span className="ob-muted">{when(fired.at)}</span>
-        </div>
-        <pre className="ob-payload">{format(fired.payload)}</pre>
-      </div>
-    )
-  }
   return (
-    <div className="ob-trigger">
-      <div className="ob-trigger-head">
-        <span className="ob-chip" data-tone="wait">
-          <span className="ob-pulse" aria-hidden="true" />
-          waiting
+    <li className="ob-sub" data-state={fired ? 'fired' : 'waiting'}>
+      <button type="button" className="ob-sub-head" aria-expanded={open} onClick={onToggle}>
+        <span className="ob-caret" data-open={open || undefined} aria-hidden="true">
+          ›
         </span>
-        <code className="ob-code">{condition.type}</code>
-        {hasConfig ? <code className="ob-code">{JSON.stringify(condition.config)}</code> : null}
-      </div>
-      <p className="ob-muted">{condition.label}</p>
-      {condition.hint ? <pre className="ob-hint">{condition.hint}</pre> : null}
-    </div>
+        <span className="ob-chip" data-tone={fired ? 'ok' : 'wait'}>
+          {fired ? 'trigger fired' : <span className="ob-pulse" aria-hidden="true" />}
+          {fired ? null : 'waiting'}
+        </span>
+        <code className="ob-code">{fired?.trigger_type ?? condition.type}</code>
+        <span className="ob-sub-meta">{fired ? when(fired.at) : condition.label}</span>
+      </button>
+      {open ? (
+        <div className="ob-sub-details">
+          {hasConfig ? (
+            <p className="ob-muted">
+              binding <code className="ob-code">{JSON.stringify(condition.config)}</code>
+            </p>
+          ) : null}
+          {fired ? (
+            <pre className="ob-payload">{format(fired.payload)}</pre>
+          ) : (
+            <>
+              <p className="ob-muted">{condition.label}</p>
+              {condition.hint ? <pre className="ob-hint">{condition.hint}</pre> : null}
+            </>
+          )}
+        </div>
+      ) : null}
+    </li>
   )
 }
 

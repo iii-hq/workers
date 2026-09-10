@@ -21,8 +21,12 @@ The guided console tour. Three parts:
 A step can wait on a real engine trigger instead of a button. The page binds
 it the way the console's own live pages do — a per-tab function id, then
 `registerTrigger` pointed at it — so what the operator sees is the payload the
-engine delivered, not a simulation. The card shows the trigger type, its
-binding config, and the payload, the way the harness shows a function call.
+engine delivered, not a simulation.
+
+The condition is its own row under its step, and stays there once it fires:
+the trigger type, its state, and the time it fired. Expanding it shows the
+binding config and the payload, the way the harness shows a function call. A
+trigger that fires opens its row, so the payload arrives in view.
 
 The tour ships two: `harness::turn-completed` (send a message) and `state`
 scoped to `tour-scratch` (write a value and watch the trigger fire).
