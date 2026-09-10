@@ -135,9 +135,12 @@ async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
     // A real key exported on the host would ride the router's env-var
     // fallback into every resolve and defeat the no-credential assertions
     // below. The provider itself sends no Authorization header without a
-    // credential (request.rs); the leak is purely environmental, so strip
-    // the variable once, before anything in-process reads it.
-    std::env::remove_var("LLAMACPP_API_KEY");
+    // credential (request.rs); the leak is purely environmental. Strip the
+    // variable exactly once per process, before the first router or provider
+    // boots: every in-process read happens after this single mutation and
+    // no test ever sets the variable, so concurrent tests cannot race it.
+    static STRIP_HOST_KEY: std::sync::Once = std::sync::Once::new();
+    STRIP_HOST_KEY.call_once(|| std::env::remove_var("LLAMACPP_API_KEY"));
     let router_iii = register_worker(engine_url, test_init_options());
     register_router(router_iii.clone())
         .await
