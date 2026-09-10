@@ -30,8 +30,12 @@ export function bindCondition(
   onFire: (fired: Fired) => void,
 ): () => void {
   const localId = `onboarding::condition::${key}`
+  // The handler is registered before the trigger, so a throw from
+  // `registerTrigger` must take it back down. A live handler with no trigger
+  // behind it would fire alongside the next successful bind.
+  let offHandler: () => void = () => {}
   try {
-    const offHandler = host.iii.on(localId, (payload: unknown) => {
+    offHandler = host.iii.on(localId, (payload: unknown) => {
       onFire({ trigger_type: condition.type, payload, at: Date.now() })
     })
     const offTrigger = host.iii.registerTrigger({
@@ -46,6 +50,7 @@ export function bindCondition(
   } catch {
     // The trigger type's worker may be down or restarting. The step stays
     // waiting and rebinds on the next mount.
+    offHandler()
     return () => {}
   }
 }
