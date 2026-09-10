@@ -16,6 +16,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
+import { isEmailish, MAX_EMAIL_LENGTH } from './subscribe.mjs'
 import { getStep, getTour, listTours } from './tours.mjs'
 
 const WORKER = 'onboarding'
@@ -75,10 +76,20 @@ const stateGet = (key) =>
     timeoutMs: STATE_TIMEOUT_MS,
   })
 
-const stateSet = (key, value) =>
+/**
+ * Progress is written with ordered atomic ops, never read-then-replace: two
+ * handlers can interleave around an await, and the second `state::set` would
+ * carry a snapshot that predates the first one's write. `state::update`
+ * touches only the paths named here.
+ *
+ * `merge` inserts keys at the path it walks (creating what is missing), so a
+ * step lands under its own tour without the rest of the value passing
+ * through this worker at all.
+ */
+const stateUpdate = (key, ops) =>
   iii.trigger({
-    function_id: 'state::set',
-    payload: { scope: STATE_SCOPE, key, value },
+    function_id: 'state::update',
+    payload: { scope: STATE_SCOPE, key, ops },
     timeoutMs: STATE_TIMEOUT_MS,
   })
 
@@ -88,7 +99,13 @@ const emptyProgress = () => ({ tours: {}, updated_at: null })
 const readProgress = async (subject) => {
   const stored = await stateGet(progressKey(subject))
   const progress = stored && typeof stored === 'object' ? stored : emptyProgress()
-  return { ...emptyProgress(), ...progress, tours: progress.tours ?? {} }
+  // A reset nulls its tour rather than removing it — `state::update`'s
+  // `remove` reaches top-level keys only — so nulls are dropped on the way
+  // out and the page never sees a tour it cannot read.
+  const tours = Object.fromEntries(
+    Object.entries(progress.tours ?? {}).filter(([, record]) => record && typeof record === 'object'),
+  )
+  return { ...emptyProgress(), ...progress, tours }
 }
 
 const tourIsComplete = (tour, record) =>
@@ -136,13 +153,10 @@ iii.registerFunction(
     const step = getStep(input.tour_id, input.step_id)
     if (!step) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
     const subject = input.subject ?? 'local'
-    const key = progressKey(subject)
-    const progress = await readProgress(subject)
-    const record = progress.tours[input.tour_id] ?? { steps: {} }
-    const steps = { ...(record.steps ?? {}) }
-    steps[input.step_id] = {
+    const at = Date.now()
+    const record = {
       status: 'complete',
-      at: Date.now(),
+      at,
       // Present only when a trigger closed the step, so the page can tell a
       // condition apart from a step the operator closed by hand.
       fired: input.fired
@@ -150,16 +164,16 @@ iii.registerFunction(
             trigger_type: input.fired.trigger_type ?? step.condition?.type ?? null,
             function_id: input.fired.function_id ?? null,
             payload: cap(input.fired.payload),
-            at: Date.now(),
+            at,
           }
         : null,
     }
-    const tours = {
-      ...progress.tours,
-      [input.tour_id]: { steps, updated_at: Date.now() },
-    }
-    await stateSet(key, { tours, updated_at: Date.now() })
-    return { step: steps[input.step_id] }
+    await stateUpdate(progressKey(subject), [
+      { type: 'merge', path: ['tours', input.tour_id, 'steps'], value: { [input.step_id]: record } },
+      { type: 'merge', path: ['tours', input.tour_id], value: { updated_at: at } },
+      { type: 'merge', value: { updated_at: at } },
+    ])
+    return { step: record }
   },
   {
     description:
@@ -185,10 +199,13 @@ iii.registerFunction(
   'onboarding::steps::reset',
   async (input) => {
     const subject = input.subject ?? 'local'
-    const progress = await readProgress(subject)
-    const tours = { ...progress.tours }
-    delete tours[input.tour_id]
-    await stateSet(progressKey(subject), { tours, updated_at: Date.now() })
+    const at = Date.now()
+    await stateUpdate(progressKey(subject), [
+      // `remove` reaches top-level keys only, so the tour is nulled instead;
+      // `readProgress` drops nulls on the way out.
+      { type: 'merge', path: ['tours'], value: { [input.tour_id]: null } },
+      { type: 'merge', value: { updated_at: at } },
+    ])
     return { reset: true }
   },
   {
@@ -208,6 +225,8 @@ iii.registerFunction(
  * here and not in the browser: the injected page has no network of its own,
  * and one place to change the destination is enough.
  */
+const SIGNUP_TIMEOUT_MS = 10_000
+
 const SIGNUP_URL =
   process.env.III_ONBOARDING_SIGNUP_URL ??
   'https://api.mailmodo.com/api/v1/at/f/b7XMGvRS9B/cdb51f52-a91e-520c-888d-03470a9c8faa'
@@ -216,13 +235,22 @@ iii.registerFunction(
   'onboarding::subscribe',
   async (input) => {
     const email = String(input.email ?? '').trim()
-    // One address, an @, and a dot after it. The list itself does the real
-    // validation; this only stops an obvious typo becoming a POST.
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('that does not look like an email address')
+    if (!isEmailish(email)) {
+      throw new Error(
+        `that does not look like an email address (one address, up to ${MAX_EMAIL_LENGTH} characters)`,
+      )
+    }
+    // A signup host that accepts the connection and never answers would hold
+    // this invocation open until the caller gives up, with the socket still
+    // in hand. The deadline is ours, not the caller's.
     const response = await fetch(SIGNUP_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ email, source: input.source ?? 'onboarding_flow' }),
+      signal: AbortSignal.timeout(SIGNUP_TIMEOUT_MS),
+    }).catch((cause) => {
+      if (cause?.name === 'TimeoutError') throw new Error('the signup service did not answer in time')
+      throw cause
     })
     // 409 is "already on the list", which is a success for the operator.
     if (!response.ok && response.status !== 409) {

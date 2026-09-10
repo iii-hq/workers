@@ -70,6 +70,13 @@ function firstMatch(selectors: readonly string[]): Element | null {
   return null
 }
 
+/**
+ * A scroll animation is not reachable from CSS, so the stylesheet's
+ * `prefers-reduced-motion` block cannot cover this one — it is asked for
+ * here.
+ */
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+
 /** Frame the first selector that matches; an empty list clears the box. */
 export function showSpotlight(selectors: readonly string[] | null | undefined): void {
   hideSpotlight()
@@ -77,7 +84,7 @@ export function showSpotlight(selectors: readonly string[] | null | undefined): 
   firstMatch(selectors)?.scrollIntoView({
     block: 'center',
     inline: 'nearest',
-    behavior: 'smooth',
+    behavior: reducedMotion() ? 'auto' : 'smooth',
   })
   track(selectors)
 }

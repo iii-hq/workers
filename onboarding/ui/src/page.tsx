@@ -107,26 +107,32 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
       // A trigger that just fired opens its own row, so the operator sees the
       // payload arrive rather than having to hunt for it.
       if (fired) setOpenSub(stepId)
-      setRecords((current) =>
-        current[stepId]?.status === 'complete'
-          ? current
-          : {
-              ...current,
-              [stepId]: {
-                status: 'complete',
-                at: Date.now(),
-                fired: fired ? { trigger_type: fired.trigger_type, payload: fired.payload, at: fired.at } : null,
-              },
-            },
-      )
-      // Finishing a step opens the next one that is still open for business,
-      // so the list reads as one moving front instead of a closed accordion.
-      setOpen(tour.steps.find((step) => step.id !== stepId && records[step.id]?.status !== 'complete')?.id ?? null)
+      // The engine owns progress, so the list moves only once the write
+      // lands. A rejected write leaves the step where it was, instead of
+      // showing complete until the next reload disagrees.
       void host.iii
         .trigger('onboarding::steps::complete', {
           tour_id: tour.id,
           step_id: stepId,
           ...(fired ? { fired: { trigger_type: fired.trigger_type, payload: fired.payload } } : {}),
+        })
+        .then(() => {
+          setRecords((current) =>
+            current[stepId]?.status === 'complete'
+              ? current
+              : {
+                  ...current,
+                  [stepId]: {
+                    status: 'complete',
+                    at: Date.now(),
+                    fired: fired ? { trigger_type: fired.trigger_type, payload: fired.payload, at: fired.at } : null,
+                  },
+                },
+          )
+          // Finishing a step opens the next one that is still open for
+          // business, so the list reads as one moving front instead of a
+          // closed accordion.
+          setOpen(tour.steps.find((step) => step.id !== stepId && records[step.id]?.status !== 'complete')?.id ?? null)
         })
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
     },
@@ -158,9 +164,15 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
 
   const reset = useCallback(() => {
     if (!tour) return
-    setRecords({})
-    setOpen(tour.steps[0]?.id ?? null)
-    void host.iii.trigger('onboarding::steps::reset', { tour_id: tour.id })
+    // Same order as `complete`: the stored progress is the truth, so the list
+    // empties after the write, not before it.
+    void host.iii
+      .trigger('onboarding::steps::reset', { tour_id: tour.id })
+      .then(() => {
+        setRecords({})
+        setOpen(tour.steps[0]?.id ?? null)
+      })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
   }, [host, tour])
 
   if (error) {
@@ -428,19 +440,19 @@ function StayInTouch({ host }: { host: Host }) {
 /** A block the operator can copy in one click — the fallback is the text
     itself, which is selectable either way. */
 function Copyable({ label, text }: { label: string; text: string }) {
-  const [copied, setCopied] = useState(false)
+  // The clipboard write is the event; there is no timer winding the label
+  // back. It says `copied` until the text itself changes, which is the only
+  // thing that makes the old label wrong.
+  const [copied, setCopied] = useState<string | null>(null)
   const copy = useCallback(() => {
-    void navigator.clipboard?.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1400)
-    })
+    void navigator.clipboard?.writeText(text).then(() => setCopied(text))
   }, [text])
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
         <span className="text-sm text-ink-faint">{label}</span>
         <Button variant="ghost" size="sm" onClick={copy}>
-          {copied ? 'copied' : 'copy'}
+          {copied === text ? 'copied' : 'copy'}
         </Button>
       </div>
       <pre className="ob-pre select-all text-ink">{text}</pre>
