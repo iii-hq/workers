@@ -16,7 +16,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
-import { getTour, listTours } from './tours.mjs'
+import { getStep, getTour, listTours } from './tours.mjs'
 
 const WORKER = 'onboarding'
 const STATE_SCOPE = 'onboarding'
@@ -85,18 +85,43 @@ const stateSet = (key, value) =>
 /** The shape the page reads, whether or not anything is stored yet. */
 const emptyProgress = () => ({ tours: {}, updated_at: null })
 
+const readProgress = async (subject) => {
+  const stored = await stateGet(progressKey(subject))
+  const progress = stored && typeof stored === 'object' ? stored : emptyProgress()
+  return { ...emptyProgress(), ...progress, tours: progress.tours ?? {} }
+}
+
+const tourIsComplete = (tour, record) =>
+  tour.steps.every((step) => record?.steps?.[step.id]?.status === 'complete')
+
+/**
+ * A fired trigger is evidence the page shows back to the operator, so it is
+ * stored with the step. ponytail: payloads are capped rather than paged —
+ * `state` refuses oversized values, and a tour step needs the shape of the
+ * event, not every byte of it.
+ */
+const FIRED_PAYLOAD_LIMIT = 4_000
+
+const cap = (payload) => {
+  if (payload === undefined) return null
+  const json = JSON.stringify(payload) ?? 'null'
+  if (json.length <= FIRED_PAYLOAD_LIMIT) return payload
+  return { truncated: true, bytes: json.length, head: json.slice(0, FIRED_PAYLOAD_LIMIT) }
+}
+
 iii.registerFunction(
   'onboarding::progress::get',
   async (input) => {
-    const stored = await stateGet(progressKey(input?.subject ?? 'local'))
-    const progress = stored && typeof stored === 'object' ? stored : emptyProgress()
-    const tours = progress.tours ?? {}
-    const next = listTours().find((tour) => tours[tour.id]?.status !== 'completed')
-    return { ...emptyProgress(), ...progress, tours, next_tour_id: next?.id ?? null }
+    const progress = await readProgress(input?.subject ?? 'local')
+    const next = listTours().find((entry) => {
+      const tour = getTour(entry.id)
+      return tour && !tourIsComplete(tour, progress.tours[entry.id])
+    })
+    return { ...progress, next_tour_id: next?.id ?? null }
   },
   {
     description:
-      'Read how far an operator got: per tour, the furthest step reached and whether it is completed, plus which tour to offer next.',
+      'Read an operator\u2019s tour progress: per tour, the status of every step and the trigger evidence that closed it, plus which tour to offer next.',
     request_format: object({ subject: string }),
     response_format: object(
       { tours: object(), next_tour_id: { type: ['string', 'null'] } },
@@ -106,41 +131,70 @@ iii.registerFunction(
 )
 
 iii.registerFunction(
-  'onboarding::progress::set',
+  'onboarding::steps::complete',
   async (input) => {
-    const tour = getTour(input.tour_id)
-    if (!tour) throw new Error(`unknown tour: ${input.tour_id}`)
-    const key = progressKey(input.subject ?? 'local')
-    const stored = await stateGet(key)
-    const progress = stored && typeof stored === 'object' ? stored : emptyProgress()
-    const tours = { ...(progress.tours ?? {}) }
-    const previous = tours[input.tour_id]
-    const step_index = Math.max(0, Math.min(input.step_index, tour.steps.length - 1))
-    tours[input.tour_id] = {
-      step_index,
-      // Furthest step ever reached, so re-reading an earlier step does not
-      // re-lock the ones after it.
-      reached_index: Math.max(step_index, previous?.reached_index ?? 0),
-      status: input.status ?? 'started',
-      updated_at: Date.now(),
+    const step = getStep(input.tour_id, input.step_id)
+    if (!step) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
+    const subject = input.subject ?? 'local'
+    const key = progressKey(subject)
+    const progress = await readProgress(subject)
+    const record = progress.tours[input.tour_id] ?? { steps: {} }
+    const steps = { ...(record.steps ?? {}) }
+    steps[input.step_id] = {
+      status: 'complete',
+      at: Date.now(),
+      // Present only when a trigger closed the step, so the page can tell a
+      // condition apart from a step the operator closed by hand.
+      fired: input.fired
+        ? {
+            trigger_type: input.fired.trigger_type ?? step.condition?.type ?? null,
+            function_id: input.fired.function_id ?? null,
+            payload: cap(input.fired.payload),
+            at: Date.now(),
+          }
+        : null,
     }
-    const next = { tours, updated_at: Date.now() }
-    await stateSet(key, next)
-    return { progress: next.tours[input.tour_id] }
+    const tours = {
+      ...progress.tours,
+      [input.tour_id]: { steps, updated_at: Date.now() },
+    }
+    await stateSet(key, { tours, updated_at: Date.now() })
+    return { step: steps[input.step_id] }
   },
   {
     description:
-      'Record which step of a tour an operator is on. The console page sends one of these per step change, completion, and dismissal.',
+      'Mark one tour step complete. Pass `fired` when a trigger closed it \u2014 its type and payload are kept as the evidence the tour shows back.',
     request_format: object(
       {
         subject: string,
         tour_id: string,
-        step_index: integer,
-        status: { type: 'string', enum: ['started', 'completed', 'dismissed'] },
+        step_id: string,
+        fired: object({
+          trigger_type: string,
+          function_id: string,
+          payload: {},
+        }),
       },
-      ['tour_id', 'step_index'],
+      ['tour_id', 'step_id'],
     ),
-    response_format: object({ progress: object() }, ['progress']),
+    response_format: object({ step: object() }, ['step']),
+  },
+)
+
+iii.registerFunction(
+  'onboarding::steps::reset',
+  async (input) => {
+    const subject = input.subject ?? 'local'
+    const progress = await readProgress(subject)
+    const tours = { ...progress.tours }
+    delete tours[input.tour_id]
+    await stateSet(progressKey(subject), { tours, updated_at: Date.now() })
+    return { reset: true }
+  },
+  {
+    description: 'Forget every step of one tour, so it starts from the beginning again.',
+    request_format: object({ subject: string, tour_id: string }, ['tour_id']),
+    response_format: object({ reset: { type: 'boolean' } }, ['reset']),
   },
 )
 

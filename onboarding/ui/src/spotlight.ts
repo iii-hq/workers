@@ -33,10 +33,13 @@ function ensureBox(): HTMLDivElement {
  * to the DOM only when the rect actually moves. Swap for a ResizeObserver +
  * scroll listeners if a profile ever blames this.
  */
-function track(selector: string) {
+function track(selectors: readonly string[]) {
   const step = () => {
     frame = requestAnimationFrame(step)
-    const target = document.querySelector(selector)
+    // Best selector first: the tour's own `onboarding-*` class, then the
+    // console's stable hooks, so the box still lands on a console build that
+    // predates the anchor classes.
+    const target = firstMatch(selectors)
     const element = ensureBox()
     if (!target) {
       // The element can come back — a collapsed sidebar, another tab — so keep
@@ -59,12 +62,24 @@ function track(selector: string) {
   frame = requestAnimationFrame(step)
 }
 
-/** Frame `selector`; `null` or an empty selector clears the spotlight. */
-export function showSpotlight(selector: string | null | undefined): void {
+function firstMatch(selectors: readonly string[]): Element | null {
+  for (const selector of selectors) {
+    const found = document.querySelector(selector)
+    if (found) return found
+  }
+  return null
+}
+
+/** Frame the first selector that matches; an empty list clears the box. */
+export function showSpotlight(selectors: readonly string[] | null | undefined): void {
   hideSpotlight()
-  if (!selector) return
-  document.querySelector(selector)?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
-  track(selector)
+  if (!selectors || selectors.length === 0) return
+  firstMatch(selectors)?.scrollIntoView({
+    block: 'center',
+    inline: 'nearest',
+    behavior: 'smooth',
+  })
+  track(selectors)
 }
 
 export function hideSpotlight(): void {

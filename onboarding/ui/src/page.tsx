@@ -1,26 +1,21 @@
-import {
-  Badge,
-  Button,
-  CollapsibleCard,
-  CollapsibleCardContent,
-  CollapsibleCardTrigger,
-  EmptyState,
-  type Host,
-  PageBody,
-  PageHeader,
-  PageMain,
-  type PageRenderProps,
-  PageShell,
-  Skeleton,
-} from '@iii-dev/console-ui'
-import { useCallback, useEffect, useState } from 'react'
+import { type Host, PageBody, PageHeader, PageMain, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { bindCondition, type Condition, type Fired } from './conditions'
 import { disposeSpotlight, hideSpotlight, showSpotlight } from './spotlight'
+
+/**
+ * One list, one open step. Rows are hand-rolled elements over the console's
+ * design tokens rather than shared card components: the tour has to render on
+ * whatever console build is in front of the operator, including ones older
+ * than the component it would otherwise import.
+ */
 
 interface Step {
   id: string
   title: string
   body: string
-  anchor?: string
+  anchors?: string[]
+  condition?: Condition
 }
 
 interface Tour {
@@ -30,28 +25,27 @@ interface Tour {
   steps: Step[]
 }
 
-interface TourProgress {
-  step_index: number
-  reached_index: number
-  status: 'started' | 'completed' | 'dismissed'
+interface StepRecord {
+  status: 'complete'
+  at: number
+  fired?: { trigger_type: string | null; payload: unknown; at: number } | null
 }
 
+type StepRecords = Record<string, StepRecord | undefined>
+
 interface ProgressResponse {
-  tours: Record<string, TourProgress | undefined>
+  tours: Record<string, { steps?: StepRecords } | undefined>
   next_tour_id: string | null
 }
 
+type StepState = 'complete' | 'active' | 'pending'
+
 export function TourPage({ host }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
-  const [step, setStep] = useState(0)
-  const [reached, setReached] = useState(0)
+  const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
-  const [done, setDone] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Load the tour the operator has not finished, resumed at the step they
-  // reached: progress lives in the engine, so another tab or another day
-  // picks up in the same place.
   useEffect(() => {
     let live = true
     void (async () => {
@@ -61,15 +55,16 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
           host.iii.trigger<ProgressResponse>('onboarding::progress::get', {}),
         ])
         const id = progress.next_tour_id ?? list.tours[0]?.id
-        if (!id) return
+        if (!id) {
+          if (live) setError('This engine has no tours registered.')
+          return
+        }
         const { tour: loaded } = await host.iii.trigger<{ tour: Tour }>('onboarding::tours::get', { id })
         if (!live) return
-        const stored = progress.tours[id]
+        const stored = progress.tours[id]?.steps ?? {}
         setTour(loaded)
-        setStep(stored?.step_index ?? 0)
-        setReached(stored?.reached_index ?? 0)
-        setDone(stored?.status === 'completed')
-        setOpen(loaded.steps[stored?.step_index ?? 0]?.id ?? null)
+        setRecords(stored)
+        setOpen(firstIncomplete(loaded, stored)?.id ?? loaded.steps[0]?.id ?? null)
       } catch (cause) {
         if (live) setError(cause instanceof Error ? cause.message : String(cause))
       }
@@ -79,125 +74,221 @@ export function TourPage({ host }: { host: Host } & PageRenderProps) {
     }
   }, [host])
 
-  // The box follows the step, and leaves with the page.
-  useEffect(() => {
-    if (!tour || done) {
-      hideSpotlight()
-      return
-    }
-    showSpotlight(tour.steps[step]?.anchor ?? null)
-  }, [tour, step, done])
-  useEffect(() => disposeSpotlight, [])
-
-  const go = useCallback(
-    (index: number, status: 'started' | 'completed' = 'started') => {
+  const complete = useCallback(
+    (stepId: string, fired?: Fired) => {
       if (!tour) return
-      const clamped = Math.max(0, Math.min(index, tour.steps.length - 1))
-      setStep(clamped)
-      setReached((furthest) => Math.max(furthest, clamped))
-      setOpen(tour.steps[clamped]?.id ?? null)
-      setDone(status === 'completed')
+      setRecords((current) =>
+        current[stepId]?.status === 'complete'
+          ? current
+          : {
+              ...current,
+              [stepId]: {
+                status: 'complete',
+                at: Date.now(),
+                fired: fired ? { trigger_type: fired.trigger_type, payload: fired.payload, at: fired.at } : null,
+              },
+            },
+      )
+      // Finishing a step opens the next one that is still open for business,
+      // so the list reads as one moving front instead of a closed accordion.
+      setOpen(tour.steps.find((step) => step.id !== stepId && records[step.id]?.status !== 'complete')?.id ?? null)
       void host.iii
-        .trigger('onboarding::progress::set', {
+        .trigger('onboarding::steps::complete', {
           tour_id: tour.id,
-          step_index: clamped,
-          status,
+          step_id: stepId,
+          ...(fired ? { fired: { trigger_type: fired.trigger_type, payload: fired.payload } } : {}),
         })
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
     },
-    [host, tour],
+    [host, records, tour],
   )
 
-  if (error)
-    return (
-      <Frame>
-        <EmptyState title="Could not load the tour" description={error} />
-      </Frame>
-    )
-  if (!tour)
-    return (
-      <Frame>
-        <Skeleton />
-      </Frame>
-    )
+  // Every step that is still open for business gets its condition bound, so a
+  // step can be satisfied before the operator reads down to it.
+  useEffect(() => {
+    if (!tour) return
+    const unbinds = tour.steps
+      .filter((step) => step.condition && records[step.id]?.status !== 'complete')
+      .map((step) =>
+        bindCondition(host, `${tour.id}::${step.id}`, step.condition as Condition, (fired) => complete(step.id, fired)),
+      )
+    return () => {
+      for (const unbind of unbinds) unbind()
+    }
+  }, [host, tour, records, complete])
 
-  const last = step >= tour.steps.length - 1
+  const openStep = useMemo(() => tour?.steps.find((step) => step.id === open) ?? null, [tour, open])
+
+  // The box frames whatever step is open, and leaves with the page.
+  useEffect(() => {
+    showSpotlight(openStep?.anchors ?? null)
+    return hideSpotlight
+  }, [openStep])
+  useEffect(() => disposeSpotlight, [])
+
+  const reset = useCallback(() => {
+    if (!tour) return
+    setRecords({})
+    setOpen(tour.steps[0]?.id ?? null)
+    void host.iii.trigger('onboarding::steps::reset', { tour_id: tour.id })
+  }, [host, tour])
+
+  if (error) {
+    return (
+      <Frame>
+        <p className="ob-error">{error}</p>
+      </Frame>
+    )
+  }
+  if (!tour) {
+    return (
+      <Frame>
+        <p className="ob-muted">Loading the tour…</p>
+      </Frame>
+    )
+  }
+
+  const active = firstIncomplete(tour, records)
+  const done = tour.steps.filter((step) => records[step.id]?.status === 'complete').length
 
   return (
-    <Frame
-      title={tour.title}
-      description={tour.description}
-      actions={
-        <Badge variant={done ? 'ok' : 'default'}>
-          {done ? 'complete' : `step ${step + 1} of ${tour.steps.length}`}
-        </Badge>
-      }
-    >
-      <div className="onboarding-steps">
-        {tour.steps.map((item, index) => {
-          // A step opens once it has been reached — reading ahead would give
-          // away a box the operator has not been shown yet.
-          const locked = index > reached
-          return (
-            <CollapsibleCard
-              key={item.id}
-              className="onboarding-step"
-              data-current={index === step ? 'true' : undefined}
-              open={open === item.id}
-              disabled={locked}
-              onOpenChange={(next) => setOpen(next ? item.id : null)}
-            >
-              <CollapsibleCardTrigger>
-                <span className="onboarding-step-index">{index + 1}</span>
-                <span className="onboarding-step-title">{item.title}</span>
-                {locked ? <span className="onboarding-step-lock">not reached</span> : null}
-              </CollapsibleCardTrigger>
-              <CollapsibleCardContent>
-                <p className="onboarding-step-body">{item.body}</p>
-                {index !== step && !locked ? (
-                  <Button variant="ghost" size="sm" onClick={() => go(index)}>
-                    Show me this one
-                  </Button>
-                ) : null}
-              </CollapsibleCardContent>
-            </CollapsibleCard>
-          )
-        })}
+    <Frame title={tour.title} description={tour.description}>
+      <div className="ob-summary">
+        <div
+          className="ob-bar"
+          role="progressbar"
+          aria-valuenow={done}
+          aria-valuemin={0}
+          aria-valuemax={tour.steps.length}
+        >
+          <span style={{ width: `${(done / tour.steps.length) * 100}%` }} />
+        </div>
+        <span className="ob-count">
+          {done} of {tour.steps.length} done
+        </span>
+        <button type="button" className="ob-link" onClick={reset} disabled={done === 0}>
+          Restart
+        </button>
       </div>
 
-      <div className="onboarding-controls">
-        <Button variant="ghost" disabled={step === 0} onClick={() => go(step - 1)}>
-          Back
-        </Button>
-        {last ? (
-          <Button onClick={() => go(step, 'completed')} disabled={done}>
-            {done ? 'Finished' : 'Finish'}
-          </Button>
-        ) : (
-          <Button onClick={() => go(step + 1)}>Next</Button>
-        )}
-      </div>
+      <ol className="ob-steps">
+        {tour.steps.map((step, index) => {
+          const record = records[step.id]
+          const state: StepState =
+            record?.status === 'complete' ? 'complete' : step.id === active?.id ? 'active' : 'pending'
+          // A step opens once it is reached. Reading ahead would give away a
+          // box the operator has not been shown yet.
+          const locked = state === 'pending'
+          const isOpen = open === step.id
+          return (
+            <li key={step.id} className="ob-step" data-state={state} data-open={isOpen || undefined}>
+              <button
+                type="button"
+                className="ob-step-head"
+                aria-expanded={isOpen}
+                disabled={locked}
+                onClick={() => setOpen(isOpen ? null : step.id)}
+              >
+                <span className="ob-dot" data-state={state} aria-hidden="true" />
+                <span className="ob-step-index">{index + 1}</span>
+                <span className="ob-step-title">{step.title}</span>
+                <span className="ob-step-state">{stateLabel(state, step)}</span>
+              </button>
+              {isOpen ? (
+                <div className="ob-step-body">
+                  <p className="ob-copy">{step.body}</p>
+                  {step.condition ? <ConditionBlock condition={step.condition} fired={record?.fired ?? null} /> : null}
+                  {state !== 'complete' && !step.condition ? (
+                    <button type="button" className="ob-button" onClick={() => complete(step.id)}>
+                      Got it
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </li>
+          )
+        })}
+      </ol>
     </Frame>
+  )
+}
+
+/**
+ * The condition, before and after. Waiting names the trigger type and the
+ * binding config; fired shows the trigger and the payload the engine
+ * delivered, the way the harness shows a function's own request and response.
+ */
+function ConditionBlock({ condition, fired }: { condition: Condition; fired: StepRecord['fired'] }) {
+  const hasConfig = Object.keys(condition.config ?? {}).length > 0
+  if (fired) {
+    return (
+      <div className="ob-trigger" data-fired="true">
+        <div className="ob-trigger-head">
+          <span className="ob-chip" data-tone="ok">
+            trigger fired
+          </span>
+          <code className="ob-code">{fired.trigger_type ?? condition.type}</code>
+          <span className="ob-muted">{when(fired.at)}</span>
+        </div>
+        <pre className="ob-payload">{format(fired.payload)}</pre>
+      </div>
+    )
+  }
+  return (
+    <div className="ob-trigger">
+      <div className="ob-trigger-head">
+        <span className="ob-chip" data-tone="wait">
+          <span className="ob-pulse" aria-hidden="true" />
+          waiting
+        </span>
+        <code className="ob-code">{condition.type}</code>
+        {hasConfig ? <code className="ob-code">{JSON.stringify(condition.config)}</code> : null}
+      </div>
+      <p className="ob-muted">{condition.label}</p>
+      {condition.hint ? <pre className="ob-hint">{condition.hint}</pre> : null}
+    </div>
   )
 }
 
 function Frame({
   title = 'Tour',
   description,
-  actions,
   children,
 }: {
   title?: string
   description?: string
-  actions?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
     <PageShell>
       <PageMain>
-        <PageHeader title={title} description={description} actions={actions} />
-        <PageBody>{children}</PageBody>
+        <PageHeader title={title} description={description} />
+        <PageBody>
+          <div className="ob-page">{children}</div>
+        </PageBody>
       </PageMain>
     </PageShell>
   )
+}
+
+function firstIncomplete(tour: Tour, records: StepRecords): Step | undefined {
+  return tour.steps.find((step) => records[step.id]?.status !== 'complete')
+}
+
+function stateLabel(state: StepState, step: Step): string {
+  if (state === 'complete') return 'complete'
+  if (state === 'pending') return 'not reached'
+  return step.condition ? 'waiting' : 'in progress'
+}
+
+function when(at: number): string {
+  return new Date(at).toLocaleTimeString()
+}
+
+function format(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, null, 2) ?? 'null'
+  } catch {
+    return String(payload)
+  }
 }

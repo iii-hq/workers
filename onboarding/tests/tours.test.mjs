@@ -24,28 +24,39 @@ test('every tour and step is addressable', () => {
 })
 
 /**
- * The anchors are classes the console carries for this tour alone, so nothing
- * in the console renders them useless by accident. This is the check that
- * fails when one is renamed or dropped.
+ * The first anchor of every step is a class the console carries for this tour
+ * alone. This is the check that fails when one is renamed or dropped.
  */
-test('every anchor still exists in the console source', () => {
-  const console_src = join(root, '..', 'console', 'web', 'src')
-  if (!existsSync(console_src)) return // packaged worker: no sibling checkout
+test('every step anchors on a console class that still exists', () => {
+  const consoleSrc = join(root, '..', 'console', 'web', 'src')
   for (const tour of TOURS) {
     for (const step of tour.steps) {
-      if (!step.anchor) continue
-      assert.match(step.anchor, /^\.onboarding-[a-z-]+$/, `${step.id}: odd anchor`)
-      const hits = execFileSync(
-        'grep',
-        ['-rl', step.anchor.slice(1), console_src],
-        { encoding: 'utf8' },
-      )
-      assert.ok(hits.trim().length > 0, `${step.anchor} is in no console file`)
+      if (!step.anchors) continue
+      assert.ok(step.anchors.length > 0, `${step.id}: empty anchors`)
+      assert.match(step.anchors[0], /^\.onboarding-[a-z-]+$/, `${step.id}: odd first anchor`)
+      if (!existsSync(consoleSrc)) continue // packaged worker: no sibling checkout
+      const hits = execFileSync('grep', ['-rl', step.anchors[0].slice(1), consoleSrc], {
+        encoding: 'utf8',
+      })
+      assert.ok(hits.trim().length > 0, `${step.anchors[0]} is in no console file`)
     }
   }
 })
 
-test('the injected page ships the anchors it draws', () => {
+/** A condition has to be bindable: a trigger type, a config, and a label. */
+test('every condition is a complete trigger binding', () => {
+  for (const tour of TOURS) {
+    for (const step of tour.steps) {
+      if (!step.condition) continue
+      const { type, config, label } = step.condition
+      assert.ok(type?.length, `${step.id}: condition has no trigger type`)
+      assert.equal(typeof config, 'object', `${step.id}: condition config is not an object`)
+      assert.ok(label?.length, `${step.id}: condition has no label`)
+    }
+  }
+})
+
+test('the injected page ships the box it draws', () => {
   const css = readFileSync(join(root, 'ui', 'styles.css'), 'utf8')
   assert.match(css, /\.onboarding-spotlight/)
 })

@@ -1,58 +1,85 @@
 /**
- * Tour content. One tour is a title plus an ordered list of steps; one step is
- * a headline, a short body, and the console element it talks about.
+ * Tour content. One tour is a title plus an ordered list of steps.
  *
- * `anchor` is a CSS selector for a class the console carries FOR THIS TOUR
- * (`onboarding-*`, added in console/web/src). The injected page draws its
- * spotlight around the first match, and skips the box when the selector
- * matches nothing — a step whose element is off screen still reads fine.
+ * A step carries:
+ *   - `anchors`: selectors for the console element the step talks about, best
+ *     first. The first one is always the `onboarding-*` class the console
+ *     carries FOR THIS TOUR (added in console/web/src, and checked by
+ *     tests/); the ones after it are the console's own stable hooks, so the
+ *     spotlight still lands on a console build that predates the anchor
+ *     classes.
+ *   - `condition` (optional): a real engine trigger the step waits for. The
+ *     page binds it, shows what it is waiting for, and when it fires shows
+ *     the trigger and its payload. A step with no condition is closed by the
+ *     operator with a button.
  */
 
-/** @typedef {{ id: string, title: string, body: string, anchor?: string }} Step */
-/** @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour */
+/**
+ * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string }} Condition
+ * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition }} Step
+ * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
+ */
 
 /** @type {Tour[]} */
 export const TOURS = [
   {
     id: 'console-basics',
     title: 'Find your way around',
-    description: 'The five surfaces of the console, and what each one is for.',
+    description: 'The surfaces of the console, and the engine underneath them.',
     steps: [
       {
         id: 'welcome',
         title: 'This is your engine',
-        body: 'Everything on this page talks to one iii engine over a WebSocket. The engine holds workers; workers register functions and triggers. Nothing here is a static page — each panel is a live client of the same engine.',
-        anchor: '.onboarding-menu-bar',
+        body: 'Everything on this page talks to one iii engine over a WebSocket. The engine holds workers; workers register functions and triggers. No panel here is a static page — each one is a live client of the same engine.',
+        anchors: ['.onboarding-menu-bar', 'header.h-14'],
       },
       {
         id: 'tabs',
         title: 'Workspaces, not windows',
-        body: 'Each tab is a workspace: one or more panes, side by side. Split a tab to keep a chat next to a page that a worker injected. Tabs and their panes persist across reloads, so a layout you like stays put.',
-        anchor: '.onboarding-tabs',
+        body: 'Each tab is a workspace of one or more panes, side by side. Split a tab to keep a chat beside a page that a worker injected — this tour is one of those pages. Tabs and their panes persist across reloads.',
+        anchors: ['.onboarding-tabs', '[role="tablist"][aria-label="Workspace tabs"]'],
       },
       {
         id: 'palette',
         title: 'One key reaches everything',
-        body: 'The command palette lists every page, command, and worker-provided row. Workers add their own rows at runtime, so the palette grows as you install workers. It is the fastest route to anything in the console.',
-        anchor: '.onboarding-palette',
+        body: 'The command palette lists every page, command, and worker-provided row. Workers add their rows at runtime, so the palette grows as you install workers.',
+        anchors: ['.onboarding-palette', 'button[aria-label^="Search and commands"]'],
       },
       {
         id: 'conversations',
         title: 'Conversations are sessions',
         body: 'Each conversation is a harness session with its own history, working directory, and model. The engine owns that state, not the browser: close the tab, come back, and the session is where you left it.',
-        anchor: '.onboarding-conversations',
+        anchors: ['.onboarding-conversations', 'aside[aria-label="Conversations"]'],
       },
       {
         id: 'composer',
-        title: 'Where work starts',
-        body: 'Type here and the harness picks a model through llm-router, then calls functions on your behalf. Attach files, pick a folder, or point it at a worker — the tools it can reach are the functions registered in your engine.',
-        anchor: '.onboarding-composer',
+        title: 'Send a message',
+        body: 'Type here and the harness picks a model through llm-router, then calls functions on your behalf. The tools it can reach are the functions registered in your engine.',
+        anchors: ['.onboarding-composer', '.composer-shell'],
+        condition: {
+          type: 'harness::turn-completed',
+          config: {},
+          label: 'Waiting for a harness turn to finish',
+          hint: 'Send any message in a chat pane.',
+        },
+      },
+      {
+        id: 'triggers',
+        title: 'Triggers watch for you',
+        body: 'A trigger binds an event to a function. This step is bound to the `state` trigger type: it fires the moment anything is written to the `tour-scratch` scope, and the card below shows you the event as the engine delivered it.',
+        anchors: ['.onboarding-composer', '.composer-shell'],
+        condition: {
+          type: 'state',
+          config: { scope: 'tour-scratch' },
+          label: 'Waiting for a write to the tour-scratch scope',
+          hint: 'iii trigger state::set scope=tour-scratch key=hello value=world',
+        },
       },
       {
         id: 'settings',
         title: 'Configuration is a function call',
         body: 'Every configurable worker publishes a schema, and this panel edits the value. Saving writes it through the engine, so the worker sees the change without a restart. Provider keys live here too.',
-        anchor: '.onboarding-settings',
+        anchors: ['.onboarding-settings', 'button[aria-label="console settings"]'],
       },
     ],
   },
@@ -71,4 +98,9 @@ export function listTours() {
 /** @returns {Tour | undefined} */
 export function getTour(id) {
   return TOURS.find((tour) => tour.id === id)
+}
+
+/** @returns {Step | undefined} */
+export function getStep(tourId, stepId) {
+  return getTour(tourId)?.steps.find((step) => step.id === stepId)
 }
