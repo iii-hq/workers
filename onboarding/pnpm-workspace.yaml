@@ -1,0 +1,9 @@
+# Config only, no `packages`: this marks the worker its own project root, so
+# `pnpm install` here does not reach up into the shared console-UI workspace
+# (which owns ./ui). Same split kanban/ uses.
+minimumReleaseAgeExclude:
+  - '@iii-dev/helpers@0.23.0'
+  - iii-sdk@0.23.0
+
+allowBuilds:
+  protobufjs: false

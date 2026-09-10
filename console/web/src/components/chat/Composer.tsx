@@ -569,7 +569,8 @@ export function Composer({
       ref={shell}
       data-composer-streaming={isStreaming ? 'true' : undefined}
       className={cn(
-        'composer-shell relative',
+        // onboarding-composer: tour anchor (workers/onboarding). Do not remove.
+        'onboarding-composer composer-shell relative',
         hasProjectStrip ? 'pt-8' : 'pt-0',
       )}
     >

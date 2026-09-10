@@ -1,0 +1,96 @@
+/*
+ * Onboarding styles. Two halves:
+ *   - `.onboarding-spotlight`, GLOBAL on purpose: the box lives in
+ *     `document.body` so it can frame any part of the console, not only this
+ *     page's pane.
+ *   - the step list, scoped to the injected page like every other worker UI.
+ *
+ * The movement is one CSS transition on a single element. Every duration and
+ * easing comes from the console's motion tokens, so the box moves like the
+ * rest of the console and goes still under `prefers-reduced-motion`.
+ */
+
+.onboarding-spotlight {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  pointer-events: none;
+  border: 2px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  box-shadow:
+    0 0 0 1px var(--color-accent-border),
+    0 0 0 9999px color-mix(in srgb, var(--color-bg) 42%, transparent);
+  opacity: 0;
+  transition:
+    translate var(--motion-duration-panel) var(--motion-ease-enter),
+    width var(--motion-duration-panel) var(--motion-ease-enter),
+    height var(--motion-duration-panel) var(--motion-ease-enter),
+    opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.onboarding-spotlight[data-visible='true'] {
+  opacity: 1;
+  animation: onboarding-spotlight-breathe 2.4s var(--motion-ease-standard) infinite;
+}
+
+/* A slow breath on the ring only — the box itself never resizes on its own,
+   so the frame stays honest about what it is pointing at. */
+@keyframes onboarding-spotlight-breathe {
+  0%,
+  100% {
+    border-color: var(--color-accent);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-spotlight {
+    transition: none;
+  }
+  .onboarding-spotlight[data-visible='true'] {
+    animation: none;
+  }
+}
+
+[data-iii-ui='onboarding'] .onboarding-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='onboarding'] .onboarding-step[data-current='true'] {
+  border-color: var(--color-accent-border);
+}
+
+[data-iii-ui='onboarding'] .onboarding-step-index {
+  display: inline-flex;
+  min-width: 1.5rem;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='onboarding'] .onboarding-step-title {
+  flex: 1;
+  text-align: left;
+}
+
+[data-iii-ui='onboarding'] .onboarding-step-lock,
+[data-iii-ui='onboarding'] .onboarding-step-body {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='onboarding'] .onboarding-step-body {
+  margin: 0 0 0.5rem;
+  text-wrap: pretty;
+}
+
+[data-iii-ui='onboarding'] .onboarding-controls {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+}
