@@ -3,7 +3,7 @@
 //! the router-owned channel, terminal done/error last, then close.
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::reasoning::{is_reasoning_model, reasoning_effort_for, thinking_type};
+use crate::reasoning::{is_reasoning_model, native_thinking, resolve, ReasoningParams};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
@@ -136,12 +136,27 @@ async fn run_stream_call(
             "thinking_level ignored: {model} is not a reasoning model"
         ));
     }
-    let thinking = thinking_type(input.thinking_level, reasoning);
-    let reasoning_effort = if reasoning {
-        reasoning_effort_for(input.thinking_level)
-    } else {
-        None
+    // The native on/off switch is exact or nothing: a misspelt off switch
+    // must not silently run at full effort.
+    let native = match native_thinking(input.provider_options.as_ref()) {
+        Ok(native) => native,
+        Err(message) => {
+            let _ = send_event(
+                sink,
+                &synthetic_error_event(&message, &model, ErrorKind::Permanent),
+            );
+            return;
+        }
     };
+    if native == Some("disabled") && input.thinking_level.is_some() {
+        // Report-and-continue: off was asked for explicitly, so off wins.
+        warnings
+            .push("thinking_level ignored: provider_options.thinking is \"disabled\"".to_string());
+    }
+    let ReasoningParams {
+        thinking,
+        reasoning_effort,
+    } = resolve(input.thinking_level, reasoning, native);
 
     let body = build_body(&BodyArgs {
         model: cfg.model.clone(),

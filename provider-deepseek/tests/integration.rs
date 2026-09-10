@@ -212,7 +212,7 @@ const STUB_401: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/j
 /// The `GET /models` payload, in DeepSeek's documented shape. Carries one id
 /// the local table knows and one it does not, so discovery is exercised on
 /// both paths.
-const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"object\":\"list\",\"data\":[{\"id\":\"deepseek-v4-pro\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"deepseek-v4-flash\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"deepseek-vNext\",\"object\":\"model\",\"owned_by\":\"deepseek\"}]}";
+const STUB_MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"object\":\"list\",\"data\":[{\"id\":\"deepseek-v4-pro\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"deepseek-flash\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"deepseek-v4-flash\",\"object\":\"model\",\"owned_by\":\"deepseek\"},{\"id\":\"deepseek-vNext\",\"object\":\"model\",\"owned_by\":\"deepseek\"}]}";
 
 async fn stub_upstream(completions_response: &'static str) -> StubUpstream {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -497,7 +497,12 @@ async fn refresh_models_discovers_the_live_catalog() {
     // table does not know
     assert_eq!(
         ids,
-        ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-vNext"],
+        [
+            "deepseek-v4-pro",
+            "deepseek-flash",
+            "deepseek-v4-flash",
+            "deepseek-vNext"
+        ],
         "got {ids:?}"
     );
 
@@ -512,7 +517,25 @@ async fn refresh_models_discovers_the_live_catalog() {
     assert_eq!(pro["supports_structured_output"], false);
     assert_eq!(pro["supports_thinking"], true);
     assert_eq!(pro["supports_xhigh"], true);
-    assert_eq!(pro["pricing"]["input"], 0.435);
+    assert_eq!(
+        pro["pricing"]["input"], 1.32,
+        "peak list price, 2026-09 snapshot"
+    );
+
+    // the live flash id carries the Flash row — a row keyed on the retired
+    // `deepseek-v4-flash` left it on the 65K/8K unknown-model defaults — and
+    // the retired alias keeps its own id while borrowing that row's metadata
+    let flash = models.iter().find(|m| m["id"] == "deepseek-flash").unwrap();
+    assert_eq!(flash["display_name"], "DeepSeek V4.1 Flash");
+    assert_eq!(flash["context_window"], 1_000_000);
+    assert_eq!(flash["max_output_tokens"], 384_000);
+    assert_eq!(flash["pricing"]["input"], 0.30);
+    let alias = models
+        .iter()
+        .find(|m| m["id"] == "deepseek-v4-flash")
+        .unwrap();
+    assert_eq!(alias["context_window"], 1_000_000, "alias must not degrade");
+    assert_eq!(alias["pricing"], flash["pricing"]);
 
     // the unknown row survives on conservative defaults rather than vanishing
     let next = models.iter().find(|m| m["id"] == "deepseek-vNext").unwrap();
