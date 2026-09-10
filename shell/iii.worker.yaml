@@ -1,5 +1,5 @@
 iii: v1
-name: shell
+name: ide
 language: rust
 deploy: binary
 manifest: Cargo.toml

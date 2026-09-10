@@ -32,6 +32,21 @@
     "registry_projection_sha256": {"$ref": "#/$defs/sha256"},
     "compiler_digest": {"$ref": "#/$defs/sha256"},
     "descriptor_sha256": {"$ref": "#/$defs/sha256"},
+    "previous_names": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"}
+    },
+    "previous_source_paths": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+      }
+    },
     "source": {
       "type": "object",
       "additionalProperties": false,

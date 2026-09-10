@@ -222,6 +222,28 @@ def test_release_control_can_build_the_registry_payload_from_the_manifest_alone(
     assert payload["functions"][0]["name"] == "smoke::run"
 
 
+def test_build_handoff_keeps_the_selector_and_binary_while_publishing_the_public_name(tmp_path: Path) -> None:
+    selected = descriptor("shell", "rust-binary")
+    selected["artifact"]["binary"] = "shell"
+    selected["runtime"]["exec"] = ["ide"]
+    selected["registry_projection"]["worker_name"] = "ide"
+    selected["previous_names"] = ["shell"]
+    seal(selected)
+    files = {
+        name: (unit.replace("web-", "shell-"), role)
+        for name, (unit, role) in RUST_FILES.items()
+    }
+    root = prepared_release(tmp_path, selected, files)
+
+    manifest = written(write_args(root, receipt(root, "shell"), "shell"))
+
+    assert manifest["worker"] == "shell"
+    assert manifest["descriptor"]["worker"] == "shell"
+    assert manifest["descriptor"]["registry_projection"]["worker_name"] == "ide"
+    assert manifest["descriptor"]["artifact"]["binary"] == "shell"
+    assert manifest["descriptor"]["runtime"]["exec"] == ["ide"]
+
+
 def test_bundle_manifest_exposes_archive_url_and_sha256(tmp_path: Path) -> None:
     root = prepared_release(
         tmp_path, descriptor("smoke", "javascript-bundle"),

@@ -396,6 +396,7 @@ workers:
         outputs:
         - dist
     publish: true
+    previous_names: [console]
   context-manager:
     source:
       path: context-manager
@@ -1855,6 +1856,7 @@ workers:
         outputs:
         - dist
     publish: true
+    previous_names: [shell]
   fixture-shell-harness:
     source:
       path: shell/tests/e2e/workers/harness

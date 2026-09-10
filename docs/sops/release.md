@@ -17,6 +17,16 @@ artifact contains `deployment-descriptor-index.json` and exact
 source SHA, compiler commit/digest, artifact and descriptor digest before
 planning.
 
+## Identity-change rollout order
+
+Identity changes are compiler-first. Merge the Workers compiler/catalog change,
+then publish and verify the `main` descriptor checkpoint exposes the new public
+names and complete aliases (for this transition, `shell` → `ide` and `console`
+→ `ade`). Deploy the corresponding Release Control change only after that
+checkpoint exists. Release Control without the matching descriptor contract
+fails closed on identity mismatch during the transition; do not add a static
+rename map or deploy Release Control first.
+
 ## What a build does
 
 [`build.yml`](../../.github/workflows/build.yml) runs for one worker and one

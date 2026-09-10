@@ -10,7 +10,7 @@ descriptor; Release Control and post-prepare workflows never read it.
 | Field | Type | Purpose |
 |---|---|---|
 | `iii` | `v1` | Schema version |
-| `name` | string | Folder name; git tag prefix; registry id |
+| `name` | string | Public Registry identity |
 | `language` | enum | `rust` \| `javascript` \| `node` \| `python` — routes CI language job |
 | `deploy` | enum | `binary` \| `image` \| `bundle` — routes release build + publish |
 | `manifest` | path | Version source: `Cargo.toml`, `package.json`, `pyproject.toml` |
@@ -27,6 +27,39 @@ When `targets` is omitted, all six default Unix triples are built: macOS
 x86_64/aarch64, Linux x86_64 gnu/musl, aarch64 gnu, and armv7 gnueabihf.
 The authoritative release matrix lives in `.deploy/workers.yaml`; when this
 public field is present the compiler requires the two lists to match.
+
+## Identity changes
+
+The mapping key in `.deploy/workers.yaml` is the stable build selector used by
+workflows, descriptor filenames, and artifacts. It may differ from the public
+`name` in `iii.worker.yaml`; the compiler preserves it as `descriptor.worker`
+and publishes `name` as `descriptor.registry_projection.worker_name`. Binary
+archives retain their existing external asset filenames but store the
+executable entry under this public name (plus `.exe` for Windows), which is the
+basename the iii installer extracts.
+
+When changing the public name, add every former public name to the private
+catalog entry's `previous_names`, ordered oldest first. This list is append-only
+and must keep the complete history across later renames so Release Control can
+retain the same oldest lease scope. When moving the source directory, add each
+explicit old repository-relative directory to private `previous_source_paths`.
+Empty histories may be absent or `[]`; the compiler omits empty history fields
+from unchanged descriptors. These release-only fields do not belong in
+`iii.worker.yaml`.
+
+```yaml
+workers:
+  stable-build-selector:
+    source: {path: workers/current-dir, package_manifest: Cargo.toml}
+    artifact:
+      kind: rust-binary
+      binary: worker-bin
+      toolchain: {name: rust, version: 1.97.1}
+      targets: [x86_64-pc-windows-msvc]
+    publish: true
+    previous_names: [oldest-name, middle-name]
+    previous_source_paths: [workers/oldest-dir, workers/middle-dir]
+```
 
 ## Opt-outs and runtime
 

@@ -61,10 +61,12 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
         "descriptor_sha256", "source", "artifact", "runtime",
         "interface_capture", "publish", "build_units", "registry_projection",
     }
-    if set(descriptor) != required:
+    optional = {"previous_names", "previous_source_paths"}
+    if not required.issubset(descriptor) or set(descriptor) - required - optional:
         raise SystemExit(
             "deployment descriptor fields differ from compiler contract: "
-            f"missing={sorted(required - set(descriptor))} unknown={sorted(set(descriptor) - required)}"
+            f"missing={sorted(required - set(descriptor))} "
+            f"unknown={sorted(set(descriptor) - required - optional)}"
         )
     if descriptor["contract"] != "deployment-descriptor":
         raise SystemExit("deployment descriptor contract mismatch")
@@ -79,6 +81,10 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
         raise SystemExit("deployment descriptor interface_capture must be required or skipped")
     if not isinstance(descriptor["build_units"], list) or not descriptor["build_units"]:
         raise SystemExit("deployment descriptor build_units must be non-empty")
+    for field in optional & set(descriptor):
+        value = descriptor[field]
+        if not isinstance(value, list) or not value or any(not isinstance(item, str) or not item for item in value):
+            raise SystemExit(f"deployment descriptor {field} must be a non-empty string array")
     return descriptor
 
 
@@ -489,17 +495,19 @@ def build(args: argparse.Namespace) -> int:
             command.append("--locked")
         run(*command)
         binary = str(artifact["binary"])
+        archive_binary = str(descriptor["registry_projection"]["worker_name"])
         is_windows = target.endswith("-pc-windows-msvc")
         binary_filename = f"{binary}.exe" if is_windows else binary
+        archive_binary_filename = f"{archive_binary}.exe" if is_windows else archive_binary
         binary_path = source_dir / "target" / target / "release" / binary_filename
         if not binary_path.is_file():
             raise SystemExit(f"built binary not found at {binary_path}")
         if is_windows:
             archive = args.out / f"{binary}-{target}.zip"
-            normalized_zip([(binary_path, binary_filename)], archive)
+            normalized_zip([(binary_path, archive_binary_filename)], archive)
         else:
             archive = args.out / f"{binary}-{target}.tar.gz"
-            normalized_tar([(binary_path, binary)], archive)
+            normalized_tar([(binary_path, archive_binary)], archive)
         role = "binary"
     elif kind in {"javascript-bundle", "python-bundle"}:
         workspace_root = Path(str(artifact["workspace_root"]))

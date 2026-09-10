@@ -486,10 +486,11 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
             raise ValueError(f"{catalog_path}: workers.{catalog_id} must be a mapping")
         raw = dict(value)
         expected_sections = {"source", "artifact", "publish"}
+        optional_sections = {"previous_names", "previous_source_paths"}
         legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke", "registry_interface"} & set(raw)
         if legacy:
             raise ValueError(f"{catalog_path}: workers.{catalog_id} uses legacy fields: {sorted(legacy)}")
-        unknown_sections = set(raw) - expected_sections
+        unknown_sections = set(raw) - expected_sections - optional_sections
         missing_sections = expected_sections - set(raw)
         if unknown_sections or missing_sections:
             raise ValueError(
