@@ -218,7 +218,6 @@ async fn provider_registers_with_persisted_token_and_credential_gated_catalog() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "MOT-4744: the Sarvam catalog publishes no pricing (curated.rs), so the router cannot fill cost_usd"]
 async fn chat_streams_end_to_end_with_cost_fill() {
     let engine = engine_or_skip!();
     let stub = stub_upstream(STUB_SSE).await;
@@ -244,9 +243,12 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     assert_eq!(res["ok"], true, "chat response: {res}");
     assert_eq!(res["provider"], "sarvam");
     assert_eq!(res["stop_reason"], "end");
+    // Sarvam publishes its prices in INR only and the catalog's `Pricing` is
+    // USD per MTok, so the rows stay unpriced (curated.rs): the router forwards
+    // the usage counts and must not invent a cost_usd.
     assert!(
-        res["usage"]["cost_usd"].as_f64().is_some_and(|c| c > 0.0),
-        "cost filled: {res}"
+        res["usage"]["cost_usd"].is_null(),
+        "unpriced catalog must leave cost_usd empty: {res}"
     );
 
     let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
@@ -301,7 +303,6 @@ async fn upstream_401_surfaces_as_auth_expired_error_frame() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "MOT-4744: curated::models() mixes speech rows into a chat-modality listing; predates the router's modality filter"]
 async fn refresh_models_reconciles_curated_catalog() {
     let engine = engine_or_skip!();
     let stub = stub_upstream(STUB_SSE).await;
@@ -309,10 +310,40 @@ async fn refresh_models_reconciles_curated_catalog() {
     configure_stub_key(&router_iii, &stub.url).await;
     refresh_and_wait(&router_iii, &provider_iii, "sarvam-105b").await;
 
-    let list = call(
+    // The default listing is the chat modality: the speech rows (saaras:*,
+    // saarika:*, bulbul:*) are reached through router::transcribe / speak and
+    // only appear with `modality: "any"`.
+    let chat = call(
         &router_iii,
         "router::models::list",
         json!({ "provider": "sarvam" }),
+    )
+    .await
+    .unwrap();
+    let chat_ids: Vec<&str> = chat["models"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| m["id"].as_str()).collect())
+        .unwrap_or_default();
+    let curated_chat: Vec<String> = provider_sarvam::curated::chat_models()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    for id in &curated_chat {
+        assert!(
+            chat_ids.contains(&id.as_str()),
+            "missing chat row {id}: {chat_ids:?}"
+        );
+    }
+    assert_eq!(
+        chat_ids.len(),
+        curated_chat.len(),
+        "speech rows in the chat listing: {chat_ids:?}"
+    );
+
+    let list = call(
+        &router_iii,
+        "router::models::list",
+        json!({ "provider": "sarvam", "modality": "any" }),
     )
     .await
     .unwrap();

@@ -132,6 +132,15 @@ async fn stub_upstream(chat_response: &'static str) -> StubUpstream {
 
 /// Boot router + provider on one engine; wait until the provider is listed.
 async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
+    // A real key exported on the host would ride the router's env-var
+    // fallback into every resolve and defeat the no-credential assertions
+    // below. The provider itself sends no Authorization header without a
+    // credential (request.rs); the leak is purely environmental. Strip the
+    // variable exactly once per process, before the first router or provider
+    // boots: every in-process read happens after this single mutation and
+    // no test ever sets the variable, so concurrent tests cannot race it.
+    static STRIP_HOST_KEY: std::sync::Once = std::sync::Once::new();
+    STRIP_HOST_KEY.call_once(|| std::env::remove_var("LLAMACPP_API_KEY"));
     let router_iii = register_worker(engine_url, test_init_options());
     register_router(router_iii.clone())
         .await
@@ -252,9 +261,6 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
 
 #[tokio::test(flavor = "multi_thread")]
 async fn provider_registers_with_persisted_token_and_discovers_catalog_without_a_credential() {
-    // A real key exported on the host would leak into the in-process router's
-    // env-var fallback and defeat the no-credential assertions below.
-    std::env::remove_var("LLAMACPP_API_KEY");
     let engine = engine_or_skip!();
     let stub = stub_upstream(STUB_SSE).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
@@ -308,7 +314,6 @@ async fn provider_registers_with_persisted_token_and_discovers_catalog_without_a
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "MOT-4744: the chat request carries an Authorization header with no credential configured; provider or test must change"]
 async fn chat_streams_end_to_end_with_no_credential_and_no_authorization_header() {
     let engine = engine_or_skip!();
     let stub = stub_upstream(STUB_SSE).await;
