@@ -82,6 +82,14 @@ export const TOURS = [
         body: 'Each conversation is a harness session with its own history, working directory and model. The engine holds that state, not the browser: close the tab, come back, and the session is where you left it.',
         anchors: ['.onboarding-conversations', 'aside[aria-label="Conversations"]'],
       },
+      {
+        id: 'stay-in-touch',
+        title: 'Stay in touch',
+        body: 'iii moves quickly. Put your email in for the roadmap and the product updates — what is being built, and what shipped. The links below go to the same places, if you would rather read along there.',
+        // No anchor: this step is about the page itself, and there is nothing
+        // in the console to point at. The page renders the signup box and the
+        // links for this step id.
+      },
     ],
   },
 ]

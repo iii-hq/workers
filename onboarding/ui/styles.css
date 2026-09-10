@@ -154,6 +154,41 @@
   rotate: 90deg;
 }
 
+/* The signup box and the icon links. Console has no input or icon-link
+   recipe the page can borrow. */
+[data-iii-ui='onboarding'] .ob-input {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+[data-iii-ui='onboarding'] .ob-input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+[data-iii-ui='onboarding'] .ob-social {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-ink-faint);
+  transition:
+    color var(--motion-duration-control) var(--motion-ease-standard),
+    background var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui='onboarding'] .ob-social:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
 /* A payload or a command to copy. Console has no code-block recipe. */
 [data-iii-ui='onboarding'] .ob-pre {
   margin: 0;

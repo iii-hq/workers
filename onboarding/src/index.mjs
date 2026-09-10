@@ -199,6 +199,45 @@ iii.registerFunction(
 )
 
 // ---------------------------------------------------------------------------
+// Product updates
+// ---------------------------------------------------------------------------
+
+/**
+ * The same public signup form the iii.dev landing page posts to (its URL is
+ * a meta tag in that page's head, so it is not a secret). The POST happens
+ * here and not in the browser: the injected page has no network of its own,
+ * and one place to change the destination is enough.
+ */
+const SIGNUP_URL =
+  process.env.III_ONBOARDING_SIGNUP_URL ??
+  'https://api.mailmodo.com/api/v1/at/f/b7XMGvRS9B/cdb51f52-a91e-520c-888d-03470a9c8faa'
+
+iii.registerFunction(
+  'onboarding::subscribe',
+  async (input) => {
+    const email = String(input.email ?? '').trim()
+    // One address, an @, and a dot after it. The list itself does the real
+    // validation; this only stops an obvious typo becoming a POST.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('that does not look like an email address')
+    const response = await fetch(SIGNUP_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, source: input.source ?? 'onboarding_flow' }),
+    })
+    // 409 is "already on the list", which is a success for the operator.
+    if (!response.ok && response.status !== 409) {
+      throw new Error(`the signup service answered ${response.status}`)
+    }
+    return { subscribed: true, already: response.status === 409 }
+  },
+  {
+    description: 'Add an email address to the iii product-update list.',
+    request_format: object({ email: string, source: string }, ['email']),
+    response_format: object({ subscribed: { type: 'boolean' }, already: { type: 'boolean' } }, ['subscribed']),
+  },
+)
+
+// ---------------------------------------------------------------------------
 // Injected console UI
 // ---------------------------------------------------------------------------
 
