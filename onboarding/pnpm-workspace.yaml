@@ -6,4 +6,5 @@ minimumReleaseAgeExclude:
   - iii-sdk@0.23.0
 
 allowBuilds:
+  esbuild: true
   protobufjs: false

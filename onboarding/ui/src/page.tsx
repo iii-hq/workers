@@ -310,11 +310,35 @@ function ConditionRow({
             <>
               <p className="m-0 text-base text-ink-faint">{condition.label}</p>
               {condition.hint ? <pre className="ob-pre select-all text-ink">{condition.hint}</pre> : null}
+              {condition.prompt ? <Copyable label="or ask the agent" text={condition.prompt} /> : null}
             </>
           )}
         </div>
       ) : null}
     </li>
+  )
+}
+
+/** A block the operator can copy in one click — the fallback is the text
+    itself, which is selectable either way. */
+function Copyable({ label, text }: { label: string; text: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = useCallback(() => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1400)
+    })
+  }, [text])
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-ink-faint">{label}</span>
+        <Button variant="ghost" size="sm" onClick={copy}>
+          {copied ? 'copied' : 'copy'}
+        </Button>
+      </div>
+      <pre className="ob-pre select-all text-ink">{text}</pre>
+    </div>
   )
 }
 
@@ -328,8 +352,8 @@ function Frame({
   children: React.ReactNode
 }) {
   return (
-    <PageShell>
-      <PageMain>
+    <PageShell className="ob-page">
+      <PageMain className="ob-page">
         <PageHeader title={title} description={description} />
         <PageBody>
           {/* Centred column: the pane is often narrow beside a chat, but a

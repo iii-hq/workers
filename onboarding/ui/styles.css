@@ -56,6 +56,16 @@
    plus the `uiClasses` recipes (card, listItem, chip). What follows is only
    what those cannot express. */
 
+/* The console's panel fill reads warm-gray beside this list; the page is
+   asked to be white. Dark theme keeps the console's own near-black panel. */
+[data-iii-ui='onboarding'] .ob-page {
+  background: #fff;
+}
+
+[data-theme='dark'] [data-iii-ui='onboarding'] .ob-page {
+  background: var(--color-panel);
+}
+
 [data-iii-ui='onboarding'] .ob-step[data-state='active'] {
   border-color: var(--color-accent);
 }

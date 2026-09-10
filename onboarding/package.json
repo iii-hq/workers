@@ -13,9 +13,13 @@
     "build": "pnpm --dir ui build",
     "check": "node --check src/index.mjs && node --check src/tours.mjs",
     "test": "node --test \"tests/*.test.mjs\"",
-    "start": "node src/index.mjs"
+    "start": "node src/index.mjs",
+    "build:assets": "cd ui && node build.mjs"
   },
   "dependencies": {
     "iii-sdk": "0.23.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   }
 }

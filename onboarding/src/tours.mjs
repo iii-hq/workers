@@ -15,7 +15,7 @@
  */
 
 /**
- * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string }} Condition
+ * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
  * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition }} Step
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
@@ -28,33 +28,9 @@ export const TOURS = [
     description: 'The surfaces of the console, and the engine underneath them.',
     steps: [
       {
-        id: 'welcome',
-        title: 'This is your engine',
-        body: 'Everything on this page talks to one iii engine over a WebSocket. The engine holds workers; workers register functions and triggers. No panel here is a static page — each one is a live client of the same engine.',
-        anchors: ['.onboarding-menu-bar', 'header.h-14'],
-      },
-      {
-        id: 'tabs',
-        title: 'Workspaces, not windows',
-        body: 'Each tab is a workspace of one or more panes, side by side. Split a tab to keep a chat beside a page that a worker injected — this tour is one of those pages. Tabs and their panes persist across reloads.',
-        anchors: ['.onboarding-tabs', '[role="tablist"][aria-label="Workspace tabs"]'],
-      },
-      {
-        id: 'palette',
-        title: 'One key reaches everything',
-        body: 'The command palette lists every page, command, and worker-provided row. Workers add their rows at runtime, so the palette grows as you install workers.',
-        anchors: ['.onboarding-palette', 'button[aria-label^="Search and commands"]'],
-      },
-      {
-        id: 'conversations',
-        title: 'Conversations are sessions',
-        body: 'Each conversation is a harness session with its own history, working directory, and model. The engine owns that state, not the browser: close the tab, come back, and the session is where you left it.',
-        anchors: ['.onboarding-conversations', 'aside[aria-label="Conversations"]'],
-      },
-      {
         id: 'composer',
         title: 'Send a message',
-        body: 'Type here and the harness picks a model through llm-router, then calls functions on your behalf. The tools it can reach are the functions registered in your engine.',
+        body: 'Type here. The harness is a worker, the same as every other worker. It picks a model through llm-router, then it calls functions that other workers register. All workers speak one interface: Workers, Triggers, Functions. This is why any worker can use any other worker.',
         anchors: ['.onboarding-composer', '.composer-shell'],
         condition: {
           type: 'harness::turn-completed',
@@ -64,22 +40,47 @@ export const TOURS = [
         },
       },
       {
+        id: 'welcome',
+        title: 'This is an engine, not a chat app',
+        body: 'Each panel on this page is a live client of one iii engine. The engine orchestrates; the workers extend what the system can do. A worker is a running service, not a plugin: it starts, it stays up, and it registers its functions and triggers with the engine. The console shows all of them as one system.',
+        anchors: ['.onboarding-menu-bar', 'header.h-14'],
+      },
+      {
+        id: 'traces',
+        title: 'Watch the work happen',
+        body: 'Open Traces from the command palette to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.',
+        anchors: ['.onboarding-traces', 'section[aria-label="traces"]'],
+      },
+      {
         id: 'triggers',
         title: 'Triggers watch for you',
-        body: 'A trigger binds an event to a function. This step is bound to the `state` trigger type: it fires the moment anything is written to the `tour-scratch` scope, and the card below shows you the event as the engine delivered it.',
+        body: 'A trigger binds an event to a function, so the system reacts instead of polls. This step is bound to the `state` trigger type. It fires when anything writes to the `tour-scratch` scope, and the card below shows the event as the engine delivered it.',
         anchors: ['.onboarding-composer', '.composer-shell'],
         condition: {
           type: 'state',
           config: { scope: 'tour-scratch' },
           label: 'Waiting for a write to the tour-scratch scope',
           hint: 'iii trigger state::set scope=tour-scratch key=hello value=world',
+          prompt: 'Use the state worker to set key "hello" to "world" in the tour-scratch scope.',
         },
       },
       {
-        id: 'settings',
-        title: 'Configuration is a function call',
-        body: 'Every configurable worker publishes a schema, and this panel edits the value. Saving writes it through the engine, so the worker sees the change without a restart. Provider keys live here too.',
-        anchors: ['.onboarding-settings', 'button[aria-label="console settings"]'],
+        id: 'tabs',
+        title: 'Workspaces, not windows',
+        body: 'Each tab is a workspace of one or more panes, side by side. Split a tab to keep a chat beside a page that a worker injected — this onboarding page is one of those. Install more workers from the package repo, or write your own, and they add functions, commands and pages to this same console.',
+        anchors: ['.onboarding-tabs', '[role="tablist"][aria-label="Workspace tabs"]'],
+      },
+      {
+        id: 'palette',
+        title: 'One key reaches everything',
+        body: 'The command palette lists each page, command and worker-provided row. Workers add their rows while they run, so the palette grows when you install a worker. One list, one system.',
+        anchors: ['.onboarding-palette', 'button[aria-label^="Search and commands"]'],
+      },
+      {
+        id: 'conversations',
+        title: 'Conversations are sessions',
+        body: 'Each conversation is a harness session with its own history, working directory and model. The engine holds that state, not the browser: close the tab, come back, and the session is where you left it.',
+        anchors: ['.onboarding-conversations', 'aside[aria-label="Conversations"]'],
       },
     ],
   },

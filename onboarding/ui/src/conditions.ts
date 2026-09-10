@@ -12,6 +12,7 @@ export interface Condition {
   config: Record<string, unknown>
   label: string
   hint?: string
+  prompt?: string
 }
 
 /**

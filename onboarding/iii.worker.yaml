@@ -3,14 +3,26 @@ name: onboarding
 language: javascript
 deploy: bundle
 manifest: package.json
-license: Apache-2.0
+# No `license:` key here: the VM manifest validator (the base_image path)
+# rejects it, although every other worker in this repo carries one. The
+# license stays in package.json.
 tags: [onboarding, tour, console, ui, docs]
 description: Guided console tour — step content, per-operator progress in state, and an injected page that spotlights the console element each step talks about.
 
 runtime:
   kind: javascript
+  # The iii node image. With a base_image the worker runs in its own VM, and
+  # `scripts.install` runs inside that guest before `scripts.start` — so the
+  # worker builds itself instead of depending on someone having run a build in
+  # the checkout.
+  base_image: docker.io/iiidev/node:latest
 
 scripts:
+  # npm and esbuild only. The guest gets the worker directory alone, so the
+  # asset build must not need the repo's pnpm workspace: `pnpm --dir ui build`
+  # adds `tsc --noEmit` against `@iii-dev/console-ui`, which lives in that
+  # workspace and is types-only anyway (esbuild treats it as external).
+  install: npm install && npm run build:assets
   start: node ./src/index.mjs
 
 dependencies:
