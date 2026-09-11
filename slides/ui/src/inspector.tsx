@@ -99,9 +99,9 @@ export function DeckInspector({
           onChange={(author) => onChange({ author: author || undefined })}
         />
       </Field>
-      <div className={uiClasses.field}>
-        <span className={uiClasses.fieldLabel}>Theme</span>
-        <div className="sl-theme-grid" role="group" aria-label="Theme">
+      <fieldset className={`${uiClasses.field} sl-fieldset`}>
+        <legend className={uiClasses.fieldLabel}>Theme</legend>
+        <div className="sl-theme-grid">
           {themes.map((theme) => (
             <button
               key={theme.id}
@@ -117,7 +117,7 @@ export function DeckInspector({
             </button>
           ))}
         </div>
-      </div>
+      </fieldset>
       <Field id="sl-deck-accent" label="Accent override" hint="Hex color, e.g. #ff6b57. Empty keeps the theme accent.">
         <div className="sl-color-row">
           <input
