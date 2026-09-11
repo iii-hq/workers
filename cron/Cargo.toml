@@ -18,7 +18,7 @@ name = "cron"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.1-alpha.25"
+iii-sdk = "=0.23.0"
 iii-console-ui = { path = "../crates/console-ui" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
@@ -33,7 +33,7 @@ schemars = "0.8"
 cron = "0.12"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
 
 [dev-dependencies]
 serial_test = "3"

@@ -1010,8 +1010,8 @@ mod tests {
     #[test]
     fn redis_exec_result_distinguishes_watch_abort() {
         let committed: Option<(usize,)> =
-            redis::from_redis_value(&redis::Value::Array(vec![redis::Value::Int(1)])).unwrap();
-        let aborted: Option<(usize,)> = redis::from_redis_value(&redis::Value::Nil).unwrap();
+            redis::from_redis_value(redis::Value::Array(vec![redis::Value::Int(1)])).unwrap();
+        let aborted: Option<(usize,)> = redis::from_redis_value(redis::Value::Nil).unwrap();
         assert_eq!(committed, Some((1,)));
         assert_eq!(aborted, None);
     }
