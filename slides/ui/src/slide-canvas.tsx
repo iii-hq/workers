@@ -101,6 +101,7 @@ function Editable({
     )
   }
   return (
+    // biome-ignore lint/a11y/useSemanticElements: inline editing on the rendered slide needs contentEditable; a textarea cannot inherit the slide typography
     <div
       ref={ref}
       className={`${className} sl-editable${value ? '' : ' sl-empty'}`}
@@ -110,7 +111,6 @@ function Editable({
       onBlur={commit}
       onKeyDown={onKeyDown}
       onClick={(event) => event.stopPropagation()}
-      // biome-ignore lint/a11y/useSemanticElements: inline editing on the rendered slide needs contentEditable, a textarea cannot inherit the slide typography
       role="textbox"
       aria-multiline={multiline ? 'true' : undefined}
       tabIndex={0}
