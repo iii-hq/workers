@@ -229,7 +229,13 @@ const SIGNUP_TIMEOUT_MS = 10_000
 
 const SIGNUP_URL =
   process.env.III_ONBOARDING_SIGNUP_URL ??
-  'https://api.mailmodo.com/api/v1/at/f/b7XMGvRS9B/cdb51f52-a91e-520c-888d-03470a9c8faa'
+  'https://api.mailmodo.com/api/v1/at/f/y0trGR0lfL/c6aefeeb-e66a-5c8a-9c71-4733d9ea1836'
+
+// Mailmodo matches the Origin against an allowlist and this one literal is on
+// it. `localhost` and `[::1]` are refused even though they name the same host,
+// so the value is fixed rather than derived from wherever the engine happens to
+// be listening.
+const SIGNUP_ORIGIN = process.env.III_ONBOARDING_SIGNUP_ORIGIN ?? 'http://127.0.0.1'
 
 iii.registerFunction(
   'onboarding::subscribe',
@@ -245,8 +251,16 @@ iii.registerFunction(
     // in hand. The deadline is ours, not the caller's.
     const response = await fetch(SIGNUP_URL, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, source: input.source ?? 'onboarding_flow' }),
+      // Mailmodo checks an Origin allowlist and answers 400 "Unauthorized
+      // domain" without one. A worker is not a browser, so nothing sets the
+      // header for us and we must send it ourselves.
+      headers: { 'content-type': 'application/json', origin: SIGNUP_ORIGIN },
+      // `data` carries the form fields and must be present: without it the
+      // address is refused as "'email' key must be present!", which names the
+      // wrong key. Each key here has to match a contact property in Mailmodo
+      // or the submission lands with its mapping unresolved, so `email` is the
+      // only one we send.
+      body: JSON.stringify({ email, data: { email } }),
       signal: AbortSignal.timeout(SIGNUP_TIMEOUT_MS),
     }).catch((cause) => {
       if (cause?.name === 'TimeoutError') throw new Error('the signup service did not answer in time')
