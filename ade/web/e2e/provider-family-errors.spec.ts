@@ -41,7 +41,7 @@ async function expectFailureNotice(page: Page) {
     failureSummary,
   )
   await expect(notice.locator('[data-failure-ownership]')).toContainText(
-    'not an iii or console failure',
+    'not an iii or ADE failure',
   )
   const actions = notice.locator('[data-message-next-actions] li')
   await expect(actions).toHaveCount(2)
