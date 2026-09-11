@@ -139,6 +139,15 @@ runs there while the stack builds. Callers can override `runner` for the build
 or `execution-runner` for the other jobs without changing this dependency
 graph.
 
+The stack build keys its `rust-cache` entry on every installed toolchain, and
+the larger-runner image ships a different preinstalled stable than
+`ubuntu-latest`. The build therefore uninstalls every toolchain except the
+pinned one before restoring the cache, so the entry the trusted `main` push
+publishes from `workers-ci-linux-8core` is the one PR builds on
+`ubuntu-latest` restore. Both pools must stay on this contract; a build that
+logs `No cache found.` on a PR while `main` is publishing means the keys have
+drifted again.
+
 Use
 [`harness-integration-benchmark.yml`](../../.github/workflows/harness-integration-benchmark.yml)
 to compare `ubuntu-latest` with `workers-ci-linux-8core` for the single build

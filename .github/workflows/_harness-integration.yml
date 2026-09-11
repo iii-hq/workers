@@ -76,6 +76,21 @@ jobs:
           toolchain: 1.97.1
           components: ${{ inputs.coverage && 'llvm-tools' || '' }}
 
+      # rust-cache hashes every installed toolchain into its key, and the
+      # larger-runner image ships a different preinstalled stable than
+      # ubuntu-latest. Leaving those extras in place gave the trusted main
+      # build and the PR builds different keys, so PRs never restored the
+      # cache main published. Keep only the pinned toolchain before the key
+      # is computed.
+      - name: Keep only the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          active="$(rustup show active-toolchain | awk '{print $1}')"
+          rustup toolchain list --quiet \
+            | { grep -vxF "$active" || true; } \
+            | xargs -r -n1 rustup toolchain uninstall
+          rustup toolchain list
+
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           version: 11.13.1
