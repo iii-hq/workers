@@ -203,3 +203,29 @@
 [data-iii-ui='slides'] .sl-animate .sl-blocks .sl-card, [data-iii-ui='slides'] .sl-animate .sl-blocks .sl-step { animation-delay: calc(0.3s + var(--n, 0) * 0.07s); }
 @keyframes sl-reveal { from { opacity: 0; transform: translateY(26px); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
 @media (prefers-reduced-motion: reduce) { [data-iii-ui='slides'] .sl-animate * { animation: none !important; } [data-iii-ui='slides'] .sl-blob { animation: none !important; } }
+
+/* Icons, charts, motifs */
+[data-iii-ui='slides'] .sl-icon { width: 28px; height: 28px; display: block; }
+[data-iii-ui='slides'] .sl-card-icon { width: 52px; height: 52px; border-radius: 14px; background: var(--sl-accent-soft); display: grid; place-items: center; color: var(--sl-accent); }
+[data-iii-ui='slides'] .sl-step-number .sl-icon { width: 24px; height: 24px; }
+[data-iii-ui='slides'] .sl-block-chart { padding: 28px 32px 20px; display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; border-radius: 20px; }
+[data-iii-ui='slides'] .sl-chart-title { font-family: var(--sl-font-heading); font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
+[data-iii-ui='slides'] .sl-chart { width: 100%; height: 100%; min-height: 0; flex: 1; overflow: visible; }
+[data-iii-ui='slides'] .sl-chart text { font-family: var(--sl-font-body); fill: var(--sl-ink); }
+[data-iii-ui='slides'] .sl-chart-value { font-size: 24px; font-weight: 600; font-family: var(--sl-font-heading); }
+[data-iii-ui='slides'] .sl-chart-label { font-size: 20px; fill: var(--sl-muted); }
+[data-iii-ui='slides'] .sl-chart-legend { font-size: 24px; }
+[data-iii-ui='slides'] .sl-chart-total { font-size: 56px; font-weight: 700; font-family: var(--sl-font-heading); }
+[data-iii-ui='slides'] .sl-chart-axis { stroke: var(--sl-glass-border); stroke-width: 2; }
+[data-iii-ui='slides'] .sl-chart-line { fill: none; stroke: var(--sl-accent); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
+[data-iii-ui='slides'] .sl-chart-dot circle { fill: var(--sl-bg); stroke: var(--sl-accent); stroke-width: 5; }
+[data-iii-ui='slides'] .sl-animate .sl-chart-bar rect { transform-origin: center bottom; transform-box: fill-box; animation: sl-grow 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both; animation-delay: calc(var(--i, 0) * 70ms + 300ms); }
+@keyframes sl-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+[data-iii-ui='slides'] .sl-motif { position: absolute; right: -140px; top: 50%; transform: translateY(-50%); width: 820px; height: 820px; color: var(--sl-accent); opacity: 0.3; z-index: -1; pointer-events: none; }
+[data-iii-ui='slides'] .sl-motif .sl-fill { fill: currentColor; stroke: none; }
+[data-iii-ui='slides'] .sl-motif .sl-spin { transform-origin: 500px 500px; animation: sl-spin 60s linear infinite; }
+[data-iii-ui='slides'] .sl-thumb-canvas .sl-spin { animation: none; }
+@keyframes sl-spin { to { transform: rotate(360deg); } }
+[data-iii-ui='slides'] .sl-layout-title .sl-motif, [data-iii-ui='slides'] .sl-layout-statement .sl-motif { right: -260px; width: 1000px; height: 1000px; opacity: 0.22; }
+[data-iii-ui='slides'] .sl-layout-section .sl-motif { right: 520px; top: auto; bottom: -300px; transform: none; width: 700px; height: 700px; opacity: 0.18; }
+[data-iii-ui='slides'] .sl-variant-accent .sl-motif { color: var(--sl-accent-ink); }

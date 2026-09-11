@@ -1,3 +1,5 @@
+import { ICON_PATHS } from '../../src/deck-icons'
+
 export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'split', 'statement', 'image', 'blank'] as const
 export const TRANSITIONS = ['fade', 'slide', 'zoom', 'none'] as const
 export type Transition = (typeof TRANSITIONS)[number]
@@ -16,10 +18,16 @@ export const BLOCK_TYPES = [
   'cards',
   'steps',
   'timeline',
+  'chart',
 ] as const
+export const VISUALS = ['none', 'orbits', 'grid', 'waves', 'arcs', 'rings'] as const
+export type Visual = (typeof VISUALS)[number]
+export const CHART_KINDS = ['bar', 'line', 'donut'] as const
+export type ChartKind = (typeof CHART_KINDS)[number]
+export type Series = { label: string; value: number }
 export const VARIANTS = ['default', 'accent', 'gradient', 'muted'] as const
 export type Variant = (typeof VARIANTS)[number]
-export type Entry = { title: string; text?: string }
+export type Entry = { title: string; text?: string; icon?: string }
 export type BlockType = (typeof BLOCK_TYPES)[number]
 export type Column = 'left' | 'right'
 
@@ -38,6 +46,10 @@ export type Block = {
   label?: string
   entries?: Entry[]
   numbered?: boolean
+  kind?: ChartKind
+  series?: Series[]
+  unit?: string
+  title?: string
   column?: Column
 }
 
@@ -45,6 +57,7 @@ export type Slide = {
   id: string
   layout: Layout
   variant?: Variant
+  visual?: Visual
   kicker?: string
   title?: string
   subtitle?: string
@@ -126,6 +139,16 @@ export const BLOCK_LABEL: Record<BlockType, string> = {
   cards: 'Cards',
   steps: 'Steps',
   timeline: 'Timeline',
+  chart: 'Chart',
+}
+
+export const VISUAL_LABEL: Record<Visual, string> = {
+  none: 'None',
+  orbits: 'Orbits',
+  grid: 'Dot grid',
+  waves: 'Waves',
+  arcs: 'Arcs',
+  rings: 'Rings',
 }
 
 export const VARIANT_LABEL: Record<Variant, string> = {
@@ -136,7 +159,30 @@ export const VARIANT_LABEL: Record<Variant, string> = {
 }
 
 export function entriesToText(entries: Entry[] | undefined): string {
-  return (entries ?? []).map((entry) => (entry.text ? `${entry.title} | ${entry.text}` : entry.title)).join('\n')
+  return (entries ?? [])
+    .map((entry) =>
+      [entry.title, entry.text ?? (entry.icon ? '' : undefined), entry.icon]
+        .filter((part) => part !== undefined)
+        .join(' | '),
+    )
+    .join('\n')
+}
+
+export function seriesToText(series: Series[] | undefined): string {
+  return (series ?? []).map((point) => `${point.label} | ${point.value}`).join('\n')
+}
+
+export function textToSeries(value: string): Series[] {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [label, raw] = line.split(' | ')
+      const number = Number.parseFloat((raw ?? '').replace(/[^0-9.-]/g, ''))
+      return Number.isFinite(number) ? { label: label.trim(), value: number } : null
+    })
+    .filter((point): point is Series => point !== null)
 }
 
 export function textToEntries(value: string): Entry[] {
@@ -146,8 +192,10 @@ export function textToEntries(value: string): Entry[] {
     .filter(Boolean)
     .map((line) => {
       const [title, ...rest] = line.split(' | ')
-      const text = rest.join(' | ').trim()
-      return text ? { title: title.trim(), text } : { title: title.trim() }
+      const last = rest[rest.length - 1]?.trim()
+      const icon = rest.length > 1 && last && ICON_PATHS[last] ? last : undefined
+      const text = (icon ? rest.slice(0, -1) : rest).join(' | ').trim()
+      return { title: title.trim(), ...(text ? { text } : {}), ...(icon ? { icon } : {}) }
     })
 }
 
@@ -209,6 +257,18 @@ export function defaultBlock(type: BlockType): Block {
       }
     case 'steps':
       return { id, type, entries: [{ title: 'Discover' }, { title: 'Build' }, { title: 'Deploy' }, { title: 'Scale' }] }
+    case 'chart':
+      return {
+        id,
+        type,
+        kind: 'bar',
+        unit: '',
+        series: [
+          { label: '2024', value: 12 },
+          { label: '2025', value: 24 },
+          { label: '2026', value: 41 },
+        ],
+      }
     case 'timeline':
       return {
         id,

@@ -10,12 +10,15 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
+import { ICON_NAMES } from '../../src/deck-icons'
 import { ArrowDown, ArrowUp, Plus, Trash, X } from './icons'
 import {
   BLOCK_LABEL,
   BLOCK_TYPES,
   type Block,
   type BlockType,
+  CHART_KINDS,
+  type ChartKind,
   type Deck,
   defaultBlock,
   entriesToText,
@@ -25,13 +28,18 @@ import {
   REVEALS,
   type Reveal,
   type Slide,
+  seriesToText,
   type Theme,
   TRANSITIONS,
   type Transition,
   textToEntries,
+  textToSeries,
   VARIANT_LABEL,
   VARIANTS,
   type Variant,
+  VISUAL_LABEL,
+  VISUALS,
+  type Visual,
 } from './types'
 
 function Field({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
@@ -295,6 +303,37 @@ function BlockEditor({
         </>
       )
       break
+    case 'chart':
+      fields = (
+        <>
+          <Select
+            aria-label="Chart kind"
+            value={block.kind ?? 'bar'}
+            options={CHART_KINDS.map((kind) => ({ value: kind, label: kind[0].toUpperCase() + kind.slice(1) }))}
+            onChange={(kind) => onChange({ kind: kind as ChartKind })}
+          />
+          <Input
+            aria-label="Chart title"
+            value={block.title ?? ''}
+            onChange={(title) => onChange({ title })}
+            placeholder="Chart title"
+          />
+          <Input
+            aria-label="Unit"
+            value={block.unit ?? ''}
+            onChange={(unit) => onChange({ unit })}
+            placeholder="Unit ($, %, x, users)"
+          />
+          <TextArea
+            id={id}
+            rows={Math.min(10, Math.max(4, (block.series?.length ?? 0) + 1))}
+            value={seriesToText(block.series)}
+            onChange={(value) => onChange({ series: textToSeries(value) })}
+            placeholder="One point per line: Label | 42"
+          />
+        </>
+      )
+      break
     case 'cards':
     case 'steps':
     case 'timeline':
@@ -305,8 +344,9 @@ function BlockEditor({
             rows={Math.min(10, Math.max(4, (block.entries?.length ?? 0) + 1))}
             value={entriesToText(block.entries)}
             onChange={(value) => onChange({ entries: textToEntries(value) })}
-            placeholder="One entry per line: Title | one line of text"
+            placeholder="One entry per line: Title | one line of text | icon"
           />
+          <span className={uiClasses.fieldDescription}>Icons: {ICON_NAMES.join(', ')}</span>
           {block.type === 'cards' ? (
             <label className="sl-check">
               <input
@@ -402,6 +442,18 @@ export function SlideInspector({
           value={slide.variant ?? 'default'}
           options={VARIANTS.map((variant) => ({ value: variant, label: VARIANT_LABEL[variant] }))}
           onChange={(variant) => onChange({ variant: variant === 'default' ? undefined : (variant as Variant) })}
+        />
+      </Field>
+      <Field
+        id="sl-slide-visual"
+        label="Decorative motif"
+        hint="A subtle accent-colored illustration behind the content."
+      >
+        <Select
+          id="sl-slide-visual"
+          value={slide.visual ?? 'none'}
+          options={VISUALS.map((visual) => ({ value: visual, label: VISUAL_LABEL[visual] }))}
+          onChange={(visual) => onChange({ visual: visual === 'none' ? undefined : (visual as Visual) })}
         />
       </Field>
       {slide.layout !== 'blank' ? (

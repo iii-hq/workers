@@ -1,4 +1,6 @@
+import { iconSvg } from './deck-icons.js'
 import type { Block, Deck, Entry, Slide, ThemeOverrides } from './model.js'
+import { chartSvg, motifSvg } from './render-visuals.js'
 import { googleFontsHref, hueShift, mix, type ResolvedTheme, resolveTheme, withAlpha } from './themes.js'
 
 export const SLIDE_WIDTH = 1600
@@ -78,14 +80,14 @@ export function renderBlock(block: Block, rv = new Reveal()): string {
       return `<div class="block block-cards${dense}" style="--cols:${cols}">${entries(
         block.entries,
         (entry, index) =>
-          `<div${rv.wrap('card glass')}>${block.numbered ? `<div class="card-number">${String(index + 1).padStart(2, '0')}</div>` : ''}<div class="card-title">${inline(entry.title)}</div>${entry.text ? `<div class="card-text">${inline(entry.text)}</div>` : ''}</div>`,
+          `<div${rv.wrap('card glass')}>${entry.icon ? `<div class="card-icon">${iconSvg(entry.icon)}</div>` : block.numbered ? `<div class="card-number">${String(index + 1).padStart(2, '0')}</div>` : ''}<div class="card-title">${inline(entry.title)}</div>${entry.text ? `<div class="card-text">${inline(entry.text)}</div>` : ''}</div>`,
       )}</div>`
     }
     case 'steps':
       return `<div class="block block-steps${block.entries.length > 4 ? ' dense' : ''}">${entries(
         block.entries,
         (entry, index) =>
-          `<div${rv.wrap('step glass')}><div class="step-number">${index + 1}</div><div class="step-title">${inline(entry.title)}</div>${entry.text ? `<div class="step-text">${inline(entry.text)}</div>` : ''}</div>`,
+          `<div${rv.wrap('step glass')}><div class="step-number">${entry.icon ? iconSvg(entry.icon) : index + 1}</div><div class="step-title">${inline(entry.title)}</div>${entry.text ? `<div class="step-text">${inline(entry.text)}</div>` : ''}</div>`,
       )}</div>`
     case 'timeline':
       return `<div class="block block-timeline" style="--cols:${Math.max(1, block.entries.length)}">${entries(
@@ -93,6 +95,8 @@ export function renderBlock(block: Block, rv = new Reveal()): string {
         (entry) =>
           `<div${rv.wrap('milestone')}><div class="milestone-dot"></div><div class="milestone-title">${inline(entry.title)}</div>${entry.text ? `<div class="milestone-text">${inline(entry.text)}</div>` : ''}</div>`,
       )}</div>`
+    case 'chart':
+      return `<figure${rv.wrap('block block-chart glass')}>${block.title ? `<figcaption class="chart-title">${inline(block.title)}</figcaption>` : ''}${chartSvg(block.kind, block.series, block.unit, block.title)}</figure>`
     default:
       return ''
   }
@@ -163,7 +167,7 @@ export function renderSlide(
   const footer = `<footer class="slide-footer"><span>${theme.footer ? inline(theme.footer) : ''}</span><span class="slide-number">${String(index + 1).padStart(2, '0')} <em>/ ${String(total).padStart(2, '0')}</em></span></footer>`
   const notes = slide.notes ? `<aside class="notes">${inline(slide.notes)}</aside>` : ''
   const variant = slide.variant ?? 'default'
-  return `<section class="slide layout-${slide.layout} variant-${variant}" data-index="${index}" id="slide-${index + 1}"${background}><div class="mesh" aria-hidden="true"><i class="blob blob-a"></i><i class="blob blob-b"></i><i class="blob blob-c"></i></div>${renderSlideBody(slide, index, deck)}${footer}${notes}</section>`
+  return `<section class="slide layout-${slide.layout} variant-${variant}" data-index="${index}" id="slide-${index + 1}"${background}><div class="mesh" aria-hidden="true"><i class="blob blob-a"></i><i class="blob blob-b"></i><i class="blob blob-c"></i></div>${motifSvg(slide.visual)}${renderSlideBody(slide, index, deck)}${footer}${notes}</section>`
 }
 
 export function deckCss(theme: ResolvedTheme): string {
@@ -315,6 +319,41 @@ body.show-nav .nav{opacity:1}
 .r-stagger .slide.active .rv{animation:rv .9s var(--ease) forwards;animation-delay:calc(var(--i,0) * 80ms + 120ms)}
 .r-step .slide.active .rv.on{animation:rv .7s var(--ease) forwards}
 @keyframes rv{to{opacity:1;transform:none;filter:none}}
+.card-icon{width:52px;height:52px;border-radius:14px;background:var(--accent-soft);display:grid;place-items:center;color:var(--accent)}
+.card-icon .icon,.step-number .icon{width:28px;height:28px}
+.step-number .icon{width:24px;height:24px}
+.block-chart{padding:28px 32px 20px;display:flex;flex-direction:column;gap:12px;flex:1;min-height:0}
+.chart-title{font-family:var(--font-heading);font-size:26px;font-weight:var(--heading-weight);letter-spacing:-0.01em}
+.chart{width:100%;height:100%;min-height:0;flex:1;overflow:visible;--chart-0:var(--accent);--chart-1:var(--accent-2);--chart-2:${hueShift(c.accent, 96)};--chart-3:${hueShift(c.accent, 150)};--chart-4:${hueShift(c.accent, 210)};--chart-5:${hueShift(c.accent, 270)}}
+.chart text{font-family:var(--font-body);fill:var(--ink)}
+.chart-value{font-size:24px;font-weight:600;font-family:var(--font-heading)}
+.chart-label{font-size:20px;fill:var(--muted)}
+.chart-legend{font-size:24px}
+.chart-pct{fill:var(--muted);font-size:20px}
+.chart-total{font-size:56px;font-weight:var(--heading-weight);font-family:var(--font-heading)}
+.chart-axis{stroke:var(--glass-border);stroke-width:2}
+.chart-line{fill:none;stroke:var(--accent);stroke-width:6;stroke-linecap:round;stroke-linejoin:round}
+.chart .dot circle{fill:var(--bg);stroke:var(--accent);stroke-width:5}
+.chart .bar rect{transform-origin:center bottom;transform-box:fill-box}
+.r-stagger .slide.active .chart .bar rect{animation:grow .9s var(--ease) both;animation-delay:calc(var(--i,0) * 70ms + 300ms)}
+.r-stagger .slide.active .chart .arc{animation:sweep 1.1s var(--ease) both;animation-delay:calc(var(--i,0) * 90ms + 300ms)}
+.r-stagger .slide.active .chart-line{stroke-dasharray:3000;stroke-dashoffset:3000;animation:draw 1.6s var(--ease) .3s forwards}
+@keyframes grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@keyframes sweep{from{stroke-dasharray:0 2000}}
+@keyframes draw{to{stroke-dashoffset:0}}
+.motif{position:absolute;right:-140px;top:50%;transform:translateY(-50%);width:820px;height:820px;color:var(--accent);opacity:${dark ? 0.32 : 0.28};z-index:-1;pointer-events:none}
+.motif .fill{fill:currentColor;stroke:none}
+.motif .spin{transform-origin:500px 500px;animation:spin 60s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.layout-title .motif,.layout-statement .motif{right:-260px;width:1000px;height:1000px;opacity:${dark ? 0.24 : 0.2}}
+.layout-section .motif{right:520px;top:auto;bottom:-300px;transform:none;width:700px;height:700px;opacity:.18}
+.variant-accent .motif{color:var(--accent-ink)}
+.autofit{zoom:var(--fit,1)}
+body.overview .frame{transform:none!important;width:100vw;height:100vh;display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:24px;padding:32px;overflow:auto;align-content:start;box-sizing:border-box}
+body.overview .slide{position:relative;inset:auto;opacity:1!important;visibility:visible!important;transform:none!important;transition:none!important;zoom:.22;cursor:pointer;border-radius:24px;outline:6px solid transparent;pointer-events:auto}
+body.overview .slide.active{outline-color:var(--accent)}
+body.overview .slide .rv{opacity:1!important;transform:none!important;filter:none!important;animation:none!important}
+body.overview .progress,body.overview .nav{display:none}
 strong{font-weight:700}
 code{font-family:var(--font-mono);background:var(--accent-soft);padding:.05em .3em;border-radius:6px;font-size:.92em}
 @media (prefers-reduced-motion:reduce){.slide,.blob,.progress{animation:none!important;transition:none!important}.rv{opacity:1!important;transform:none!important;filter:none!important;animation:none!important}}
@@ -352,6 +391,8 @@ const DECK_SCRIPT = `
       for (var k = 0; k < items.length; k++) items[k].classList.toggle('on', direction < 0);
     }
     slide.classList.add('active');
+    autofit(slide);
+    broadcast();
     if (progress) progress.style.width = ((current + 1) / total * 100) + '%';
     if (location.hash !== '#' + (current + 1)) history.replaceState(null, '', '#' + (current + 1));
     if (window.parent !== window) window.parent.postMessage({ type: 'slides:navigate', index: current, total: total }, '*');
@@ -364,6 +405,27 @@ const DECK_SCRIPT = `
     if (step) { var s = shown(slides[current]); if (s.length) { s[s.length - 1].classList.remove('on'); return; } }
     show(current - 1, -1);
   }
+  function autofit(slide){
+    var root = slide.querySelector(':scope > .stack, :scope > .split');
+    if (!root) return;
+    root.classList.add('autofit');
+    var levels = [1, .94, .88, .82, .76, .7];
+    for (var i = 0; i < levels.length; i++) {
+      root.style.setProperty('--fit', levels[i]);
+      if (root.scrollHeight <= root.clientHeight + 2) break;
+    }
+  }
+  var channel = null;
+  try { channel = new BroadcastChannel('slides:' + DECK_ID); } catch (err) { channel = null; }
+  function broadcast(){ if (channel) channel.postMessage({ type: 'state', index: current, total: total, notes: NOTES[current] || '', title: TITLES[current] || '', next: TITLES[current + 1] || '' }); }
+  function openSpeaker(){
+    var win = window.open('', 'slides-speaker-' + DECK_ID, 'width=960,height=640');
+    if (!win) return;
+    win.document.write(SPEAKER_HTML);
+    win.document.close();
+    setTimeout(broadcast, 300);
+  }
+  if (channel) channel.onmessage = function(e){ var d = e.data || {}; if (d.type === 'hello') broadcast(); if (d.type === 'goto') show(d.index, d.index > current ? 1 : -1); if (d.type === 'forward') forward(); if (d.type === 'backward') backward(); };
   function fit(){
     var w = window.innerWidth, h = window.innerHeight;
     var scale = Math.min(w / ${SLIDE_WIDTH}, h / ${SLIDE_HEIGHT});
@@ -377,6 +439,8 @@ const DECK_SCRIPT = `
     else if (e.key === 'Home') show(0, -1);
     else if (e.key === 'End') show(total - 1, 1);
     else if (e.key === 'n' || e.key === 'N') body.classList.toggle('show-notes');
+    else if (e.key === 'o' || e.key === 'O' || (e.key === 'Escape' && body.classList.contains('overview'))) { body.classList.toggle('overview'); if (!body.classList.contains('overview')) fit(); }
+    else if (e.key === 's' || e.key === 'S') openSpeaker();
     else if (e.key === 'f' || e.key === 'F') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); }
   });
   document.addEventListener('mousemove', wakeNav);
@@ -387,7 +451,7 @@ const DECK_SCRIPT = `
   if (prevBtn) prevBtn.addEventListener('click', backward);
   if (nextBtn) nextBtn.addEventListener('click', forward);
   var stage = document.querySelector('.stage');
-  if (stage) stage.addEventListener('click', function(e){ if (e.target.closest && e.target.closest('.nav')) return; var x = e.clientX / window.innerWidth; x < 0.2 ? backward() : forward(); });
+  if (stage) stage.addEventListener('click', function(e){ if (e.target.closest && e.target.closest('.nav')) return; if (body.classList.contains('overview')) { var target = e.target.closest && e.target.closest('.slide'); if (target) { body.classList.remove('overview'); fit(); show(parseInt(target.getAttribute('data-index'), 10), 1); } return; } var x = e.clientX / window.innerWidth; x < 0.2 ? backward() : forward(); });
   window.addEventListener('hashchange', function(){ show(fromHash(), 1); });
   window.addEventListener('resize', fit);
   window.addEventListener('message', function(e){ var d = e.data || {}; if (d.type === 'slides:goto' && typeof d.index === 'number') show(d.index, d.index > current ? 1 : -1); });
@@ -395,6 +459,42 @@ const DECK_SCRIPT = `
   show(fromHash(), 1);
 })();
 `
+
+export function scriptJson(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, '\u003c').replace(/>/g, '\u003e').replace(/&/g, '\u0026')
+}
+
+function speakerHtml(deck: Deck, theme: ResolvedTheme): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Speaker: ${escapeHtml(deck.title)}</title><style>
+body{margin:0;background:#0b0b10;color:#f4f4f8;font-family:'${theme.fonts.body}',ui-sans-serif,system-ui,sans-serif;display:grid;grid-template-rows:auto 1fr auto;height:100vh}
+header{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid #222;font-size:14px;letter-spacing:.1em;text-transform:uppercase;color:#9aa}
+#timer{font-family:ui-monospace,Menlo,monospace;font-size:28px;color:#fff;letter-spacing:0}
+main{display:grid;grid-template-columns:1.4fr 1fr;gap:24px;padding:24px;min-height:0}
+.card{background:#15151d;border:1px solid #262633;border-radius:16px;padding:24px;min-height:0;overflow:auto}
+.label{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#8a8aa0;margin-bottom:12px}
+#notes{font-size:26px;line-height:1.5}
+#title{font-size:20px;line-height:1.3;margin-bottom:24px;color:#fff}
+#next{font-size:20px;line-height:1.3;color:#cfd}
+footer{display:flex;gap:12px;justify-content:center;padding:14px;border-top:1px solid #222}
+button{background:#26263a;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-size:15px;cursor:pointer}
+button:hover{background:#34344d}
+</style></head><body>
+<header><span>${escapeHtml(deck.title)}</span><span id="pos"></span><span id="timer">00:00</span></header>
+<main><section class="card"><div class="label">Current slide</div><div id="title"></div><div class="label">Speaker notes</div><div id="notes"></div></section><section class="card"><div class="label">Up next</div><div id="next"></div></section></main>
+<footer><button id="prev">&larr; Previous</button><button id="reset">Reset timer</button><button id="nextBtn">Next &rarr;</button></footer>
+<script>
+var ch = new BroadcastChannel('slides:' + ${scriptJson(deck.id)});
+var start = Date.now();
+function tick(){ var s = Math.floor((Date.now() - start) / 1000); document.getElementById('timer').textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
+setInterval(tick, 1000);
+ch.onmessage = function(e){ var d = e.data || {}; if (d.type !== 'state') return; document.getElementById('pos').textContent = (d.index + 1) + ' / ' + d.total; document.getElementById('title').textContent = d.title; document.getElementById('notes').textContent = d.notes || 'No notes for this slide.'; document.getElementById('next').textContent = d.next || 'End of deck'; };
+document.getElementById('prev').onclick = function(){ ch.postMessage({ type: 'backward' }); };
+document.getElementById('nextBtn').onclick = function(){ ch.postMessage({ type: 'forward' }); };
+document.getElementById('reset').onclick = function(){ start = Date.now(); tick(); };
+document.addEventListener('keydown', function(e){ if (e.key === 'ArrowRight' || e.key === ' ') ch.postMessage({ type: 'forward' }); if (e.key === 'ArrowLeft') ch.postMessage({ type: 'backward' }); });
+ch.postMessage({ type: 'hello' });
+</script></body></html>`
+}
 
 export function renderDeckHtml(deck: Deck, brand?: ThemeOverrides): string {
   const theme = resolveTheme(deck, brand)
@@ -419,6 +519,7 @@ ${slides}
 </div></main>
 <div class="progress"></div>
 <div class="nav" aria-label="Navigation"><button type="button" class="prev" aria-label="Previous slide">&larr;</button><button type="button" class="next" aria-label="Next slide">&rarr;</button></div>
+<script>var DECK_ID=${scriptJson(deck.id)};var NOTES=${scriptJson(deck.slides.map((slide) => slide.notes ?? ''))};var TITLES=${scriptJson(deck.slides.map((slide) => slide.title ?? ''))};var SPEAKER_HTML=${scriptJson(speakerHtml(deck, theme))};</script>
 <script>${DECK_SCRIPT}</script>
 </body>
 </html>

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { ICON_PATHS } from './deck-icons.js'
 
 export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'split', 'statement', 'image', 'blank'] as const
 export const TRANSITIONS = ['fade', 'slide', 'zoom', 'none'] as const
@@ -23,13 +24,24 @@ export const BLOCK_TYPES = [
   'cards',
   'steps',
   'timeline',
+  'chart',
 ] as const
+export const VISUALS = ['none', 'orbits', 'grid', 'waves', 'arcs', 'rings'] as const
+export type Visual = (typeof VISUALS)[number]
+export const CHART_KINDS = ['bar', 'line', 'donut'] as const
+export type ChartKind = (typeof CHART_KINDS)[number]
+
+export interface Series {
+  label: string
+  value: number
+}
 export const VARIANTS = ['default', 'accent', 'gradient', 'muted'] as const
 export type Variant = (typeof VARIANTS)[number]
 
 export interface Entry {
   title: string
   text?: string
+  icon?: string
 }
 export type BlockType = (typeof BLOCK_TYPES)[number]
 
@@ -46,11 +58,13 @@ export type Block =
   | { id: string; type: 'cards'; entries: Entry[]; numbered?: boolean; column?: Column }
   | { id: string; type: 'steps'; entries: Entry[]; column?: Column }
   | { id: string; type: 'timeline'; entries: Entry[]; column?: Column }
+  | { id: string; type: 'chart'; kind: ChartKind; series: Series[]; unit?: string; title?: string; column?: Column }
 
 export interface Slide {
   id: string
   layout: Layout
   variant?: Variant
+  visual?: Visual
   kicker?: string
   title?: string
   subtitle?: string
@@ -129,21 +143,45 @@ function column(value: unknown): Column | undefined {
 
 export const MAX_ENTRIES = 12
 
+export function seriesList(value: unknown): Series[] {
+  if (!Array.isArray(value)) return []
+  const out: Series[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const raw = item as Record<string, unknown>
+    const label = text(raw.label) ?? text(raw.title) ?? text(raw.name)
+    const number =
+      typeof raw.value === 'number' ? raw.value : Number.parseFloat(String(raw.value ?? '').replace(/[^0-9.-]/g, ''))
+    if (!label || !Number.isFinite(number)) continue
+    out.push({ label, value: number })
+  }
+  return out.slice(0, MAX_ENTRIES)
+}
+
 export function entryList(value: unknown): Entry[] {
   const raw = Array.isArray(value) ? value : typeof value === 'string' ? value.split('\n') : []
   const entries: Entry[] = []
   for (const item of raw) {
     if (typeof item === 'string') {
-      const [title, ...rest] = item.split(/\s\|\s|\s\u2014\s|:\s/)
+      const parts = item.split(/\s\|\s/)
+      const [title, ...rest] = parts.length > 1 ? parts : item.split(/\s\u2014\s|:\s/)
       const cleanTitle = title.replace(/^\s*[-*\u2022]\s*/, '').trim()
       if (!cleanTitle) continue
-      entries.push({ title: cleanTitle, ...(rest.join(' ').trim() ? { text: rest.join(' ').trim() } : {}) })
+      const last = rest[rest.length - 1]?.trim()
+      const icon = rest.length > 1 && last && ICON_PATHS[last] ? last : undefined
+      const body = (icon ? rest.slice(0, -1) : rest).join(' ').trim()
+      entries.push({ title: cleanTitle, ...(body ? { text: body } : {}), ...(icon ? { icon } : {}) })
     } else if (item && typeof item === 'object') {
       const entry = item as Record<string, unknown>
       const title = text(entry.title) ?? text(entry.label) ?? text(entry.name) ?? text(entry.heading)
       const body = text(entry.text) ?? text(entry.description) ?? text(entry.body) ?? text(entry.detail)
       if (!title && !body) continue
-      entries.push({ title: title ?? (body as string), ...(title && body ? { text: body } : {}) })
+      const icon = text(entry.icon)
+      entries.push({
+        title: title ?? (body as string),
+        ...(title && body ? { text: body } : {}),
+        ...(icon && ICON_PATHS[icon] ? { icon } : {}),
+      })
     }
   }
   return entries.slice(0, MAX_ENTRIES)
@@ -199,6 +237,19 @@ export function normalizeBlock(input: unknown, index = 0): Block {
     case 'steps':
     case 'timeline':
       return withColumn({ id, type, entries: entryList(raw.entries ?? raw.items) })
+    case 'chart': {
+      const kind = (CHART_KINDS as readonly string[]).includes(String(raw.kind)) ? (raw.kind as ChartKind) : 'bar'
+      const series = seriesList(raw.series ?? raw.data ?? raw.items)
+      if (!series.length) throw new Error(`INVALID_BLOCK: blocks[${index}] chart needs series [{ label, value }]`)
+      return withColumn({
+        id,
+        type,
+        kind,
+        series,
+        ...(text(raw.unit) ? { unit: text(raw.unit) } : {}),
+        ...(text(raw.title) ? { title: text(raw.title) } : {}),
+      })
+    }
     default:
       throw new Error(`INVALID_BLOCK: blocks[${index}] has unknown type ${String(type)}`)
   }
@@ -223,6 +274,9 @@ export function normalizeSlide(input: unknown, index = 0): Slide {
     id: text(raw.id) ?? newId('slide'),
     layout,
     ...(variant ? { variant } : {}),
+    ...((VISUALS as readonly string[]).includes(String(raw.visual)) && raw.visual !== 'none'
+      ? { visual: raw.visual as Visual }
+      : {}),
     ...(text(raw.kicker) ? { kicker: text(raw.kicker) } : {}),
     ...(text(raw.title) ? { title: text(raw.title) } : {}),
     ...(text(raw.subtitle) ? { subtitle: text(raw.subtitle) } : {}),
@@ -317,6 +371,7 @@ export function mergeSlide(current: Slide, patch: unknown): Slide {
   if (raw.title === null || raw.title === '') delete next.title
   if (raw.kicker === null || raw.kicker === '') delete next.kicker
   if (raw.variant === null || raw.variant === '' || raw.variant === 'default') delete next.variant
+  if (raw.visual === null || raw.visual === '' || raw.visual === 'none') delete next.visual
   if (raw.subtitle === null || raw.subtitle === '') delete next.subtitle
   if (raw.notes === null || raw.notes === '') delete next.notes
   if (raw.background === null || raw.background === '') delete next.background
@@ -363,6 +418,8 @@ export function slidesFromMarkdown(markdown: string): { title?: string; subtitle
         else if (key === 'kicker') slide.kicker = value.trim()
         else if (key === 'variant' && (VARIANTS as readonly string[]).includes(value.trim()))
           slide.variant = value.trim() as Variant
+        else if (key === 'visual' && (VISUALS as readonly string[]).includes(value.trim()))
+          slide.visual = value.trim() as Visual
         else if ((key === 'cards' || key === 'steps' || key === 'timeline') && !value.trim()) pendingList = key
         index += 1
         continue
@@ -482,6 +539,7 @@ export function deckToMarkdown(deck: Deck): string {
       if (slide.layout !== 'content') lines.push(`<!-- layout: ${slide.layout} -->`)
       if (slide.variant) lines.push(`<!-- variant: ${slide.variant} -->`)
       if (slide.kicker) lines.push(`<!-- kicker: ${slide.kicker} -->`)
+      if (slide.visual) lines.push(`<!-- visual: ${slide.visual} -->`)
       if (slide.title) lines.push(`${slide.layout === 'title' ? '#' : '##'} ${slide.title}`)
       if (slide.subtitle) lines.push(slide.layout === 'title' ? slide.subtitle : `## ${slide.subtitle}`)
       for (const block of slide.blocks) {
@@ -498,7 +556,15 @@ export function deckToMarkdown(deck: Deck): string {
         else if (block.type === 'cards' || block.type === 'steps' || block.type === 'timeline') {
           lines.push(
             `<!-- ${block.type} -->`,
-            ...block.entries.map((entry) => `- ${entry.title}${entry.text ? ` | ${entry.text}` : ''}`),
+            ...block.entries.map(
+              (entry) =>
+                `- ${entry.title}${entry.text ? ` | ${entry.text}` : ''}${entry.icon ? ` | ${entry.icon}` : ''}`,
+            ),
+          )
+        } else if (block.type === 'chart') {
+          lines.push(
+            `<!-- chart: ${block.kind} -->`,
+            ...block.series.map((point) => `- ${point.label} | ${point.value}`),
           )
         }
       }

@@ -1,5 +1,6 @@
 import { type CSSProperties, type KeyboardEvent, type ReactElement, useEffect, useRef, useState } from 'react'
 import type { Block, Entry, Slide, Theme, ThemeOverrides } from './types'
+import { Chart, DeckIcon, Motif } from './visuals'
 
 export const CANVAS_W = 1600
 export const CANVAS_H = 900
@@ -119,6 +120,12 @@ export function themeVars(
     '--sl-glass-hi': dark ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.9)',
     '--sl-shadow': dark ? '0 30px 80px rgba(0,0,0,.45)' : '0 30px 80px rgba(20,20,40,.14)',
     '--sl-panel-fill': dark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.65)',
+    '--sl-chart-0': accent,
+    '--sl-chart-1': hueShift(accent, dark ? 48 : -32),
+    '--sl-chart-2': hueShift(accent, 96),
+    '--sl-chart-3': hueShift(accent, 150),
+    '--sl-chart-4': hueShift(accent, 210),
+    '--sl-chart-5': hueShift(accent, 270),
     '--sl-gradient-end': mix(background, accent, dark ? 0.38 : 0.2),
     '--sl-grid': alpha(ink, dark ? 0.045 : 0.06),
     '--sl-on-accent-muted': alpha(accentInk, 0.72),
@@ -229,7 +236,7 @@ function EntryView({
   )
 }
 
-const GLASS = new Set(['code', 'metric'])
+const GLASS = new Set(['code', 'metric', 'chart'])
 
 function BlockView({
   block,
@@ -372,7 +379,13 @@ function BlockView({
         >
           {entries.map((entry, index) => (
             <div className="sl-card sl-glass" key={`${block.id}-${index}`}>
-              {block.numbered ? <div className="sl-card-number">{String(index + 1).padStart(2, '0')}</div> : null}
+              {entry.icon ? (
+                <div className="sl-card-icon">
+                  <DeckIcon name={entry.icon} />
+                </div>
+              ) : block.numbered ? (
+                <div className="sl-card-number">{String(index + 1).padStart(2, '0')}</div>
+              ) : null}
               <EntryView
                 entry={entry}
                 editable={editable}
@@ -391,7 +404,7 @@ function BlockView({
         <div {...common} className={`${common.className}${entries.length > 4 ? ' sl-dense' : ''}`}>
           {entries.map((entry, index) => (
             <div className="sl-step sl-glass" key={`${block.id}-${index}`}>
-              <div className="sl-step-number">{index + 1}</div>
+              <div className="sl-step-number">{entry.icon ? <DeckIcon name={entry.icon} /> : index + 1}</div>
               <EntryView
                 entry={entry}
                 editable={editable}
@@ -423,6 +436,13 @@ function BlockView({
         </div>
       )
     }
+    case 'chart':
+      return (
+        <figure {...common}>
+          {block.title ? <figcaption className="sl-chart-title">{block.title}</figcaption> : null}
+          <Chart kind={block.kind ?? 'bar'} series={block.series ?? []} unit={block.unit} title={block.title} />
+        </figure>
+      )
     default:
       return null
   }
@@ -651,6 +671,7 @@ export function SlideCanvas({
             <i className="sl-blob sl-blob-b" />
             <i className="sl-blob sl-blob-c" />
           </div>
+          <Motif visual={slide.visual} />
           {body}
           <footer className="sl-footer">
             <span className="sl-footer-text" />

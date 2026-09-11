@@ -1,4 +1,5 @@
-import { BLOCK_TYPES, LAYOUTS, REVEALS, TRANSITIONS, VARIANTS } from './model.js'
+import { ICON_NAMES } from './deck-icons.js'
+import { BLOCK_TYPES, CHART_KINDS, LAYOUTS, REVEALS, TRANSITIONS, VARIANTS, VISUALS } from './model.js'
 
 export const object = (
   properties: Record<string, unknown> = {},
@@ -34,14 +35,22 @@ export const blockSchema = object(
     attribution: nullableString,
     value: nullableString,
     label: nullableString,
-    entries: array(object({ title: string, text: nullableString }, ['title'])),
+    entries: array(
+      object({ title: string, text: nullableString, icon: { type: ['string', 'null'], enum: [...ICON_NAMES, null] } }, [
+        'title',
+      ]),
+    ),
     numbered: boolean,
+    kind: { type: ['string', 'null'], enum: [...CHART_KINDS, null] },
+    series: array(object({ label: string, value: { type: 'number' } }, ['label', 'value'])),
+    unit: nullableString,
+    title: nullableString,
     column: { type: ['string', 'null'], enum: ['left', 'right', null] },
   },
   ['type'],
   {
     description:
-      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text? }] (cards may be numbered). column places the block in a two-column layout.',
+      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text?, icon? }] (cards may be numbered; icon is one of the built-in icon names); chart uses kind (bar, line, donut), series [{ label, value }], unit, title. column places the block in a two-column layout.',
   },
 )
 
@@ -50,6 +59,7 @@ export const slideSchema = object(
     id: nullableString,
     layout: { type: 'string', enum: [...LAYOUTS] },
     variant: { type: ['string', 'null'], enum: [...VARIANTS, null] },
+    visual: { type: ['string', 'null'], enum: [...VISUALS, null] },
     kicker: nullableString,
     title: nullableString,
     subtitle: nullableString,
@@ -60,7 +70,7 @@ export const slideSchema = object(
   [],
   {
     description:
-      'One slide. layout defaults to content; variant (accent, gradient, muted) changes the background treatment; kicker is a short eyebrow label above the title; blocks render in order; notes are speaker notes; background is a hex color or image URL.',
+      'One slide. layout defaults to content; variant (accent, gradient, muted) changes the background treatment; visual adds a decorative motif (orbits, grid, waves, arcs, rings); kicker is a short eyebrow label above the title; blocks render in order; notes are speaker notes; background is a hex color or image URL.',
   },
 )
 
