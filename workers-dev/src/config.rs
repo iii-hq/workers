@@ -21,6 +21,11 @@ pub const COMPOSE_FILE_REL: &str = "harness/worker-compose.yaml";
 /// container to a loaded project would need a whole-project restart, and every
 /// worker already running in it would bounce. A new file is a new project.
 pub const LOCAL_DIR_REL: &str = "harness/.workers-dev";
+/// Every worker in this repo, and every worker outside it worth offering,
+/// carries one.
+const MANIFEST_FILE: &str = "iii.worker.yaml";
+/// A worker outside this repo often ships the compose container it wants.
+const SELF_COMPOSE_FILE: &str = "worker-compose.yaml";
 /// Where the spawned `iii compose` daemon's stdout and stderr land. A file,
 /// never a pipe: compose prints its banner with bare `println!`, and Rust
 /// ignores SIGPIPE, so a closed read end panics the daemon.
@@ -56,6 +61,13 @@ pub struct WorkerSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoWorker {
     pub name: String,
+    /// Where it lives. Absolute, because it is not always under the repo root.
+    pub dir: PathBuf,
+    /// The container this worker declares for itself, when it ships a
+    /// `worker-compose.yaml`. It knows things a synthesized declaration cannot
+    /// guess — `harness-e2e` refuses to start without the `config_override`
+    /// its own file carries.
+    pub declared: Option<serde_yaml::Value>,
     /// The binary to `cargo run --bin`. `None` for the workers that are not
     /// Rust binaries — they install from the registry, not from this tree.
     pub bin: Option<String>,
@@ -129,6 +141,7 @@ struct UiPackage {
 impl Config {
     pub fn load(
         repo: Option<PathBuf>,
+        worker_dirs: Vec<PathBuf>,
         namespace: Option<String>,
         color: Option<String>,
         ui_watch: bool,
@@ -166,7 +179,7 @@ impl Config {
         let (engine_host, engine_port) = parse_engine_url(&engine_url)?;
 
         let workers = parse_containers(&file.containers, &compose_dir)?;
-        let repo_workers = discover_repo_workers(&repo_root, &workers);
+        let repo_workers = discover_workers(&repo_root, &worker_dirs, &workers);
 
         Ok(Self {
             local_dir: repo_root.join(LOCAL_DIR_REL),
@@ -223,36 +236,101 @@ impl Config {
     }
 }
 
-/// Every `<repo>/*/iii.worker.yaml` that the compose file does not already
-/// declare. Read loosely: an unparsable manifest is a worker we cannot offer,
-/// not a reason to refuse to start.
-fn discover_repo_workers(repo_root: &Path, declared: &[WorkerSpec]) -> Vec<RepoWorker> {
-    let Ok(entries) = std::fs::read_dir(repo_root) else {
-        return Vec::new();
-    };
-    let mut workers: Vec<RepoWorker> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let dir = entry.path();
-            let text = std::fs::read_to_string(dir.join("iii.worker.yaml")).ok()?;
-            let manifest: WorkerManifest = serde_yaml::from_str(&text).ok()?;
-            let name = manifest
-                .name
-                .or_else(|| dir.file_name()?.to_str().map(str::to_string))?;
-            if declared.iter().any(|worker| worker.name == name) {
-                return None;
+/// Every worker the compose file does not already declare: the repo's own, and
+/// whatever `--worker-dir` adds.
+///
+/// A root that carries an `iii.worker.yaml` *is* one worker (`harness-e2e`);
+/// otherwise its children are scanned (a monorepo like this one). Read loosely:
+/// an unparsable manifest is a worker we cannot offer, not a reason to refuse
+/// to start. The repo comes first, so a name it already uses wins.
+fn discover_workers(
+    repo_root: &Path,
+    extra: &[PathBuf],
+    declared: &[WorkerSpec],
+) -> Vec<RepoWorker> {
+    let mut workers: Vec<RepoWorker> = Vec::new();
+    let mut seen: HashSet<String> = declared.iter().map(|worker| worker.name.clone()).collect();
+
+    for root in std::iter::once(repo_root.to_path_buf()).chain(extra.iter().cloned()) {
+        let dirs: Vec<PathBuf> = if root.join(MANIFEST_FILE).is_file() {
+            vec![root]
+        } else {
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect()
+        };
+        for dir in dirs {
+            let Some(worker) = read_worker(&dir) else {
+                continue;
+            };
+            if seen.insert(worker.name.clone()) {
+                workers.push(worker);
             }
-            let bin = (manifest.deploy.as_deref() == Some("binary"))
-                .then(|| manifest.bin.clone().unwrap_or_else(|| name.clone()));
-            Some(RepoWorker {
-                ui_dir: watchable_ui_dir(&dir),
-                name,
-                bin,
-            })
-        })
-        .collect();
+        }
+    }
     workers.sort_by(|a, b| a.name.cmp(&b.name));
     workers
+}
+
+fn read_worker(dir: &Path) -> Option<RepoWorker> {
+    let text = std::fs::read_to_string(dir.join(MANIFEST_FILE)).ok()?;
+    let manifest: WorkerManifest = serde_yaml::from_str(&text).ok()?;
+    let name = manifest
+        .name
+        .or_else(|| dir.file_name()?.to_str().map(str::to_string))?;
+    let declared = declared_container(dir, &name);
+    // A worker that declares its own container can be started whatever its
+    // deploy kind says: the declaration carries the command.
+    let bin = (declared.is_some() || manifest.deploy.as_deref() == Some("binary"))
+        .then(|| manifest.bin.clone().unwrap_or_else(|| name.clone()));
+    Some(RepoWorker {
+        ui_dir: watchable_ui_dir(dir),
+        dir: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+        declared,
+        name,
+        bin,
+    })
+}
+
+/// The container a worker declares for itself. Its own key when there is one,
+/// otherwise the sole container — a single-worker project names it whatever
+/// it likes.
+fn declared_container(dir: &Path, name: &str) -> Option<serde_yaml::Value> {
+    let text = std::fs::read_to_string(dir.join(SELF_COMPOSE_FILE)).ok()?;
+    let file: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    let containers = file.get("containers")?.as_mapping()?;
+    containers
+        .get(serde_yaml::Value::from(name))
+        .cloned()
+        .or_else(|| {
+            (containers.len() == 1)
+                .then(|| containers.values().next().cloned())
+                .flatten()
+        })
+}
+
+/// Colon-separated, like `PATH`: export it once rather than passing
+/// `--worker-dir` on every launch.
+pub fn worker_dirs(explicit: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    let from_env = std::env::var("WORKERS_DEV_WORKER_DIRS")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|entry| !entry.trim().is_empty())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+
+    explicit
+        .into_iter()
+        .chain(from_env)
+        .map(|dir| {
+            dir.canonicalize()
+                .with_context(|| format!("worker directory {}", dir.display()))
+        })
+        .collect()
 }
 
 fn parse_containers(
@@ -440,14 +518,19 @@ mod tests {
         repo
     }
 
-    fn load(repo: &tempfile::TempDir) -> Config {
+    fn load_with(repo: &tempfile::TempDir, extra: Vec<PathBuf>) -> Config {
         Config::load(
             Some(repo.path().to_path_buf()),
+            extra,
             None,
             Some("never".into()),
             false,
         )
         .unwrap()
+    }
+
+    fn load(repo: &tempfile::TempDir) -> Config {
+        load_with(repo, Vec::new())
     }
 
     // Pins `start_after` (not `depends_on`, whose `#[serde(default)]` would
@@ -487,9 +570,15 @@ mod tests {
     fn a_workers_dev_yaml_is_refused_with_a_pointer() {
         let repo = repo_fixture();
         std::fs::write(repo.path().join("workers-dev.yaml"), "release: true\n").unwrap();
-        let error = Config::load(Some(repo.path().to_path_buf()), None, None, false)
-            .unwrap_err()
-            .to_string();
+        let error = Config::load(
+            Some(repo.path().to_path_buf()),
+            Vec::new(),
+            None,
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("workers-dev.yaml"), "{error}");
         assert!(error.contains("worker-compose.yaml"), "{error}");
     }
@@ -530,12 +619,86 @@ mod tests {
         assert_eq!(config.repo_workers[1].bin, None);
     }
 
+    /// A sibling project that is itself one worker — the `harness-e2e` shape.
+    #[test]
+    fn a_worker_dir_outside_the_repo_joins_the_list() {
+        let repo = repo_fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let worker = outside.path().join("harness-e2e");
+        std::fs::create_dir_all(&worker).unwrap();
+        std::fs::write(
+            worker.join("iii.worker.yaml"),
+            "iii: v1\nname: harness-e2e\ndeploy: binary\nbin: harness-e2e\n",
+        )
+        .unwrap();
+
+        // Pointed at the worker itself, not at a directory of workers.
+        let config = load_with(&repo, vec![worker.clone()]);
+        let found = config
+            .repo_workers
+            .iter()
+            .find(|candidate| candidate.name == "harness-e2e")
+            .expect("the outside worker is offered");
+        assert_eq!(found.bin.as_deref(), Some("harness-e2e"));
+        assert_eq!(found.dir, worker.canonicalize().unwrap());
+
+        // Pointed at its parent, which is a directory of workers instead.
+        let config = load_with(&repo, vec![outside.path().to_path_buf()]);
+        assert!(config
+            .repo_workers
+            .iter()
+            .any(|candidate| candidate.name == "harness-e2e"));
+    }
+
+    /// The repo is scanned first, so a name it already uses is not replaced by
+    /// a stranger — and a worker the stack declares never appears at all.
+    #[test]
+    fn the_repo_wins_a_name_collision() {
+        let repo = repo_fixture();
+        std::fs::create_dir_all(repo.path().join("browser")).unwrap();
+        std::fs::write(
+            repo.path().join("browser/iii.worker.yaml"),
+            "iii: v1\nname: browser\ndeploy: binary\n",
+        )
+        .unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        for name in ["browser", "state"] {
+            let dir = outside.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                format!("iii: v1\nname: {name}\ndeploy: binary\n"),
+            )
+            .unwrap();
+        }
+
+        let config = load_with(&repo, vec![outside.path().to_path_buf()]);
+        let browser: Vec<&RepoWorker> = config
+            .repo_workers
+            .iter()
+            .filter(|worker| worker.name == "browser")
+            .collect();
+        assert_eq!(browser.len(), 1, "one entry per name");
+        assert_eq!(
+            browser[0].dir,
+            repo.path().join("browser").canonicalize().unwrap()
+        );
+        // `state` is a container in the compose file; it is the stack's, not a
+        // candidate to start on demand.
+        assert!(!config
+            .repo_workers
+            .iter()
+            .any(|worker| worker.name == "state"));
+    }
+
     // The only check that fails when the tracked compose file drifts — the
     // next ade/ide-style rename lands here first.
     #[test]
     fn harness_compose_declares_the_real_inventory() {
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let config = Config::load(Some(repo), None, Some("never".into()), false).unwrap();
+        let config =
+            Config::load(Some(repo), Vec::new(), None, Some("never".into()), false).unwrap();
         assert_eq!(
             config.names(),
             [

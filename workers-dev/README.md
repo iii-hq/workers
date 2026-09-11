@@ -39,9 +39,10 @@ workers-dev restart harness       # compose::restart — that container only
 workers-dev status                # one compose::status table
 ```
 
-Flags: `--repo`, `-n/--namespace`, `--color auto|always|never`, `--ui-watch`.
-Environment: `WORKERS_DEV_REPO` names the repo root, `III_ENGINE_PORT` moves the
-engine, `NO_COLOR` disables color.
+Flags: `--repo`, `--worker-dir`, `-n/--namespace`, `--color auto|always|never`,
+`--ui-watch`. Environment: `WORKERS_DEV_REPO` names the repo root,
+`WORKERS_DEV_WORKER_DIRS` adds worker directories (colon-separated, like `PATH`),
+`III_ENGINE_PORT` moves the engine, `NO_COLOR` disables color.
 
 For log history deeper than the pane keeps, the CLI that owns the logs is better
 at it:
@@ -129,6 +130,30 @@ starting the fifth on-demand worker leaves the other four running.
 Workers that are not Rust binaries show `registry` instead of a state: they
 install from the registry rather than from this tree, with
 `iii trigger compose::add worker=<name>`.
+
+### Workers from another directory
+
+`--worker-dir` offers a worker that does not live in this repo at all:
+
+```bash
+workers-dev --worker-dir ~/project/iii/harness-e2e
+# or, once, in your shell profile:
+export WORKERS_DEV_WORKER_DIRS=~/project/iii/harness-e2e
+```
+
+The directory *is* a worker when it carries an `iii.worker.yaml`; otherwise its
+children are scanned, so a path to another monorepo's root works too. The repo
+is read first, so a name it already uses is not replaced by a stranger, and a
+worker the stack declares never appears in the list at all.
+
+There is no auto-scan of sibling directories, deliberately: a checkout with ten
+worktrees beside it would offer seventy copies of every worker.
+
+A worker that ships its own `worker-compose.yaml` is taken at its word — its
+container declaration is used as written, with only `worker:` repointed at the
+real directory, `start_after` dropped (the containers it names are not in this
+project) and the env file appended. `harness-e2e` refuses to start without the
+`config_override` its own file carries, and this is how it gets it.
 
 ## The dashboard
 

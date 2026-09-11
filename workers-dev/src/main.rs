@@ -29,6 +29,13 @@ struct Cli {
     #[arg(long, global = true)]
     repo: Option<PathBuf>,
 
+    /// Offer the workers in this directory too, alongside the repo's own. The
+    /// directory is a worker when it carries an `iii.worker.yaml`, otherwise
+    /// its children are. Repeatable; `WORKERS_DEV_WORKER_DIRS` is the
+    /// colon-separated equivalent, for a shell profile.
+    #[arg(long = "worker-dir", value_name = "DIR", global = true)]
+    worker_dirs: Vec<PathBuf>,
+
     /// Compose namespace. Defaults to the compose file's own `namespace:`;
     /// a second worktree needs its own, plus III_ENGINE_PORT.
     #[arg(short = 'n', long, global = true)]
@@ -72,7 +79,13 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = Config::load(cli.repo, cli.namespace, cli.color, cli.ui_watch)?;
+    let config = Config::load(
+        cli.repo,
+        config::worker_dirs(cli.worker_dirs)?,
+        cli.namespace,
+        cli.color,
+        cli.ui_watch,
+    )?;
     let color = config.color_mode.enabled_for_stdout();
     let compose = Arc::new(Compose::new(config)?);
 
@@ -125,17 +138,19 @@ async fn run(command: &Option<Command>, compose: &Arc<Compose>, color: bool) -> 
             compose.ensure_daemon().await?;
             for container in containers {
                 match compose.project_of(container).await {
+                    // An on-demand worker is re-declared every time: the repo
+                    // may have moved under it, and the daemon only re-reads a
+                    // project it is made to.
+                    Some(file) if file.starts_with(&compose.config.local_dir) => {
+                        let bin = on_demand_bin(compose, container)?;
+                        compose.add_local(container, &bin).await?
+                    }
                     Some(file) => compose.up(&file, Some(container)).await?,
                     // Not declared anywhere yet: a repo worker started on
                     // demand, which declares it in the local project first.
                     None => match compose.repo_worker(container) {
-                        Some(worker) => {
-                            let bin = worker.bin.clone().with_context(|| {
-                                format!(
-                                    "{container} is not a Rust binary — install it from the \
-                                     registry with `iii trigger compose::add worker={container}`"
-                                )
-                            })?;
+                        Some(_) => {
+                            let bin = on_demand_bin(compose, container)?;
                             compose.add_local(container, &bin).await?
                         }
                         None => bail!("no container or repo worker named {container:?}"),
@@ -167,6 +182,19 @@ async fn run(command: &Option<Command>, compose: &Arc<Compose>, color: bool) -> 
             print_status(compose, color).await
         }
     }
+}
+
+/// What `cargo run --bin` would name, or why this worker is not ours to start.
+fn on_demand_bin(compose: &Compose, container: &str) -> Result<String> {
+    compose
+        .repo_worker(container)
+        .and_then(|worker| worker.bin.clone())
+        .with_context(|| {
+            format!(
+                "{container} is not a Rust binary — install it from the registry with \
+                 `iii trigger compose::add worker={container}`"
+            )
+        })
 }
 
 async fn print_status(compose: &Compose, color: bool) -> Result<()> {

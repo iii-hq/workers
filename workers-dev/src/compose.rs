@@ -389,26 +389,35 @@ impl Compose {
     /// manifests do not declare.)
     pub async fn add_local(&self, name: &str, bin: &str) -> Result<()> {
         let file = self.write_local_file(name, bin)?;
-        self.up(&file, None).await
+        // Restart, not up: the daemon holds a project as its file was when it
+        // loaded it, so a rewritten declaration is invisible to `up`. Only a
+        // whole-project restart re-reads — and a project here holds exactly one
+        // container, which is the point of one file per worker.
+        ensure_ok(self.call_on(&file, Operation::Restart, None, None).await?)
     }
 
     fn write_local_file(&self, name: &str, bin: &str) -> Result<PathBuf> {
+        let Some(worker) = self.repo_worker(name) else {
+            bail!("no worker named {name:?} in the repo or any --worker-dir");
+        };
+        let (dir, declared) = (worker.dir.clone(), worker.declared.clone());
         let file = self.config.local_file(name);
         std::fs::create_dir_all(&self.config.local_dir)
             .with_context(|| format!("create {}", self.config.local_dir.display()))?;
 
-        let document = serde_yaml::to_string(&json!({
-            "containers": {
-                name: {
-                    // Relative to this file, which sits one level deeper than
-                    // the stack's compose file.
-                    "worker": format!("path://../../{name}"),
-                    "scripts": { "run": format!("cargo run --bin {bin}") },
-                    "environment": { "RUST_LOG": "info", "CI": "true" },
-                    "env_file": [self.config.ui_watch_env_path.to_string_lossy()],
-                }
-            }
-        }))
+        let container = self.container_for(name, bin, &dir, declared)?;
+        let document = serde_yaml::to_string(&serde_yaml::Value::Mapping(
+            [(
+                serde_yaml::Value::from("containers"),
+                serde_yaml::Value::Mapping(
+                    [(serde_yaml::Value::from(name), container)]
+                        .into_iter()
+                        .collect(),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+        ))
         .context("render the on-demand compose file")?;
         std::fs::write(
             &file,
@@ -419,6 +428,47 @@ impl Compose {
         )
         .with_context(|| format!("write {}", file.display()))?;
         Ok(file)
+    }
+
+    /// The container to declare. A worker that ships its own is taken at its
+    /// word — only `worker:` is rewritten (theirs is relative to their file,
+    /// ours sits elsewhere), `start_after` dropped (the containers it names are
+    /// not in this project), and our env file appended so API keys and the
+    /// UI-watch flag still arrive.
+    fn container_for(
+        &self,
+        name: &str,
+        bin: &str,
+        dir: &Path,
+        declared: Option<serde_yaml::Value>,
+    ) -> Result<serde_yaml::Value> {
+        let mut container = match declared {
+            Some(serde_yaml::Value::Mapping(declared)) => declared,
+            _ => serde_yaml::from_str(&format!(
+                "scripts:\n  run: cargo run --bin {bin}\nenvironment:\n  RUST_LOG: info\n  CI: \"true\"\n"
+            ))
+            .with_context(|| format!("render a container for {name}"))?,
+        };
+        container.insert(
+            serde_yaml::Value::from("worker"),
+            // Absolute: a worker offered by `--worker-dir` is not under the
+            // repo root at all.
+            serde_yaml::Value::from(format!("path://{}", dir.display())),
+        );
+        container.remove(serde_yaml::Value::from("start_after"));
+
+        let mut env_files = match container.remove(serde_yaml::Value::from("env_file")) {
+            Some(serde_yaml::Value::Sequence(existing)) => existing,
+            _ => Vec::new(),
+        };
+        env_files.push(serde_yaml::Value::from(
+            self.config.ui_watch_env_path.to_string_lossy().to_string(),
+        ));
+        container.insert(
+            serde_yaml::Value::from("env_file"),
+            serde_yaml::Value::Sequence(env_files),
+        );
+        Ok(serde_yaml::Value::Mapping(container))
     }
 
     /// Carry a pre-existing shared on-demand file over to one project per

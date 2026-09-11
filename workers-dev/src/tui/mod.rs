@@ -624,7 +624,25 @@ fn spawn_toggle_ui_watch(actions: &Actions, file: PathBuf, worker: String) {
     });
 }
 
-/// Declare a repo worker in the on-demand project and start it.
+fn start_on_demand(actions: &Actions, mode: &mut UiMode, name: String) {
+    match actions
+        .compose
+        .repo_worker(&name)
+        .and_then(|worker| worker.bin.clone())
+    {
+        Some(bin) => {
+            *mode = UiMode::Busy(format!("starting {name}…"));
+            spawn_add_local(actions, name, bin);
+        }
+        None => {
+            *mode = UiMode::Busy(format!(
+                "{name} installs from the registry, not from this tree"
+            ))
+        }
+    }
+}
+
+/// Declare a repo worker in its own project and start it.
 fn spawn_add_local(actions: &Actions, worker: String, bin: String) {
     let compose = actions.compose.clone();
     spawn_action(
@@ -714,23 +732,16 @@ fn handle_dashboard_key(
             spawn_up(actions, compose.config.compose_path.clone(), None);
         }
         KeyCode::Char('s') => match (name, running) {
+            // An on-demand worker is re-declared on every start, so the
+            // declaration follows the repo and the daemon re-reads it.
+            (Some(name), Some(_)) if is_local => start_on_demand(actions, mode, name),
             (Some(name), Some(file)) => {
                 *mode = UiMode::Busy(format!("up {name}…"));
                 spawn_up(actions, file, Some(name));
             }
-            // A repo worker nothing declares yet: declare it in the on-demand
+            // A repo worker nothing declares yet: declare it in its own
             // project and start it, which is the whole point of listing them.
-            (Some(name), None) => match compose.repo_worker(&name).and_then(|w| w.bin.clone()) {
-                Some(bin) => {
-                    *mode = UiMode::Busy(format!("adding {name}…"));
-                    spawn_add_local(actions, name, bin);
-                }
-                None => {
-                    *mode = UiMode::Busy(format!(
-                        "{name} is not a Rust binary — install it from the registry"
-                    ))
-                }
-            },
+            (Some(name), None) => start_on_demand(actions, mode, name),
             _ => {}
         },
         KeyCode::Char('x') => {
