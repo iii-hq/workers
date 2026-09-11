@@ -150,7 +150,6 @@ impl Orchestrator {
         }
 
         let mut cmd = Command::new("iii");
-        cmd.env("III_TELEMETRY_ENABLED", "false");
         cmd.arg("-c").arg(config_rel);
         cmd.current_dir(&self.config.repo_root);
         // Detach: the engine should outlive the dashboard. Suppress its output
@@ -384,7 +383,6 @@ impl Orchestrator {
         };
 
         let mut cmd = Command::new("cargo");
-        cmd.env("III_TELEMETRY_ENABLED", "false");
         cmd.arg("run");
         if self.config.release {
             cmd.arg("--release");
@@ -1029,7 +1027,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn local_engine_launcher_opts_out_without_cargo_environment() {
+    async fn local_launchers_preserve_caller_telemetry_choice() {
         use std::os::unix::fs::PermissionsExt;
 
         const CHILD: &str = "III_WORKERS_DEV_TELEMETRY_PROBE";
@@ -1047,41 +1045,61 @@ mod tests {
                 error.to_string().contains("iii exited immediately"),
                 "{error:#}"
             );
+            // Drive the real Cargo launcher without an engine round-trip.
+            orch.start_one("harness", false).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while orch.runtimes.read().await["harness"].exit_code.is_none() {
+                    time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(orch.runtimes.read().await["harness"].exit_code, Some(0));
             return;
         }
 
         let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("telemetry.txt");
-        let iii = dir.path().join("iii");
-        std::fs::write(
-            &iii,
-            "#!/bin/sh\n/bin/sh -c 'printf %s \"$III_TELEMETRY_ENABLED\"' > \"$III_WORKERS_DEV_TELEMETRY_PROBE\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&iii, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "orchestrator::tests::local_engine_launcher_opts_out_without_cargo_environment",
-                "--nocapture",
-            ])
-            .env("PATH", dir.path())
-            .env("III_TELEMETRY_ENABLED", "true")
-            .env(CHILD, &marker)
-            .output()
+        for binary in ["iii", "cargo"] {
+            let path = dir.path().join(binary);
+            std::fs::write(
+                &path,
+                r#"#!/bin/sh
+/bin/sh -c 'printf %s "${III_TELEMETRY_ENABLED-<unset>}"' > "$III_WORKERS_DEV_TELEMETRY_PROBE/${0##*/}.txt"
+"#,
+            )
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        assert_eq!(
-            std::fs::read_to_string(marker).unwrap_or_else(|error| panic!(
-                "{error}: {}",
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for parent in [None, Some(""), Some("true"), Some("false"), Some("0")] {
+            let capture = tempfile::tempdir().unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "orchestrator::tests::local_launchers_preserve_caller_telemetry_choice",
+                    "--nocapture",
+                ])
+                .env("PATH", dir.path())
+                .env_remove("III_TELEMETRY_ENABLED")
+                .env(CHILD, capture.path());
+            if let Some(value) = parent {
+                command.env("III_TELEMETRY_ENABLED", value);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
-            )),
-            "false"
-        );
+            );
+            for binary in ["iii", "cargo"] {
+                assert_eq!(
+                    std::fs::read_to_string(capture.path().join(format!("{binary}.txt"))).unwrap(),
+                    parent.unwrap_or("<unset>"),
+                    "{binary} must preserve {parent:?}"
+                );
+            }
+        }
     }
 
     /// A stack can legitimately end up with empty roots when every root it

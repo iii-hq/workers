@@ -13,7 +13,6 @@ Install these tools before you start:
 Check the required commands:
 
 ```bash
-export III_TELEMETRY_ENABLED=false
 iii --version
 cargo --version
 ```
@@ -26,9 +25,19 @@ starts and configures the iii engine. From the repository root, run:
 
 ```bash
 cd harness
-export III_TELEMETRY_ENABLED=false
 iii compose up
 ```
+
+Local development leaves telemetry enabled by default. Our team opts out
+explicitly by running the following in the shell before starting Compose,
+`workers-dev`, or the Make development targets:
+
+```bash
+export III_TELEMETRY_ENABLED=false
+```
+
+This team setting is optional for other developers. CI and dedicated test and
+validation launchers opt out automatically.
 
 The managed engine listens on `ws://127.0.0.1:49134`. Do not start a separate
 engine or pass `--engine` with this Compose file.
