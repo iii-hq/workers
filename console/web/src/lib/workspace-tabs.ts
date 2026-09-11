@@ -170,16 +170,20 @@ export function withColumnAdded(
   }
 }
 
+/** Which side of the anchor column a new column lands on. */
+export type OpenDirection = 'left' | 'right'
+
 /**
  * Place `screen` in an existing empty column or insert a new column beside
- * `anchor`. Returns `null` only when the tab is full and has no empty column.
- * Existing screens are never replaced.
+ * `anchor`, on the `direction` side. Returns `null` only when the tab is full
+ * and has no empty column. Existing screens are never replaced.
  */
 export function withScreenOpenedBeside(
   tab: WorkspaceTab,
   screen: TabScreen,
   anchor: TabScreen = CHAT_SCREEN,
   makePaneId: () => string = newPaneId,
+  direction: OpenDirection = 'right',
 ): WorkspaceTab | null {
   const columns = tabColumns(tab)
   const screens: (TabScreen | null)[] = Array.from(
@@ -193,8 +197,13 @@ export function withScreenOpenedBeside(
       candidate === anchor ||
       (anchor === CHAT_SCREEN && candidate !== null && isChatScreen(candidate)),
   )
+  // An empty column next to the anchor, on the asked-for side, before any
+  // other empty one: the caller said where it wants this.
+  const besideAnchor = direction === 'right' ? anchorIndex + 1 : anchorIndex - 1
   const adjacentEmpty =
-    anchorIndex >= 0 && screens[anchorIndex + 1] === null ? anchorIndex + 1 : -1
+    anchorIndex >= 0 && besideAnchor >= 0 && screens[besideAnchor] === null
+      ? besideAnchor
+      : -1
   const emptyIndex = adjacentEmpty >= 0 ? adjacentEmpty : screens.indexOf(null)
   if (emptyIndex >= 0) {
     screens[emptyIndex] = screen
@@ -202,7 +211,10 @@ export function withScreenOpenedBeside(
   }
   if (columns >= MAX_COLUMNS) return null
 
-  const insertAt = anchorIndex >= 0 ? anchorIndex + 1 : columns
+  // No anchor mounted: the screen still has to go somewhere, and the end is
+  // the one place that displaces nothing.
+  const insertAt =
+    anchorIndex < 0 ? columns : direction === 'right' ? anchorIndex + 1 : anchorIndex
   screens.splice(insertAt, 0, screen)
   const paneIds = tabPaneIds(tab)
   paneIds.splice(insertAt, 0, makePaneId())
@@ -637,6 +649,8 @@ export function withWorkspaceScreenOpened(
   screen: TabScreen,
   makeTabId: () => string = newTabId,
   makePaneId: () => string = newPaneId,
+  anchor: TabScreen = CHAT_SCREEN,
+  direction: OpenDirection = 'right',
 ): OpenWorkspaceScreenResult {
   const active = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]
   // Where you already are beats where it happens to be mounted: opening chat
@@ -653,8 +667,9 @@ export function withWorkspaceScreenOpened(
     const placed = withScreenOpenedBeside(
       active,
       screen,
-      CHAT_SCREEN,
+      anchor,
       makePaneId,
+      direction,
     )
     if (placed) {
       return {

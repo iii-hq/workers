@@ -59,7 +59,9 @@ stack; traces need the engine's OpenTelemetry export.
   `engine::register_trigger`.
 - `workspace::open` reuses a tab that already shows the screen; it never
   duplicates panels. Selection of the active tab is per browser tab and only
-  follows a function-driven activation.
+  follows a function-driven activation. A page that asks for a panel of its
+  own passes `relative_to` with its own screen id, so the panel lands beside
+  the page instead of beside the chat.
 - Native console UI (`console/web`) and worker UI change in separate pull
   requests; the shared component surface is `@iii-dev/console-ui`
   (`packages/console-ui`) and its `index.d.ts` is the only API contract.
@@ -68,8 +70,8 @@ stack; traces need the engine's OpenTelemetry export.
 
 - `console::status` — runtime knobs: `http_port`, `engine_url`, `version`; use for liveness and readiness.
 - `console::ui-manifest` — every injected asset currently loadable, with path, kind, content hash, and style-lint warnings; the authoritative check after registering UI.
-- `console::workspace::list` — the operator's workspace: tabs, columns, screens, and the active tab.
-- `console::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`).
+- `console::workspace::list` — the operator's workspace: tabs, columns, screens, column widths, and the active tab.
+- `console::workspace::open` — show a screen next to the conversation (`ext:<page>`, `workers`, `traces`, or a pinned `chat` by `session_id`). It lands right of the chat panel; `relative_to` names another mounted screen to sit beside and `direction` (`right`/`left`) picks the side. `sizes` sets the tab's column widths in the same write — read `workspace::list` first for the widths that are up.
 - `console::workspace::close` — remove a screen wherever it is shown; idempotent.
 - `console::working-directory::propose` — ask the operator to move the session (chat and paired shell) to a directory created or cloned elsewhere.
 - `console::ui-content` — the console's own content function for its injected catalog pages; internal.
