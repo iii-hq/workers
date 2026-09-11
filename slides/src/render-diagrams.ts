@@ -113,9 +113,11 @@ export function networkDiagram(spec: DiagramSpec): string {
   return `${edges}${ringSvg}${centerSvg}${hubSvg}`
 }
 
+const MATRIX_W = 1400
+
 export function matrixDiagram(spec: DiagramSpec): string {
-  const left = 120
-  const right = DW - 60
+  const left = 130
+  const right = MATRIX_W - 60
   const top = 40
   const bottom = DH - 90
   const w = right - left
@@ -129,24 +131,35 @@ export function matrixDiagram(spec: DiagramSpec): string {
     [left + 16, bottom - 16, 'start'],
     [right - 16, bottom - 16, 'end'],
   ]
-    .map(([x, y, anchor], i) =>
-      q[i] ? `<text class="quadrant" x="${x}" y="${y}" text-anchor="${anchor}">${esc(q[i])}</text>` : '',
-    )
+    .map(([x, y, anchor], i) => (q[i] ? `<text class="quadrant" x="${x}" y="${y}" text-anchor="${anchor}">${esc(q[i])}</text>` : ''))
     .join('')
   const xAxis = spec.axes?.x
   const yAxis = spec.axes?.y
-  const axes = `<rect class="guide" x="${left}" y="${top}" width="${w}" height="${h}"/><line class="guide dashed" x1="${midX}" x2="${midX}" y1="${top}" y2="${bottom}"/><line class="guide dashed" x1="${left}" x2="${right}" y1="${midY}" y2="${midY}"/>${xAxis ? `<text class="axis" x="${midX}" y="${bottom + 60}" text-anchor="middle">${esc(xAxis.label)}</text>${xAxis.low ? `<text class="tick" x="${left}" y="${bottom + 30}" text-anchor="start">${esc(xAxis.low)}</text>` : ''}${xAxis.high ? `<text class="tick" x="${right}" y="${bottom + 30}" text-anchor="end">${esc(xAxis.high)}</text>` : ''}` : ''}${yAxis ? `<text class="axis" transform="translate(40 ${midY}) rotate(-90)" text-anchor="middle">${esc(yAxis.label)}</text>${yAxis.low ? `<text class="tick" transform="translate(76 ${bottom}) rotate(-90)" text-anchor="start">${esc(yAxis.low)}</text>` : ''}${yAxis.high ? `<text class="tick" transform="translate(76 ${top}) rotate(-90)" text-anchor="end">${esc(yAxis.high)}</text>` : ''}` : ''}`
-  const points = spec.nodes
-    .map((node, i) => {
-      const px = left + ((node.x ?? 50) / 100) * w
-      const py = bottom - ((node.y ?? 50) / 100) * h
-      const r = 8 + ((node.value ?? 40) / 100) * 18
-      const anchor = px > right - 220 ? 'end' : 'start'
-      const lx = anchor === 'start' ? px + r + 14 : px - r - 14
-      return `<g class="point" style="--i:${i}"><circle class="halo" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(r + 10).toFixed(1)}"/><circle class="dot" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${r.toFixed(1)}"/>${textLines(lx, py + 7, [node.label], 'point-label', anchor)}${node.text ? textLines(lx, py + 30, [node.text], 'sub', anchor) : ''}</g>`
+  const axes = `<rect class="guide" x="${left}" y="${top}" width="${w}" height="${h}"/><line class="guide dashed" x1="${midX}" x2="${midX}" y1="${top}" y2="${bottom}"/><line class="guide dashed" x1="${left}" x2="${right}" y1="${midY}" y2="${midY}"/>${xAxis ? `<text class="axis" x="${midX}" y="${bottom + 60}" text-anchor="middle">${esc(xAxis.label)}</text>${xAxis.low ? `<text class="tick" x="${left}" y="${bottom + 30}" text-anchor="start">${esc(xAxis.low)}</text>` : ''}${xAxis.high ? `<text class="tick" x="${right}" y="${bottom + 30}" text-anchor="end">${esc(xAxis.high)}</text>` : ''}` : ''}${yAxis ? `<text class="axis" transform="translate(44 ${midY}) rotate(-90)" text-anchor="middle">${esc(yAxis.label)}</text>${yAxis.low ? `<text class="tick" transform="translate(84 ${bottom}) rotate(-90)" text-anchor="start">${esc(yAxis.low)}</text>` : ''}${yAxis.high ? `<text class="tick" transform="translate(84 ${top}) rotate(-90)" text-anchor="end">${esc(yAxis.high)}</text>` : ''}` : ''}`
+  const place = (node: DiagramNode) => [left + ((node.x ?? 50) / 100) * w, bottom - ((node.y ?? 50) / 100) * h] as const
+  const byLabel = new Map(spec.nodes.map((node) => [node.label, place(node)]))
+  const sequenced = (spec.edges ?? []).length > 0
+  const trail = (spec.edges ?? [])
+    .map((edge, i) => {
+      const a = byLabel.get(edge.from)
+      const b = byLabel.get(edge.to)
+      if (!a || !b) return ''
+      return `<line class="trail" style="--i:${i}" x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}"/>`
     })
     .join('')
-  return `${axes}${quadrants}${points}`
+  const points = spec.nodes
+    .map((node, i) => {
+      const [px, py] = place(node)
+      const r = sequenced ? 7 : 8 + ((node.value ?? 40) / 100) * 18
+      const anchor = sequenced ? (i % 2 === 0 ? 'start' : 'end') : px > right - 240 ? 'end' : 'start'
+      const lx = anchor === 'start' ? px + r + 14 : px - r - 14
+      const label = sequenced ? `${String(i + 1).padStart(2, '0')}  ${node.label}` : node.label
+      const halo = sequenced ? '' : `<circle class="halo" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(r + 10).toFixed(1)}"/>`
+      const sub = node.text && !sequenced ? textLines(lx, py + 30, [node.text], 'sub', anchor) : ''
+      return `<g class="point" style="--i:${i}">${halo}<circle class="dot" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${r.toFixed(1)}"/>${textLines(lx, py + 7, [label], sequenced ? 'point-label small' : 'point-label', anchor)}${sub}</g>`
+    })
+    .join('')
+  return `${axes}${quadrants}${trail}${points}`
 }
 
 export function radarDiagram(spec: DiagramSpec): string {
@@ -331,6 +344,6 @@ export function diagramSvg(spec: DiagramSpec, title?: string): string {
   }
   const body = (renderers[spec.kind] ?? networkDiagram)(spec)
   const height = spec.kind === 'weave' ? WEAVE_H : spec.kind === 'gate' ? 420 : DH
-  const width = spec.kind === 'weave' ? WEAVE_W : DW
+  const width = spec.kind === 'weave' ? WEAVE_W : spec.kind === 'matrix' ? MATRIX_W : DW
   return `<svg class="diagram diagram-${spec.kind}" viewBox="0 0 ${width} ${height}" role="img"${title ? ` aria-label="${esc(title)}"` : ''}>${body}</svg>`
 }
