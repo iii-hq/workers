@@ -1,0 +1,10 @@
+version: 1
+
+rules:
+  - '!slides::on-config-change'
+  - '!slides::ui-content'
+  - slides::list
+  - slides::get
+  - slides::markdown
+  - slides::render
+  - slides::themes::list

@@ -1918,6 +1918,32 @@ workers:
       binary: slack
       targets: *id001
     publish: true
+  slides:
+    source:
+      path: slides
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: slides
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 11.13.1
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
   state:
     source:
       path: state

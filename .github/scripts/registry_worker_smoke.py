@@ -25,6 +25,7 @@ EXPERIMENTAL_WORKERS = {
     "pdf",
     "provider-opencode-go",
     "provider-openrouter",
+    "slides",
 }
 REGISTRY_COMPOSE_UNSUPPORTED_WORKERS = {
     # These workers publish GitHub binary artifacts, not Registry packages.

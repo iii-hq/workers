@@ -19,6 +19,7 @@ EXPERIMENTAL_WORKERS = {
     "pdf",
     "provider-opencode-go",
     "provider-openrouter",
+    "slides",
 }
 DEPENDENCY_RANGES = {
     "configuration": "0.x",
