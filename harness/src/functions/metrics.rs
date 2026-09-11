@@ -19,6 +19,10 @@ use super::session_tree::{self, SessionTreeNodeV1};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionMetricsRequestV1 {
+    /// Any session in the tree. `session_id` is accepted as an alias, and a
+    /// child id is walked up to its root, so the id that addresses
+    /// `harness::status` addresses the tree here too.
+    #[serde(alias = "session_id")]
     pub root_session_id: String,
 }
 
@@ -42,17 +46,35 @@ pub struct SessionUsageTotalsV1 {
     pub turns: u64,
     pub function_calls: u64,
     pub function_call_errors: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub input_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub output_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub cache_read_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub cache_write_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub reasoning_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub cost_usd: Option<f64>,
 }
 
@@ -66,17 +88,35 @@ pub struct SessionUsageV1 {
     pub turns: u64,
     pub function_calls: u64,
     pub function_call_errors: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub input_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub output_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub cache_read_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub cache_write_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub reasoning_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Summed over every generation that reported it. `null` means at least
+    /// one generation did not report the counter (a provider that omits it, or
+    /// a turn that failed before usage came back) — never a measured zero, so
+    /// the key is always present and a reader can tell the two apart.
     pub cost_usd: Option<f64>,
     /// The session's latest per-generation context snapshot (categories,
     /// budget, usage) — absent for sessions that have not generated since
@@ -131,7 +171,8 @@ pub async fn handle(
     deps: &Deps,
     req: SessionMetricsRequestV1,
 ) -> Result<SessionMetricsResponseV1, HarnessError> {
-    let tree = session_tree::collect(deps, &req.root_session_id).await?;
+    let root_session_id = resolve_root(deps, &req.root_session_id).await?;
+    let tree = session_tree::collect(deps, &root_session_id).await?;
     let session = deps.session().await;
     let cfg = deps.cfg().await;
     let mut complete = tree.complete;
@@ -194,18 +235,52 @@ pub async fn handle(
     // comparatively expensive and does not help the watchdog decide whether
     // work advanced, so collect it only for the final complete response.
     let traces = if complete {
-        collect_trace_metrics(deps, &tree.sessions, &req.root_session_id).await
+        collect_trace_metrics(deps, &tree.sessions, &root_session_id).await
     } else {
         None
     };
 
     Ok(SessionMetricsResponseV1 {
-        root_session_id: req.root_session_id,
+        root_session_id,
         complete,
         totals: total.finish_totals(tree.sessions.len() as u64),
         by_session,
         traces,
     })
+}
+
+/// Walk `session_id` up to the root of its tree. Every other `harness::*`
+/// function takes the session a caller is holding, so this one accepts it too
+/// and reports the whole tree that session belongs to rather than refusing the
+/// id. A root (or an orphan) walks zero steps.
+async fn resolve_root(deps: &Deps, session_id: &str) -> Result<String, HarnessError> {
+    /// Deeper than any legitimate sub-agent chain; a cycle in the durable
+    /// metadata must end as an error, never as an unbounded walk.
+    const MAX_ANCESTORS: usize = 64;
+    let session = deps.session().await;
+    let mut current = session_id.to_string();
+    let mut seen = BTreeSet::from([current.clone()]);
+    for _ in 0..MAX_ANCESTORS {
+        let Some(metadata) = session.metadata_of(&current).await? else {
+            return Ok(current);
+        };
+        let Some(parent) = metadata
+            .get("parent_session_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|parent| !parent.is_empty())
+        else {
+            return Ok(current);
+        };
+        if !seen.insert(parent.to_string()) {
+            return Err(HarnessError::InvalidRequest(format!(
+                "session `{session_id}` has a cyclic parent chain at `{parent}`;                  pass the root session id"
+            )));
+        }
+        current = parent.to_string();
+    }
+    Err(HarnessError::InvalidRequest(format!(
+        "session `{session_id}` has more than {MAX_ANCESTORS} ancestors;          pass the root session id"
+    )))
 }
 
 fn terminal_status(status: Option<crate::types::turn::TurnStatus>) -> bool {
@@ -523,6 +598,41 @@ mod tests {
         assert_eq!(totals.turns, 2);
         assert_eq!(totals.input_tokens, None);
         assert_eq!(totals.output_tokens, Some(2));
+    }
+
+    #[test]
+    fn the_request_takes_either_session_id_spelling() {
+        for payload in [
+            json!({"root_session_id": "s_root"}),
+            json!({"session_id": "s_root"}),
+        ] {
+            let req: SessionMetricsRequestV1 = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(req.root_session_id, "s_root", "{payload}");
+        }
+    }
+
+    #[test]
+    fn unreported_usage_stays_a_present_null_never_a_measured_zero() {
+        let mut usage = UsageAccumulator::default();
+        usage.observe(&message(json!({
+            "role": "assistant",
+            "content": [],
+            "stop_reason": "end",
+            "usage": {"input": 7},
+            "model": "model",
+            "provider": "provider",
+            "timestamp": 1
+        })));
+        let wire =
+            serde_json::to_value(usage.finish_session(&session("s_root", None, 0), None)).unwrap();
+        assert_eq!(wire["input_tokens"], json!(7));
+        for unreported in ["output_tokens", "reasoning_tokens", "cost_usd"] {
+            assert!(
+                wire.get(unreported).is_some_and(serde_json::Value::is_null),
+                "{unreported} must be present and null, got {:?}",
+                wire.get(unreported)
+            );
+        }
     }
 
     #[test]
