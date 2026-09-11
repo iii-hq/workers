@@ -19,7 +19,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../pnpm-lock.yaml");
     println!("cargo:rerun-if-changed=ui/tsconfig.json");
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let ui_dir = manifest_dir.join("ui");
     let assets = [ui_dir.join("dist/page.js"), ui_dir.join("dist/styles.css")];
     if assets
