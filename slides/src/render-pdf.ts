@@ -278,9 +278,9 @@ async function drawBlocks(p: Painter, blocks: Block[], cursor: Cursor, scale = 1
 function splitColumns(blocks: Block[]): [Block[], Block[]] {
   const left: Block[] = []
   const right: Block[] = []
-  blocks.forEach((block, index) =>
-    ((block.column ?? (index % 2 === 0 ? 'left' : 'right')) === 'left' ? left : right).push(block),
-  )
+  for (const [index, block] of blocks.entries()) {
+    ;((block.column ?? (index % 2 === 0 ? 'left' : 'right')) === 'left' ? left : right).push(block)
+  }
   return [left, right]
 }
 

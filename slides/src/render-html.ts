@@ -62,7 +62,7 @@ function splitColumns(blocks: Block[]): [Block[], Block[]] {
   return [left, right]
 }
 
-export function renderSlideBody(slide: Slide, index: number, total: number): string {
+export function renderSlideBody(slide: Slide, index: number): string {
   const title = slide.title ? `<h2 class="slide-title">${inline(slide.title)}</h2>` : ''
   const subtitle = slide.subtitle ? `<p class="slide-subtitle">${inline(slide.subtitle)}</p>` : ''
   const blocks = slide.blocks.map(renderBlock).join('')
@@ -109,7 +109,7 @@ export function renderSlide(slide: Slide, index: number, total: number, theme: R
     : ''
   const footer = `<footer class="slide-footer"><span>${theme.footer ? inline(theme.footer) : ''}</span><span class="slide-number">${index + 1} / ${total}</span></footer>`
   const notes = slide.notes ? `<aside class="notes">${inline(slide.notes)}</aside>` : ''
-  return `<section class="slide layout-${slide.layout}" data-index="${index}" id="slide-${index + 1}"${background}>${renderSlideBody(slide, index, total)}${footer}${notes}</section>`
+  return `<section class="slide layout-${slide.layout}" data-index="${index}" id="slide-${index + 1}"${background}>${renderSlideBody(slide, index)}${footer}${notes}</section>`
 }
 
 export function deckCss(theme: ResolvedTheme): string {
@@ -168,7 +168,7 @@ code{font-family:var(--font-mono);background:var(--accent-soft);padding:.05em .3
 `
 }
 
-const DECK_SCRIPT = String.raw`
+const DECK_SCRIPT = `
 (function(){
   var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
   var stage = document.querySelector('.stage');

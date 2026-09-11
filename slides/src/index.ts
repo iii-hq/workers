@@ -18,7 +18,6 @@ import {
   normalizeSlide,
   normalizeSlides,
   reorderSlides,
-  type Slide,
   slideIndex,
   slidesFromMarkdown,
   summarize,
