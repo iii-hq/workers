@@ -295,8 +295,15 @@ resolution never reach a live session — start a new one to pick them up.
 resolved prompt (preloaded functions and skills included) is the child's whole identity, its model/effort slot in the same way
 (model precedence profile → explicit `model` → parent, without dragging the parent's
 provider onto a foreign model), and its name and icon become the display
-defaults. Which agent profile a spawn names is the prompt's decision — the profile
-body steers it, nothing gates it. Spawning
+defaults. A spawn that names NO profile continues the parent turn's: an agent
+running under a profile fans work out to itself, not to a stranger wearing the
+built-in identity, and the child re-resolves that same id so its own preloaded
+functions and skills arrive with it. `options.system_prompt` — the escape hatch
+for a child that genuinely needs a different identity — sheds the inherited
+profile instead of colliding with it, and a parentless spawn (console,
+workflow, CLI) has no parent turn to inherit from. Which agent profile a spawn
+names is the prompt's decision — the profile body steers it, nothing gates it.
+Spawning
 with `agent` into an already RUNNING session of the caller's own tree merges
 the task like any reuse and does not re-apply the profile.
 
