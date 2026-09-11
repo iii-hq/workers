@@ -32,7 +32,7 @@ pub struct ConsoleConfig {
 }
 
 fn default_http_host() -> String {
-    "127.0.0.1".to_string()
+    "0.0.0.0".to_string()
 }
 
 fn default_http_port() -> u16 {
