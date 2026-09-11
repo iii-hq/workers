@@ -22,7 +22,7 @@ EXPERIMENTAL_WORKERS = {
 }
 DEPENDENCY_RANGES = {
     "configuration": "0.x",
-    "console": "^1.9.11",
+    "ade": "^1.9.11",
     "context-manager": "^1.1.3",
     "cron": "^0.21.9",
     "harness": "^1.8.5",
@@ -36,7 +36,7 @@ DEPENDENCY_RANGES = {
     "provider-openai-codex": "^0.4.4",
     "queue": "^0.21.5",
     "session-manager": "^1.0.13",
-    "shell": "^0.11.9",
+    "ide": "^0.11.9",
     # `skills` left this table with the worker itself: its functionality was
     # folded into iii-directory and the last consumer (mcp) dropped the
     # dependency in #1018, so a range here would fail the consumer check.
@@ -44,11 +44,11 @@ DEPENDENCY_RANGES = {
 }
 
 WORKER_DEPENDENCY_RANGE_OVERRIDES: dict[str, dict[str, str]] = {
-    # Both terminals need shell 0.12.0's named-program PTY session
+    # Both terminals need ide 0.12.0's named-program PTY session
     # (`shell::pty::open` with `program`/`args`/`env`) to run the agent CLI
     # with no login shell around it; other consumers stay on 0.11.9.
-    "claude-code": {"shell": "^0.12.0"},
-    "pi": {"shell": "^0.12.0"},
+    "claude-code": {"ide": "^0.12.0"},
+    "pi": {"ide": "^0.12.0"},
     # Speech providers need the router that carries router::transcribe and
     # router::speak and filters speech models out of chat listings; an
     # older router would offer their models to chat pickers.

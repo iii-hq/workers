@@ -1,0 +1,1820 @@
+import { describe, expect, it } from 'vitest'
+import type { Attachment, FunctionTriggerMessage, Message } from '@/types/chat'
+import {
+  applyEntryUpsert,
+  applyFcallPatch,
+  clearTransientFlags,
+  entrySegments,
+  isCallSettled,
+  prependTranscript,
+  splitReactionTask,
+  transcriptToMessages,
+  triggerFiredSummary,
+} from './entry-mapper'
+import type { AgentMessage, TranscriptItem } from './types'
+
+function userItem(
+  entryId: string,
+  text: string,
+  origin?: TranscriptItem['origin'],
+): TranscriptItem {
+  return {
+    entry_id: entryId,
+    ...(origin ? { origin } : {}),
+    message: { role: 'user', content: [{ type: 'text', text }], timestamp: 1 },
+  }
+}
+
+function assistantItem(
+  entryId: string,
+  content: Extract<AgentMessage, { role: 'assistant' }>['content'],
+  stopReason: Extract<
+    AgentMessage,
+    { role: 'assistant' }
+  >['stop_reason'] = 'end',
+): TranscriptItem {
+  return {
+    entry_id: entryId,
+    message: {
+      role: 'assistant',
+      content,
+      stop_reason: stopReason,
+      model: 'm',
+      provider: 'p',
+      timestamp: 2,
+    },
+  }
+}
+
+function resultItem(
+  entryId: string,
+  functionTriggerId: string,
+  text: string,
+  isError = false,
+): TranscriptItem {
+  return {
+    entry_id: entryId,
+    message: {
+      role: 'function_result',
+      function_call_id: functionTriggerId,
+      function_id: 'shell::run',
+      content: [{ type: 'text', text }],
+      details: {},
+      is_error: isError,
+      timestamp: 3,
+    },
+  }
+}
+
+describe('entrySegments', () => {
+  it('maps a user entry to one user message whose id IS the entry id', () => {
+    const [msg] = entrySegments(userItem('msg-1-user-0', 'hello'))
+    expect(msg).toMatchObject({
+      id: 'msg-1-user-0',
+      role: 'user',
+      content: 'hello',
+    })
+  })
+
+  it('preserves the assistant stop reason for progress grouping', () => {
+    const [msg] = entrySegments(
+      assistantItem(
+        'msg-2-assistant-0',
+        [
+          {
+            type: 'text',
+            text: 'The scan found two matches; next I will edit.',
+          },
+        ],
+        'function_call',
+      ),
+    )
+
+    expect(msg).toMatchObject({
+      role: 'assistant',
+      stopReason: 'function_call',
+    })
+  })
+
+  it('collapses attached-file blocks into chips instead of dumping content', () => {
+    const item: TranscriptItem = {
+      entry_id: 'msg-2-user-0',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'review #file(src/a.rs) please' },
+          {
+            type: 'text',
+            text: '<attached-file path="src/a.rs" size="12" total-lines="1">\nfn main() {}\n</attached-file>',
+          },
+          {
+            type: 'text',
+            text: '<attached-file path="gone.txt" error="not found" />',
+          },
+          {
+            type: 'text',
+            text: '<attached-file path="src/b.rs" lines="3-4" size="900">\nb\n</attached-file>',
+          },
+        ],
+        timestamp: 1,
+      },
+    }
+    const [msg] = entrySegments(item)
+    expect(msg).toMatchObject({
+      role: 'user',
+      content: 'review #file(src/a.rs) please',
+      attachments: [
+        {
+          id: 'mention-src/a.rs',
+          name: 'src/a.rs',
+          size: 12,
+          type: 'text/x-file-mention',
+        },
+        {
+          id: 'mention-gone.txt',
+          name: 'gone.txt (not found)',
+          size: 0,
+          type: 'text/x-file-mention',
+        },
+        {
+          id: 'mention-src/b.rs:3-4',
+          name: 'src/b.rs:3-4',
+          size: 900,
+          type: 'text/x-file-mention',
+        },
+      ],
+    })
+    expect((msg as { content: string }).content).not.toContain('fn main')
+  })
+
+  /* A pasted screenshot IS the message's content for a vision model. Dropping
+     the block on the way in would leave a reloaded conversation showing the
+     question with no sign a picture went with it. */
+  it('turns image blocks into chips that keep their thumbnail', () => {
+    const item: TranscriptItem = {
+      entry_id: 'msg-3-user-0',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is wrong with this screen?' },
+          { type: 'image', mime: 'image/png', data: 'AAAA' },
+        ],
+        timestamp: 1,
+      },
+    }
+    const [msg] = entrySegments(item)
+    expect(msg).toMatchObject({
+      role: 'user',
+      content: 'what is wrong with this screen?',
+      attachments: [
+        {
+          id: 'image-1',
+          name: 'image 1',
+          type: 'image/png',
+          dataUrl: 'data:image/png;base64,AAAA',
+        },
+      ],
+    })
+  })
+
+  /* A `file` block is the reference to the stored original. Alone it is the
+     whole chip; next to the expansion of the same file it must NOT become a
+     second chip, because the console sends both for every attachment. */
+  describe('file blocks', () => {
+    const fileBlock = {
+      type: 'file' as const,
+      attachment_id: 'a_1',
+      name: 'report.pdf',
+      mime: 'application/pdf',
+      size: 12345,
+    }
+
+    it('turns a lone file block into a downloadable chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-5-user-0',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'read this' }, fileBlock],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        role: 'user',
+        content: 'read this',
+        attachments: [
+          {
+            id: 'a_1',
+            name: 'report.pdf',
+            size: 12345,
+            type: 'application/pdf',
+            attachmentId: 'a_1',
+          },
+        ],
+      })
+    })
+
+    it('folds a file block into its attached-file expansion as one chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-6-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarise' },
+            {
+              type: 'text',
+              text: '<attached-file path="report.pdf" size="12345" format="pdf-markdown">\n# Report\n</attached-file>',
+            },
+            fileBlock,
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: unknown[] }).attachments
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]).toMatchObject({
+        id: 'a_1',
+        name: 'report.pdf',
+        size: 12345,
+        type: 'application/pdf',
+        attachmentId: 'a_1',
+      })
+      expect((msg as { content: string }).content).toBe('summarise')
+    })
+
+    /* The expansion's label can say more than the name — here, why the read
+       failed. That stays on the one surviving chip. */
+    it('keeps the expansion label when it carries more than the name', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-7-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarise' },
+            {
+              type: 'text',
+              text: '<attached-file path="report.pdf" error="the pdf worker is not running" />',
+            },
+            fileBlock,
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_1',
+            name: 'report.pdf (the pdf worker is not running)',
+            attachmentId: 'a_1',
+          },
+        ],
+      })
+    })
+
+    it('merges an image block with its file block, keeping the thumbnail', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-8-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is this?' },
+            {
+              type: 'file',
+              attachment_id: 'a_2',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            { type: 'image', mime: 'image/png', data: 'AAAA' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_2',
+            name: 'shot.png',
+            size: 4096,
+            type: 'image/png',
+            dataUrl: 'data:image/png;base64,AAAA',
+            attachmentId: 'a_2',
+          },
+        ],
+      })
+      expect((msg as { attachments: unknown[] }).attachments).toHaveLength(1)
+    })
+
+    /* Two pictures pair with their references by order: image blocks carry
+       no name, and the send path writes both lists in attachment order. */
+    it('pairs several images with their file blocks in order', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-9-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'compare' },
+            {
+              type: 'file',
+              attachment_id: 'a_3',
+              name: 'before.png',
+              mime: 'image/png',
+              size: 1,
+            },
+            {
+              type: 'file',
+              attachment_id: 'a_4',
+              name: 'after.jpg',
+              mime: 'image/jpeg',
+              size: 2,
+            },
+            { type: 'image', mime: 'image/png', data: 'BBBB' },
+            { type: 'image', mime: 'image/jpeg', data: 'CCCC' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          { name: 'before.png', dataUrl: 'data:image/png;base64,BBBB' },
+          { name: 'after.jpg', dataUrl: 'data:image/jpeg;base64,CCCC' },
+        ],
+      })
+    })
+
+    /* A read with `include_image_data: false` leaves the picture's bytes out
+       and names the stored original instead. The two blocks still fold into
+       one chip, and that chip must carry the id to fetch by and no thumbnail
+       to draw from — the renderer reads exactly that as "fetch on view". */
+    it('merges an elided image with its file block into one lazy chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-11-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is this?' },
+            {
+              type: 'file',
+              attachment_id: 'a_5',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: '',
+              attachment_id: 'a_5',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: Attachment[] }).attachments
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]).toMatchObject({
+        id: 'a_5',
+        name: 'shot.png',
+        size: 4096,
+        type: 'image/png',
+        attachmentId: 'a_5',
+      })
+      expect(attachments[0]).not.toHaveProperty('dataUrl')
+    })
+
+    /* With ids on both sides the pairing no longer depends on order, so a
+       transcript whose blocks were reordered still puts each thumbnail on
+       the right chip. */
+    it('pairs elided images with their file blocks by id, not by order', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-12-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'compare' },
+            {
+              type: 'file',
+              attachment_id: 'a_6',
+              name: 'before.png',
+              mime: 'image/png',
+              size: 1,
+            },
+            {
+              type: 'file',
+              attachment_id: 'a_7',
+              name: 'after.png',
+              mime: 'image/png',
+              size: 2,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: 'AFTER',
+              attachment_id: 'a_7',
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: '',
+              attachment_id: 'a_6',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: Attachment[] }).attachments
+      expect(attachments).toHaveLength(2)
+      expect(attachments[0]).toMatchObject({
+        name: 'before.png',
+        attachmentId: 'a_6',
+      })
+      expect(attachments[0]).not.toHaveProperty('dataUrl')
+      expect(attachments[1]).toMatchObject({
+        name: 'after.png',
+        attachmentId: 'a_7',
+        dataUrl: 'data:image/png;base64,AFTER',
+      })
+    })
+
+    /* An older session-manager ignores `include_image_data` and answers with
+       the bytes; a chip drawn from them must look exactly as it did before. */
+    it('keeps the inline thumbnail when the worker still sends the bytes', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-13-user-0',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              attachment_id: 'a_8',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: 'AAAA',
+              attachment_id: 'a_8',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_8',
+            name: 'shot.png',
+            attachmentId: 'a_8',
+            dataUrl: 'data:image/png;base64,AAAA',
+          },
+        ],
+      })
+    })
+
+    /* A transcript written before the store existed has no file blocks, and
+       its chips must not change. */
+    it('maps messages without file blocks exactly as before', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-10-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'look' },
+            {
+              type: 'text',
+              text: '<attached-file path="notes.txt" size="7">\nabc\n</attached-file>',
+            },
+            { type: 'image', mime: 'image/png', data: 'AAAA' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        content: 'look',
+        attachments: [
+          {
+            id: 'mention-notes.txt',
+            name: 'notes.txt',
+            size: 7,
+            type: 'text/x-file-mention',
+          },
+          {
+            id: 'image-1',
+            name: 'image 1',
+            type: 'image/png',
+            dataUrl: 'data:image/png;base64,AAAA',
+          },
+        ],
+      })
+      for (const chip of (msg as { attachments: object[] }).attachments) {
+        expect(chip).not.toHaveProperty('attachmentId')
+      }
+    })
+  })
+
+  it('keeps command blocks visible and collapses skill blocks into chips', () => {
+    const commandBlock =
+      '<command name="review-pr">\nThe entire prompt body.\n</command>'
+    const skillBlock =
+      '<skill id="coder/index">\nThe entire skill body.\n</skill>'
+    const item: TranscriptItem = {
+      entry_id: 'msg-4-user-0',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: '/review-pr the auth changes' },
+          { type: 'text', text: commandBlock },
+          { type: 'text', text: skillBlock },
+        ],
+        timestamp: 1,
+      },
+    }
+    const [msg] = entrySegments(item)
+    expect(msg).toMatchObject({
+      role: 'user',
+      content: `/review-pr the auth changes${commandBlock}`,
+      attachments: [
+        {
+          id: 'slash-/skill:coder/index',
+          name: '/skill:coder/index',
+          size: skillBlock.length,
+          type: 'text/x-skill',
+        },
+      ],
+    })
+    expect((msg as { content: string }).content).toContain('entire prompt body')
+    expect((msg as { content: string }).content).not.toContain(
+      'entire skill body',
+    )
+  })
+
+  it('marks only trusted notification user entries', () => {
+    expect(
+      entrySegments(userItem('e-1', 'normal', { notification: false }))[0],
+    ).not.toHaveProperty('notification')
+    expect(
+      entrySegments(userItem('e-2', 'wake', { notification: true }))[0],
+    ).toMatchObject({ notification: true })
+    expect(entrySegments(userItem('e_notify_sub_1', 'wake'))[0]).toMatchObject({
+      notification: true,
+      triggerBindingId: 'sub_1',
+    })
+    expect(entrySegments(userItem('e_fire_sub_2_4', 'wake'))[0]).toMatchObject({
+      notification: true,
+      triggerBindingId: 'sub_2',
+    })
+    expect(
+      entrySegments(userItem('e_condfail_sub_3', 'delivery failed'))[0],
+    ).toMatchObject({ notification: true, triggerBindingId: 'sub_3' })
+    expect(
+      entrySegments(
+        userItem('opaque-id', 'wake', {
+          notification: true,
+          binding: 'sub_live',
+        }),
+      )[0],
+    ).toMatchObject({ notification: true, triggerBindingId: 'sub_live' })
+  })
+
+  it('splits a reaction task from its appended event block', () => {
+    // The exact format spawn.rs produces (single_event_task).
+    const content =
+      'Present the results.\n\n<event>\n```json\n{"session_id":"reviewer-1","status":"completed"}\n```\n</event>'
+    for (const entryId of ['e_react_1', 'e_spawned_1']) {
+      const [msg] = entrySegments(userItem(entryId, content))
+      expect(msg).toMatchObject({
+        reaction: true,
+        content: 'Present the results.',
+        reactionEvent: {
+          label: 'event',
+          json: JSON.stringify(
+            { session_id: 'reviewer-1', status: 'completed' },
+            null,
+            2,
+          ),
+        },
+      })
+    }
+  })
+
+  it('splitReactionTask handles inputs, collapsed whitespace, and bad JSON', () => {
+    // Join variant (gather_inputs_task).
+    expect(
+      splitReactionTask(
+        'Combine.\n\n<inputs>\n```json\n{"a":1}\n```\n</inputs>',
+      ),
+    ).toEqual({
+      task: 'Combine.',
+      appendix: { label: 'inputs', json: '{\n  "a": 1\n}' },
+    })
+    // Whitespace collapsed onto one line (as rendered markdown re-serializes).
+    expect(
+      splitReactionTask('Do it. <event> ```json {"x":1} ``` </event>').appendix
+        ?.label,
+    ).toBe('event')
+    // Invalid JSON stays raw instead of disappearing.
+    expect(
+      splitReactionTask('T\n\n<event>\n```json\nnot-json{\n```\n</event>')
+        .appendix?.json,
+    ).toBe('not-json{')
+    // No appendix → untouched.
+    expect(splitReactionTask('plain task')).toEqual({ task: 'plain task' })
+  })
+
+  it('marks react-fired task entries as reactions', () => {
+    expect(
+      entrySegments(userItem('e-1', 'do the thing', { reaction: true }))[0],
+    ).toMatchObject({ reaction: true })
+    expect(entrySegments(userItem('e_spawned_ab12', 'do it'))[0]).toMatchObject(
+      {
+        reaction: true,
+      },
+    )
+    expect(
+      entrySegments(userItem('e-2', 'typed by hand'))[0],
+    ).not.toHaveProperty('reaction')
+  })
+
+  it('marks direct-spawn seed tasks (origin on events, prefix on reads)', () => {
+    expect(
+      entrySegments(userItem('e-1', 'build the report', { spawn: true }))[0],
+    ).toMatchObject({ spawn: true })
+    expect(
+      entrySegments(userItem('e_spawn_ab12', 'build it'))[0],
+    ).toMatchObject({ spawn: true })
+    expect(
+      entrySegments(userItem('e-2', 'typed by hand'))[0],
+    ).not.toHaveProperty('spawn')
+  })
+
+  it('marks validation nudges (origin on events, nudge suffix on reads)', () => {
+    expect(
+      entrySegments(
+        userItem('e-1', 'Not accepted: fix it', { validation: true }),
+      )[0],
+    ).toMatchObject({ validation: true })
+    expect(
+      entrySegments(userItem('e_t_ab12_nudge_2', 'VALIDATOR: only 4…'))[0],
+    ).toMatchObject({ validation: true })
+    expect(
+      entrySegments(userItem('e-2', 'typed by hand'))[0],
+    ).not.toHaveProperty('validation')
+  })
+
+  it('renders durable skill catalog updates as skill-index markers', () => {
+    const content = [
+      'The available skills have changed. This list supersedes the previous',
+      'available skills list.',
+      '<available_skills>',
+      'A `<skill id="...">` block is already loaded; follow it directly.',
+      '- **console** — The iii web console.',
+      '- **console/injectable-ui** — Build worker UI &lt;at runtime&gt;.',
+      '</available_skills>',
+    ].join('\n')
+
+    for (const item of [
+      userItem('opaque-id', content, { skill_update: true }),
+      userItem('e_t_123_skills_7', content),
+    ]) {
+      expect(entrySegments(item)[0]).toMatchObject({
+        role: 'system',
+        kind: 'skills',
+        tone: 'info',
+        content,
+        skills: {
+          available: true,
+          entries: [
+            { id: 'console', description: 'The iii web console.' },
+            {
+              id: 'console/injectable-ui',
+              description: 'Build worker UI <at runtime>.',
+            },
+          ],
+        },
+      })
+    }
+    expect(entrySegments(userItem('ordinary-id', content))[0].role).toBe('user')
+  })
+
+  it('marks withdrawn skill guidance as a warning skill-index marker', () => {
+    const content =
+      'Skill guidance is no longer available. Do not use any previously listed skill.'
+    expect(
+      entrySegments(userItem('e_t_123_skills_8', content))[0],
+    ).toMatchObject({
+      role: 'system',
+      kind: 'skills',
+      tone: 'warn',
+      skills: { available: false, entries: [] },
+    })
+  })
+
+  it('keeps an unrecognised skill update as a plain notice', () => {
+    const content = 'The available skills have changed.'
+    expect(
+      entrySegments(userItem('e_t_123_skills_9', content))[0],
+    ).toMatchObject({ role: 'system', kind: 'notice', tone: 'info', content })
+  })
+
+  it('hides the machine-authored transient recovery prompt', () => {
+    expect(
+      entrySegments(
+        userItem(
+          'e_t-1_transient_resume_1',
+          'Resume from the previous partial response',
+        ),
+      ),
+    ).toEqual([])
+  })
+
+  it('splits an assistant entry into thought/text/function-trigger segments by block', () => {
+    const segments = entrySegments(
+      assistantItem('e-a', [
+        { type: 'thinking', text: 'pondering' },
+        { type: 'text', text: 'the answer' },
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {
+            function: 'shell::run',
+            description: 'Listing project files',
+            payload: { command: 'ls' },
+          },
+        },
+      ]),
+      'sess-1',
+    )
+    expect(segments.map((s) => [s.id, s.role])).toEqual([
+      ['e-a:0', 'thought'],
+      ['e-a:1', 'assistant'],
+      ['e-a:2', 'function-trigger'],
+    ])
+    expect(segments[2]).toMatchObject({
+      functionId: 'shell::run',
+      description: 'Listing project files',
+      input: { command: 'ls' },
+      functionTriggerId: 'fc-1',
+      sessionId: 'sess-1',
+    })
+  })
+
+  it('renders nothing for an empty assistant placeholder', () => {
+    expect(entrySegments(assistantItem('e-a', []))).toEqual([])
+  })
+
+  // Mid-stream, the harness exposes the router's bounded identity preview
+  // beside the raw tail. The row can render the action before valid JSON has
+  // reached the closing delimiters without parsing JSON in the harness.
+  it('surfaces partial wrapper identity while args form', () => {
+    const withTarget = entrySegments(
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {
+            function: 'state::se',
+            description: 'Updating arti',
+            _partial: true,
+            _streaming: '"payload":{"value":"grow',
+          },
+        },
+      ]),
+    )[0]
+    expect(withTarget).toMatchObject({
+      functionId: 'state::se',
+      description: 'Updating arti',
+      input: { _streaming: '"payload":{"value":"grow' },
+    })
+    expect(withTarget).not.toMatchObject({ unresolvedTarget: true })
+
+    const noTarget = entrySegments(
+      assistantItem('e-b', [
+        {
+          type: 'function_call',
+          id: 'fc-2',
+          function_id: 'agent_trigger',
+          arguments: { _streaming: '{"fun' },
+        },
+      ]),
+    )[0]
+    expect(noTarget).toMatchObject({
+      unresolvedTarget: true,
+      input: { _streaming: '{"fun' },
+    })
+  })
+
+  it('maps a compaction custom entry to the compaction marker', () => {
+    const [marker] = entrySegments({
+      entry_id: 'e-c',
+      custom: {
+        custom_type: 'compaction',
+        data: { summary: 'older turns', tokens_before: 1200, timestamp: 9 },
+      },
+    })
+    expect(marker).toMatchObject({
+      id: 'e-c',
+      role: 'system',
+      kind: 'compaction',
+      summaryText: 'older turns',
+      tokensBefore: 1200,
+    })
+  })
+
+  it('maps a called reaction outcome as info, never the failed fallback', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e-r',
+      custom: {
+        custom_type: 'reaction',
+        data: { status: 'called', summary: 'Reaction dispatched fp::pipe.' },
+      },
+    })
+    expect(notice).toMatchObject({
+      id: 'e-r',
+      role: 'system',
+      kind: 'notice',
+      content: 'reaction called — Reaction dispatched fp::pipe.',
+      tone: 'info',
+    })
+  })
+
+  it('maps role:custom read-back messages through the same typed dispatch', () => {
+    // The exact `session::messages` wire shape: kind:custom entries come back
+    // as a `role: 'custom'` MESSAGE (custom_type + details), not `item.custom`.
+    const [err] = entrySegments({
+      entry_id: 'e_t_faa6_error',
+      message: {
+        role: 'custom',
+        custom_type: 'error',
+        content: [],
+        details: {
+          reason:
+            'remote error (router/provider_unavailable): provider zai unavailable',
+        },
+        timestamp: 9,
+      },
+    })
+    expect(err).toMatchObject({
+      role: 'system',
+      tone: 'error',
+      content: 'The response could not be completed.',
+      technicalDetails: {
+        detail:
+          'remote error (router/provider_unavailable): provider zai unavailable',
+      },
+      createdAt: 9,
+    })
+    const [fired] = entrySegments({
+      entry_id: 'e_trigfired_sub_9',
+      message: {
+        role: 'custom',
+        custom_type: 'trigger_fired',
+        content: [],
+        details: {
+          subscription_id: 'sub_9',
+          target: 'spawn',
+          once: true,
+          retired: true,
+          fired_at: 4,
+        },
+        timestamp: 4,
+      },
+    })
+    expect(fired).toMatchObject({ role: 'system', kind: 'trigger-fired' })
+    // Unknown custom types still fall back to their display text.
+    const [note] = entrySegments({
+      entry_id: 'e-x',
+      message: {
+        role: 'custom',
+        custom_type: 'someother',
+        content: [],
+        display: 'hello from a worker',
+        timestamp: 5,
+      },
+    })
+    expect(note).toMatchObject({
+      role: 'system',
+      content: 'hello from a worker',
+    })
+  })
+
+  it('maps harness error/notice custom entries to visible system notices', () => {
+    const [err] = entrySegments({
+      entry_id: 'e_t1_error',
+      custom: {
+        custom_type: 'error',
+        data: { reason: 'provider zai unavailable' },
+      },
+    })
+    expect(err).toMatchObject({
+      role: 'system',
+      kind: 'turn-failure',
+      tone: 'error',
+      content: 'The response could not be completed.',
+      failure: { summary: 'The response could not be completed.' },
+      technicalDetails: { detail: 'provider zai unavailable' },
+    })
+    const [notice] = entrySegments({
+      entry_id: 'e_t1_max_turns',
+      custom: {
+        custom_type: 'notice',
+        data: { reason: 'max_turns', message: 'max_turns (8) reached' },
+      },
+    })
+    expect(notice).toMatchObject({
+      role: 'system',
+      tone: 'info',
+      content: 'max_turns (8) reached',
+    })
+  })
+
+  it('maps a trigger_fired custom entry to a turn-less notice carrying its record', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e_trigfired_sub_1',
+      custom: {
+        custom_type: 'trigger_fired',
+        data: {
+          subscription_id: 'sub_1',
+          trigger_id: 't-1',
+          target: 'spawn',
+          model: 'claude-sonnet-4-6',
+          once: true,
+          retired: true,
+          scope: 'cache-repl-pipeline',
+          key: 'facts',
+          payload: { event: { db: 'primary', op: 'update' } },
+          fired_at: 42,
+        },
+      },
+    })
+    expect(notice).toMatchObject({
+      id: 'e_trigfired_sub_1',
+      role: 'system',
+      kind: 'trigger-fired',
+      createdAt: 42,
+      trigger: {
+        subscription_id: 'sub_1',
+        target: 'spawn',
+        retired: true,
+        payload: { event: { db: 'primary', op: 'update' } },
+      },
+    })
+    expect((notice as { content: string }).content).toBe(
+      'cache-repl-pipeline/facts · spawned claude-sonnet-4-6 · once consumed',
+    )
+  })
+
+  it('triggerFiredSummary reads spawn and notify targets', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'spawn',
+        model: 'claude-sonnet-5',
+        once: false,
+        retired: false,
+        fired_at: 0,
+      }),
+    ).toBe('trigger · spawned claude-sonnet-5')
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'notify',
+        label: 'ping',
+        once: true,
+        retired: true,
+        fired_at: 0,
+      }),
+    ).toBe('ping · notified this chat · once consumed')
+  })
+
+  it('does not invent delivery for lifecycle-only or skipped records', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'state::set',
+        label: 'cleanup',
+        once: false,
+        retired: true,
+        outcome: 'unregistered',
+        retirement_reason: 'unregistered',
+        fired_at: 0,
+      }),
+    ).toBe('cleanup · binding manually removed')
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'state::set',
+        label: 'guarded',
+        once: false,
+        retired: false,
+        outcome: 'skipped',
+        fired_at: 0,
+      }),
+    ).toBe('guarded · delivery skipped')
+  })
+
+  it('uses an enriched trigger type when no label or state key exists', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        trigger_type: 'cron',
+        target: 'harness::send',
+        once: false,
+        retired: false,
+        outcome: 'delivered',
+        fired_at: 0,
+      }),
+    ).toBe('cron · notified this chat')
+  })
+
+  it('prefers registration action as the fired event summary', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        trigger_type: 'on-message',
+        target: 'harness::send',
+        label: 'explorer-messages',
+        action: 'new Explorer message received',
+        once: false,
+        retired: false,
+        outcome: 'delivered',
+        fired_at: 0,
+      }),
+    ).toBe('new Explorer message received · notified this chat')
+  })
+
+  it('renders a persisted failure with partial-output and recovery context', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e-t-1-error',
+      custom: {
+        custom_type: 'error',
+        data: {
+          status: 'error',
+          code: 'llm.transient',
+          class: 'llm.transient',
+          summary: 'The response was interrupted.',
+          detail: 'stream ended without a terminal frame',
+          provider: 'zai',
+          model: 'glm-5',
+          next_actions: ['Try again in a moment.', '', 42],
+          partial_result_available: true,
+          recovery: { attempted: 1, max_attempts: 1, outcome: 'exhausted' },
+          timestamp: 42,
+        },
+      },
+    })
+    expect(notice).toMatchObject({
+      id: 'e-t-1-error',
+      role: 'system',
+      tone: 'error',
+      createdAt: 42,
+    })
+    if (notice.role !== 'system') throw new Error('expected a system notice')
+    expect(notice.content).toBe(
+      'The response was interrupted. A partial response was preserved in this conversation and may be incomplete. Automatic recovery stopped after 1 of 1 attempts.',
+    )
+    expect(notice.content).not.toContain('llm.transient')
+    expect(notice.content).not.toContain('terminal frame')
+    expect(notice.nextActions).toEqual(['Try again in a moment.'])
+    expect(notice.technicalDetails).toEqual({
+      code: 'llm.transient',
+      class: 'llm.transient',
+      detail: 'stream ended without a terminal frame',
+      provider: 'zai',
+      model: 'glm-5',
+    })
+    expect(notice.kind).toBe('turn-failure')
+    expect(notice.failure).toMatchObject({
+      summary: 'The response was interrupted.',
+      partialResultAvailable: true,
+      recoveryAttempted: 1,
+      recoveryMaxAttempts: 1,
+    })
+  })
+
+  it('keeps permanent provider diagnostics out of the primary copy', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e-permanent-error',
+      custom: {
+        custom_type: 'error',
+        data: {
+          status: 'error',
+          summary: 'The provider rejected this request.',
+          next_actions: [
+            'Review the selected model and provider settings, then try again.',
+          ],
+          code: 'llm.permanent',
+          class: 'llm.permanent',
+          detail: 'openai responses: credit balance exhausted',
+        },
+      },
+    })
+    expect(notice).toMatchObject({
+      content: 'The provider rejected this request.',
+      nextActions: [
+        'Review the selected model and provider settings, then try again.',
+      ],
+      technicalDetails: {
+        code: 'llm.permanent',
+        class: 'llm.permanent',
+        detail: 'openai responses: credit balance exhausted',
+      },
+    })
+  })
+
+  it('renders recovery and blocked reaction lifecycle entries', () => {
+    expect(
+      entrySegments({
+        entry_id: 'e-recovery',
+        custom: {
+          custom_type: 'recovery',
+          data: { status: 'recovering', summary: 'resuming (1/1)' },
+        },
+      })[0],
+    ).toMatchObject({ tone: 'warn', content: 'resuming (1/1)' })
+
+    expect(
+      entrySegments({
+        entry_id: 'e-reaction',
+        custom: {
+          custom_type: 'reaction',
+          data: { status: 'blocked', summary: 'facts stage failed' },
+        },
+      })[0],
+    ).toMatchObject({
+      tone: 'error',
+      content: 'reaction blocked — facts stage failed',
+    })
+  })
+
+  it('flags an agent_trigger whose target is not resolvable yet', () => {
+    // Providers degrade partial/streaming JSON arguments to `{}`, so the
+    // wrapped target function is unknown until the stream finishes.
+    const [seg] = entrySegments(
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: {},
+        },
+      ]),
+    )
+    expect(seg).toMatchObject({
+      role: 'function-trigger',
+      functionId: 'agent_trigger',
+      unresolvedTarget: true,
+    })
+    // A resolvable wrapper carries no flag.
+    const [resolved] = entrySegments(
+      assistantItem('e-b', [
+        {
+          type: 'function_call',
+          id: 'fc-2',
+          function_id: 'agent_trigger',
+          arguments: { function: 'shell::run', payload: {} },
+        },
+      ]),
+    )
+    expect(resolved).toMatchObject({
+      functionId: 'shell::run',
+      unresolvedTarget: undefined,
+    })
+  })
+})
+
+describe('applyEntryUpsert', () => {
+  it('replaces the optimistic user message in place (predicted entry id)', () => {
+    const optimistic: Message = {
+      id: 'msg-1-user-0',
+      role: 'user',
+      content: 'hello',
+      attachments: [{ id: 'a1', name: 'f.txt', size: 1, type: 'text/plain' }],
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert(
+      [optimistic],
+      userItem('msg-1-user-0', 'hello'),
+    )
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({ id: 'msg-1-user-0', content: 'hello' })
+    expect((next[0] as { attachments?: unknown[] }).attachments).toHaveLength(1)
+  })
+
+  it("re-derives an entry's segments wholesale on update (streamed snapshots)", () => {
+    let messages = applyEntryUpsert(
+      [],
+      assistantItem('e-a', [{ type: 'text', text: 'par' }]),
+    )
+    messages = applyEntryUpsert(
+      messages,
+      assistantItem('e-a', [{ type: 'text', text: 'partial reply' }]),
+    )
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ id: 'e-a:0', content: 'partial reply' })
+  })
+
+  it('keeps entry order when replacing a mid-path entry', () => {
+    let messages = transcriptToMessages([
+      userItem('e-u', 'hi'),
+      assistantItem('e-a', [{ type: 'text', text: 'one' }]),
+      userItem('e-u2', 'more'),
+    ])
+    messages = applyEntryUpsert(
+      messages,
+      assistantItem('e-a', [{ type: 'text', text: 'two' }]),
+    )
+    expect(messages.map((m) => m.id)).toEqual(['e-u', 'e-a:0', 'e-u2'])
+    expect(messages[1]).toMatchObject({ content: 'two' })
+  })
+
+  it('pairs a function_result entry into the matching function-trigger row', () => {
+    let messages = transcriptToMessages([
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'agent_trigger',
+          arguments: { function: 'shell::run', payload: {} },
+        },
+      ]),
+    ])
+    messages = applyEntryUpsert(messages, resultItem('fr-fc-1', 'fc-1', 'ok'))
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      role: 'function-trigger',
+      running: false,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+  })
+
+  it('wraps errored function results in the error envelope', () => {
+    let messages = transcriptToMessages([
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+    ])
+    messages = applyEntryUpsert(
+      messages,
+      resultItem('fr-fc-1', 'fc-1', 'boom', true),
+    )
+    const row = messages[0] as { output?: { error?: { message?: string } } }
+    expect(row.output?.error?.message).toBe('boom')
+  })
+
+  it('absorbs a locally-created fcall row (pending approval) into the entry segment', () => {
+    const local: Message = {
+      id: 'local-1',
+      role: 'function-trigger',
+      functionId: 'shell::run',
+      input: {},
+      running: true,
+      pendingApproval: true,
+      functionTriggerId: 'fc-1',
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert(
+      [local],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+    )
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e-a:0',
+      running: true,
+      pendingApproval: true,
+      functionTriggerId: 'fc-1',
+    })
+  })
+
+  it('carries filesystemAccess through a snapshot re-derivation while pending', () => {
+    const local: Message = {
+      id: 'local-1',
+      role: 'function-trigger',
+      functionId: 'shell::fs::read',
+      input: {},
+      running: false,
+      pendingApproval: true,
+      functionTriggerId: 'fc-1',
+      sessionId: 'sess-a',
+      filesystemAccess: {
+        requestedRoot: '/abs/existing/dir',
+        errorCode: 'S215',
+      },
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert(
+      [local],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::fs::read',
+          arguments: {},
+        },
+      ]),
+    )
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e-a:0',
+      pendingApproval: true,
+      functionTriggerId: 'fc-1',
+      filesystemAccess: {
+        requestedRoot: '/abs/existing/dir',
+        errorCode: 'S215',
+      },
+    })
+  })
+
+  it('infers running for unpaired calls while the session is working', () => {
+    const messages = applyEntryUpsert(
+      [],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+      { working: true },
+    )
+    expect(messages[0]).toMatchObject({
+      role: 'function-trigger',
+      running: true,
+    })
+  })
+
+  it('does not infer running when the session is not working', () => {
+    const messages = applyEntryUpsert(
+      [],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+    )
+    expect((messages[0] as { running?: boolean }).running).toBeUndefined()
+  })
+
+  it('clears inferred running when the function_result pairs in', () => {
+    let messages = applyEntryUpsert(
+      [],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+      { working: true },
+    )
+    messages = applyEntryUpsert(messages, resultItem('fr-fc-1', 'fc-1', 'ok'), {
+      working: true,
+    })
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ running: false })
+    // A later snapshot of the same entry keeps the paired call done.
+    messages = applyEntryUpsert(
+      messages,
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+      { working: true },
+    )
+    expect(messages[0]).toMatchObject({ running: false })
+  })
+
+  it('never marks a pending-approval call as running', () => {
+    const local: Message = {
+      id: 'local-1',
+      role: 'function-trigger',
+      functionId: 'shell::run',
+      input: {},
+      pendingApproval: true,
+      functionTriggerId: 'fc-1',
+      createdAt: 0,
+    }
+    const next = applyEntryUpsert(
+      [local],
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+      { working: true },
+    )
+    expect(next[0]).toMatchObject({ pendingApproval: true })
+    expect((next[0] as { running?: boolean }).running).toBeFalsy()
+  })
+})
+
+describe('transcriptToMessages — running inference on hydration', () => {
+  const call = (id: string) =>
+    ({
+      type: 'function_call',
+      id,
+      function_id: 'shell::run',
+      arguments: {},
+    }) as const
+
+  it('marks unpaired calls of the last assistant entry while working', () => {
+    const messages = transcriptToMessages(
+      [
+        userItem('e-u', 'go'),
+        assistantItem('e-a', [call('fc-1')]),
+        resultItem('fr-fc-1', 'fc-1', 'ok'),
+        assistantItem('e-b', [call('fc-2')]),
+      ],
+      'sess-1',
+      { working: true },
+    )
+    const rows = messages.filter((m) => m.role === 'function-trigger')
+    expect(rows[0]).toMatchObject({ functionTriggerId: 'fc-1', running: false })
+    expect(rows[1]).toMatchObject({ functionTriggerId: 'fc-2', running: true })
+  })
+
+  it('does not pulse historical unpaired calls (earlier entries or idle sessions)', () => {
+    // Unpaired call in an EARLIER entry (interrupted turn) stays still even
+    // while working.
+    const working = transcriptToMessages(
+      [
+        assistantItem('e-a', [call('fc-1')]),
+        assistantItem('e-b', [{ type: 'text', text: 'done' }]),
+      ],
+      'sess-1',
+      { working: true },
+    )
+    const row = working.find((m) => m.role === 'function-trigger')
+    expect((row as { running?: boolean }).running).toBeFalsy()
+
+    // Idle session: nothing pulses.
+    const idle = transcriptToMessages(
+      [assistantItem('e-a', [call('fc-1')])],
+      'sess-1',
+    )
+    expect((idle[0] as { running?: boolean }).running).toBeUndefined()
+  })
+})
+
+describe('isCallSettled', () => {
+  const row = (
+    extra: Partial<FunctionTriggerMessage>,
+  ): FunctionTriggerMessage => ({
+    id: 'e_a:1',
+    role: 'function-trigger',
+    functionId: 'shell::exec',
+    input: {},
+    functionTriggerId: 'fc-1',
+    createdAt: 1,
+    ...extra,
+  })
+
+  it('is settled once an output or its result entry is known', () => {
+    expect(isCallSettled(row({ running: true }))).toBe(false)
+    expect(isCallSettled(row({ output: 'ok' }))).toBe(true)
+    expect(isCallSettled(row({ resultEntryId: 'e_r1', unloaded: true }))).toBe(
+      true,
+    )
+  })
+})
+
+describe('applyFcallPatch / clearTransientFlags', () => {
+  it('patches the row matching functionTriggerId and reports found', () => {
+    const messages = transcriptToMessages([
+      assistantItem('e-a', [
+        {
+          type: 'function_call',
+          id: 'fc-1',
+          function_id: 'shell::run',
+          arguments: {},
+        },
+      ]),
+    ])
+    const { messages: next, found } = applyFcallPatch(messages, 'fc-1', {
+      running: true,
+    })
+    expect(found).toBe(true)
+    expect(next[0]).toMatchObject({ running: true })
+    expect(applyFcallPatch(next, 'fc-unknown', { running: true }).found).toBe(
+      false,
+    )
+  })
+
+  it('clears dangling streaming/running flags when the turn ends', () => {
+    const messages: Message[] = [
+      {
+        id: 't',
+        role: 'thought',
+        content: 'x',
+        durationMs: 0,
+        streaming: true,
+        createdAt: 0,
+      },
+      {
+        id: 'a',
+        role: 'assistant',
+        content: 'y',
+        streaming: true,
+        createdAt: 0,
+      },
+      {
+        id: 'f',
+        role: 'function-trigger',
+        functionId: 'shell::run',
+        input: {},
+        running: true,
+        createdAt: 0,
+      },
+    ]
+    const next = clearTransientFlags(messages)
+    expect(
+      next.map((m) => ('streaming' in m ? m.streaming : undefined)),
+    ).toEqual([false, false, undefined])
+    expect((next[2] as { running?: boolean }).running).toBe(false)
+  })
+})
+
+/* Paged reads: `session::messages-tail` hands the inside of a collapsed run
+   back as `elided` placeholders, and `session::messages-range` brings the
+   whole entries later. The mapper must produce rows the group can count and
+   swap in place without the reader noticing the seam. */
+describe('elided placeholders', () => {
+  function elidedCall(
+    entryId: string,
+    calls: Array<{ id: string; functionId: string }>,
+    text?: string,
+  ): TranscriptItem {
+    return {
+      ...assistantItem(
+        entryId,
+        [
+          ...(text ? [{ type: 'text' as const, text }] : []),
+          ...calls.map((c) => ({
+            type: 'function_call' as const,
+            id: c.id,
+            function_id: c.functionId,
+            arguments: {},
+          })),
+        ],
+        'function_call',
+      ),
+      elided: true,
+    }
+  }
+
+  function elidedResult(
+    entryId: string,
+    functionTriggerId: string,
+    functionId = 'shell::run',
+  ): TranscriptItem {
+    return {
+      entry_id: entryId,
+      elided: true,
+      message: {
+        role: 'function_result',
+        function_call_id: functionTriggerId,
+        function_id: functionId,
+        content: [],
+        details: null,
+        is_error: false,
+        timestamp: 3,
+      },
+    }
+  }
+
+  it('maps an elided assistant to unloaded rows and keeps its prose', () => {
+    const segments = entrySegments(
+      elidedCall(
+        'e_a1',
+        [{ id: 'fc_1', functionId: 'shell::run' }],
+        'Looking at the file.',
+      ),
+    )
+    expect(segments).toHaveLength(2)
+    expect(segments[0]).toMatchObject({
+      id: 'e_a1:0',
+      role: 'assistant',
+      content: 'Looking at the file.',
+    })
+    expect(segments[1]).toMatchObject({
+      id: 'e_a1:1',
+      role: 'function-trigger',
+      functionId: 'shell::run',
+      functionTriggerId: 'fc_1',
+      unloaded: true,
+    })
+    expect((segments[1] as FunctionTriggerMessage).input).toBeUndefined()
+  })
+
+  /* The wrapper's target lives in the arguments the page dropped; the result
+     entry names the resolved function, so the row learns its label there. */
+  it('lets an elided result name an agent_trigger placeholder', () => {
+    const messages = transcriptToMessages([
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'agent_trigger' }]),
+      elidedResult('e_r1', 'fc_1', 'coder::read-file'),
+    ])
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      role: 'function-trigger',
+      functionId: 'coder::read-file',
+      unresolvedTarget: false,
+      unloaded: true,
+      resultEntryId: 'e_r1',
+      running: false,
+      pendingApproval: false,
+    })
+    expect(messages[0]).not.toHaveProperty('output')
+  })
+
+  it('never marks a placeholder running while the session works', () => {
+    const messages = transcriptToMessages(
+      [
+        elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+        elidedResult('e_r1', 'fc_1'),
+      ],
+      's-1',
+      { working: true },
+    )
+    expect(messages[0]).toMatchObject({ unloaded: true, running: false })
+    const bare = applyEntryUpsert(
+      [],
+      elidedCall('e_a2', [{ id: 'fc_2', functionId: 'shell::run' }]),
+      { working: true },
+    )
+    expect(bare[0]).toMatchObject({ unloaded: true })
+    expect((bare[0] as FunctionTriggerMessage).running).toBeUndefined()
+  })
+
+  it('records the result entry on a whole row too', () => {
+    const messages = transcriptToMessages([
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+      resultItem('e_r1', 'fc_1', 'ok'),
+    ])
+    expect(messages[0]).toMatchObject({
+      resultEntryId: 'e_r1',
+      unloaded: false,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+  })
+
+  it('keeps a placeholder for a lost assistant snapshot', () => {
+    const messages = transcriptToMessages([elidedResult('e_r1', 'fc_1')])
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      id: 'e_r1',
+      role: 'function-trigger',
+      functionTriggerId: 'fc_1',
+      unloaded: true,
+      resultEntryId: 'e_r1',
+    })
+    expect(messages[0]).not.toHaveProperty('output')
+  })
+
+  /* "Show all": the range read answers with the whole assistant entry and
+     its result. Each replaces its placeholder in place — same call id, same
+     position — and the flag clears only once the result has landed. */
+  it('replaces the placeholder in place from a range read', () => {
+    const page = transcriptToMessages([
+      userItem('e_u1', 'go'),
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+      elidedResult('e_r1', 'fc_1'),
+      userItem('e_u2', 'thanks'),
+    ])
+    expect(page.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+
+    const withCall = applyEntryUpsert(
+      page,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(withCall.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+    expect(withCall[1]).toMatchObject({
+      functionTriggerId: 'fc_1',
+      input: { command: 'ls' },
+      // The result is still on its way: the row stays a placeholder.
+      unloaded: true,
+      resultEntryId: 'e_r1',
+    })
+
+    const whole = applyEntryUpsert(withCall, resultItem('e_r1', 'fc_1', 'ok'))
+    expect(whole.map((m) => m.id)).toEqual(['e_u1', 'e_a1:0', 'e_u2'])
+    expect(whole[1]).toMatchObject({
+      functionTriggerId: 'fc_1',
+      input: { command: 'ls' },
+      unloaded: false,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+  })
+
+  /* A reconnect re-reads the tail, which elides a run the window already
+     holds whole. The re-read must not turn loaded rows back into skeletons. */
+  it('keeps a loaded row when a re-read page elides it', () => {
+    const loaded = transcriptToMessages([
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+      resultItem('e_r1', 'fc_1', 'ok'),
+    ])
+    let next = applyEntryUpsert(
+      loaded,
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+    )
+    next = applyEntryUpsert(next, elidedResult('e_r1', 'fc_1'))
+    expect(next).toHaveLength(1)
+    expect(next[0]).toMatchObject({
+      id: 'e_a1:0',
+      input: { command: 'ls' },
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+    expect((next[0] as FunctionTriggerMessage).unloaded).not.toBe(true)
+  })
+})
+
+describe('prependTranscript', () => {
+  it('puts the older page first, dedupes by id, and leaves the tail alone', () => {
+    const tail = transcriptToMessages([
+      userItem('e_u3', 'three'),
+      assistantItem('e_a3', [{ type: 'text', text: 'and three' }]),
+    ])
+    const older: TranscriptItem[] = [
+      userItem('e_u1', 'one'),
+      assistantItem('e_a1', [{ type: 'text', text: 'and one' }]),
+      userItem('e_u2', 'two'),
+      // The anchor entry can come back on the page boundary.
+      userItem('e_u3', 'three'),
+    ]
+    const merged = prependTranscript(tail, older, 's-1')
+    expect(merged.map((m) => m.id)).toEqual([
+      'e_u1',
+      'e_a1:0',
+      'e_u2',
+      'e_u3',
+      'e_a3:0',
+    ])
+    // The tail's own objects are the ones in the result, untouched.
+    expect(merged[3]).toBe(tail[0])
+    expect(merged[4]).toBe(tail[1])
+  })
+
+  it('returns the same list for an empty or fully duplicate page', () => {
+    const tail = transcriptToMessages([userItem('e_u1', 'one')])
+    expect(prependTranscript(tail, [])).toBe(tail)
+    expect(prependTranscript(tail, [userItem('e_u1', 'one')])).toBe(tail)
+  })
+})

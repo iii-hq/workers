@@ -11,7 +11,7 @@ reference. The reference lives in the code — rustdoc, source links,
 ## Links must be absolute
 
 The README renders on the registry page, not just on GitHub. A relative
-link that escapes the worker folder (`../tech-specs/...`, `../console`)
+link that escapes the worker folder (`../tech-specs/...`, `../ade`)
 resolves against the registry origin and 404s there. Link to anything
 outside the worker folder with a full GitHub URL
 (`https://github.com/iii-hq/workers/tree/main/<dir>` or

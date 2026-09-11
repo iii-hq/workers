@@ -119,6 +119,9 @@ fn to_chat_model(r: &Row) -> Model {
         supports_cache: None,
         supports_structured_output: Some(false),
         thinking_budgets: None,
+        // Sarvam prices in INR only (docs.sarvam.ai/api/getting-started/pricing)
+        // and `Pricing` is USD per MTok, so the rows stay unpriced on purpose:
+        // router::chat reports usage counts without a cost_usd.
         pricing: None,
         speech: None,
     }

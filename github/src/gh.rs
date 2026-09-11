@@ -1,6 +1,6 @@
 //! Process core for the `gh` CLI: spawn with bounded capture, a timeout
 //! watchdog, and process-group kill. The bounded-read / group-kill / stdin
-//! mechanics are lifted from `shell/src/exec/host.rs` (see the comments there
+//! mechanics are lifted from `ide/src/exec/host.rs` (see the comments there
 //! for the full rationale); this file trims the policy jail, env scrubbing,
 //! and background-job machinery a gh wrapper doesn't need.
 

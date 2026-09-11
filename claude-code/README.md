@@ -16,8 +16,8 @@ The terminal half adds three companions:
 
 | Worker | Why |
 |---|---|
-| [`shell`](https://github.com/iii-hq/workers/tree/main/shell) ≥ 0.12 | Owns the terminal. `shell::pty::open` runs the CLI, `shell::exec` installs it and equips the workspace, `coder::read-file` reads the files back. The workspace must be inside shell's jail (`fs.host_roots`). |
-| [`console`](https://github.com/iii-hq/workers/tree/main/console) | Renders the injected **claude** page. |
+| [`shell`](https://github.com/iii-hq/workers/tree/main/ide) ≥ 0.12 | Owns the terminal. `shell::pty::open` runs the CLI, `shell::exec` installs it and equips the workspace, `coder::read-file` reads the files back. The workspace must be inside shell's jail (`fs.host_roots`). |
+| [`console`](https://github.com/iii-hq/workers/tree/main/ade) | Renders the injected **claude** page. |
 | `configuration` (built in) | Holds the settings below. |
 
 ## Skills
@@ -356,7 +356,7 @@ Every `claude::run` is an ordinary traced invocation on the engine: the trace ca
 
 Both halves stamp the identity keys an agent harness stamps, so the trace views
 group and label this worker's turns with no knowledge of Claude Code
-(`console/docs/timeline-span-tags.md`):
+(`ade/docs/timeline-span-tags.md`):
 
 | Key | Value here |
 | --- | --- |

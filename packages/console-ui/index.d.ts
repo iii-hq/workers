@@ -9,8 +9,8 @@
  * `external` in every worker UI build (the js entry throws if bundled).
  *
  * Component prop types are hand-modeled on the console's real components
- * (console/web/src/components/ui, lib/markdown, lib/syntax) and checked
- * against them by console/web/src/lib/console-ui-conformance.test.ts —
+ * (ade/web/src/components/ui, lib/markdown, lib/syntax) and checked
+ * against them by ade/web/src/lib/console-ui-conformance.test.ts —
  * declared props must stay accepted by the real components. The console's
  * own components may accept more (Radix pass-through props); this file
  * declares the supported authoring surface.

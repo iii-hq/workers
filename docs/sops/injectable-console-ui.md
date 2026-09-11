@@ -11,17 +11,17 @@ implementation. The `state` worker is the broad delivery reference; the
 
 | Piece | Reference |
 |---|---|
-| Console-side registry + trigger types | `workers/console/src/ui_assets.rs` |
-| HTTP serving (`/ui`, `/ui/*`, `/vendor/*`) | `workers/console/src/server.rs` |
-| Browser loader (import / link-swap / dispose) | `workers/console/web/src/lib/ui-loader.tsx` |
-| Slot registries (pages, renderers, forms) | `workers/console/web/src/lib/ui-slots.ts` |
-| The `@iii-dev/console-ui` runtime surface | `workers/console/web/src/lib/console-api.ts` |
+| Console-side registry + trigger types | `workers/ade/src/ui_assets.rs` |
+| HTTP serving (`/ui`, `/ui/*`, `/vendor/*`) | `workers/ade/src/server.rs` |
+| Browser loader (import / link-swap / dispose) | `workers/ade/web/src/lib/ui-loader.tsx` |
+| Slot registries (pages, renderers, forms) | `workers/ade/web/src/lib/ui-slots.ts` |
+| The `@iii-dev/console-ui` runtime surface | `workers/ade/web/src/lib/console-api.ts` |
 | The `@iii-dev/console-ui` package (types + component manifest) | `workers/packages/console-ui/` |
 | The `iii-console-ui` crate (Rust worker-side registration) | `workers/crates/console-ui/` |
 | Worker reference implementation | `workers/state/src/ui.rs` + `workers/state/ui/` |
 | Trigger-activity renderer reference | `workers/cron/src/ui.rs` + `workers/cron/ui/` |
 
-> **Companion skill — keep it in sync.** `workers/console/skills/injectable-ui.md` is a
+> **Companion skill — keep it in sync.** `workers/ade/skills/injectable-ui.md` is a
 > standalone skill teaching this same workflow to authors *outside* this
 > repo: it consumes `@iii-dev/console-ui` via `npm install` and the
 > `iii-console-ui` crate via `cargo add`, instead of the workspace/path
@@ -145,7 +145,7 @@ highlight, inset ring, 1 px edge, and drops for `lift`) whose ingredients
 (`--iii-ui-lift-*`) are re-tinted by the dark theme, so worker CSS writes
 `box-shadow: var(--shadow-lift);` and nothing else: no border or extra drop
 beside it, and never a literal shadow color. Promote a new elevation by adding
-a token to `console/web/src/index.css` and `packages/console-ui/token-names.mjs`,
+a token to `ade/web/src/index.css` and `packages/console-ui/token-names.mjs`,
 not by copying a stack into a worker sheet.
 
 For related content that needs emphasis inside an existing card, use
@@ -186,7 +186,7 @@ What must NOT be in the sheet: unscoped selectors (`:root`, `html`, `body`,
 `*`, bare element names) and `@font-face` — injected CSS is unlayered, so an
 unscoped rule silently beats the console's fully-layered CSS document-wide.
 The console runs a warn-only lint on every `console:style` fetch
-(`lint_style`, `workers/console/src/ui_assets.rs`) and puts findings in the
+(`lint_style`, `workers/ade/src/ui_assets.rs`) and puts findings in the
 manifest's `warnings` array; keep it empty.
 
 Injected Tailwind utility names are not part of the Console build. Compose
@@ -252,7 +252,7 @@ assets (dispatch on `path`), one trigger per asset. Rust workers don't
 hand-roll it — the shared **`iii-console-ui`** crate
 (`workers/crates/console-ui`) is the whole worker side. Workers in this
 repo link it directly by path so it versions with the console worker here
-(out-of-repo workers install it instead — see `workers/console/skills/injectable-ui.md`):
+(out-of-repo workers install it instead — see `workers/ade/skills/injectable-ui.md`):
 
 ```toml
 # <worker>/Cargo.toml
@@ -410,7 +410,7 @@ hairline `--color-edge` border; sidebar `--color-sidebar`; main
 a sidebar just puts its content straight into `PageBody`/`PageMain`; a
 page with custom internals (the directory page's drill-in browser) may
 own its body but MUST keep `PageShell` + `PageHeader`. The shell
-explorer (`workers/shell/ui/src/page/index.tsx`) is the reference
+explorer (`workers/ide/ui/src/page/index.tsx`) is the reference
 composition.
 
 When a page's worker has configuration, set `configurationId` on its
@@ -654,7 +654,7 @@ interface FunctionTriggerRenderer {
 
 Injected renderers dispatch **before** the first-party families
 (`useFunctionTriggerRenderers`,
-`workers/console/web/src/components/function-trigger/renderer-registry.tsx`),
+`workers/ade/web/src/components/function-trigger/renderer-registry.tsx`),
 so you can override built-in rendering for your worker's functions. Return
 `null` to fall through to the next renderer. The host calls `tryRender*` only
 after that renderer's `isMatch(functionId)` returns true — match narrowly (your
@@ -795,7 +795,7 @@ renderer should tolerate all three `kind` values because source identity does
 not change as the binding moves through its lifecycle.
 
 See
-[`console/web/docs/custom-trigger-components.md`](../../console/web/docs/custom-trigger-components.md)
+[`ade/web/docs/custom-trigger-components.md`](../../ade/web/docs/custom-trigger-components.md)
 for the complete authoring guide and test matrix.
 
 ### `host.configForms.register(configurationId, component)`
@@ -1229,7 +1229,7 @@ enabled cards use the neutral selected recipe, disabled ones dim) — editing
 applies live: the console worker subscribes to `configuration:updated` for
 its own entry and pushes `delete`/`set` to every tab. The board is itself
 injected UI (a `configForms` override shipped by the console worker —
-`workers/console/ui/` + `workers/console/src/ui.rs`, registered through the
+`workers/ade/ui/` + `workers/ade/src/ui.rs`, registered through the
 `iii-console-ui` crate), which is why the `console` worker is absent from
 its own board: the registry refuses to disable it.
 
@@ -1266,7 +1266,7 @@ its own board: the registry refuses to disable it.
 - Record reusable-primitive coverage and justified local exceptions in
   `workers/docs/sops/console-ui-conformance.md`.
 - The package's declarations are themselves pinned to the real console
-  components by `console/web/src/lib/console-ui-conformance.test.ts`
+  components by `ade/web/src/lib/console-ui-conformance.test.ts`
   (type-level + name-manifest checks) — extend all three (manifest, record,
   declaration) when promoting a new shared component.
 
@@ -1281,7 +1281,7 @@ composer toolbar itself. Not shipped yet (don't design against them):
 | Spec item | Status |
 |---|---|
 | `@iii-dev/console-build` CLI + Tailwind preset | not implemented — hand-write scoped CSS (as `state` does) or scope your own Tailwind output; there is no automatic scoping pass to save you |
-| Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — in-repo workers consume it **workspace-linked** (out-of-repo authors install it from npm, see `workers/console/skills/injectable-ui.md`); the runtime module specifier was renamed from the spec's `@iii/console` |
+| Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — in-repo workers consume it **workspace-linked** (out-of-repo authors install it from npm, see `workers/ade/skills/injectable-ui.md`); the runtime module specifier was renamed from the spec's `@iii/console` |
 | Rust worker-side registration | shipped **beyond spec** as the path-linked `iii-console-ui` crate (`crates/console-ui`) — the spec's authoring doc had each worker hand-roll the content function, triggers, and watcher |
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |

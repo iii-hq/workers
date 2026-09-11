@@ -103,21 +103,21 @@ containers:
     scripts:
       run: cargo run --bin cron
 
-  console:
-    worker: path://../console
+  ade:
+    worker: path://../ade
     environment:
       RUST_LOG: info
       CI: "true"
     scripts:
-      run: cargo run --bin console
+      run: cargo run --bin ade
 
-  shell:
-    worker: path://../shell
+  ide:
+    worker: path://../ide
     environment:
       RUST_LOG: info
       CI: "true"
     scripts:
-      run: cargo run --bin shell
+      run: cargo run --bin ide
 
   harness:
     worker: path://.
@@ -132,8 +132,8 @@ containers:
       - context-manager
       - iii-directory
       - cron
-      - console
-      - shell
+      - ade
+      - ide
     environment:
       RUST_LOG: info
       CI: "true"

@@ -47,7 +47,7 @@ INTEGRATION_WORKERS = {
     "context-manager",
     "iii-directory",
     "state",
-    "console",
+    "ade",
 }
 INTEGRATION_DOC_GLOBS = (
     "README.md",

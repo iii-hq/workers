@@ -3,8 +3,8 @@
  * UI — the single source of truth for:
  *
  * - the `/vendor/console-ui.js` shim's named exports
- *   (console/web/scripts/generate-vendor-shims.mjs), and
- * - the curated `components` record in console/web/src/lib/console-api.ts
+ *   (ade/web/scripts/generate-vendor-shims.mjs), and
+ * - the curated `components` record in ade/web/src/lib/console-api.ts
  *   (asserted equal by console-ui-conformance.test.ts).
  *
  * Adding a component: add it here, to the record, and to ../index.d.ts —

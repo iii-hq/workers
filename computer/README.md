@@ -24,7 +24,7 @@ the cursor. Three drivers sit behind one surface, picked per session:
   out of band.
 
 Everything else composes with workers that already exist: run commands and touch
-files with the [shell](https://github.com/iii-hq/workers/tree/main/shell)
+files with the [shell](https://github.com/iii-hq/workers/tree/main/ide)
 worker, persist with `state`, schedule with `cron`.
 
 ## Install
@@ -112,7 +112,7 @@ actions that land wherever the desktop's focus is (`type` with `text`,
 `computer::displays`, `computer::sessions::list` and `computer::sessions::stop`.
 For commands and files, mind which machine you mean: on a native session the
 desktop IS this host, so the
-[shell](https://github.com/iii-hq/workers/tree/main/shell) worker is the right
+[shell](https://github.com/iii-hq/workers/tree/main/ide) worker is the right
 tool. A sandboxed desktop is reached with `sandbox::exec` / `sandbox::fs`, and
 a remote one through its own guest executor — `shell` would run on the host
 instead, which is a different machine entirely.

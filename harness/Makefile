@@ -18,8 +18,8 @@ SCRAPLING_VENV := $(SCRAPLING_ROOT)/.venv
 SCRAPLING_STAMP := $(SCRAPLING_VENV)/.installed
 
 BASE_STACK := state queue iii-directory llm-router session-manager context-manager \
-              provider-anthropic provider-openai provider-openai-codex shell scrapling cron \
-              approval-gate harness console
+              provider-anthropic provider-openai provider-openai-codex ide scrapling cron \
+              approval-gate harness ade
 STACK := $(BASE_STACK) eval
 
 # scrapling is a Python worker (pyproject + venv, see prepare-scrapling);
@@ -51,9 +51,9 @@ help:
 	  '  make dev-up                         start engine + harness stack in tmux' \
 	  '  make dev-down                       stop the tmux stack' \
 	  '  make dev-restart                    restart all workers in the stack' \
-	  '  make restart console harness shell  restart selected workers' \
+	  '  make restart ade harness ide        restart selected workers' \
 	  '  make restart harness WORKTREE_ROOT=.worktrees/my-feature' \
-	  '  make stop harness shell             stop selected worker windows' \
+	  '  make stop harness ide               stop selected worker windows' \
 	  '  make stop-work                      stop all worker windows, keep engine' \
 	  '  make stop-engine                    stop the engine window only' \
 	  '  make install-iii-rc               install the iii CLI @rc channel' \
@@ -281,7 +281,7 @@ restart-worker:
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	  args="--url $(ENGINE_URL)"; \
 	  if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
-	  if [ "$$worker" = "console" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
+	  if [ "$$worker" = "ade" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
 	  cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
 	fi; \
 	if tmux list-windows -t "$(TMUX_SESSION)" -F '#W' | grep -Fxq "$$worker"; then \
@@ -459,7 +459,7 @@ integration-playground:
 	  echo "Install it with: make -C harness install-iii-rc"; \
 	  exit 3; \
 	fi
-	@for w in $(INTEGRATION_WORKERS) harness console; do \
+	@for w in $(INTEGRATION_WORKERS) harness ade; do \
 	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
 	  cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --target-dir "$(INTEGRATION_TARGET_DIR)" --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
@@ -469,7 +469,7 @@ integration-playground:
 	  playground \
 	  --engine-bin "$(III_BIN)" \
 	  --harness-bin "$(INTEGRATION_BIN_DIR)/harness" \
-	  --console-bin "$(INTEGRATION_BIN_DIR)/console" \
+	  --console-bin "$(INTEGRATION_BIN_DIR)/ade" \
 	  --worker-bin "queue=$(INTEGRATION_BIN_DIR)/queue" \
 	  --worker-bin "iii-directory=$(INTEGRATION_BIN_DIR)/iii-directory" \
 	  --worker-bin "session-manager=$(INTEGRATION_BIN_DIR)/session-manager" \

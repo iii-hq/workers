@@ -12,7 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=ui/tsconfig.json");
     println!("cargo:rerun-if-changed=../pnpm-lock.yaml");
 
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let ui_dir = manifest_dir.join("ui");
     let assets = [ui_dir.join("dist/page.js"), ui_dir.join("dist/styles.css")];
     let sources = [

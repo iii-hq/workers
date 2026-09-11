@@ -28,7 +28,7 @@ exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 | Worker | Why |
 |---|---|
 | [`state`](https://github.com/iii-hq/workers/tree/main/state) | Required. Every canvas record lives in its `canvas` scope; the worker holds nothing in process memory, so a restart loses nothing. |
-| [`console`](https://github.com/iii-hq/workers/tree/main/console) | Optional. Renders the `#/ext/canvas` page and draws `canvas::*` calls as live diagrams in chat. |
+| [`console`](https://github.com/iii-hq/workers/tree/main/ade) | Optional. Renders the `#/ext/canvas` page and draws `canvas::*` calls as live diagrams in chat. |
 
 ## Quickstart
 

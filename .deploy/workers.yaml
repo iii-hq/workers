@@ -345,20 +345,20 @@ workers:
         outputs:
         - dist
     publish: true
-  console:
+  ade:
     source:
-      path: console
+      path: ade
       package_manifest: Cargo.toml
     artifact:
       kind: rust-binary
       toolchain:
         name: rust
         version: 1.97.1
-      binary: console
+      binary: ade
       targets: *id001
       frontends:
       - workspace_root: .
-        source_path: console/ui
+        source_path: ade/ui
         runtime:
           name: node
           version: 22.20.0
@@ -377,7 +377,7 @@ workers:
         outputs:
         - dist
       - workspace_root: .
-        source_path: console/web
+        source_path: ade/web
         runtime:
           name: node
           version: 22.20.0
@@ -1845,16 +1845,16 @@ workers:
       binary: session-manager
       targets: *id001
     publish: true
-  shell:
+  ide:
     source:
-      path: shell
+      path: ide
       package_manifest: Cargo.toml
     artifact:
       kind: rust-binary
       toolchain:
         name: rust
         version: 1.97.1
-      binary: shell
+      binary: ide
       targets:
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
@@ -1864,7 +1864,7 @@ workers:
       windows_exception: published releases have never included a Windows build
       frontends:
       - workspace_root: .
-        source_path: shell/ui
+        source_path: ide/ui
         runtime:
           name: node
           version: 22.20.0
@@ -1885,11 +1885,11 @@ workers:
     publish: true
   fixture-shell-harness:
     source:
-      path: shell/tests/e2e/workers/harness
+      path: ide/tests/e2e/workers/harness
       package_manifest: package.json
     artifact:
       kind: javascript-bundle
-      workspace_root: shell/tests/e2e/workers/harness
+      workspace_root: ide/tests/e2e/workers/harness
       runtime:
         name: node
         version: 22.20.0

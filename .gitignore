@@ -13,7 +13,7 @@ graphify-out
 node_modules
 yarn.lock
 !iii-database/tests/e2e/workers/harness/package-lock.json
-!shell/tests/e2e/workers/harness/package-lock.json
+!ide/tests/e2e/workers/harness/package-lock.json
 tmp/
 
 # Python
@@ -76,7 +76,7 @@ workers-dev.yaml
 # Agent terminal workspaces: the claude-code / pi workers create these on the
 # shell worker's host at runtime (notes, hooks, extension, per-host CLI paths).
 # Runtime state, never source.
-shell/claude-code/
-shell/claude-cli/
-shell/pi/
-shell/pi-cli/
+ide/claude-code/
+ide/claude-cli/
+ide/pi/
+ide/pi-cli/

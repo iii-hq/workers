@@ -22,7 +22,7 @@ event, so a write made by anything shows up, including tools that never call
 this worker.
 
 It opens no files itself. Reads, writes, moves, listings and `git` all go
-through the [`shell`](https://github.com/iii-hq/workers/tree/main/shell) worker,
+through the [`shell`](https://github.com/iii-hq/workers/tree/main/ide) worker,
 so shell's jail and denylist are the only filesystem boundary; the workspace
 record lives in [`state`](https://github.com/iii-hq/workers/tree/main/state).
 What `editor` adds is the model on top: diffing, ranking paths, refusing a
@@ -31,16 +31,16 @@ stale write, and keeping open buffers correct when a folder moves under them.
 ## Install
 
 ```bash
-iii trigger compose::add worker=editor worker=shell worker=state
+iii trigger compose::add worker=editor worker=ide worker=state
 ```
 
 ### Companion workers
 
 | Worker | Why |
 |---|---|
-| [`shell`](https://github.com/iii-hq/workers/tree/main/shell) | Required. Every read, write, move, listing (`coder::tree`) and `git` invocation. Its `fs.host_roots` jail governs which paths `editor` can reach. |
+| [`shell`](https://github.com/iii-hq/workers/tree/main/ide) | Required. Every read, write, move, listing (`coder::tree`) and `git` invocation. Its `fs.host_roots` jail governs which paths `editor` can reach. |
 | [`state`](https://github.com/iii-hq/workers/tree/main/state) | Required. Holds the active root and one session per project (open buffers, expanded folders). |
-| [`console`](https://github.com/iii-hq/workers/tree/main/console) | Optional. Renders the `#/ext/editor` page and the `editor::*` chat cards. |
+| [`console`](https://github.com/iii-hq/workers/tree/main/ade) | Optional. Renders the `#/ext/editor` page and the `editor::*` chat cards. |
 
 ## Quickstart
 

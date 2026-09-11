@@ -1,151 +1,20 @@
 //! Engine-backed integration suite — real engine, real router, real provider,
 //! stubbed upstream. Self-skips when no engine is available.
-use std::io::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, IIIClient};
 use llm_router::register::register_router;
 use provider_sarvam::register::register_provider;
 use serde_json::{json, Value};
 
-struct Engine {
-    url: String,
-    child: std::process::Child,
-    dir: std::path::PathBuf,
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn engine_bin() -> Option<std::path::PathBuf> {
-    if let Ok(p) = std::env::var("III_ENGINE_BIN") {
-        return Some(p.into());
-    }
-    let on_path = std::process::Command::new("iii")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    on_path.then(|| "iii".into())
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral port")
-        .local_addr()
-        .expect("local addr")
-        .port()
-}
-
-fn test_init_options() -> InitOptions {
-    static NEXT_WORKER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
-    let worker_id = NEXT_WORKER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    metadata.name = format!("{}-test-{worker_id}", metadata.name);
-    InitOptions {
-        metadata: Some(metadata),
-        ..InitOptions::default()
-    }
-}
-
-/// Spawn a minimal engine in a temp dir; poll until WS-reachable.
-/// None = no engine available on this host → the caller self-skips.
-async fn spawn_engine() -> Option<Engine> {
-    let bin = engine_bin()?;
-    let port = free_port();
-    let dir = std::env::temp_dir().join(format!("provider-sarvam-it-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-
-    let config = format!(
-        r#"workers:
-  - name: iii-worker-manager
-    config:
-      port: {port}
-  - name: iii-pubsub
-    config:
-      adapter:
-        name: local
-  - name: configuration
-    config:
-      adapter:
-        name: fs
-        config:
-          directory: {dir}/configuration
-      ttl_seconds: 0
-  - name: iii-state
-    config:
-      adapter:
-        name: kv
-        config:
-          file_path: {dir}/state_store.db
-          store_method: file_based
-"#,
-        port = port,
-        dir = dir.display(),
-    );
-    let config_path = dir.join("config.yaml");
-    std::fs::File::create(&config_path)
-        .and_then(|mut f| f.write_all(config.as_bytes()))
-        .expect("write config");
-
-    let child = std::process::Command::new(&bin)
-        .arg("--no-update-check")
-        .arg("--config")
-        .arg(&config_path)
-        .current_dir(&dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn engine");
-
-    let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, test_init_options());
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let ready = probe
-            .trigger(TriggerRequest {
-                function_id: "engine::workers::list".into(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(1000),
-            })
-            .await
-            .is_ok();
-        if ready {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "engine did not become ready in 15s"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    probe.shutdown();
-
-    Some(Engine { url, child, dir })
-}
-
-/// Self-skip macro: returns from the test when no engine is available.
-macro_rules! engine_or_skip {
-    () => {
-        match spawn_engine().await {
-            Some(e) => e,
-            None => {
-                eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
-                return;
-            }
-        }
-    };
-}
+// ── engine bootstrap ── shared with llm-router and every provider suite; see
+// llm-router/tests/support/engine_fixture.rs for what it spawns (bare engine +
+// standalone state worker) and the skip-vs-fail policy.
+#[path = "../../llm-router/tests/support/engine_fixture.rs"]
+mod engine_fixture;
+use engine_fixture::*;
 
 async fn call(
     iii: &IIIClient,
@@ -374,9 +243,12 @@ async fn chat_streams_end_to_end_with_cost_fill() {
     assert_eq!(res["ok"], true, "chat response: {res}");
     assert_eq!(res["provider"], "sarvam");
     assert_eq!(res["stop_reason"], "end");
+    // Sarvam publishes its prices in INR only and the catalog's `Pricing` is
+    // USD per MTok, so the rows stay unpriced (curated.rs): the router forwards
+    // the usage counts and must not invent a cost_usd.
     assert!(
-        res["usage"]["cost_usd"].as_f64().is_some_and(|c| c > 0.0),
-        "cost filled: {res}"
+        res["usage"]["cost_usd"].is_null(),
+        "unpriced catalog must leave cost_usd empty: {res}"
     );
 
     let _ = tokio::time::timeout(Duration::from_secs(5), pump).await;
@@ -438,10 +310,40 @@ async fn refresh_models_reconciles_curated_catalog() {
     configure_stub_key(&router_iii, &stub.url).await;
     refresh_and_wait(&router_iii, &provider_iii, "sarvam-105b").await;
 
-    let list = call(
+    // The default listing is the chat modality: the speech rows (saaras:*,
+    // saarika:*, bulbul:*) are reached through router::transcribe / speak and
+    // only appear with `modality: "any"`.
+    let chat = call(
         &router_iii,
         "router::models::list",
         json!({ "provider": "sarvam" }),
+    )
+    .await
+    .unwrap();
+    let chat_ids: Vec<&str> = chat["models"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| m["id"].as_str()).collect())
+        .unwrap_or_default();
+    let curated_chat: Vec<String> = provider_sarvam::curated::chat_models()
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    for id in &curated_chat {
+        assert!(
+            chat_ids.contains(&id.as_str()),
+            "missing chat row {id}: {chat_ids:?}"
+        );
+    }
+    assert_eq!(
+        chat_ids.len(),
+        curated_chat.len(),
+        "speech rows in the chat listing: {chat_ids:?}"
+    );
+
+    let list = call(
+        &router_iii,
+        "router::models::list",
+        json!({ "provider": "sarvam", "modality": "any" }),
     )
     .await
     .unwrap();

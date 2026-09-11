@@ -9,7 +9,7 @@
  * so one scope around a turn labels the turn's own span, the calls it makes,
  * and the spans those produce in other workers.
  *
- * The keys (workers/console/docs/timeline-span-tags.md, harness
+ * The keys (workers/ade/docs/timeline-span-tags.md, harness
  * `src/functions/turn.rs`):
  *
  * | Key | What it carries |

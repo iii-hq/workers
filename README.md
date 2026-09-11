@@ -21,7 +21,7 @@ npx skills add iii-hq/workers --list
 npx skills add iii-hq/workers --skill database
 
 # Install several
-npx skills add iii-hq/workers --skill database,coder,shell
+npx skills add iii-hq/workers --skill database,coder,ide
 
 # Install all worker skills at once
 npx skills add iii-hq/workers --all
@@ -51,12 +51,12 @@ npx skills add iii-hq/iii --all
 | [`pi`](pi/) | Node | pi coding agent as an iii worker — `pi::run` drives headless turns, and `pi::terminal::*` runs the same agent as a TERMINAL on the console (installed on the terminal host, in a workspace equipped with the iii skills and the iii activity extension). Both mirror raw events onto `pi::events` and stream AgentEvent frames onto `agent::events`. |
 | [`hermes`](hermes/) | Python | Hermes agent as an iii worker — `hermes::run` runs headless turns with the iii runtime context, `hermes::send` delivers to 27+ messaging platforms, and inbound platform/webhook events republish via `hermes::inbound`. |
 | [`opencode`](opencode/) | Node | OpenCode as an iii worker — `opencode::*` run headless OpenCode turns via `opencode run --format json`, mirror raw JSON events onto `opencode::events`, and stream AgentEvent frames (with usage + cost) onto `agent::events`. |
-| [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `console`. See [`session-manager/architecture/`](session-manager/architecture/). |
+| [`session-manager`](session-manager/) | Rust | Durable, reactive, branching conversation store — fourteen `session::*` functions plus six trigger types; the transcript backend for `harness` and `ade`. See [`session-manager/architecture/`](session-manager/architecture/). |
 | [`telegram-bot`](telegram-bot/) | Rust | Telegram webhook bridge to the harness stack — live message edits, inline approval keyboards, and configurable verbosity. |
 | [`slack`](slack/) | Rust | Slack Web API as `slack::*` functions plus a harness bridge — @mention-triggered turns, native `chat.*Stream` replies, Block Kit approvals. See [`slack/architecture/`](slack/architecture/). |
 | [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
-| [`editor`](editor/) | Rust | A shared code workspace — open buffers, file tree, unified diffs, fuzzy find and conflict-safe saves, held in `state` so an agent and a person see one editor. Files and git go through `shell`; ships a console editor page. |
+| [`editor`](editor/) | Rust | A shared code workspace — open buffers, file tree, unified diffs, fuzzy find and conflict-safe saves, held in `state` so an agent and a person see one editor. Files and git go through `ide`; ships a console editor page. |
 | [`vscode`](vscode/) | Node | VS Code as an iii worker — `vscode::*` runs the VS Code Server through the `code` CLI per workspace, and a Console page embeds the Workbench for the working directory. |
 | [`compose-ui`](compose-ui/) | Rust | The compose daemon in the Console — a **Compose** page over `compose::*` with live container state, lifecycle actions, worker packages, and per-container log tails, plus a `compose-ui::changed` trigger type for supervisor changes. |
 | [`kanban`](kanban/) | Node | Repository-aware multi-worker Kanban runs — launch Harness and external worker tasks under one root session, isolate them in managed Git worktrees, gate dependencies, review results, and land approved branches from the Console. |
@@ -69,7 +69,7 @@ npx skills add iii-hq/iii --all
 | [`mcp`](mcp/) | Rust | MCP 2025-06-18 Streamable HTTP bridge — exposes iii functions tagged `mcp.expose` as MCP tools. |
 | [`memory`](memory/) | Rust | Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity + semantic recall, pinning, supersede-never-delete history, and two live trigger types. Plain files on disk; binds the harness `pre-generate` hook for injection and `turn-completed` for background capture. |
 | [`memory-consolidate`](memory-consolidate/) | Rust | Scheduled hygiene sibling of `memory` — deterministic dedup of near-duplicate memories, supersede-only through the public memory functions, pinned untouchable, catch-up-on-boot scheduling. Removable without touching stored memory. |
-| [`rbac-proxy`](rbac-proxy/) | Rust | RBAC boundary proxy for the iii worker protocol — opens its own port and reverse-proxies functions + channels to a trusted engine listener, authenticating each connection, gating every invocation and trigger binding, namespacing registrations, running middleware + registration hooks, and filtering the `engine::*` discovery results to the caller's boundaries. The [`console`](console/) reverse-proxy with the engine's RBAC vendored in front, out of process. |
+| [`rbac-proxy`](rbac-proxy/) | Rust | RBAC boundary proxy for the iii worker protocol — opens its own port and reverse-proxies functions + channels to a trusted engine listener, authenticating each connection, gating every invocation and trigger binding, namespacing registrations, running middleware + registration hooks, and filtering the `engine::*` discovery results to the caller's boundaries. The [`ade`](ade/) reverse-proxy with the engine's RBAC vendored in front, out of process. |
 | [`provider-anthropic`](provider-anthropic/) | Rust | Anthropic Messages API provider behind `llm-router` — `provider::anthropic::stream` with prompt caching, thinking, and live model discovery. |
 | [`provider-claude-code`](provider-claude-code/) | Rust | Claude Code (Pro/Max subscription) Messages API provider behind `llm-router` — `provider::claude-code::stream` using OAuth credentials from the auth-credentials vault or `~/.claude/.credentials.json`, namespaced `claude-code/*` catalog. Local/personal dev only (ToS caveat). |
 | [`provider-command-code`](provider-command-code/) | Rust | Command Code multi-vendor provider behind `llm-router`; Claude ids use Anthropic Messages, other ids use OpenAI Chat Completions, and the live catalog is namespaced `command-code/*`. |
@@ -81,7 +81,7 @@ npx skills add iii-hq/iii --all
 | [`provider-openrouter`](provider-openrouter/) | Rust | OpenRouter Chat Completions provider behind `llm-router` — one API key in front of every major vendor; `provider::openrouter::stream` with unified reasoning-effort support, billed-cost usage accounting, and a fully live catalog (context/pricing/capabilities from `GET /api/v1/models`, ids prefixed `openrouter/`). |
 | [`provider-xai`](provider-xai/) | Rust | xAI (Grok) Chat Completions provider behind `llm-router` — `provider::xai::stream` with grok reasoning support and live model discovery against `api.x.ai`. |
 | [`provider-zai`](provider-zai/) | Rust | Z.AI (GLM) Chat Completions provider behind `llm-router` — `provider::zai::stream` with GLM thinking/effort support and a curated catalog against `api.z.ai` (no upstream model listing). |
-| [`shell`](shell/) | Rust | Unix shell + filesystem worker — `shell::exec` with denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
+| [`ide`](ide/) | Rust | Unix shell + filesystem worker — `shell::exec` with denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
 | [`tailscale`](tailscale/) | Rust | Tailscale as an iii worker — the `tailscale` CLI as 38 typed `tailscale::*` functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, updates) with a Console page: links as QR codes, devices, network diagnostics, settings. |
 | [`scrapling`](scrapling/) | Python | [Scrapling](https://github.com/D4Vinci/Scrapling) as an iii worker — `scrapling::*` map three fetch tiers (HTTP / Camoufox stealth / Playwright), screenshots, and CSS/XPath/regex/adaptive extraction over the bus. |
@@ -136,7 +136,7 @@ See [`docs/sops/release.md`](docs/sops/release.md) for the sequence and recovery
 rules.
 
 Targets per build (Windows targets are skipped on POSIX-only workers such
-as `shell`):
+as `ide`):
 
 ```text
 aarch64-apple-darwin
@@ -155,10 +155,10 @@ armv7-unknown-linux-gnueabihf
 Build a Rust worker locally without waiting for GitHub Actions:
 
 ```bash
-python3 .github/scripts/build_worker_binaries.py shell
+python3 .github/scripts/build_worker_binaries.py ide
 ```
 
-On Windows, use `py .github\scripts\build_worker_binaries.py shell`. The TUI
+On Windows, use `py .github\scripts\build_worker_binaries.py ide`. The TUI
 starts with every target available on the current host selected; use the arrow
 keys and Space to change the matrix, then Enter to build. Archives and SHA-256
 files are written to `dist/workers/<worker>/` using the same names as release

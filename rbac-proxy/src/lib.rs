@@ -1,7 +1,7 @@
 //! `rbac-proxy` worker library surface — exposed for integration tests and
 //! so the binary (`main.rs`) and the test harness share one implementation.
 //!
-//! `rbac-proxy` is the [`console`](../../console) reverse-proxy with an RBAC
+//! `rbac-proxy` is the [`ade`](../../ade) reverse-proxy with an RBAC
 //! interceptor spliced into the frame pump: it opens its own public WebSocket
 //! port, speaks the iii worker protocol verbatim, and transparently proxies
 //! every frame (functions *and* channels) to a trusted engine listener —

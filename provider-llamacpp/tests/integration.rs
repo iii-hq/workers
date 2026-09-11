@@ -1,153 +1,20 @@
 //! Engine-backed integration suite — real engine, real router, real provider,
 //! stubbed upstream. Self-skips when no engine is available.
-use std::io::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, IIIClient};
 use llm_router::register::register_router;
 use provider_llamacpp::register::register_provider;
 use serde_json::{json, Value};
 
-// ── engine bootstrap ────────────────────────────────────────────────────────
-
-struct Engine {
-    url: String,
-    child: std::process::Child,
-    dir: std::path::PathBuf,
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn engine_bin() -> Option<std::path::PathBuf> {
-    if let Ok(p) = std::env::var("III_ENGINE_BIN") {
-        return Some(p.into());
-    }
-    let on_path = std::process::Command::new("iii")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    on_path.then(|| "iii".into())
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral port")
-        .local_addr()
-        .expect("local addr")
-        .port()
-}
-
-fn test_init_options() -> InitOptions {
-    static NEXT_WORKER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
-    let worker_id = NEXT_WORKER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    metadata.name = format!("{}-test-{worker_id}", metadata.name);
-    InitOptions {
-        metadata: Some(metadata),
-        ..InitOptions::default()
-    }
-}
-
-/// Spawn a minimal engine in a temp dir; poll until WS-reachable.
-/// None = no engine available on this host → the caller self-skips.
-async fn spawn_engine() -> Option<Engine> {
-    let bin = engine_bin()?;
-    let port = free_port();
-    let dir = std::env::temp_dir().join(format!("provider-llamacpp-it-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-
-    let config = format!(
-        r#"workers:
-  - name: iii-worker-manager
-    config:
-      port: {port}
-  - name: iii-pubsub
-    config:
-      adapter:
-        name: local
-  - name: configuration
-    config:
-      adapter:
-        name: fs
-        config:
-          directory: {dir}/configuration
-      ttl_seconds: 0
-  - name: iii-state
-    config:
-      adapter:
-        name: kv
-        config:
-          file_path: {dir}/state_store.db
-          store_method: file_based
-"#,
-        port = port,
-        dir = dir.display(),
-    );
-    let config_path = dir.join("config.yaml");
-    std::fs::File::create(&config_path)
-        .and_then(|mut f| f.write_all(config.as_bytes()))
-        .expect("write config");
-
-    let child = std::process::Command::new(&bin)
-        .arg("--no-update-check")
-        .arg("--config")
-        .arg(&config_path)
-        .current_dir(&dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn engine");
-
-    let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, test_init_options());
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let ready = probe
-            .trigger(TriggerRequest {
-                function_id: "engine::workers::list".into(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(1000),
-            })
-            .await
-            .is_ok();
-        if ready {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "engine did not become ready in 15s"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    probe.shutdown();
-
-    Some(Engine { url, child, dir })
-}
-
-/// Self-skip macro: returns from the test when no engine is available.
-macro_rules! engine_or_skip {
-    () => {
-        match spawn_engine().await {
-            Some(e) => e,
-            None => {
-                eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
-                return;
-            }
-        }
-    };
-}
+// ── engine bootstrap ── shared with llm-router and every provider suite; see
+// llm-router/tests/support/engine_fixture.rs for what it spawns (bare engine +
+// standalone state worker) and the skip-vs-fail policy.
+#[path = "../../llm-router/tests/support/engine_fixture.rs"]
+mod engine_fixture;
+use engine_fixture::*;
 
 async fn call(
     iii: &IIIClient,
@@ -265,6 +132,15 @@ async fn stub_upstream(chat_response: &'static str) -> StubUpstream {
 
 /// Boot router + provider on one engine; wait until the provider is listed.
 async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
+    // A real key exported on the host would ride the router's env-var
+    // fallback into every resolve and defeat the no-credential assertions
+    // below. The provider itself sends no Authorization header without a
+    // credential (request.rs); the leak is purely environmental. Strip the
+    // variable exactly once per process, before the first router or provider
+    // boots: every in-process read happens after this single mutation and
+    // no test ever sets the variable, so concurrent tests cannot race it.
+    static STRIP_HOST_KEY: std::sync::Once = std::sync::Once::new();
+    STRIP_HOST_KEY.call_once(|| std::env::remove_var("LLAMACPP_API_KEY"));
     let router_iii = register_worker(engine_url, test_init_options());
     register_router(router_iii.clone())
         .await
@@ -385,9 +261,6 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
 
 #[tokio::test(flavor = "multi_thread")]
 async fn provider_registers_with_persisted_token_and_discovers_catalog_without_a_credential() {
-    // A real key exported on the host would leak into the in-process router's
-    // env-var fallback and defeat the no-credential assertions below.
-    std::env::remove_var("LLAMACPP_API_KEY");
     let engine = engine_or_skip!();
     let stub = stub_upstream(STUB_SSE).await;
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;

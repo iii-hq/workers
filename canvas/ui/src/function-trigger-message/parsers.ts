@@ -2,7 +2,7 @@
  * Pure payload logic for the canvas chat renderer — no React, no DOM, no
  * console-ui value imports, so every function here is testable in plain node.
  *
- * Wire shapes tolerated (per console/docs/custom-function-call-message.md §4):
+ * Wire shapes tolerated (per ade/docs/custom-function-call-message.md §4):
  * raw handler JSON, the harness `{content, details}` envelope (unwrapped via
  * ../lib/types), and the `{error: {...}}` transport wrapper. Anything
  * unrecognizable parses to "nothing" so the renderer returns null and falls

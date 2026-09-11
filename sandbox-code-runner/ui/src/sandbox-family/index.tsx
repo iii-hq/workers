@@ -1,6 +1,6 @@
 /**
  * The sandbox::* family renderer — the console's first-party sandbox
- * chat family (console/web/src/components/chat/sandbox/) ported into
+ * chat family (ade/web/src/components/chat/sandbox/) ported into
  * this worker as ONE injected `FunctionTriggerRenderer`, so the daemon
  * calls this worker's runtimes are built from render as cards wherever
  * the worker's UI is installed, console version notwithstanding.

@@ -92,13 +92,12 @@ directly instead.
 - Repo: `https://github.com/iii-hq/workers`. Fetch `origin/main` first; it moves hourly.
 - Work in a fresh git worktree beside the checkout, never in the main checkout:
   `git worktree add ../workers-wt/<slug> -b feat/<slug> origin/main`
-  (or `worktree::*` when installed). Branch names are `feat/<slug>`; never Linear's
-  generated `user/mot-####` names.
+  (or `worktree::*` when installed). Branch names are `feat/<slug>`.
 - Pick the sibling you will imitate and read its files fully, not skimmed: Rust binary
   with UI: `tailscale/` or `pdf/`; Rust binary without UI: `session-manager/`; Node
   bundle with UI: `vscode/`; provider: the newest `provider-*/`. Study external
   reference repos with a sparse clone, never name them in the repo.
-- Read before you write, with `coder::read-file`, in this order: `AGENTS.md`,
+- Read before you write, with `coder::read-file`, in this order:
   `docs/sops/new-worker.md`, `docs/sops/binary-worker.md`,
   `docs/sops/configuration.md`, `docs/architecture/iii-worker-yaml.md`,
   `docs/architecture/skills-and-permissions.md`, `docs/architecture/testing-and-ci.md`,
@@ -212,17 +211,14 @@ Then verify at the wire:
   to the no-lockfile rule. `git diff --stat` must show no version line changes.
 - Simplify pass before committing: dead code, comments, nested ternaries, clever
   one-liners out; single-line imports. New commits only, never amend.
-- Commit and pull request title: `(MOT-####) feat(<slug>): <what it does>`; without a
-  ticket, drop the prefix and apply the `no-ticket` label. Body: what, why, how it was
-  verified, `Fixes MOT-####` when applicable, and the intended bump ("this is a
-  minor"). Plain sentences, no em dashes, no meeting references, no @-mentions, no
-  assistant attribution, no session links, no external project names.
+- Commit and pull request title: `feat(<slug>): <what it does>`. Body: what, why,
+  how it was verified, and the intended bump ("this is a minor"). Plain sentences,
+  no em dashes, no meeting references, no @-mentions, no assistant attribution, no
+  session links, no external project names.
 - Worker and console changes are always separate pull requests, worker first.
-- Opening the pull request (`gh pr create`) against any `iii-hq/*` repo needs the
-  user's explicit go for this pull request. Prepare the branch, the title, and a body
-  file, show them, then wait. Same for a Linear ticket (iii team, key `MOT`,
-  user-facing title, implementation notes under `## Technical details`) or a GitHub
-  issue or comment.
+- Opening a pull request (`gh pr create`) needs the user's explicit go for that pull
+  request. Prepare the branch, the title, and a body file, show them, then wait. The
+  same applies to tickets, issues, and comments.
 - After CodeRabbit runs: verify each finding against the code before acting, fix the
   real ones, reply `addressed in <short-sha>`, resolve threads by hand (nothing
   auto-resolves). A force-push does not trigger a re-review; comment
@@ -257,7 +253,7 @@ workflow to dispatch and you must not add one. What you own:
 
 ## Hard stops (ask, do not act)
 
-- `gh pr create`, `gh issue create`, Linear ticket creation, any comment on iii-hq/*.
+- `gh pr create`, `gh issue create`, or any remote comment.
 - Any merge, `git push --force` onto a shared branch, `git commit --amend` of pushed
   work.
 - `compose::remove`, `compose::down`, `compose::stop`, recursive deletes of any

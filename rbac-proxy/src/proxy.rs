@@ -1,7 +1,7 @@
 //! The data plane: one outbound engine WebSocket per inbound connection, with
 //! the RBAC [`Interceptor`](crate::interceptor) spliced into each pump half.
 //!
-//! This is the [`console`](../../console) `src/proxy.rs` pattern — `tokio::
+//! This is the [`ade`](../../ade) `src/proxy.rs` pattern — `tokio::
 //! select!` on the two pump halves, 1:1 frame conversion between
 //! [`axum::extract::ws::Message`] and [`tokio_tungstenite::tungstenite::
 //! Message`] — except: the upgrade is **authenticated first** (no upstream is

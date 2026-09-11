@@ -1,7 +1,7 @@
 /**
  * Injected function-trigger renderer for the `directory::*` family —
  * moved out of the console SPA (formerly
- * console/web/src/components/chat/directory/) into the worker's own
+ * ade/web/src/components/chat/directory/) into the worker's own
  * injected UI, so the rendering ships and versions with the worker.
  *
  * Matches only the ids in `DIRECTORY_FUNCTION_IDS`. Error outputs and

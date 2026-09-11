@@ -32,7 +32,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../packages/console-ui");
     println!("cargo:rerun-if-changed=ui/tsconfig.json");
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let ui_dir = manifest_dir.join("ui");
     // Only the two console assets: unlike sandbox-code-runner, this worker
     // plants no `iii-sdk` bundle into a guest — its Node guest gets a

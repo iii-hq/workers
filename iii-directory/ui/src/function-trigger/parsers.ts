@@ -1,6 +1,6 @@
 /**
  * Zod schemas for the `directory::*` namespace — moved out of the console
- * SPA (formerly console/web/src/components/chat/directory/parsers.ts) into
+ * SPA (formerly ade/web/src/components/chat/directory/parsers.ts) into
  * the worker's own injected UI.
  *
  * Wire source: `iii-directory/src/functions/*.rs`

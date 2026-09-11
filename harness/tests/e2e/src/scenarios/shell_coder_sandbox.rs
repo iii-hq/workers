@@ -313,7 +313,7 @@ fn registry_add_evidence(
     transcript: &Value,
     invocations: &[common::ObservedFunctionInvocation],
 ) -> RegistryAddEvidence {
-    let shell_calls = registry_add_call_ids(invocations, "shell");
+    let shell_calls = registry_add_call_ids(invocations, "ide");
     let sandbox_calls = registry_add_call_ids(invocations, "iii-sandbox");
     let mut seen_calls = HashSet::new();
     let mut ordered_sandbox_calls = HashSet::new();
@@ -354,7 +354,7 @@ fn registry_add_evidence(
                 if !seen_calls.contains(call_id) {
                     continue;
                 }
-                if shell_calls.contains(call_id) && compose_add_succeeded(message, "shell") {
+                if shell_calls.contains(call_id) && compose_add_succeeded(message, "ide") {
                     evidence.shell_succeeded = true;
                 }
                 if sandbox_calls.contains(call_id) && compose_add_succeeded(message, "iii-sandbox")
@@ -831,8 +831,8 @@ mod tests {
             (
                 "successful and ordered",
                 transcript(vec![
-                    assistant_calls(vec![add_call("call-shell", "shell")]),
-                    add_result("call-shell", "shell", "ok"),
+                    assistant_calls(vec![add_call("call-shell", "ide")]),
+                    add_result("call-shell", "ide", "ok"),
                     assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
                     add_result("call-sandbox", "iii-sandbox", "ok"),
                 ]),
@@ -845,8 +845,8 @@ mod tests {
             (
                 "failed shell result",
                 transcript(vec![
-                    assistant_calls(vec![add_call("call-shell", "shell")]),
-                    add_result("call-shell", "shell", "failed"),
+                    assistant_calls(vec![add_call("call-shell", "ide")]),
+                    add_result("call-shell", "ide", "failed"),
                     assistant_calls(vec![add_call("call-sandbox", "iii-sandbox")]),
                     add_result("call-sandbox", "iii-sandbox", "ok"),
                 ]),
@@ -860,10 +860,10 @@ mod tests {
                 "parallel calls",
                 transcript(vec![
                     assistant_calls(vec![
-                        add_call("call-shell", "shell"),
+                        add_call("call-shell", "ide"),
                         add_call("call-sandbox", "iii-sandbox"),
                     ]),
-                    add_result("call-shell", "shell", "ok"),
+                    add_result("call-shell", "ide", "ok"),
                     add_result("call-sandbox", "iii-sandbox", "ok"),
                 ]),
                 RegistryAddEvidence {
