@@ -64,6 +64,36 @@ containers:
         gh_executable: ''
         max_output_bytes: 1048576
         max_timeout_ms: 120000
+  provider-deepseek:
+    worker: package://api.workers.iii.dev/provider-deepseek
+    requested: 0.1.13
+    resolved:
+      name: provider-deepseek
+      version: 0.1.13
+      type: binary
+      artifacts:
+        aarch64-apple-darwin:
+          sha256: e6afae0e003235929b93fcf4d889a31ddb2a71ead1c0c686e50ebb6186860415
+          url: https://github.com/iii-hq/workers/releases/download/build-571fb6bfa070609c30f2728a67c35bc720c3e6e8/provider-deepseek-aarch64-apple-darwin.tar.gz
+        aarch64-pc-windows-msvc:
+          sha256: 96b64894ae583590892e8772e8c3f3eafdfac36352287a021b3920726ec623a2
+          url: https://github.com/iii-hq/workers/releases/download/build-571fb6bfa070609c30f2728a67c35bc720c3e6e8/provider-deepseek-aarch64-pc-windows-msvc.zip
+        aarch64-unknown-linux-gnu:
+          sha256: d45cff1785a7cb773c9e5a06092038e7a1642652f29b13aef90184d50c4b060b
+          url: https://github.com/iii-hq/workers/releases/download/build-571fb6bfa070609c30f2728a67c35bc720c3e6e8/provider-deepseek-aarch64-unknown-linux-gnu.tar.gz
+        armv7-unknown-linux-gnueabihf:
+          sha256: e098eb6ab0249da1f1f6a5e15cb65c1cb2c15b49abc5039f21046930afe5a760
+          url: https://github.com/iii-hq/workers/releases/download/build-571fb6bfa070609c30f2728a67c35bc720c3e6e8/provider-deepseek-armv7-unknown-linux-gnueabihf.tar.gz
+        x86_64-pc-windows-msvc:
+          sha256: 09cb00bfecc378c18f6acc0e4968172f85d88bde87a11e4d03ff14bd3e17a58d
+          url: https://github.com/iii-hq/workers/releases/download/build-571fb6bfa070609c30f2728a67c35bc720c3e6e8/provider-deepseek-x86_64-pc-windows-msvc.zip
+        x86_64-unknown-linux-gnu:
+          sha256: 0b7aedc9d99f11efd6c0325d9fc5ed6e274d81c8d07ec7f03aa0ae0d96aaec9d
+          url: https://github.com/iii-hq/workers/releases/download/build-571fb6bfa070609c30f2728a67c35bc720c3e6e8/provider-deepseek-x86_64-unknown-linux-gnu.tar.gz
+        x86_64-unknown-linux-musl:
+          sha256: caf1b5504a0991a1b625018fdf0e54a34326de6b7e2eb09504d80072b91573b0
+          url: https://github.com/iii-hq/workers/releases/download/build-571fb6bfa070609c30f2728a67c35bc720c3e6e8/provider-deepseek-x86_64-unknown-linux-musl.tar.gz
+      default_config: {}
   tailscale:
     worker: package://api.workers.iii.dev/tailscale
     requested: 0.1.10
@@ -129,6 +159,10 @@ graphs:
   - browser
   github:
   - github
+  provider-deepseek:
+  - llm-router
+  - provider-deepseek
+  - state
   tailscale:
   - ade
   - tailscale

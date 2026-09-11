@@ -15,6 +15,13 @@ functions:
   - slides::slide::update
   - slides::slide::remove
   - slides::slide::reorder
+  - slides::block::insert
+  - slides::block::update
+  - slides::block::remove
+  - slides::block::reorder
+  - slides::apply
+  - slides::audit
+  - slides::snapshot
   - slides::themes::list
   - slides::export
   - slides::render
@@ -38,9 +45,14 @@ the `slides` worker; the person sees the result in the Slides page of the Consol
    when asked.
 3. Read it back compactly with `slides::markdown`. Critique it against the doctrine below and
    fix specific slides with `slides::slide::update`, `slides::slide::insert`,
-   `slides::slide::remove` and `slides::slide::reorder`. Do not regenerate the deck to fix one
-   slide.
-4. Tell the person the deck id and what you changed, in two or three sentences, and offer the
+   `slides::slide::remove` and `slides::slide::reorder`; change one block with
+   `slides::block::update` and batch related edits into one `slides::apply` call with
+   `expect_revision`. Do not regenerate the deck to fix one slide.
+4. Inspect before you hand over. Run `slides::audit` and fix every error (overflow, collisions,
+   ragged tables) and the warnings you agree with, block by block from the finding's `block_id`;
+   re-audit until `error_count` is zero. Use `slides::snapshot` when a slide needs a visual
+   judgement (balance, a diagram that reads wrong).
+5. Tell the person the deck id and what you changed, in two or three sentences, and offer the
    export they most likely need. Export with `slides::export` only when asked or when the brief
    named a format; report the path.
 

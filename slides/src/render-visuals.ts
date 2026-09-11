@@ -180,11 +180,10 @@ export function motifSvg(visual: Visual | undefined): string {
       ).join('')
       break
     case 'rings':
-      body =
-        Array.from(
-          { length: 6 },
-          (_, i) => `<circle cx="500" cy="500" r="${90 + i * 75}" opacity="${(1 - i * 0.14).toFixed(2)}"/>`,
-        ).join('') + `<circle class="fill" cx="500" cy="500" r="18"/>`
+      body = `${Array.from(
+        { length: 6 },
+        (_, i) => `<circle cx="500" cy="500" r="${90 + i * 75}" opacity="${(1 - i * 0.14).toFixed(2)}"/>`,
+      ).join('')}<circle class="fill" cx="500" cy="500" r="18"/>`
       break
   }
   return `<svg class="motif motif-${visual}" viewBox="0 0 1000 1000" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2">${body}</svg>`

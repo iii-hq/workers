@@ -38,6 +38,7 @@ containers:
       CI: "true"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
     scripts:
       run: cargo run --bin llm-router
 
@@ -157,3 +158,10 @@ containers:
     version: "0.1.10"
     start_after:
     - ade
+  # added by compose::add
+  provider-deepseek:
+    worker: package://api.workers.iii.dev/provider-deepseek
+    version: "0.1.13"
+    start_after:
+    - llm-router
+    - state

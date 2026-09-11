@@ -5,8 +5,20 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { uiPage, uiStyles } from 'virtual:slides-ui-assets'
 import { registerWorker } from 'iii-sdk'
+import { auditDeck } from './audit.js'
+import { CaptureUnavailable, captureOverview, captureSlides, measureSlides } from './capture.js'
 import { type Config, expandHome, loadConfig } from './config.js'
 import { bindConfigTrigger, fetchRuntime, registerSlidesConfig } from './configuration.js'
+import {
+  applyOperations,
+  type BlockEdit,
+  insertBlock,
+  OPERATIONS,
+  removeBlock,
+  reorderBlocks,
+  updateBlock,
+  withSlide,
+} from './edits.js'
 import {
   type Deck,
   deckToMarkdown,
@@ -19,6 +31,7 @@ import {
   normalizeSlide,
   normalizeSlides,
   reorderSlides,
+  type Slide,
   slideIndex,
   slidesFromMarkdown,
   summarize,
@@ -28,8 +41,10 @@ import { draftDeck } from './outline.js'
 import { renderDeckHtml } from './render-html.js'
 import { renderDeckPdf } from './render-pdf.js'
 import { renderDeckPptx } from './render-pptx.js'
+import { rasterPdf, rasterPptx } from './render-raster.js'
 import {
   array,
+  blockSchema,
   boolean,
   deckResponse,
   deckSchema,
@@ -306,11 +321,284 @@ iii.registerFunction(
   },
 )
 
+function blockResponse(extra: Record<string, unknown> = {}, required: string[] = []) {
+  return object({ deck: deckSchema, ...extra }, ['deck', ...required])
+}
+
+async function editSlide(deckId: unknown, slideId: unknown, edit: (slide: Slide) => Slide): Promise<Deck> {
+  const deck = await loadDeck(deckId)
+  const id = text(slideId)
+  if (!id) throw new Error('INVALID_SLIDE: slide_id is required')
+  const slide = deck.slides[slideIndex(deck, id)]
+  return saveDeck(withSlide(deck, id, edit(slide)), 'updated')
+}
+
+iii.registerFunction(
+  'slides::block::insert',
+  async (input: { deck_id: string; slide_id: string } & BlockEdit) => {
+    let blockId = ''
+    const deck = await editSlide(input?.deck_id, input?.slide_id, (slide) => {
+      const result = insertBlock(slide, input)
+      blockId = result.block.id
+      return result.slide
+    })
+    return { deck, block_id: blockId }
+  },
+  {
+    description:
+      'Insert one block into a slide at index (default: end) or after after_block_id, without resending the slide. Returns the deck and the new block id.',
+    request_format: object(
+      { deck_id: string, slide_id: string, block: blockSchema, index: integer, after_block_id: nullableString },
+      ['deck_id', 'slide_id', 'block'],
+    ),
+    response_format: blockResponse({ block_id: string }, ['block_id']),
+  },
+)
+
+iii.registerFunction(
+  'slides::block::update',
+  async (input: { deck_id: string; slide_id: string; block_id: string; block: unknown }) => ({
+    deck: await editSlide(input?.deck_id, input?.slide_id, (slide) => updateBlock(slide, input)),
+  }),
+  {
+    description:
+      'Patch one block by id, keeping its id and position. Fields merge into the block; pass a different type to replace it (diagram nodes, table rows, chart series and captions change without resending the slide).',
+    request_format: object({ deck_id: string, slide_id: string, block_id: string, block: blockSchema }, [
+      'deck_id',
+      'slide_id',
+      'block_id',
+      'block',
+    ]),
+    response_format: deckResponse,
+  },
+)
+
+iii.registerFunction(
+  'slides::block::remove',
+  async (input: { deck_id: string; slide_id: string; block_id: string }) => ({
+    deck: await editSlide(input?.deck_id, input?.slide_id, (slide) => removeBlock(slide, input)),
+  }),
+  {
+    description: 'Remove one block by id.',
+    request_format: object({ deck_id: string, slide_id: string, block_id: string }, [
+      'deck_id',
+      'slide_id',
+      'block_id',
+    ]),
+    response_format: deckResponse,
+  },
+)
+
+iii.registerFunction(
+  'slides::block::reorder',
+  async (input: { deck_id: string; slide_id: string; block_ids: string[] }) => ({
+    deck: await editSlide(input?.deck_id, input?.slide_id, (slide) => reorderBlocks(slide, input?.block_ids)),
+  }),
+  {
+    description:
+      'Reorder the blocks of a slide. block_ids lists ids in the new order; omitted blocks keep their order at the end.',
+    request_format: object({ deck_id: string, slide_id: string, block_ids: array(string) }, [
+      'deck_id',
+      'slide_id',
+      'block_ids',
+    ]),
+    response_format: deckResponse,
+  },
+)
+
+const operationSchema = object(
+  {
+    op: { type: 'string', enum: [...OPERATIONS] },
+    slide_id: nullableString,
+    slide: slideSchema,
+    index: integer,
+    after_slide_id: nullableString,
+    slide_ids: array(string),
+    block_id: nullableString,
+    block: blockSchema,
+    after_block_id: nullableString,
+    block_ids: array(string),
+  },
+  ['op'],
+  {
+    description:
+      'One operation. slide.insert uses slide, index or after_slide_id; slide.update/slide.remove use slide_id (and slide); slide.reorder uses slide_ids; block.insert uses slide_id, block, index or after_block_id; block.update/block.remove use slide_id and block_id (and block); block.reorder uses slide_id and block_ids.',
+  },
+)
+
+iii.registerFunction(
+  'slides::apply',
+  async (input: { deck_id: string; ops: unknown; expect_revision?: number }) => {
+    const deck = await loadDeck(input?.deck_id)
+    if (
+      input.expect_revision !== undefined &&
+      input.expect_revision !== null &&
+      input.expect_revision !== deck.revision
+    )
+      throw new Error(`REVISION_CONFLICT: expected revision ${input.expect_revision}, deck is at ${deck.revision}`)
+    const { deck: next, applied } = applyOperations(deck, input.ops)
+    return { deck: await saveDeck(next, 'updated'), applied }
+  },
+  {
+    description:
+      'Apply many slide and block operations in one call and one revision increment; nothing is saved if any operation fails. expect_revision rejects the batch with REVISION_CONFLICT when the deck changed since it was read, so an agent and the editor do not overwrite each other. Returns the deck and the ids each operation touched or created.',
+    request_format: object({ deck_id: string, ops: array(operationSchema), expect_revision: integer }, [
+      'deck_id',
+      'ops',
+    ]),
+    response_format: blockResponse(
+      {
+        applied: array(object({ op: string, slide_id: string, block_id: nullableString }, ['op', 'slide_id'])),
+      },
+      ['applied'],
+    ),
+  },
+)
+
+function captureHtml(deck: Deck): string {
+  return renderDeckHtml(deck, brand(), { capture: true })
+}
+
+function resolveSlide(deck: Deck, slide: unknown): number {
+  if (typeof slide === 'number') {
+    if (!Number.isInteger(slide) || slide < 0 || slide >= deck.slides.length)
+      throw new Error(`SLIDE_NOT_FOUND: index ${slide} is out of range 0..${deck.slides.length - 1}`)
+    return slide
+  }
+  const id = text(slide)
+  if (!id) throw new Error('INVALID_SLIDE: slide must be a slide id or a zero-based index')
+  return slideIndex(deck, id)
+}
+
+const findingSchema = object(
+  {
+    code: string,
+    severity: { type: 'string', enum: ['error', 'warning', 'info'] },
+    message: string,
+    block_id: nullableString,
+  },
+  ['code', 'severity', 'message'],
+)
+
+const slideAuditSchema = object(
+  {
+    slide_id: string,
+    index: integer,
+    title: nullableString,
+    layout: string,
+    word_count: integer,
+    block_count: integer,
+    measured: boolean,
+    overflow: boolean,
+    minimum_font_size: { type: ['number', 'null'] },
+    empty_space_ratio: { type: ['number', 'null'] },
+    collisions: array(object({ a: string, b: string }, ['a', 'b'])),
+    clipped_labels: array(string),
+    repeated_words: array(object({ word: string, count: integer }, ['word', 'count'])),
+    findings: array(findingSchema),
+  },
+  [
+    'slide_id',
+    'index',
+    'layout',
+    'word_count',
+    'block_count',
+    'measured',
+    'overflow',
+    'collisions',
+    'clipped_labels',
+    'repeated_words',
+    'findings',
+  ],
+)
+
+iii.registerFunction(
+  'slides::audit',
+  async (input: { deck_id: string; measure?: boolean }) => {
+    const deck = await loadDeck(input?.deck_id)
+    if (input.measure === false) return auditDeck(deck)
+    try {
+      return auditDeck(deck, await measureSlides(iii, captureHtml(deck)))
+    } catch (error) {
+      return auditDeck(deck, undefined, error instanceof Error ? error.message : String(error))
+    }
+  },
+  {
+    description:
+      'Machine-readable layout diagnostics per slide so an agent can fix a deck without looking at pixels: content checks (word count, bullets, notes, repeated words, ragged tables, thin charts) plus, when the browser worker is installed, measurements of the rendered slide (overflow after auto-fit, smallest font size, block collisions, clipped labels, empty-space ratio). measure: false skips the browser. measured: false with measurement_error tells you the layout checks did not run.',
+    request_format: object({ deck_id: string, measure: boolean }, ['deck_id']),
+    response_format: object(
+      {
+        deck_id: string,
+        revision: integer,
+        measured: boolean,
+        measurement_error: nullableString,
+        slides: array(slideAuditSchema),
+        error_count: integer,
+        warning_count: integer,
+      },
+      ['deck_id', 'revision', 'measured', 'slides', 'error_count', 'warning_count'],
+    ),
+  },
+)
+
+const imageSchema = object(
+  {
+    index: integer,
+    slide_id: nullableString,
+    content_type: string,
+    width: integer,
+    height: integer,
+    data_base64: string,
+  },
+  ['index', 'content_type', 'width', 'height', 'data_base64'],
+)
+
+iii.registerFunction(
+  'slides::snapshot',
+  async (input: { deck_id: string; slide?: unknown; slides?: unknown[]; scale?: number; overview?: boolean }) => {
+    const deck = await loadDeck(input?.deck_id)
+    const html = captureHtml(deck)
+    const scale = typeof input.scale === 'number' ? Math.max(0.25, Math.min(3, input.scale)) : 1
+    if (input.overview) {
+      const image = await captureOverview(iii, html, scale)
+      return { deck_id: deck.id, revision: deck.revision, images: [{ ...image, slide_id: null }] }
+    }
+    const requested = Array.isArray(input.slides) ? input.slides : input.slide !== undefined ? [input.slide] : null
+    const indexes = requested ? requested.map((slide) => resolveSlide(deck, slide)) : deck.slides.map((_, i) => i)
+    const images = await captureSlides(iii, html, indexes, scale)
+    return {
+      deck_id: deck.id,
+      revision: deck.revision,
+      images: images.map((image) => ({ ...image, slide_id: deck.slides[image.index]?.id ?? null })),
+    }
+  },
+  {
+    description:
+      'Render slides headlessly through the browser worker and return them as images (JPEG, base64), exactly as the presentation and exports look. slide takes one slide id or zero-based index, slides a list; omit both for every slide. scale multiplies the 1600x900 canvas (default 1). overview: true returns one contact sheet of the whole deck instead. Requires the browser worker; fails with CAPTURE_UNAVAILABLE otherwise.',
+    request_format: object(
+      {
+        deck_id: string,
+        slide: { type: ['string', 'integer', 'null'], description: 'Slide id or zero-based index' },
+        slides: array({ type: ['string', 'integer'] }),
+        scale: { type: 'number', minimum: 0.25, maximum: 3 },
+        overview: boolean,
+      },
+      ['deck_id'],
+    ),
+    response_format: object({ deck_id: string, revision: integer, images: array(imageSchema) }, [
+      'deck_id',
+      'revision',
+      'images',
+    ]),
+  },
+)
 iii.registerFunction(
   'slides::delete',
   async (input: { deck_id: string }) => {
     const deck = await loadDeck(input?.deck_id)
     await stateDelete(deck.id)
+
     await emitChanged('deleted', deck)
     return { deleted: true, deck_id: deck.id }
   },
@@ -461,19 +749,46 @@ function slug(value: string): string {
   )
 }
 
-async function renderExport(deck: Deck, format: ExportFormat): Promise<Buffer> {
-  if (format === 'html') return Buffer.from(renderDeckHtml(deck, brand()), 'utf8')
+type ExportEngine = 'browser' | 'native'
+
+async function renderNative(deck: Deck, format: ExportFormat): Promise<Buffer> {
   if (format === 'pdf') return Buffer.from(await renderDeckPdf(deck, brand()))
   return renderDeckPptx(deck, brand())
 }
 
+async function renderExport(
+  deck: Deck,
+  format: ExportFormat,
+  requested: ExportEngine | undefined,
+): Promise<{ bytes: Buffer; engine: ExportEngine; fallback_reason?: string }> {
+  if (format === 'html') return { bytes: Buffer.from(renderDeckHtml(deck, brand()), 'utf8'), engine: 'native' }
+  if (requested === 'native') return { bytes: await renderNative(deck, format), engine: 'native' }
+  try {
+    const images = await captureSlides(
+      iii,
+      captureHtml(deck),
+      deck.slides.map((_, i) => i),
+    )
+    const bytes = format === 'pdf' ? Buffer.from(await rasterPdf(deck, images)) : await rasterPptx(deck, images)
+    return { bytes, engine: 'browser' }
+  } catch (error) {
+    if (requested === 'browser') throw error
+    const reason = error instanceof Error ? error.message : String(error)
+    if (!(error instanceof CaptureUnavailable))
+      console.error(`[${WORKER}] browser export failed, using the native renderer: ${reason}`)
+    return { bytes: await renderNative(deck, format), engine: 'native', fallback_reason: reason }
+  }
+}
+
 iii.registerFunction(
   'slides::export',
-  async (input: { deck_id: string; format: ExportFormat; inline?: boolean; path?: string }) => {
+  async (input: { deck_id: string; format: ExportFormat; inline?: boolean; path?: string; engine?: ExportEngine }) => {
     const deck = await loadDeck(input?.deck_id)
     const format = input.format
     if (!(format in EXPORT_TYPES)) throw new Error('INVALID_FORMAT: format must be html, pdf or pptx')
-    const bytes = await renderExport(deck, format)
+    if (input.engine !== undefined && input.engine !== null && input.engine !== 'browser' && input.engine !== 'native')
+      throw new Error('INVALID_ENGINE: engine must be browser or native')
+    const { bytes, engine, fallback_reason } = await renderExport(deck, format, input.engine ?? undefined)
     let path: string
     if (text(input.path)) {
       if (!isAbsolute(input.path as string)) throw new Error('INVALID_PATH: path must be absolute')
@@ -488,18 +803,21 @@ iii.registerFunction(
       content_type: EXPORT_TYPES[format],
       path,
       size: bytes.byteLength,
+      engine,
+      ...(fallback_reason ? { fallback_reason } : {}),
       ...(input.inline ? { data_base64: bytes.toString('base64') } : {}),
     }
   },
   {
     description:
-      'Export a deck as html, pdf or pptx. Writes the file under output_dir (or the absolute path given) and returns its path; inline: true also returns the bytes as data_base64.',
+      'Export a deck as html, pdf or pptx. Writes the file under output_dir (or the absolute path given) and returns its path; inline: true also returns the bytes as data_base64. pdf and pptx render each slide headlessly through the browser worker (pixel-identical to the presentation, theme fonts, diagrams and tables included, notes kept in pptx) and fall back to the native vector renderers when the browser worker is missing; engine forces browser or native.',
     request_format: object(
       {
         deck_id: string,
         format: { type: 'string', enum: ['html', 'pdf', 'pptx'] },
         inline: boolean,
         path: nullableString,
+        engine: { type: ['string', 'null'], enum: ['browser', 'native', null] },
       },
       ['deck_id', 'format'],
     ),
@@ -511,9 +829,11 @@ iii.registerFunction(
         content_type: string,
         path: string,
         size: integer,
+        engine: { type: 'string', enum: ['browser', 'native'] },
+        fallback_reason: nullableString,
         data_base64: nullableString,
       },
-      ['deck_id', 'revision', 'format', 'content_type', 'path', 'size'],
+      ['deck_id', 'revision', 'format', 'content_type', 'path', 'size', 'engine'],
     ),
   },
 )

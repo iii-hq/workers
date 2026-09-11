@@ -8,3 +8,5 @@ rules:
   - slides::markdown
   - slides::render
   - slides::themes::list
+  - slides::audit
+  - slides::snapshot

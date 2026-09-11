@@ -107,7 +107,9 @@ export function networkDiagram(spec: DiagramSpec): string {
   const hubX = 740
   const hubGap = hubs.length > 1 ? Math.min(118, (DH - 100) / (hubs.length - 1)) : 0
   const hubY0 = cy - (hubGap * (hubs.length - 1)) / 2
-  hubs.forEach((node, i) => pos.set(node.label, [hubX, hubY0 + i * hubGap]))
+  hubs.forEach((node, i) => {
+    pos.set(node.label, [hubX, hubY0 + i * hubGap])
+  })
   const edges = (spec.edges ?? [])
     .map((edge, i) => {
       const a = pos.get(edge.from)

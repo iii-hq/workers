@@ -10,11 +10,11 @@
   },
   "packageManager": "pnpm@11.13.1",
   "scripts": {
-    "build": "pnpm --dir ui build && node scripts/build-bundle.mjs",
+    "build": "node scripts/build-bundle.mjs",
     "build:bundle": "node scripts/build-bundle.mjs",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --dir ui typecheck",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p ui/tsconfig.json --noEmit",
     "test": "vitest run",
     "start": "node dist/bundle/index.mjs"
   },

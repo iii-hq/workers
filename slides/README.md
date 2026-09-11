@@ -10,7 +10,7 @@ Slide decks as an iii worker. `slides::*` functions author, store, draft, render
 iii trigger compose::add worker=slides@latest
 ```
 
-`iii trigger compose::add` declares the worker in `worker-compose.yaml` and starts it as part of the Compose project. It needs the `state` worker for storage and the `ade` Console for the page; `llm-router` is only used by `slides::outline`, so every other function works without any API key.
+`iii trigger compose::add` declares the worker in `worker-compose.yaml` and starts it as part of the Compose project. It needs the `state` worker for storage and the `ade` Console for the page. `slides::snapshot`, `slides::audit` measurements and the pixel-identical PDF and PPTX exports compose the `browser` worker over the bus (`compose::add worker=browser@latest`); without it exports fall back to the native vector renderers and audits keep their content checks. `llm-router` is only used by `slides::outline`, so every other function works without any API key.
 
 ## Quickstart
 
@@ -60,7 +60,15 @@ iii trigger slides::export deck_id=deck-3f9c1a2b format=pptx
 iii trigger slides::render deck_id=deck-3f9c1a2b
 ```
 
-`slides::outline` returns the persisted deck and the model that drafted it; `slides::export` writes the file under `output_dir` (`~/.iii/slides` by default) and returns its path, or the bytes as `data_base64` with `inline: true`; `slides::render` returns the HTML presentation (arrow keys, `n` for speaker notes, `f` for fullscreen, print to PDF from the browser). `slides::get`, `slides::markdown`, `slides::update`, `slides::slide::insert|update|remove|reorder`, `slides::delete`, `slides::list` and `slides::themes::list` complete the surface; each function's description carries its request shape.
+`slides::outline` returns the persisted deck and the model that drafted it; `slides::export` writes the file under `output_dir` (`~/.iii/slides` by default) and returns its path, or the bytes as `data_base64` with `inline: true`; `slides::render` returns the HTML presentation (arrow keys, `n` for speaker notes, `f` for fullscreen, print to PDF from the browser). `slides::get`, `slides::markdown`, `slides::update`, `slides::slide::insert|update|remove|reorder`, `slides::block::insert|update|remove|reorder`, `slides::apply`, `slides::delete`, `slides::list` and `slides::themes::list` complete the editing surface; each function's description carries its request shape.
+
+An agent gets eyes and hands on a deck without a screen. `slides::snapshot { deck_id, slide? }` renders any slide (or an `overview` contact sheet) headlessly and returns it as an image, exactly as the presentation and the exports look. `slides::audit { deck_id }` returns machine-readable diagnostics per slide: overflow after auto-fit, smallest body font size, block collisions, clipped labels, empty-space ratio, word and bullet counts, missing notes, repeated words, ragged tables, each finding tagged with the block id to fix. `slides::block::update` changes one diagram, table, chart or caption without resending the slide, and `slides::apply { deck_id, ops, expect_revision }` runs a batch of slide and block operations in one revision increment, rejecting the batch with `REVISION_CONFLICT` when the deck changed underneath it so the agent and the Console editor never overwrite each other.
+
+```bash
+iii trigger slides::audit deck_id=deck-3f9c1a2b
+iii trigger slides::snapshot deck_id=deck-3f9c1a2b slide=2 scale=0.5
+iii trigger slides::apply deck_id=deck-3f9c1a2b expect_revision=4 ops='[{"op":"block.update","slide_id":"slide-c04d","block_id":"block-1","block":{"items":["Faster onboarding","Partner API"]}}]'
+```
 
 The worker emits the `slides::changed` trigger type (`{ kind, deck_id, revision, updated_at_ms }`) whenever a deck is created, updated or deleted; bind it with an empty config, or `{ deck_id }` for one deck. Another worker opens a deck in the page with `host.panels.open({ pageId: 'slides', context: { deck_id } })`.
 
@@ -90,4 +98,4 @@ An optional `--config path.yaml` seeds these values on first boot. `engine_url` 
 
 ## Security
 
-Decks live in the `state` worker under the `slides_decks` scope. Exports write only under `output_dir` unless a call passes an absolute `path`. Rendered HTML escapes every string and drops image sources that are not `http(s)`, root-relative or `data:image/`. Read-only functions (`list`, `get`, `markdown`, `render`, `themes::list`) are allowed for agents by default; everything that writes a deck, exports a file or spends router tokens needs approval.
+Decks live in the `state` worker under the `slides_decks` scope. Exports write only under `output_dir` unless a call passes an absolute `path`. Rendered HTML escapes every string and drops image sources that are not `http(s)`, root-relative or `data:image/`. Read-only functions (`list`, `get`, `markdown`, `render`, `themes::list`, `audit`, `snapshot`) are allowed for agents by default; everything that writes a deck, exports a file or spends router tokens needs approval. Headless captures write the rendered HTML to a private temporary directory that is removed after the browser session closes.

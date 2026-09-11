@@ -2,7 +2,7 @@ import { iconSvg } from './deck-icons.js'
 import type { Block, Deck, Entry, Slide, ThemeOverrides } from './model.js'
 import { diagramSvg } from './render-diagrams.js'
 import { chartSvg, motifSvg } from './render-visuals.js'
-import { googleFontsHref, hueShift, mix, type ResolvedTheme, resolveTheme, withAlpha } from './themes.js'
+import { googleFontsHref, mix, type ResolvedTheme, resolveTheme, withAlpha } from './themes.js'
 
 export const SLIDE_WIDTH = 1600
 export const SLIDE_HEIGHT = 900
@@ -501,6 +501,10 @@ body.show-nav .nav{opacity:1}
 .editing [data-block-id].selected{outline-color:var(--accent)}
 .editing .nav,.editing .progress{display:none}
 .editing .stars{animation:none}
+.capture .rv{opacity:1!important;transform:none!important;clip-path:none!important;animation:none!important}
+.capture .slide,.capture .progress{transition:none!important}
+.capture .stars{animation:none!important}
+.capture .nav,.capture .progress,.capture .notes,body.capture>#iii-session-badge,body.capture>#iii-ghost-cursor{display:none!important}
 .r-none .rv{opacity:1;transform:none;clip-path:none}
 .r-stagger .slide.active .rv{animation:rv 1.1s var(--ease) forwards;animation-delay:calc(var(--i,0) * 90ms + 160ms)}
 .r-step .slide.active .rv.on{animation:rv .8s var(--ease) forwards}
@@ -658,13 +662,15 @@ ch.postMessage({ type: 'hello' });
 
 export interface RenderOptions {
   editing?: boolean
+  capture?: boolean
 }
 
 export function renderDeckHtml(deck: Deck, brand?: ThemeOverrides, options: RenderOptions = {}): string {
   const theme = resolveTheme(deck, brand)
   const total = deck.slides.length
-  const transition = options.editing ? 'none' : (deck.motion?.transition ?? 'fade')
-  const reveal = options.editing ? 'none' : (deck.motion?.reveal ?? 'stagger')
+  const still = options.editing || options.capture
+  const transition = still ? 'none' : (deck.motion?.transition ?? 'fade')
+  const reveal = still ? 'none' : (deck.motion?.reveal ?? 'stagger')
   const slides = deck.slides.map((slide, index) => renderSlide(slide, index, total, theme, deck)).join('\n')
   return `<!doctype html>
 <html lang="en">
@@ -677,7 +683,7 @@ export function renderDeckHtml(deck: Deck, brand?: ThemeOverrides, options: Rend
 <link rel="stylesheet" href="${googleFontsHref(theme)}" />
 <style>${deckCss(theme)}</style>
 </head>
-<body class="deck t-${transition} r-${reveal}${options.editing ? ' editing' : ''}">
+<body class="deck t-${transition} r-${reveal}${options.editing ? ' editing' : ''}${options.capture ? ' capture' : ''}">
 <main class="stage"><div class="frame">
 ${slides}
 </div></main>
