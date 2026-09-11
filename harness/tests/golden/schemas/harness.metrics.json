@@ -232,6 +232,12 @@
               "null"
             ]
           },
+          "context_compactions": {
+            "description": "Durable context compaction records across the active paths of the root session and all descendants.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "cost_usd": {
             "format": "double",
             "type": [
@@ -285,6 +291,7 @@
           }
         },
         "required": [
+          "context_compactions",
           "function_call_errors",
           "function_calls",
           "sessions",
@@ -321,6 +328,12 @@
               }
             ],
             "description": "The session's latest per-generation context snapshot (categories, budget, usage) — absent for sessions that have not generated since snapshots landed."
+          },
+          "context_compactions": {
+            "description": "Durable context compaction records on this session's active path.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
           },
           "cost_usd": {
             "format": "double",
@@ -384,6 +397,7 @@
           }
         },
         "required": [
+          "context_compactions",
           "depth",
           "function_call_errors",
           "function_calls",

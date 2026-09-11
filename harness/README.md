@@ -76,6 +76,11 @@ with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/
 The full function reference (every `harness::*` id and its request/response
 schema) lives in the code and `iii worker info harness`.
 
+`harness::metrics` reports `context_compactions` per session and for the full
+root/descendant tree. It counts durable `compaction` custom records on each
+session's active path; the latest `context.compacted` snapshot remains a
+separate latest-generation indicator.
+
 Building a consumer — a chat UI, a Telegram/WhatsApp bridge, a cron worker, or
 any event-driven loop on top of the harness? Start with the integration
 contract in
