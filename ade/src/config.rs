@@ -1,7 +1,9 @@
 //! Local seed/fallback configuration for the `console` worker.
 //!
-//! The YAML config file exposes two operator-facing knobs:
+//! The YAML config file exposes three operator-facing knobs:
 //!
+//! - `http_host` — HTTP bind address. Defaults to `0.0.0.0` (all IPv4
+//!   interfaces); set `127.0.0.1` for local access only. Boot-time only.
 //! - `http_port` — first-registration seed/fallback for the TCP port serving
 //!   `/`, `/assets/*`, and `/ws`. Defaults to `3113`; after registration the
 //!   central `console.http_port` value is authoritative and hot-reloads.
@@ -20,9 +22,9 @@ pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ConsoleConfig {
-    /// Interface the HTTP listener binds. Loopback by default: the console
-    /// proxies the engine WebSocket and serves worker UIs, so exposing it on
-    /// every interface is an opt-in (`0.0.0.0`), like `http` and `rbac-proxy`.
+    /// Interface the HTTP listener binds. Defaults to all IPv4 interfaces
+    /// (`0.0.0.0`); set `127.0.0.1` to limit the console and its engine
+    /// WebSocket proxy to local access.
     #[serde(default = "default_http_host")]
     pub http_host: String,
     #[serde(default = "default_http_port")]
@@ -32,7 +34,7 @@ pub struct ConsoleConfig {
 }
 
 fn default_http_host() -> String {
-    "127.0.0.1".to_string()
+    "0.0.0.0".to_string()
 }
 
 fn default_http_port() -> u16 {
@@ -66,15 +68,15 @@ mod tests {
     #[test]
     fn defaults_from_empty_yaml() {
         let cfg: ConsoleConfig = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(cfg.http_host, "127.0.0.1");
+        assert_eq!(cfg.http_host, "0.0.0.0");
         assert_eq!(cfg.http_port, 3113);
         assert!(cfg.injectable_ui);
     }
 
     #[test]
-    fn http_host_is_an_explicit_opt_in_to_all_interfaces() {
-        let cfg: ConsoleConfig = serde_yaml::from_str("http_host: 0.0.0.0\n").unwrap();
-        assert_eq!(cfg.http_host, "0.0.0.0");
+    fn custom_yaml_overrides_http_host() {
+        let cfg: ConsoleConfig = serde_yaml::from_str("http_host: 127.0.0.1\n").unwrap();
+        assert_eq!(cfg.http_host, "127.0.0.1");
     }
 
     #[test]
@@ -93,6 +95,7 @@ mod tests {
     fn impl_default_matches_yaml_defaults() {
         let from_empty: ConsoleConfig = serde_yaml::from_str("{}").unwrap();
         let from_default = ConsoleConfig::default();
+        assert_eq!(from_empty.http_host, from_default.http_host);
         assert_eq!(from_empty.http_port, from_default.http_port);
     }
 
