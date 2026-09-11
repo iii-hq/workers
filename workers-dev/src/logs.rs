@@ -1,6 +1,7 @@
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::path::Path;
 
-use crossterm::style::{Color as CrosstermColor, ResetColor, SetForegroundColor};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -119,38 +120,6 @@ fn log_timestamp_style(color_enabled: bool) -> Style {
     }
 }
 
-fn log_crossterm_color(kind: LogKind) -> Option<CrosstermColor> {
-    use crossterm::style::Color as CrosstermColor;
-    match kind {
-        LogKind::CargoProgress | LogKind::Warn => Some(CrosstermColor::Yellow),
-        LogKind::CargoDone => Some(CrosstermColor::Cyan),
-        LogKind::Error => Some(CrosstermColor::Red),
-        LogKind::Info => Some(CrosstermColor::Green),
-        LogKind::Debug => Some(CrosstermColor::DarkGrey),
-        LogKind::Plain => None,
-    }
-}
-
-pub fn print_colored_line(
-    line: &str,
-    color_enabled: bool,
-    out: &mut impl Write,
-) -> std::io::Result<()> {
-    if !color_enabled {
-        writeln!(out, "{line}")?;
-        return Ok(());
-    }
-    if let Some(color) = log_crossterm_color(classify_log_line(line)) {
-        crossterm::execute!(out, SetForegroundColor(color))?;
-        write!(out, "{line}")?;
-        crossterm::execute!(out, ResetColor)?;
-    } else {
-        write!(out, "{line}")?;
-    }
-    writeln!(out)?;
-    Ok(())
-}
-
 fn split_tracing_timestamp(line: &str) -> Option<(&str, &str)> {
     if !line.starts_with("20") {
         return None;
@@ -203,6 +172,52 @@ fn unicode_width(ch: char) -> usize {
     } else {
         2
     }
+}
+
+/// Last `bytes` of a log file, normalized for the pane. Serves both the
+/// container logs compose retains under `<state_dir>/logs/` and the compose
+/// daemon's own redirect file, so there is one reader, not two.
+///
+/// Seeks rather than reads: compose lets the active segment grow to 10 MiB
+/// before rotating, and this runs on every poll tick.
+pub fn tail_file(path: &Path, bytes: u64) -> Vec<String> {
+    let Ok(mut file) = File::open(path) else {
+        return Vec::new();
+    };
+    let len = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let from_start = len <= bytes;
+    if !from_start && file.seek(SeekFrom::End(-(bytes as i64))).is_err() {
+        return Vec::new();
+    }
+
+    // Decoded lossily rather than read line by line: `BufRead::lines()` yields
+    // an error for a line that is not valid UTF-8 and the iterator ends there,
+    // so a seek landing between the bytes of a glyph would throw the whole tail
+    // away — and the daemon log is mostly →, ✓, ✗ and ·.
+    let mut window = Vec::new();
+    if BufReader::new(file).read_to_end(&mut window).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&window);
+
+    let mut lines: Vec<String> = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        // A mid-line seek lands inside a record; the first fragment is not a line.
+        if index == 0 && !from_start {
+            continue;
+        }
+        // compose stamps each worker log with a format header and prefixes
+        // every record with its stream. Our own daemon log has neither.
+        if index == 0 && from_start && line.starts_with("# iii-compose-worker-log-") {
+            continue;
+        }
+        let body = line
+            .strip_prefix("stdout\t")
+            .or_else(|| line.strip_prefix("stderr\t"))
+            .unwrap_or(line);
+        lines.push(normalize_log_line(body));
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -274,5 +289,49 @@ mod tests {
             .map(unicode_width)
             .sum();
         assert!(total <= max, "rendered width {total} exceeds {max}");
+    }
+
+    #[test]
+    fn tail_file_strips_the_compose_header_and_stream_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.log");
+        std::fs::write(
+            &path,
+            "# iii-compose-worker-log-v1 abc\nstdout\thello\nstderr\tboom\nplain\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::tail_file(&path, 64 * 1024),
+            ["hello", "boom", "plain"]
+        );
+        assert!(super::tail_file(&dir.path().join("missing.log"), 64).is_empty());
+    }
+
+    // The daemon log is full of →, ✓, ✗ and ·, so a seek lands mid-glyph often.
+    #[test]
+    fn tail_file_survives_a_seek_into_the_middle_of_a_glyph() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.log");
+        let body: String = (0..400)
+            .map(|i| format!("✓ container-{i} ready\n"))
+            .collect();
+        std::fs::write(&path, &body).unwrap();
+        let lines = super::tail_file(&path, 64);
+        assert!(
+            !lines.is_empty(),
+            "a mid-glyph seek must not discard the tail"
+        );
+        assert_eq!(lines.last().unwrap(), "✓ container-399 ready");
+    }
+
+    #[test]
+    fn tail_file_drops_the_partial_first_line_after_a_seek() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.log");
+        let body: String = (0..500).map(|i| format!("line-{i}\n")).collect();
+        std::fs::write(&path, &body).unwrap();
+        let lines = super::tail_file(&path, 64);
+        assert!(lines.len() < 500 && !lines.is_empty());
+        assert_eq!(lines.last().unwrap(), "line-499");
     }
 }

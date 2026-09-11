@@ -3,12 +3,17 @@ startup_timeout: 15m
 stop_timeout: 10s
 
 engine:
-  url: ws://127.0.0.1:49134
+  # Interpolated so a second worktree can run its own engine without forking
+  # this file: unset, it is the literal 49134 CI and a plain `iii compose --up`
+  # have always used.
+  url: ws://127.0.0.1:${III_ENGINE_PORT:-49134}
 
 # CI disables install prompts when compose starts workers without a terminal.
 containers:
   queue:
     worker: path://../queue
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     environment:
       RUST_LOG: info
     scripts:
@@ -16,6 +21,8 @@ containers:
 
   state:
     worker: path://../state
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     environment:
       RUST_LOG: info
       CI: "true"
@@ -24,6 +31,8 @@ containers:
 
   session-manager:
     worker: path://../session-manager
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     environment:
       RUST_LOG: info
     scripts:
@@ -31,6 +40,8 @@ containers:
 
   llm-router:
     worker: path://../llm-router
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     start_after:
       - state
     environment:
@@ -43,6 +54,8 @@ containers:
 
   provider-openai-codex:
     worker: path://../provider-openai-codex
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     start_after:
       - llm-router
       - state
@@ -54,6 +67,8 @@ containers:
 
   provider-openai:
     worker: path://../provider-openai
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     start_after:
       - llm-router
       - state
@@ -64,6 +79,8 @@ containers:
 
   provider-anthropic:
     worker: path://../provider-anthropic
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     start_after:
       - llm-router
       - state
@@ -74,6 +91,8 @@ containers:
 
   context-manager:
     worker: path://../context-manager
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     start_after:
       - llm-router
     environment:
@@ -84,6 +103,8 @@ containers:
 
   iii-directory:
     worker: path://../iii-directory
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     environment:
       RUST_LOG: info
       CI: "true"
@@ -97,6 +118,8 @@ containers:
 
   cron:
     worker: path://../cron
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     environment:
       RUST_LOG: info
       CI: "true"
@@ -105,6 +128,8 @@ containers:
 
   ade:
     worker: path://../ade
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     environment:
       RUST_LOG: info
       CI: "true"
@@ -113,6 +138,8 @@ containers:
 
   ide:
     worker: path://../ide
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     environment:
       RUST_LOG: info
       CI: "true"
@@ -121,6 +148,8 @@ containers:
 
   harness:
     worker: path://.
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     start_after:
       - state
       - queue

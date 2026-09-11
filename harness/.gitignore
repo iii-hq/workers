@@ -5,3 +5,13 @@
 .env.local
 # Path B: no committed config.yaml (the configuration worker is authoritative).
 config.yaml
+
+# One compose project per worker started on demand from the repo list, written
+# by workers-dev. The tracked worker-compose.yaml stays the shared stack.
+.workers-dev/
+# The shared file that layout replaced, and its migrated copy.
+worker-compose.local.yaml*
+
+# Skills iii-directory downloads from the registry at boot, one directory per
+# worker. The skills this repo owns are the files at the root of skills/.
+skills/*/
