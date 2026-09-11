@@ -25,6 +25,9 @@ concurrency:
   group: harness-quickstart
   cancel-in-progress: false
 
+env:
+  III_TELEMETRY_ENABLED: "false"
+
 jobs:
   quickstart:
     runs-on: ubuntu-latest

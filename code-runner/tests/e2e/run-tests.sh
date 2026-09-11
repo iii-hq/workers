@@ -16,6 +16,9 @@
 # workers down with it.
 set -uo pipefail
 
+# Internal validation, including installers and nested III commands.
+export III_TELEMETRY_ENABLED=false
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
 HARNESS="$HERE/workers/harness"

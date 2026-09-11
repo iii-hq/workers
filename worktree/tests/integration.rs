@@ -52,6 +52,7 @@ async fn boot() -> Option<Harness> {
     let worker_dir = tempfile::tempdir().expect("create worker tempdir");
 
     let iii = Command::new(&iii_bin)
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("--use-default-config")
         .current_dir(engine_dir.path())
         .stdout(Stdio::null())

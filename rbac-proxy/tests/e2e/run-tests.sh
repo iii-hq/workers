@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Internal validation, including installers and nested III commands.
+export III_TELEMETRY_ENABLED=false
+
 # End-to-end harness for the rbac-proxy worker. Boots a real iii engine, starts
 # the rbac-proxy binary as a host process (with a --config seed wiring auth /
 # middleware / hooks / expose to the harness support functions), then runs a

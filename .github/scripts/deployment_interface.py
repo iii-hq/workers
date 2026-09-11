@@ -430,6 +430,7 @@ def run_worker(args: argparse.Namespace) -> int:
     environment = os.environ.copy()
     environment.update(metadata.get("environment") or {})
     environment["III_URL"] = args.engine_url
+    environment["III_TELEMETRY_ENABLED"] = "false"
     for command in metadata["prepare"]:
         subprocess.run(command, cwd=cwd, env=environment, check=True)
     with args.log.open("wb") as log:

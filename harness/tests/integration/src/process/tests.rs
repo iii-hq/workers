@@ -12,6 +12,32 @@ fn builder_preserves_args_and_environment() {
     assert_eq!(spec.env.get(OsStr::new("LANG")), Some(&OsString::from("C")));
 }
 
+#[tokio::test]
+async fn telemetry_opt_out_survives_env_clear_and_reaches_nested_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let stdout = dir.path().join("worker.out");
+    let mut supervisor = ProcessSupervisor::new(Duration::from_millis(100));
+    let spec = ProcessSpec::new(
+        "worker",
+        "/bin/sh",
+        dir.path(),
+        &stdout,
+        dir.path().join("worker.err"),
+    )
+    .env("III_TELEMETRY_ENABLED", "true")
+    .env("OTEL_SERVICE_NAME", "integration-probe")
+    .args([
+        "-c",
+        "exec /bin/sh -c 'printf \"%s:%s\" \"$III_TELEMETRY_ENABLED\" \"$OTEL_SERVICE_NAME\"'",
+    ]);
+    supervisor.spawn(spec).unwrap();
+    supervisor.wait_for_exit().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(stdout).unwrap(),
+        "false:integration-probe"
+    );
+}
+
 #[test]
 fn drop_cleans_up_a_partially_started_supervisor() {
     let dir = tempfile::tempdir().unwrap();

@@ -47,6 +47,15 @@ pub fn build_command(
                 cmd.env(k, v);
             }
         }
+        // Keep an existing product telemetry opt-out across the scrubbed
+        // boundary, including nested III commands started by internal tests.
+        // An unset or enabled parent does not introduce an opt-out.
+        if matches!(
+            std::env::var("III_TELEMETRY_ENABLED").as_deref(),
+            Ok("false" | "0")
+        ) {
+            cmd.env("III_TELEMETRY_ENABLED", "false");
+        }
     }
     // Identity keys never reach a child (see IDENTITY_ENV_KEYS); the per-call
     // overrides below may still set them on purpose.
@@ -468,9 +477,66 @@ mod tests {
         }
     }
 
-    /// With `env.inherit: false`, the child env is scrubbed to exactly the
-    /// `env.allow` keys: an allowed worker var round-trips, a non-allowed one
-    /// never reaches the child. (Unit twin of the e2e scrub/passthrough cases.)
+    #[test]
+    fn telemetry_opt_out_crosses_scrubbed_environment() {
+        const CHILD: &str = "III_IDE_TELEMETRY_PROBE";
+        if std::env::var_os(CHILD).is_some() {
+            let mut cfg = test_cfg();
+            cfg.env.inherit = false;
+            cfg.env.allow.clear();
+            let argv = vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "exec /bin/sh -c 'printf %s \"$III_TELEMETRY_ENABLED\"'".into(),
+            ];
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let output = runtime.block_on(async {
+                build_command(&argv, &cfg, &ExecOverrides::default())
+                    .unwrap()
+                    .output()
+                    .await
+                    .unwrap()
+            });
+            assert!(output.status.success());
+            let expected = std::env::var(CHILD).unwrap();
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+            return;
+        }
+        // Isolate each parent environment; never mutate the test runner's env.
+        for (parent, expected) in [
+            (Some("false"), "false"),
+            (Some("0"), "false"),
+            (Some("true"), ""),
+            (None, ""),
+        ] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "exec::host::tests::telemetry_opt_out_crosses_scrubbed_environment",
+                    "--nocapture",
+                ])
+                .env(CHILD, expected)
+                .env_remove("III_TELEMETRY_ENABLED");
+            if let Some(value) = parent {
+                command.env("III_TELEMETRY_ENABLED", value);
+            }
+            let result = command.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+        }
+    }
+
+    /// With `env.inherit: false`, the child env is scrubbed to the
+    /// `env.allow` keys plus an existing telemetry opt-out: an allowed worker
+    /// var round-trips, a non-allowed one never reaches the child.
+    /// (Unit twin of the e2e scrub/passthrough cases.)
     #[tokio::test]
     async fn inherit_false_forwards_only_allow_keys() {
         const ALLOWED: &str = "SHELL_DX_ALLOWED_9F3A";

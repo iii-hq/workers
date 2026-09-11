@@ -1025,6 +1025,83 @@ mod tests {
         (tmp, orch)
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_launchers_preserve_caller_telemetry_choice() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD: &str = "III_WORKERS_DEV_TELEMETRY_PROBE";
+        if std::env::var_os(CHILD).is_some() {
+            let (_tmp, mut orch) = test_orchestrator();
+            std::fs::write(
+                orch.config.repo_root.join(ENGINE_CONFIG_REL),
+                "workers: []\n",
+            )
+            .unwrap();
+            // Port zero never points at an existing developer engine.
+            orch.config.engine_url = "ws://127.0.0.1:0".into();
+            let error = orch.ensure_engine_inner(false, 5_000).await.unwrap_err();
+            assert!(
+                error.to_string().contains("iii exited immediately"),
+                "{error:#}"
+            );
+            // Drive the real Cargo launcher without an engine round-trip.
+            orch.start_one("harness", false).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while orch.runtimes.read().await["harness"].exit_code.is_none() {
+                    time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(orch.runtimes.read().await["harness"].exit_code, Some(0));
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        for binary in ["iii", "cargo"] {
+            let path = dir.path().join(binary);
+            std::fs::write(
+                &path,
+                r#"#!/bin/sh
+/bin/sh -c 'printf %s "${III_TELEMETRY_ENABLED-<unset>}"' > "$III_WORKERS_DEV_TELEMETRY_PROBE/${0##*/}.txt"
+"#,
+            )
+            .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for parent in [None, Some(""), Some("true"), Some("false"), Some("0")] {
+            let capture = tempfile::tempdir().unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "orchestrator::tests::local_launchers_preserve_caller_telemetry_choice",
+                    "--nocapture",
+                ])
+                .env("PATH", dir.path())
+                .env_remove("III_TELEMETRY_ENABLED")
+                .env(CHILD, capture.path());
+            if let Some(value) = parent {
+                command.env("III_TELEMETRY_ENABLED", value);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            for binary in ["iii", "cargo"] {
+                assert_eq!(
+                    std::fs::read_to_string(capture.path().join(format!("{binary}.txt"))).unwrap(),
+                    parent.unwrap_or("<unset>"),
+                    "{binary} must preserve {parent:?}"
+                );
+            }
+        }
+    }
+
     /// A stack can legitimately end up with empty roots when every root it
     /// names is filtered out of the managed `workers:` set (config.rs warns
     /// and drops). `start_stack` must refuse rather than fall through to

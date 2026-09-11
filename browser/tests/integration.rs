@@ -92,6 +92,7 @@ async fn boot() -> Option<Harness> {
     .ok()?;
 
     let mut iii = Command::new(&iii_bin)
+        .env("III_TELEMETRY_ENABLED", "false")
         .args(["--config", config_path.to_str()?, "--no-update-check"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

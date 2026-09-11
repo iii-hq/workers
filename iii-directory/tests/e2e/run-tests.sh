@@ -11,6 +11,9 @@
 #   PORT=49210 ./run-tests.sh # use a non-default engine port
 set -uo pipefail
 
+# Internal validation, including installers and nested III commands.
+export III_TELEMETRY_ENABLED=false
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; cd "$ROOT_DIR"
 HERE="$ROOT_DIR"                                   # assertion body refers to $HERE / $GLOBAL
 PORT="${PORT:-49134}"

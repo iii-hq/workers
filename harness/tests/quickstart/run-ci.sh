@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Internal validation, including installers and nested III commands.
+export III_TELEMETRY_ENABLED=false
+
 # Validate the published quickstart in an isolated home and project:
 # install iii, boot an empty engine, bring up harness + console through
 # `iii compose`, and complete the first Console conversation, switch from

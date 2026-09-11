@@ -98,6 +98,7 @@ pub async fn spawn_engine() -> Option<Engine> {
         .ok()?;
 
     let mut child = std::process::Command::new(&bin)
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("--no-update-check")
         .arg("--config")
         .arg(&config_path)

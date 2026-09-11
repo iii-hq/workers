@@ -119,6 +119,9 @@ on:
 
 permissions: {}
 
+env:
+  III_TELEMETRY_ENABLED: "false"
+
 jobs:
   build:
     name: harness e2e build

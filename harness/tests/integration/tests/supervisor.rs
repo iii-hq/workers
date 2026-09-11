@@ -130,10 +130,25 @@ async fn children_see_only_the_environment_allowlist() {
         !dump.contains("INTEGRATION_TEST_SECRET"),
         "runner env leaked into a child:\n{dump}"
     );
+    assert!(
+        dump.lines()
+            .any(|line| line == "III_TELEMETRY_ENABLED=false"),
+        "supervised child must opt out of product telemetry:\n{dump}"
+    );
     for line in dump.lines().filter(|l| l.contains('=')) {
         let key = line.split('=').next().unwrap();
         assert!(
-            ["PATH", "HOME", "LANG", "RUST_LOG", "PWD", "SHLVL", "_"].contains(&key),
+            [
+                "PATH",
+                "HOME",
+                "LANG",
+                "RUST_LOG",
+                "PWD",
+                "SHLVL",
+                "_",
+                "III_TELEMETRY_ENABLED",
+            ]
+            .contains(&key),
             "unexpected env var {key} in child environment"
         );
     }

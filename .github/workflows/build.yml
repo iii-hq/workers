@@ -35,6 +35,7 @@ on:
       correlation_id: {required: false, default: '', type: string}
 
 env:
+  III_TELEMETRY_ENABLED: "false"
   WORKER: ${{ inputs.worker }}
   SOURCE_SHA: ${{ inputs.source_sha }}
   DESCRIPTOR_RUN_ID: ${{ inputs.descriptor_run_id }}
@@ -326,7 +327,8 @@ jobs:
             while IFS= read -r encoded; do
               docker_env+=(--env "$(printf '%s' "$encoded" | base64 --decode)")
             done < <(jq -r '.environment | to_entries[] | (.key + "=" + .value) | @base64' interface-work/stage.json)
-            docker run --rm --network host --name "$container_name" "${docker_env[@]}" "$image_name" \
+            docker run --rm --network host --name "$container_name" "${docker_env[@]}" \
+              --env III_TELEMETRY_ENABLED=false "$image_name" \
               >interface-work/worker.log 2>&1 &
             worker_pid=$!
           else

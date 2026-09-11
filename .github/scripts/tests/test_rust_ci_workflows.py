@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import re
+import subprocess
 import tomllib
 
+import pytest
 import yaml
 
 
@@ -21,6 +24,93 @@ def workflow(name: str) -> dict:
 
 def named_step(steps: list[dict], name: str) -> dict:
     return next(step for step in steps if step.get("name") == name)
+
+
+@pytest.fixture
+def make_launch_probe(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    tools = tmp_path / "fake tools"
+    tools.mkdir()
+    marker = tmp_path / "environment.txt"
+    probe = """#!/bin/sh
+exec /bin/sh -c 'printf %s "${III_TELEMETRY_ENABLED-<unset>}"' > "$TELEMETRY_PROBE_FILE"
+"""
+    tmux = """#!/bin/sh
+case "$1" in
+  has-session) exit 0 ;;
+  list-windows)
+    if [ "$TMUX_PROBE_EXISTING" = 1 ]; then printf 'engine\\nharness\\nscrapling\\n'; fi
+    exit 0 ;;
+  new-window|respawn-window)
+    printf %s "$1" > "$TMUX_PROBE_CALL"
+    shift
+    # Simulate a persistent server whose environment still contains false.
+    telemetry=III_TELEMETRY_ENABLED=false
+    while [ "$#" -gt 1 ]; do
+      case "$1" in
+        -e) telemetry=$2; shift 2 ;;
+        -c|-t|-n) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    exec /usr/bin/env "$telemetry" /bin/sh -c "$1" ;;
+  *) exit 2 ;;
+esac
+"""
+    for name, body in [("iii", probe), ("cargo", probe), ("tmux", tmux), ("lsof", "#!/bin/sh\nexit 0\n")]:
+        executable = tools / name
+        executable.write_text(body)
+        executable.chmod(0o755)
+    scrapling = tmp_path / "scrapling"
+    (scrapling / ".venv/bin").mkdir(parents=True)
+    (scrapling / "pyproject.toml").write_text("[project]\nname = 'probe'\n")
+    python = scrapling / ".venv/bin/python"
+    python.write_text(probe)
+    python.chmod(0o755)
+    (scrapling / ".venv/.installed").touch()
+    env = {
+        **os.environ,
+        "PATH": f"{tools}:/usr/bin:/bin",
+        "TELEMETRY_PROBE_FILE": str(marker),
+        "TMUX_PROBE_CALL": str(tmp_path / "tmux-call.txt"),
+    }
+    return env, marker, scrapling
+
+
+@pytest.mark.parametrize("parent,make_argument", [
+    (None, False), ("", False), ("true", False), ("false", False),
+    ("0", False), ("false", True),
+])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("worker", ["engine", "harness", "scrapling"])
+def test_harness_dev_tmux_uses_caller_choice_over_stale_server(
+    make_launch_probe, parent: str | None, make_argument: bool,
+    existing: bool, worker: str,
+) -> None:
+    env, marker, scrapling = make_launch_probe
+    env.pop("III_TELEMETRY_ENABLED", None)
+    env["TMUX_PROBE_EXISTING"] = "1" if existing else "0"
+    command = ["make", "--no-print-directory", "-f", str(REPOSITORY / "harness/Makefile")]
+    if worker == "engine":
+        command.append("engine")
+    else:
+        command.extend(["restart-worker", f"WORKER={worker}", f"SCRAPLING_ROOT={scrapling}"])
+    if make_argument:
+        command.append(f"III_TELEMETRY_ENABLED={parent}")
+    elif parent is not None:
+        env["III_TELEMETRY_ENABLED"] = parent
+    subprocess.run(command, cwd=REPOSITORY / "harness", env=env, check=True, capture_output=True, timeout=10)
+    assert marker.read_text() == (parent or "true")
+    assert Path(env["TMUX_PROBE_CALL"]).read_text() == ("respawn-window" if existing else "new-window")
+
+
+def test_harness_validation_target_still_opts_out(make_launch_probe) -> None:
+    env, marker, _ = make_launch_probe
+    env["III_TELEMETRY_ENABLED"] = "true"
+    subprocess.run(
+        ["make", "--no-print-directory", "-f", str(REPOSITORY / "harness/Makefile"), "integration-validate"],
+        cwd=REPOSITORY, env=env, check=True, capture_output=True, timeout=10,
+    )
+    assert marker.read_text() == "false"
 
 
 def test_rust_toolchain_is_pinned_to_the_last_verified_stable() -> None:
