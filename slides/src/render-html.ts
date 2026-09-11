@@ -234,7 +234,7 @@ body.deck{overflow:hidden}
 .mesh{display:none}
 .variant-gradient{background:radial-gradient(ellipse 70% 60% at 12% 100%,var(--accent-glow),transparent 60%),var(--bg)}
 .variant-muted{--bg:var(--surface)}
-.variant-accent{--bg:var(--accent);--ink:var(--accent-ink);--muted:${withAlpha(c.accent_ink, 0.7)};--hair:${withAlpha(c.accent_ink, 0.2)};--hair-strong:${withAlpha(c.accent_ink, 0.4)};--card:${withAlpha(c.accent_ink, 0.06)};--accent:var(--accent-ink);--accent-soft:${withAlpha(c.accent_ink, 0.12)}}
+.variant-accent{--bg:${c.accent};--ink:${c.accent_ink};--muted:${withAlpha(c.accent_ink, 0.7)};--hair:${withAlpha(c.accent_ink, 0.2)};--hair-strong:${withAlpha(c.accent_ink, 0.4)};--card:${withAlpha(c.accent_ink, 0.06)};--accent:${c.accent_ink};--accent-2:${withAlpha(c.accent_ink, 0.6)};--accent-soft:${withAlpha(c.accent_ink, 0.12)}}
 .variant-accent .stars{opacity:.15}
 .meta{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:32px;padding-bottom:22px;border-bottom:1px solid var(--hair);font-family:var(--font-mono);font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);flex:none}
 .meta-kicker{display:inline-flex;align-items:center;gap:14px;color:var(--ink)}
