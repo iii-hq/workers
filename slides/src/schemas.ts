@@ -1,5 +1,5 @@
 import { ICON_NAMES } from './deck-icons.js'
-import { BLOCK_TYPES, CHART_KINDS, LAYOUTS, REVEALS, TRANSITIONS, VARIANTS, VISUALS } from './model.js'
+import { BLOCK_TYPES, CHART_KINDS, DIAGRAM_KINDS, LAYOUTS, REVEALS, TRANSITIONS, VARIANTS, VISUALS } from './model.js'
 
 export const object = (
   properties: Record<string, unknown> = {},
@@ -41,18 +41,39 @@ export const blockSchema = object(
       ]),
     ),
     numbered: boolean,
-    kind: { type: ['string', 'null'], enum: [...CHART_KINDS, null] },
+    kind: { type: ['string', 'null'], enum: [...CHART_KINDS, ...DIAGRAM_KINDS, null] },
     series: array(object({ label: string, value: { type: 'number' } }, ['label', 'value'])),
     unit: nullableString,
     title: nullableString,
     columns: array(string),
     rows: array(array(string)),
+    log: boolean,
+    nodes: array(
+      object(
+        {
+          label: string,
+          text: nullableString,
+          x: { type: ['number', 'null'] },
+          y: { type: ['number', 'null'] },
+          value: { type: ['number', 'null'] },
+          hub: boolean,
+        },
+        ['label'],
+      ),
+    ),
+    edges: array(object({ from: string, to: string }, ['from', 'to'])),
+    axes: object({
+      x: object({ label: string, low: nullableString, high: nullableString }, ['label']),
+      y: object({ label: string, low: nullableString, high: nullableString }, ['label']),
+    }),
+    quadrants: array(string),
+    center: nullableString,
     column: { type: ['string', 'null'], enum: ['left', 'right', null] },
   },
   ['type'],
   {
     description:
-      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text?, icon? }] (cards may be numbered; icon is one of the built-in icon names); chart uses kind (bar, line, donut), series [{ label, value }], unit, title; table uses columns [header...] and rows [[cell...]]. column places the block in a two-column layout.',
+      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text?, icon? }] (cards may be numbered; icon is one of the built-in icon names); chart uses kind (bar, line, donut), series [{ label, value }], unit, title; table uses columns [header...] and rows [[cell...]]; diagram uses kind (network: ring nodes plus hub: true nodes joined by edges; matrix: nodes with x/y 0-100 on axes {x,y} with optional quadrants; radar: nodes with value 0-100; loop: ordered nodes around a cycle with center; ladder: ordered nodes as a staircase), nodes [{ label, text?, x?, y?, value?, hub? }], edges [{ from, to }], axes, quadrants, center, title. column places the block in a two-column layout.',
   },
 )
 

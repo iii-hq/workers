@@ -26,7 +26,25 @@ export const BLOCK_TYPES = [
   'timeline',
   'chart',
   'table',
+  'diagram',
 ] as const
+export const DIAGRAM_KINDS = ['network', 'matrix', 'radar', 'loop', 'ladder'] as const
+export type DiagramKind = (typeof DIAGRAM_KINDS)[number]
+
+export interface DiagramNode {
+  label: string
+  text?: string
+  x?: number
+  y?: number
+  value?: number
+  hub?: boolean
+}
+
+export interface DiagramAxis {
+  label: string
+  low?: string
+  high?: string
+}
 export const VISUALS = ['none', 'orbits', 'grid', 'waves', 'arcs', 'rings'] as const
 export type Visual = (typeof VISUALS)[number]
 export const CHART_KINDS = ['bar', 'line', 'donut'] as const
@@ -59,8 +77,29 @@ export type Block =
   | { id: string; type: 'cards'; entries: Entry[]; numbered?: boolean; column?: Column }
   | { id: string; type: 'steps'; entries: Entry[]; column?: Column }
   | { id: string; type: 'timeline'; entries: Entry[]; column?: Column }
-  | { id: string; type: 'chart'; kind: ChartKind; series: Series[]; unit?: string; title?: string; column?: Column }
+  | {
+      id: string
+      type: 'chart'
+      kind: ChartKind
+      series: Series[]
+      unit?: string
+      title?: string
+      log?: boolean
+      column?: Column
+    }
   | { id: string; type: 'table'; columns: string[]; rows: string[][]; column?: Column }
+  | {
+      id: string
+      type: 'diagram'
+      kind: DiagramKind
+      nodes: DiagramNode[]
+      edges?: { from: string; to: string }[]
+      axes?: { x?: DiagramAxis; y?: DiagramAxis }
+      quadrants?: string[]
+      center?: string
+      title?: string
+      column?: Column
+    }
 
 export interface Slide {
   id: string
@@ -239,6 +278,67 @@ export function normalizeBlock(input: unknown, index = 0): Block {
     case 'steps':
     case 'timeline':
       return withColumn({ id, type, entries: entryList(raw.entries ?? raw.items) })
+    case 'diagram': {
+      const kind = (DIAGRAM_KINDS as readonly string[]).includes(String(raw.kind))
+        ? (raw.kind as DiagramKind)
+        : 'network'
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+      const nodes = (Array.isArray(raw.nodes) ? raw.nodes : [])
+        .map((node): DiagramNode | null => {
+          if (!node || typeof node !== 'object') return null
+          const n = node as Record<string, unknown>
+          const label = text(n.label) ?? text(n.title)
+          if (!label) return null
+          return {
+            label,
+            ...(text(n.text) ? { text: text(n.text) } : {}),
+            ...(num(n.x) !== undefined ? { x: num(n.x) } : {}),
+            ...(num(n.y) !== undefined ? { y: num(n.y) } : {}),
+            ...(num(n.value) !== undefined ? { value: num(n.value) } : {}),
+            ...(n.hub === true ? { hub: true } : {}),
+          }
+        })
+        .filter((node): node is DiagramNode => node !== null)
+        .slice(0, 24)
+      if (!nodes.length) throw new Error(`INVALID_BLOCK: blocks[${index}] diagram needs nodes [{ label }]`)
+      const edges = (Array.isArray(raw.edges) ? raw.edges : [])
+        .map((edge) => {
+          if (Array.isArray(edge) && edge.length >= 2) return { from: String(edge[0]), to: String(edge[1]) }
+          if (edge && typeof edge === 'object') {
+            const e = edge as Record<string, unknown>
+            const from = text(e.from)
+            const to = text(e.to)
+            return from && to ? { from, to } : null
+          }
+          return null
+        })
+        .filter((edge): edge is { from: string; to: string } => edge !== null)
+        .slice(0, 80)
+      const axis = (v: unknown): DiagramAxis | undefined => {
+        if (typeof v === 'string' && v.trim()) return { label: v.trim() }
+        if (!v || typeof v !== 'object') return undefined
+        const a = v as Record<string, unknown>
+        const label = text(a.label)
+        if (!label) return undefined
+        return { label, ...(text(a.low) ? { low: text(a.low) } : {}), ...(text(a.high) ? { high: text(a.high) } : {}) }
+      }
+      const rawAxes = raw.axes && typeof raw.axes === 'object' ? (raw.axes as Record<string, unknown>) : {}
+      const axes = {
+        ...(axis(rawAxes.x) ? { x: axis(rawAxes.x) } : {}),
+        ...(axis(rawAxes.y) ? { y: axis(rawAxes.y) } : {}),
+      }
+      return withColumn({
+        id,
+        type,
+        kind,
+        nodes,
+        ...(edges.length ? { edges } : {}),
+        ...(Object.keys(axes).length ? { axes } : {}),
+        ...(Array.isArray(raw.quadrants) ? { quadrants: stringList(raw.quadrants).slice(0, 4) } : {}),
+        ...(text(raw.center) ? { center: text(raw.center) } : {}),
+        ...(text(raw.title) ? { title: text(raw.title) } : {}),
+      })
+    }
     case 'table': {
       const columns = stringList(raw.columns ?? raw.header)
       const rows = (Array.isArray(raw.rows) ? raw.rows : [])
@@ -259,6 +359,7 @@ export function normalizeBlock(input: unknown, index = 0): Block {
         series,
         ...(text(raw.unit) ? { unit: text(raw.unit) } : {}),
         ...(text(raw.title) ? { title: text(raw.title) } : {}),
+        ...(raw.log === true ? { log: true } : {}),
       })
     }
     default:

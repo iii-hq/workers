@@ -1,5 +1,6 @@
 import { iconSvg } from './deck-icons.js'
 import type { Block, Deck, Entry, Slide, ThemeOverrides } from './model.js'
+import { diagramSvg } from './render-diagrams.js'
 import { chartSvg, motifSvg } from './render-visuals.js'
 import { googleFontsHref, hueShift, mix, type ResolvedTheme, resolveTheme, withAlpha } from './themes.js'
 
@@ -100,7 +101,9 @@ function renderBlockInner(block: Block, rv: Reveal): string {
           `<div${rv.wrap('milestone')}><div class="milestone-dot"></div><div class="milestone-title">${inline(entry.title)}</div>${entry.text ? `<div class="milestone-text">${inline(entry.text)}</div>` : ''}</div>`,
       )}</div>`
     case 'chart':
-      return `<figure${rv.wrap('block block-chart glass')}>${block.title ? `<figcaption class="chart-title">${inline(block.title)}</figcaption>` : ''}${chartSvg(block.kind, block.series, block.unit, block.title)}</figure>`
+      return `<figure${rv.wrap('block block-chart glass')}>${block.title ? `<figcaption class="chart-title">${inline(block.title)}</figcaption>` : ''}${chartSvg(block.kind, block.series, block.unit, block.title, block.log)}</figure>`
+    case 'diagram':
+      return `<figure${rv.wrap('block block-diagram')}>${block.title ? `<figcaption class="diagram-title">${inline(block.title)}</figcaption>` : ''}${diagramSvg(block, block.title)}</figure>`
     case 'table':
       return `<table${rv.wrap(`block block-table${block.rows.length > 5 ? ' dense' : ''}`)}>${block.columns.length ? `<thead><tr>${block.columns.map((cell) => `<th>${inline(cell)}</th>`).join('')}</tr></thead>` : ''}<tbody>${block.rows.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`
     default:
@@ -239,7 +242,7 @@ body.deck{overflow:hidden}
 .meta-title{text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:560px}
 .meta-index{text-align:right;color:var(--ink)}
 .meta-index em{font-style:normal;color:var(--muted)}
-.body{display:flex;flex-direction:column;flex:1;min-height:0;padding-top:48px}
+.body{display:flex;flex-direction:column;flex:1;min-height:0;padding-top:48px;padding-bottom:40px}
 .stack{display:flex;flex-direction:column;gap:28px;flex:1;min-height:0}
 .head{display:flex;flex-direction:column;gap:18px;padding-bottom:36px;max-width:1240px}
 .stack.center{justify-content:center;align-items:flex-start}
@@ -260,6 +263,7 @@ body.deck{overflow:hidden}
 .section-decor{position:absolute;right:56px;bottom:-30px;font-family:var(--font-heading);font-size:640px;line-height:1;letter-spacing:-0.06em;color:transparent;-webkit-text-stroke:1px var(--hair-strong);z-index:-1;pointer-events:none;user-select:none}
 .blocks{display:flex;flex-direction:column;gap:28px;min-height:0;flex:1;justify-content:flex-start}
 .blocks:empty{display:none}
+.blocks > .block-steps:not(:last-child),.blocks > .block-cards:not(:last-child){flex:0 0 auto}
 .hero .blocks,.section .blocks,.statement .blocks{flex:0 0 auto}
 .columns{display:grid;grid-template-columns:1fr 1fr;gap:80px;flex:1;min-height:0;align-content:center}
 .column{display:flex;flex-direction:column;gap:28px;min-width:0;justify-content:center}
@@ -337,6 +341,33 @@ body.deck{overflow:hidden}
 .slide-footer .slide-number{display:none}
 .card-icon,.step-number,.card-number{font-weight:400}
 .block-chart{padding:26px 30px 18px;display:flex;flex-direction:column;gap:12px;flex:1;min-height:0;background:var(--card);border:1px solid var(--hair);border-radius:var(--radius)}
+.block-diagram{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0}
+.diagram-title{font-family:var(--font-mono);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+.diagram{width:100%;height:100%;min-height:0;flex:1;overflow:visible;color:var(--accent)}
+.diagram text{font-family:var(--font-body);fill:var(--ink);font-weight:300}
+.diagram .guide{fill:none;stroke:var(--hair-strong);stroke-width:1}
+.diagram .guide.dashed{stroke-dasharray:4 8;stroke:var(--hair)}
+.diagram .dot{fill:var(--accent);stroke:var(--bg);stroke-width:3}
+.diagram .halo{fill:var(--accent);opacity:.12}
+.diagram .edge{fill:none;stroke:var(--accent);stroke-width:1.2;opacity:.45}
+.diagram .label{font-size:19px;fill:var(--ink)}
+.diagram .label-strong{font-family:var(--font-heading);font-size:26px;letter-spacing:-0.01em}
+.diagram .hub rect{fill:var(--card);stroke:var(--hair)}
+.diagram .hub-label{font-family:var(--font-heading);font-size:26px;letter-spacing:-0.01em}
+.diagram .sub{font-family:var(--font-mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;fill:var(--muted)}
+.diagram .center{font-family:var(--font-heading);font-size:30px;fill:var(--ink);letter-spacing:-0.01em}
+.diagram .quadrant{font-family:var(--font-mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;fill:var(--muted)}
+.diagram .axis{font-family:var(--font-mono);font-size:13px;letter-spacing:.2em;text-transform:uppercase;fill:var(--ink)}
+.diagram .tick{font-family:var(--font-mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;fill:var(--muted)}
+.diagram .point-label{font-family:var(--font-heading);font-size:26px;letter-spacing:-0.01em}
+.diagram .shape{fill:var(--accent);fill-opacity:.14;stroke:var(--accent);stroke-width:1.5}
+.diagram .arc{fill:none;stroke:var(--accent);stroke-width:1.5}
+.diagram .arrow{fill:none;stroke:var(--accent);stroke-width:1.5}
+.diagram .index{font-family:var(--font-mono);font-size:15px;letter-spacing:.16em;fill:var(--accent)}
+.diagram .stair{fill:none;stroke:var(--accent);stroke-width:1.5}
+.column .diagram,.split-panel .diagram{max-height:100%}
+.r-stagger .slide.active .diagram .node,.r-stagger .slide.active .diagram .hub,.r-stagger .slide.active .diagram .point{animation:rv .9s var(--ease) both;animation-delay:calc(var(--i,0) * 60ms + 400ms)}
+.r-stagger .slide.active .diagram .edge,.r-stagger .slide.active .diagram .arc,.r-stagger .slide.active .diagram .stair,.r-stagger .slide.active .diagram .shape{stroke-dasharray:2400;stroke-dashoffset:2400;animation:draw 2s var(--ease) .5s forwards}
 .block-table{width:100%;border-collapse:collapse;font-size:21px;line-height:1.4;font-weight:300}
 .block-table th{text-align:left;font-family:var(--font-mono);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);font-weight:400;padding:0 28px 16px 0;border-bottom:1px solid var(--hair-strong)}
 .block-table td{vertical-align:top;padding:22px 28px 22px 0;border-bottom:1px solid var(--hair);color:var(--muted)}
@@ -345,11 +376,11 @@ body.deck{overflow:hidden}
 .block-table.dense{font-size:19px}
 .block-table.dense td{padding:16px 24px 16px 0}
 .block-table.dense td:first-child{font-size:28px}
-.chart-title{font-family:var(--font-heading);font-size:30px;letter-spacing:-0.01em}
+.chart-title{font-family:var(--font-mono);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
 .chart{width:100%;height:100%;min-height:0;flex:1;overflow:visible;--chart-0:var(--accent);--chart-1:var(--ink);--chart-2:var(--accent-2);--chart-3:var(--muted);--chart-4:${mix(c.accent, c.background, 0.5)};--chart-5:${mix(c.ink, c.background, 0.6)}}
 .chart text{font-family:var(--font-mono);fill:var(--ink)}
 .chart-value{font-size:22px;font-weight:500}
-.chart-label{font-size:16px;fill:var(--muted);letter-spacing:.1em;text-transform:uppercase}
+.chart-label{font-size:17px;fill:var(--muted);letter-spacing:.04em}
 .chart-legend{font-size:20px}
 .chart-pct{fill:var(--muted);font-size:18px}
 .chart-total{font-size:64px;font-family:var(--font-heading)}
@@ -449,7 +480,7 @@ const DECK_SCRIPT = `
     show(current - 1, -1);
   }
   function autofit(slide){
-    var root = slide.querySelector(':scope > .stack, :scope > .split');
+    var root = slide.querySelector(':scope > .body > .stack, :scope > .body > .split, :scope > .stack, :scope > .split');
     if (!root) return;
     root.classList.add('autofit');
     var levels = [1, .94, .88, .82, .76, .7];
@@ -502,6 +533,8 @@ const DECK_SCRIPT = `
   window.addEventListener('message', function(e){ var d = e.data || {}; if (d.type === 'slides:goto' && typeof d.index === 'number') show(d.index, d.index > current ? 1 : -1); });
   fit();
   show(fromHash(), 1);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function(){ slides.forEach(autofit); });
+  window.addEventListener('load', function(){ slides.forEach(autofit); });
 })();
 `
 

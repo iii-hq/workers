@@ -9,9 +9,27 @@ function esc(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
+function wrapWords(text: string, max: number): string[] {
+  const lines: string[] = []
+  let line = ''
+  for (const word of text.split(/\s+/)) {
+    const candidate = line ? `${line} ${word}` : word
+    if (candidate.length > max && line) {
+      lines.push(line)
+      line = word
+    } else line = candidate
+  }
+  if (line) lines.push(line)
+  return lines.slice(0, 2)
+}
+
+function trimZero(value: string): string {
+  return value.replace(/\.0(?=[A-Z]|$)/, '')
+}
+
 export function formatValue(value: number, unit?: string): string {
   const abs = Math.abs(value)
-  const text =
+  const text = trimZero(
     abs >= 1_000_000_000
       ? `${(value / 1_000_000_000).toFixed(abs >= 10_000_000_000 ? 0 : 1)}B`
       : abs >= 1_000_000
@@ -20,7 +38,8 @@ export function formatValue(value: number, unit?: string): string {
           ? `${(value / 1_000).toFixed(0)}K`
           : Number.isInteger(value)
             ? String(value)
-            : value.toFixed(1)
+            : value.toFixed(1),
+  )
   if (!unit) return text
   return unit === '%' || unit === 'x' ? `${text}${unit}` : /^[$€£¥]$/.test(unit) ? `${unit}${text}` : `${text} ${unit}`
 }
@@ -28,8 +47,9 @@ export function formatValue(value: number, unit?: string): string {
 const W = 1000
 const H = 480
 
-function barChart(series: Series[], unit?: string): string {
-  const max = Math.max(...series.map((s) => Math.abs(s.value)), 1)
+function barChart(series: Series[], unit?: string, log = false): string {
+  const scale = (v: number) => (log ? Math.log10(Math.max(1, Math.abs(v))) : Math.abs(v))
+  const max = Math.max(...series.map((s) => scale(s.value)), 1)
   const padL = 24
   const padB = 70
   const top = 60
@@ -40,10 +60,18 @@ function barChart(series: Series[], unit?: string): string {
   const startX = (W - totalW) / 2
   const bars = series
     .map((point, index) => {
-      const h = Math.max(6, (Math.abs(point.value) / max) * plotH)
+      const h = Math.max(6, (scale(point.value) / max) * plotH)
       const x = startX + index * (barW + gap)
       const y = top + plotH - h
-      return `<g class="bar" style="--i:${index}"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="14" fill="url(#barfill)"/><text class="chart-value" x="${(x + barW / 2).toFixed(1)}" y="${(y - 16).toFixed(1)}" text-anchor="middle">${esc(formatValue(point.value, unit))}</text><text class="chart-label" x="${(x + barW / 2).toFixed(1)}" y="${H - 28}" text-anchor="middle">${esc(point.label)}</text></g>`
+      return `<g class="bar" style="--i:${index}"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="url(#barfill)"/><text class="chart-value" x="${(x + barW / 2).toFixed(1)}" y="${(y - 16).toFixed(1)}" text-anchor="middle">${esc(formatValue(point.value, unit))}</text>${wrapWords(
+        point.label,
+        16,
+      )
+        .map(
+          (line, i) =>
+            `<text class="chart-label" x="${(x + barW / 2).toFixed(1)}" y="${H - 44 + i * 20}" text-anchor="middle">${esc(line)}</text>`,
+        )
+        .join('')}</g>`
     })
     .join('')
   return `<line class="chart-axis" x1="${padL}" x2="${W - padL}" y1="${top + plotH}" y2="${top + plotH}"/>${bars}`
@@ -102,9 +130,13 @@ function donutChart(series: Series[], unit?: string): string {
   return `${arcs}<text class="chart-total" x="${cx}" y="${cy + 14}" text-anchor="middle">${esc(formatValue(total, unit))}</text>${legend}`
 }
 
-export function chartSvg(kind: ChartKind, series: Series[], unit?: string, title?: string): string {
+export function chartSvg(kind: ChartKind, series: Series[], unit?: string, title?: string, log = false): string {
   const body =
-    kind === 'line' ? lineChart(series, unit) : kind === 'donut' ? donutChart(series, unit) : barChart(series, unit)
+    kind === 'line'
+      ? lineChart(series, unit)
+      : kind === 'donut'
+        ? donutChart(series, unit)
+        : barChart(series, unit, log)
   return `<svg class="chart chart-${kind}" viewBox="0 0 ${W} ${H}" role="img"${title ? ` aria-label="${esc(title)}"` : ''}><defs><linearGradient id="barfill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/></linearGradient><linearGradient id="areafill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".35"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>${body}</svg>`
 }
 
