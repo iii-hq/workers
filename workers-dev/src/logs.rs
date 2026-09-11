@@ -4,6 +4,7 @@ use std::path::Path;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthChar;
 
 /// Normalize process output for TUI display and ring-buffer storage.
 pub fn normalize_log_line(raw: &str) -> String {
@@ -76,7 +77,7 @@ pub fn log_line_to_ratatui(line: &str, max_width: usize, color_enabled: bool) ->
     if let Some((ts, rest)) = split_tracing_timestamp(line) {
         let kind = classify_log_line(line);
         let ts_str = truncate_chars(ts, max_width);
-        let ts_width: usize = ts_str.chars().map(unicode_width).sum();
+        let ts_width: usize = ts_str.chars().map(|ch| ch.width().unwrap_or(0)).sum();
         let mut spans = vec![Span::styled(ts_str, log_timestamp_style(true))];
         // Only append the separator + message when columns remain. If the
         // timestamp alone fills max_width, a trailing space would push the line
@@ -156,7 +157,7 @@ fn truncate_chars(input: &str, max_width: usize) -> String {
     let mut width = 0usize;
     let mut out = String::new();
     for ch in input.chars() {
-        let w = unicode_width(ch);
+        let w = ch.width().unwrap_or(0);
         if width + w > max_width {
             break;
         }
@@ -164,14 +165,6 @@ fn truncate_chars(input: &str, max_width: usize) -> String {
         out.push(ch);
     }
     out
-}
-
-fn unicode_width(ch: char) -> usize {
-    if ch.is_ascii() {
-        1
-    } else {
-        2
-    }
 }
 
 /// Last `bytes` of a log file, normalized for the pane. Serves both the
@@ -286,7 +279,7 @@ mod tests {
             .spans
             .iter()
             .flat_map(|s| s.content.chars())
-            .map(unicode_width)
+            .map(|ch| ch.width().unwrap_or(0))
             .sum();
         assert!(total <= max, "rendered width {total} exceeds {max}");
     }

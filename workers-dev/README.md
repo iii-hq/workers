@@ -169,6 +169,13 @@ UI-watch flag and last error. Row 0 is pinned:
 `compose (daemon)`, whose log is the daemon's own output — the startup tree, the
 adoption lines, the managed engine's pid and every `error[CODE]`.
 
+An action never takes the keyboard: it runs detached and reports in the footer,
+because a cold container can take minutes and the daemon owns its lifecycle
+either way. `Esc` cancels only the project start — the one operation compose
+registers; a restart this dashboard asks for passes an id compose never
+registers, so there is nothing to cancel and `Esc` says nothing rather than
+lying.
+
 While an operation is running, the state column comes from compose's
 `compose-operation` feed (`queued` → `starting` → `ready`/`failed`) with a
 counter in the header. This matters on a cold checkout: `compose::status` cannot
@@ -191,6 +198,13 @@ see inside its own operation, so without the feed thirteen containers would read
 | `Esc` | cancel the running operation (`compose::cancel`) |
 | `?` | keys |
 | `q` | quit: `l` leave running · `s` stop everything · `Esc` cancel |
+| mouse | click a row to select it; the wheel scrolls whichever pane is under the pointer |
+
+Only button and SGR reporting are enabled (`?1000h` + `?1006h`), not crossterm's
+`EnableMouseCapture` — that also turns on any-motion reporting, which wakes the
+event loop for every cell the pointer crosses and, under tmux, takes drag-select,
+double-click-copy and middle-click paste away from the pane. Selecting text to
+copy keeps working.
 
 `s` is per container on purpose: a project-wide `compose::up` rolls back
 everything it started if one container fails, so a bad thirteenth worker would

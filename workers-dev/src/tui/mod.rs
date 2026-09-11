@@ -11,13 +11,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::style::Print;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
@@ -30,7 +32,6 @@ use crate::logs;
 use theme::*;
 
 const SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
-const LOG_PAGE: usize = 10;
 const LOG_HEIGHT_MIN: u16 = 6;
 const LOG_HEIGHT_DEFAULT: u16 = 18;
 const MIN_TABLE_HEIGHT: u16 = 9;
@@ -42,6 +43,14 @@ const TWO_COL_MIN_WIDTH: u16 = TABLE_PANE_WIDTH + PANE_GUTTER + MIN_LOG_PANE_WID
 const BRANCH_MAX: usize = 40;
 /// Dependents listed before the confirm dialog truncates; `d` always shows all.
 const CONFIRM_DEPENDENTS_SHOWN: usize = 8;
+
+/// Button tracking plus SGR coordinates, and deliberately not crossterm's
+/// `EnableMouseCapture`: that also sets `?1003h`, which reports every cell the
+/// pointer crosses — one wake per pixel of travel — and, under tmux, flips
+/// `mouse_any_flag`, taking drag-select, double-click-copy and middle-paste
+/// away from the pane. Click and wheel arrive without any of that.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
 
 const HELP_FULL: &str =
     " s up · x down · r restart · w ui-watch · d deps · f follow · / filter · ? keys · q quit ";
@@ -69,7 +78,6 @@ enum UiMode {
         name: String,
         dependents: Vec<String>,
     },
-    Busy(String),
     Quit,
 }
 
@@ -81,7 +89,6 @@ enum ModeKind {
     Help,
     Deps,
     Confirm,
-    Busy,
     Quit,
 }
 
@@ -93,7 +100,6 @@ fn mode_kind(mode: &UiMode) -> ModeKind {
         UiMode::Help => ModeKind::Help,
         UiMode::Deps { .. } => ModeKind::Deps,
         UiMode::ConfirmDown { .. } => ModeKind::Confirm,
-        UiMode::Busy(_) => ModeKind::Busy,
         UiMode::Quit => ModeKind::Quit,
     }
 }
@@ -145,6 +151,14 @@ struct Actions {
     errors: tokio::sync::mpsc::UnboundedSender<String>,
 }
 
+/// Where the two panes landed, so a click or a wheel can be aimed at one.
+/// `Terminal::draw` discards its closure's return, so they come back by `&mut`.
+#[derive(Clone, Copy, Default)]
+struct Panes {
+    table: Rect,
+    log: Rect,
+}
+
 struct UiCtx<'a> {
     compose: &'a Compose,
     state: &'a DashboardState,
@@ -158,6 +172,10 @@ struct UiCtx<'a> {
     follow: bool,
     log_height: u16,
     table_width: u16,
+    /// What is running, for the footer. A modal would be worse: an action here
+    /// is a detached call to a daemon that owns the lifecycle, and a cold
+    /// container takes minutes — the keyboard has no business being held.
+    busy: Option<&'a str>,
     spinner_frame: usize,
     color_enabled: bool,
     error: Option<&'a str>,
@@ -206,7 +224,12 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
     enable_raw_mode()?;
     // Push the terminal's title (XTWINOPS; ignored where unsupported) before
     // overwriting it, so quitting can restore it.
-    execute!(io::stdout(), EnterAlternateScreen, Print("\x1b[22;0t"))?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        Print("\x1b[22;0t"),
+        Print(MOUSE_ON)
+    )?;
 
     let result: Result<()> = async {
         let backend = ratatui::backend::CrosstermBackend::new(io::stdout());
@@ -254,7 +277,8 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
         let mut log_height: u16 = LOG_HEIGHT_DEFAULT;
         let mut table_width: u16 = TABLE_PANE_WIDTH;
         let mut spinner_frame: usize = 0;
-        let mut error_banner: Option<(String, Instant)> = None;
+        let mut busy_note: Option<String> = None;
+        let mut error_banner: Option<String> = None;
         let mut running = true;
         let mut stop_on_exit = false;
         let mut needs_redraw = true;
@@ -264,6 +288,7 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
         let mut log_title = String::new();
         let mut last_log_read = Instant::now() - Duration::from_secs(60);
         let mut last_log_key = String::new();
+        let mut panes = Panes::default();
 
         let color_enabled = compose.config.color_mode.enabled_for_tui();
 
@@ -278,7 +303,10 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
             // active segment compose writes grows to 10 MiB, so this is not a
             // per-redraw cost.
             let key = log_key(&compose, &state, selected);
-            if key != last_log_key || last_log_read.elapsed() >= poll_interval {
+            // Only while following: the scroll window is measured back from the
+            // end, so re-reading a growing file walks the line you stopped on
+            // off the top of the pane.
+            if key != last_log_key || (follow && last_log_read.elapsed() >= poll_interval) {
                 let (title, path) = log_source(&compose, &state, selected);
                 log_lines = path
                     .map(|p| logs::tail_file(&p, LOG_TAIL_BYTES))
@@ -306,19 +334,21 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
                     follow,
                     log_height,
                     table_width,
+                    busy: busy_note.as_deref(),
                     spinner_frame,
                     color_enabled,
-                    error: error_banner.as_ref().map(|(s, _)| s.as_str()),
+                    error: error_banner.as_deref(),
                 };
-                terminal.draw(|f| draw_ui(f, &mut table_state, &ctx))?;
+                terminal.draw(|f| panes = draw_ui(f, &mut table_state, &ctx))?;
                 needs_redraw = false;
                 last_redraw = Instant::now();
             }
 
+            // Also the 1 Hz idle redraw and the spinner clock.
             if last_busy_tick.elapsed() >= poll_interval {
                 last_busy_tick = Instant::now();
-                if matches!(mode, UiMode::Busy(_)) && in_flight.load(Ordering::SeqCst) == 0 {
-                    mode = UiMode::Dashboard;
+                if in_flight.load(Ordering::SeqCst) == 0 {
+                    busy_note = None;
                 }
                 needs_redraw = true;
             }
@@ -333,31 +363,22 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
                         error_banner = None; // any keypress acknowledges the banner
                         match mode_kind(&mode) {
                             ModeKind::Filter => handle_filter_key(key, &mut filter, &mut mode),
-                            ModeKind::AddDir => handle_add_dir_key(key, &mut mode, &actions),
+                            ModeKind::AddDir => {
+                                handle_add_dir_key(key, &mut mode, &mut busy_note, &actions)
+                            }
                             ModeKind::Help | ModeKind::Deps => mode = UiMode::Dashboard,
-                            ModeKind::Confirm => handle_confirm_key(key, &mut mode, &actions),
+                            ModeKind::Confirm => {
+                                handle_confirm_key(key, &mut mode, &mut busy_note, &actions)
+                            }
                             ModeKind::Quit => {
                                 handle_quit_key(key, &mut mode, &mut running, &mut stop_on_exit)
                             }
-                            ModeKind::Busy => match key.code {
-                                // `compose::cancel` is a control, not a mutation,
-                                // so it answers during the cold build when up,
-                                // down and restart do not.
-                                KeyCode::Esc if progress.live() => spawn_cancel(&actions),
-                                KeyCode::Esc if in_flight.load(Ordering::SeqCst) == 0 => {
-                                    mode = UiMode::Dashboard
-                                }
-                                // An action is a detached call to a daemon that
-                                // owns the lifecycle, so leaving while one runs
-                                // is the architecture's default, not an escape
-                                // hatch. Without this a `s` on a cold container
-                                // holds the whole UI for the lifecycle timeout.
-                                KeyCode::Char('q') => mode = UiMode::Quit,
-                                _ => {}
-                            },
                             ModeKind::Dashboard => handle_dashboard_key(
                                 key,
                                 &mut mode,
+                                &mut busy_note,
+                                progress.live(),
+                                panes.log.height.saturating_sub(3).max(1) as usize,
                                 &mut table_state,
                                 &rows,
                                 &state,
@@ -370,20 +391,28 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
                             ),
                         }
                     }
+                    Event::Mouse(mouse) => {
+                        needs_redraw = true;
+                        handle_mouse(
+                            mouse,
+                            panes,
+                            &mut table_state,
+                            &rows,
+                            &mut follow,
+                            &mut log_scroll,
+                        );
+                    }
                     Event::Resize(_, _) => needs_redraw = true,
                     _ => {}
                 }
             }
 
             if let Ok(message) = err_rx.try_recv() {
-                error_banner = Some((message, Instant::now()));
-                needs_redraw = true;
-            }
-            if error_banner
-                .as_ref()
-                .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(8))
-            {
-                error_banner = None;
+                // Kept until a keypress acknowledges it. A failed mutation is
+                // the only copy of a startup failure — a container that never
+                // starts writes no record, so `compose::status` reports a plain
+                // `stopped` with nothing to read.
+                error_banner = Some(message);
                 needs_redraw = true;
             }
             if state_rx.has_changed().unwrap_or(false) {
@@ -401,7 +430,12 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
     .await;
 
     disable_raw_mode()?;
-    execute!(io::stdout(), Print("\x1b[23;0t"), LeaveAlternateScreen)?;
+    execute!(
+        io::stdout(),
+        Print(MOUSE_OFF),
+        Print("\x1b[23;0t"),
+        LeaveAlternateScreen
+    )?;
     result
 }
 
@@ -629,20 +663,23 @@ fn spawn_toggle_ui_watch(actions: &Actions, file: PathBuf, worker: String) {
     });
 }
 
-fn start_on_demand(actions: &Actions, mode: &mut UiMode, name: String) {
+fn start_on_demand(actions: &Actions, busy: &mut Option<String>, name: String) {
     match actions
         .compose
         .repo_worker(&name)
         .and_then(|worker| worker.bin.clone())
     {
         Some(bin) => {
-            *mode = UiMode::Busy(format!("starting {name}…"));
+            *busy = Some(format!("starting {name}…"));
             spawn_add_local(actions, name, bin);
         }
+        // The banner, not the footer: the footer clears itself on the next
+        // idle tick and this needs to be read.
         None => {
-            *mode = UiMode::Busy(format!(
-                "{name} installs from the registry, not from this tree"
-            ))
+            let _ = actions.errors.send(format!(
+                "{name} installs from the registry, not from this tree — \
+                 `iii trigger compose::add worker={name}`"
+            ));
         }
     }
 }
@@ -667,6 +704,11 @@ fn spawn_cancel(actions: &Actions) {
 fn handle_dashboard_key(
     key: KeyEvent,
     mode: &mut UiMode,
+    busy: &mut Option<String>,
+    progress_live: bool,
+    // One screenful of the log pane as it was last drawn, so a page keeps a
+    // line or two of overlap instead of a fixed ten.
+    log_page: usize,
     table_state: &mut TableState,
     rows: &[RowRef],
     state: &DashboardState,
@@ -690,6 +732,13 @@ fn handle_dashboard_key(
         KeyCode::Char('?') => *mode = UiMode::Help,
         KeyCode::Char('/') => *mode = UiMode::Filter,
         KeyCode::Char('a') => *mode = UiMode::AddDir(String::new()),
+        // Only the daemon's own startup `--up` runs under an operation compose
+        // registered; a restart this dashboard asks for passes an id compose
+        // never registers, so there is nothing to cancel and Esc says nothing.
+        KeyCode::Esc if progress_live => {
+            *busy = Some("cancelling…".to_string());
+            spawn_cancel(actions);
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             move_selection(table_state, rows, false);
             *follow = true;
@@ -714,10 +763,10 @@ fn handle_dashboard_key(
         }
         KeyCode::PageUp => {
             *follow = false;
-            *log_scroll += LOG_PAGE;
+            *log_scroll += log_page;
         }
         KeyCode::PageDown => {
-            *log_scroll = log_scroll.saturating_sub(LOG_PAGE);
+            *log_scroll = log_scroll.saturating_sub(log_page);
             if *log_scroll == 0 {
                 *follow = true;
             }
@@ -734,20 +783,20 @@ fn handle_dashboard_key(
         // everything it started when one container fails, so it is never what
         // a single `s` does.
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            *mode = UiMode::Busy("starting the project…".to_string());
+            *busy = Some("starting the project…".to_string());
             spawn_up(actions, compose.config.compose_path.clone(), None);
         }
         KeyCode::Char('s') => match (name, running) {
             // An on-demand worker is re-declared on every start, so the
             // declaration follows the repo and the daemon re-reads it.
-            (Some(name), Some(_)) if is_local => start_on_demand(actions, mode, name),
+            (Some(name), Some(_)) if is_local => start_on_demand(actions, busy, name),
             (Some(name), Some(file)) => {
-                *mode = UiMode::Busy(format!("up {name}…"));
+                *busy = Some(format!("up {name}…"));
                 spawn_up(actions, file, Some(name));
             }
             // A repo worker nothing declares yet: declare it in its own
             // project and start it, which is the whole point of listing them.
-            (Some(name), None) => start_on_demand(actions, mode, name),
+            (Some(name), None) => start_on_demand(actions, busy, name),
             _ => {}
         },
         KeyCode::Char('x') => {
@@ -755,7 +804,7 @@ fn handle_dashboard_key(
                 // An on-demand worker has no dependents to take down with it:
                 // nothing in the stack can declare a dependency on it.
                 if is_local {
-                    *mode = UiMode::Busy(format!("down {name}…"));
+                    *busy = Some(format!("down {name}…"));
                     spawn_down(actions, file, name);
                 } else {
                     let dependents = compose.config.dependents(&name);
@@ -765,13 +814,13 @@ fn handle_dashboard_key(
         }
         KeyCode::Char('r') => {
             if let (Some(name), Some(file)) = (name, running) {
-                *mode = UiMode::Busy(format!("restarting {name}…"));
+                *busy = Some(format!("restarting {name}…"));
                 spawn_restart(actions, file, name);
             }
         }
         KeyCode::Char('w') => {
             if let (Some(name), Some(file)) = (name, running) {
-                *mode = UiMode::Busy(format!("ui watch {name}…"));
+                *busy = Some(format!("ui watch {name}…"));
                 spawn_toggle_ui_watch(actions, file, name);
             }
         }
@@ -788,6 +837,50 @@ fn handle_dashboard_key(
                     deps,
                     dependents,
                 };
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Click selects, the wheel scrolls whatever is under the pointer. Anything
+/// else the terminal reports is the terminal's business, not ours.
+fn handle_mouse(
+    mouse: MouseEvent,
+    panes: Panes,
+    table_state: &mut TableState,
+    rows: &[RowRef],
+    follow: &mut bool,
+    log_scroll: &mut usize,
+) {
+    let at = Position::new(mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::ScrollUp if panes.log.contains(at) => {
+            *follow = false;
+            *log_scroll += 3;
+        }
+        MouseEventKind::ScrollDown if panes.log.contains(at) => {
+            *log_scroll = log_scroll.saturating_sub(3);
+            if *log_scroll == 0 {
+                *follow = true;
+            }
+        }
+        MouseEventKind::ScrollUp => move_selection(table_state, rows, false),
+        MouseEventKind::ScrollDown => move_selection(table_state, rows, true),
+        MouseEventKind::Down(MouseButton::Left) if panes.table.contains(at) => {
+            // The first body row sits below the border and the column header,
+            // and ratatui writes the real first visible index back into
+            // `offset` as it renders. Every row here is one line high; the day
+            // one is not, this aims short.
+            let first_row = panes.table.y + 2;
+            if mouse.row < first_row {
+                return;
+            }
+            let index = table_state.offset() + (mouse.row - first_row) as usize;
+            if rows.get(index).is_some_and(|row| row.selectable()) {
+                table_state.select(Some(index));
+                *follow = true;
+                *log_scroll = 0;
             }
         }
         _ => {}
@@ -823,7 +916,12 @@ fn handle_filter_key(key: KeyEvent, filter: &mut String, mode: &mut UiMode) {
 
 /// Tab completes against the filesystem, because a path is the one thing here
 /// nobody wants to type in full and nobody remembers exactly.
-fn handle_add_dir_key(key: KeyEvent, mode: &mut UiMode, actions: &Actions) {
+fn handle_add_dir_key(
+    key: KeyEvent,
+    mode: &mut UiMode,
+    busy: &mut Option<String>,
+    actions: &Actions,
+) {
     let UiMode::AddDir(input) = mode else {
         return;
     };
@@ -831,7 +929,8 @@ fn handle_add_dir_key(key: KeyEvent, mode: &mut UiMode, actions: &Actions) {
         KeyCode::Enter => {
             let input = input.clone();
             let compose = actions.compose.clone();
-            *mode = UiMode::Busy(format!("scanning {input}…"));
+            *busy = Some(format!("scanning {input}…"));
+            *mode = UiMode::Dashboard;
             spawn_action(actions, async move {
                 compose.add_worker_dir(&input).map(|_| ())
             });
@@ -893,7 +992,12 @@ fn complete_path(input: &mut String) {
     }
 }
 
-fn handle_confirm_key(key: KeyEvent, mode: &mut UiMode, actions: &Actions) {
+fn handle_confirm_key(
+    key: KeyEvent,
+    mode: &mut UiMode,
+    busy: &mut Option<String>,
+    actions: &Actions,
+) {
     let UiMode::ConfirmDown { name, .. } = mode else {
         return;
     };
@@ -905,7 +1009,8 @@ fn handle_confirm_key(key: KeyEvent, mode: &mut UiMode, actions: &Actions) {
                 actions.compose.config.compose_path.clone(),
                 name.clone(),
             );
-            *mode = UiMode::Busy(format!("down {name}…"));
+            *busy = Some(format!("down {name}…"));
+            *mode = UiMode::Dashboard;
         }
         KeyCode::Char('n') | KeyCode::Esc => *mode = UiMode::Dashboard,
         _ => {}
@@ -940,7 +1045,7 @@ fn styled_if(enabled: bool, style: Style) -> Style {
     }
 }
 
-fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
+fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) -> Panes {
     let area = f.area();
     // The header grows a line while something is wrong, to carry the remedy.
     let header_h = if ctx.state.error.is_some() { 4 } else { 3 };
@@ -956,6 +1061,7 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
 
     draw_header(f, chunks[0], ctx);
 
+    let panes;
     if body.width >= TWO_COL_MIN_WIDTH {
         let table_w = ctx
             .table_width
@@ -969,6 +1075,10 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
                 Constraint::Min(MIN_LOG_PANE_WIDTH),
             ])
             .split(body);
+        panes = Panes {
+            table: cols[0],
+            log: cols[2],
+        };
         draw_table(f, cols[0], table_state, ctx);
         draw_log_pane(f, cols[2], ctx);
     } else {
@@ -980,6 +1090,10 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(MIN_TABLE_HEIGHT), Constraint::Length(log_h)])
             .split(body);
+        panes = Panes {
+            table: rows[0],
+            log: rows[1],
+        };
         draw_table(f, rows[0], table_state, ctx);
         draw_log_pane(f, rows[1], ctx);
     }
@@ -990,7 +1104,6 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
         UiMode::ConfirmDown { name, dependents } => {
             draw_confirm_overlay(f, body, name, dependents, ctx)
         }
-        UiMode::Busy(message) => draw_busy_overlay(f, body, message, ctx),
         UiMode::Deps {
             name,
             deps,
@@ -1000,6 +1113,7 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) {
         UiMode::Quit => draw_quit_overlay(f, body, ctx),
         _ => {}
     }
+    panes
 }
 
 fn draw_header(f: &mut Frame, area: Rect, ctx: &UiCtx) {
@@ -1023,17 +1137,6 @@ fn draw_header(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             styled_if(color, branch_style()).add_modifier(Modifier::BOLD),
         ));
     }
-
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-        &ctx.compose.config.engine_url,
-        styled_if(color, engine_url_style()),
-    ));
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-        format!("ns:{}", ctx.compose.config.namespace),
-        styled_if(color, muted_cell_style()),
-    ));
 
     if ctx.state.error.is_some() {
         spans.push(Span::styled(
@@ -1099,6 +1202,20 @@ fn draw_header(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             styled_if(color, Style::default().fg(Color::Yellow)),
         ));
     }
+
+    // Constants last. A narrow terminal clips the header from the right, and
+    // the engine URL never changes while the counts and the filter do — with
+    // them ahead of it an applied filter needed ~150 columns to be visible.
+    spans.push(Span::raw("   "));
+    spans.push(Span::styled(
+        &ctx.compose.config.engine_url,
+        styled_if(color, engine_url_style()),
+    ));
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(
+        format!("ns:{}", ctx.compose.config.namespace),
+        styled_if(color, muted_cell_style()),
+    ));
 
     let mut lines = vec![Line::from(spans)];
     // A bare error is a dead end. The remedy comes first so right-edge
@@ -1181,7 +1298,7 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
                     )),
                     Cell::from(Span::styled(ui, ui_style)),
                     Cell::from(Span::styled(
-                        entry.status.last_error.clone().unwrap_or_default(),
+                        short_error(entry.status.last_error.as_deref()),
                         styled_if(color, Style::default().fg(Color::Red)),
                     )),
                 ])
@@ -1262,6 +1379,18 @@ fn group_row(ctx: &UiCtx, label: &str, header: RowRef, color: bool) -> Row<'stat
     ))])
 }
 
+/// compose writes five fixed phrases here; the column is ~10 columns wide and
+/// the exit code is the only part that differs between two crashes.
+fn short_error(error: Option<&str>) -> String {
+    let Some(error) = error else {
+        return String::new();
+    };
+    match error.strip_prefix("exited unexpectedly with ") {
+        Some(code) => format!("exit {code}"),
+        None => error.to_string(),
+    }
+}
+
 fn pid_cell(pid: Option<u32>) -> String {
     pid.map(|pid| pid.to_string()).unwrap_or_else(|| "—".into())
 }
@@ -1303,9 +1432,6 @@ fn draw_log_pane(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             .map(|line| logs::log_line_to_ratatui(line, inner_width, color))
             .collect()
     };
-    while lines.len() < inner_height {
-        lines.push(Line::from(" ".repeat(inner_width.max(1))));
-    }
     lines.truncate(inner_height.max(1));
 
     let mut title = vec![
@@ -1345,6 +1471,17 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             Paragraph::new(format!(" ⚠ {error} ")).style(
                 styled_if(color, Style::default().fg(Color::Red)).add_modifier(Modifier::BOLD),
             ),
+            area,
+        );
+        return;
+    }
+    // Ahead of the help line: what is running matters more than what the keys
+    // are, and it is the only thing left saying an action is in flight.
+    if let Some(message) = ctx.busy {
+        let spin = SPINNER[ctx.spinner_frame % SPINNER.len()];
+        f.render_widget(
+            Paragraph::new(format!(" {spin} {message} "))
+                .style(styled_if(color, Style::default().fg(Color::Yellow))),
             area,
         );
         return;
@@ -1608,7 +1745,10 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         ("+ -", "resize the log pane"),
         ("/", "filter workers by name"),
         ("a", "offer the workers in another directory (remembered)"),
-        ("Esc", "cancel the running operation (while busy)"),
+        (
+            "Esc",
+            "cancel the project start (only the cold boot can be)",
+        ),
         ("?", "toggle this help"),
         ("q", "quit (leave running, or stop everything)"),
     ];
@@ -1635,6 +1775,14 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         Span::styled("○ ", styled_if(color, muted_cell_style())),
         Span::raw("stopped"),
     ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "   mouse       ",
+            styled_if(color, Style::default().fg(Color::Cyan)),
+        ),
+        Span::raw("click a row · wheel scrolls the pane under the pointer"),
+    ]));
+    lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "   stack = harness/worker-compose.yaml · repo = everything else here",
         styled_if(color, hint_style()),
@@ -1671,33 +1819,6 @@ fn centered_rect_fixed(width: u16, height: u16, area: Rect) -> Rect {
         w,
         h,
     )
-}
-
-fn draw_busy_overlay(f: &mut Frame, area: Rect, message: &str, ctx: &UiCtx) {
-    let color = ctx.color_enabled;
-    let spin = SPINNER[ctx.spinner_frame % SPINNER.len()];
-    let mut text = format!("{message}  ");
-    if ctx.progress.live() {
-        text.push_str("(Esc cancels)  ");
-    }
-    let line = Line::from(vec![
-        Span::styled(
-            format!("  {spin} "),
-            styled_if(color, Style::default().fg(Color::Yellow)),
-        ),
-        Span::raw(text.clone()),
-    ]);
-    let width = (text.chars().count() as u16).saturating_add(8).max(24);
-    let popup = centered_rect_fixed(width, 3, area);
-    f.render_widget(Clear, popup);
-    f.render_widget(
-        Paragraph::new(vec![line]).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .style(styled_if(color, overlay_bg_style())),
-        ),
-        popup,
-    );
 }
 
 fn status_icon(state: &str, spinner_frame: usize) -> &'static str {
