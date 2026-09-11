@@ -24,7 +24,7 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
     // must never fail or delay the step).
     //
     // `iii.tag.kind` / `iii.tag.display_name` are the console timeline's
-    // relevant-span convention (see workers/console/docs/timeline-span-tags.md):
+    // relevant-span convention (see workers/ade/docs/timeline-span-tags.md):
     // `harness.turn` vs `harness.subagent` classifies the step, and
     // sub-agent steps get a suggestive `Sub-agent · <task preview>` label so
     // they read as distinct segments from the parent turn's own steps in the

@@ -21,11 +21,11 @@ def harness_changed(files: list[str]) -> bool:
 
 
 def test_harness_ignores_worker_release_metadata() -> None:
-    assert harness_changed(["console/Cargo.toml", "console/Cargo.lock"]) is False
+    assert harness_changed(["ade/Cargo.toml", "ade/Cargo.lock"]) is False
 
 
 def test_harness_runs_for_worker_source_changes() -> None:
-    assert harness_changed(["console/src/main.rs"]) is True
+    assert harness_changed(["ade/src/main.rs"]) is True
 
 
 def test_harness_runs_for_integration_infrastructure_changes() -> None:

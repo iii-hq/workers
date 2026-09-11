@@ -143,7 +143,7 @@ mod tests {
         ] {
             assert!(valid_container_name(name), "{name}");
         }
-        for name in ["", "../console", "/tmp/x", "Upper", "a/b", "a b"] {
+        for name in ["", "../ade", "/tmp/x", "Upper", "a/b", "a b"] {
             assert!(!valid_container_name(name), "{name}");
         }
     }

@@ -22,5 +22,5 @@ dependencies:
   provider-openai-codex: "^0.4.4"
   provider-anthropic: "^1.2.8"
   provider-openai: "^1.2.7"
-  shell: "^0.11.9"
-  console: "^1.9.11"
+  ide: "^0.11.9"
+  ade: "^1.9.11"

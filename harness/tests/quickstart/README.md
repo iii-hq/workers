@@ -51,7 +51,7 @@ export OPENAI_API_KEY='<your-openai-api-key>'
 make -C harness quickstart-validate
 ```
 
-The machine needs `curl`, `jq`, `ffmpeg`, the `console/web` dependencies, and
+The machine needs `curl`, `jq`, `ffmpeg`, the `ade/web` dependencies, and
 Chromium for Playwright. The validator invokes the repository's local
 Playwright binary directly, so Corepack cannot silently select a different
 pnpm version while the quickstart is running.

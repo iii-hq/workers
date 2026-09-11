@@ -38,7 +38,7 @@ it back), so it needs no SDK or engine changes and works from every SDK
 language.
 
 **Who consumes it.** The console's traces page
-(`workers/console/web/src/lib/trace-hidden-functions.ts`) fetches
+(`workers/ade/web/src/lib/trace-hidden-functions.ts`) fetches
 `engine::functions::list { include_internal: true }`, collects the ids whose
 `metadata.trace_hidden === true`, and merges them into the span filter as
 defaults. A user unhiding a group persists that override in the `console`
@@ -87,7 +87,7 @@ Chained plumbing still disappears as a unit because each link matches on
 its own: hiding `harness::turn` removes `enqueue` + `fn_queue` +
 `execute harness::turn` (all attributed to `harness::turn`), and the
 `harness::turn step` span — a tag ROOT, so it groups under its own name
-(see [`timeline-span-tags.md`](../../console/docs/timeline-span-tags.md))
+(see [`timeline-span-tags.md`](../../ade/docs/timeline-span-tags.md))
 rather than under `harness::turn` — re-parents under `harness::send` with
 all the turn's real work intact. A span nested inside hidden plumbing that
 belongs to a *different, visible* function always survives, promoted.
@@ -124,7 +124,7 @@ by the family label, hidden by default; unhiding a family persists as
 `session::update-message` writes), `session events` (session-manager's
 event fan-out — the console's live relays), `turn enqueue` (harness
 re-enqueue of the next `harness::turn` step). See
-[`timeline-span-tags.md`](../../console/docs/timeline-span-tags.md).
+[`timeline-span-tags.md`](../../ade/docs/timeline-span-tags.md).
 
 ## 3b. Engine built-ins
 
@@ -175,7 +175,7 @@ keeps the engine's own machinery spans out of the console streams is
 - [ ] Existing metadata keys preserved — `.metadata()` replaces the object.
 - [ ] If the handler does work a human should still see, that work is
       marked as its own segment via `iii.tag.kind`
-      ([`timeline-span-tags.md`](../../console/docs/timeline-span-tags.md))
+      ([`timeline-span-tags.md`](../../ade/docs/timeline-span-tags.md))
       so the hide re-roots it instead of swallowing it.
 - [ ] Verify the registration: restart the worker, then
       `iii trigger engine::functions::list --json '{"include_internal": true}'`

@@ -139,7 +139,7 @@ Pick a **reload tier** (§6) and mirror the matching reference:
   and other numeric knobs from the live snapshot per call so they need no rebuild.
 - `register_config_trigger(iii, cell, <resource(s) to rebuild/re-bind>)`
 
-**Tier 2 — Full runtime swap** ([`session-manager/src/configuration.rs`](../../session-manager/src/configuration.rs), [`shell/src/configuration.rs`](../../shell/src/configuration.rs)):
+**Tier 2 — Full runtime swap** ([`session-manager/src/configuration.rs`](../../session-manager/src/configuration.rs), [`ide/src/configuration.rs`](../../ide/src/configuration.rs)):
 
 - `AppState { runtime: Arc<RwLock<SessionRuntime>>, ctx, reload_lock, reload_status }`
 - `build_runtime(cfg, ctx) -> Result<SessionRuntime, String>` — pure wiring

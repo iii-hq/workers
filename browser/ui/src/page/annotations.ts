@@ -2,7 +2,7 @@
  * Annotations over one captured frame: the pure half the browser page owns.
  * The pin type and the layer/list components come from console-ui; the
  * helpers here build, export and describe a set. Mirrors
- * console/web/src/lib/annotations.ts.
+ * ade/web/src/lib/annotations.ts.
  */
 
 import type { Annotation, AnnotationKind, AnnotationTool } from '@iii-dev/console-ui'

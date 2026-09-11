@@ -9,7 +9,7 @@
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://workers.iii.dev/workers/harness"><img alt="harness on the workers registry" src="https://workers.iii.dev/workers/harness/badge.svg"></a>
-  <a href="https://workers.iii.dev/workers/console"><img alt="console on the workers registry" src="https://workers.iii.dev/workers/console/badge.svg"></a>
+  <a href="https://workers.iii.dev/workers/ade"><img alt="ade on the workers registry" src="https://workers.iii.dev/workers/ade/badge.svg"></a>
 </p>
 
 </div>
@@ -39,7 +39,7 @@ iii compose --up
 ```bash
 # New terminal, same folder. `compose::add` updates this Compose project.
 cd iii-app
-iii trigger compose::add worker=harness worker=console
+iii trigger compose::add worker=harness worker=ade
 ```
 
 ```bash

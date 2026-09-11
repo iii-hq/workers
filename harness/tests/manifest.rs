@@ -108,8 +108,8 @@ fn worker_manifest_uses_the_tested_harness_stack() {
         ("iii-directory", "^1.2.3"),
         ("provider-anthropic", "^1.2.8"),
         ("provider-openai", "^1.2.7"),
-        ("shell", "^0.11.9"),
-        ("console", "^1.9.11"),
+        ("ide", "^0.11.9"),
+        ("ade", "^1.9.11"),
     ] {
         assert_eq!(
             dependencies.get(serde_yaml::Value::String(worker.into())),

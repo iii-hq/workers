@@ -183,5 +183,5 @@ This page covers behavior the schema can't. For exact field types, call
 
 # Related
 
-- [`shell/index`](iii://shell) — local filesystem + process ops; `web::fetch` is the network counterpart (use it, not `shell::exec curl`).
+- [`ide/index`](iii://ide) — local filesystem + process ops; `web::fetch` is the network counterpart (use it, not `shell::exec curl`).
 - [`sandbox/index`](iii://sandbox) — code *inside* a sandbox reaches the host engine via the boot-time `III_ENGINE_URL` rewrite, not `web::fetch`.

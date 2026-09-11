@@ -209,7 +209,7 @@ jobs:
         with:
           node-version: 22
           cache: 'pnpm'
-          # console/web is a member of the repo-root pnpm workspace (root
+          # ade/web is a member of the repo-root pnpm workspace (root
           # pnpm-lock.yaml); the glob also covers standalone web/ locks.
           cache-dependency-path: '**/pnpm-lock.yaml'
 
@@ -672,7 +672,7 @@ jobs:
         with:
           node-version: 22
           cache: 'pnpm'
-          # console/web is a member of the repo-root pnpm workspace (root
+          # ade/web is a member of the repo-root pnpm workspace (root
           # pnpm-lock.yaml); the glob also covers standalone web/ locks.
           cache-dependency-path: '**/pnpm-lock.yaml'
 

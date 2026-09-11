@@ -1,0 +1,50 @@
+[workspace]
+
+[package]
+name = "ide"
+version = "0.12.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "ide"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.23.0"
+iii-worker-paths = { path = "../crates/worker-paths" }
+iii-helpers = "=0.23.0"
+iii-console-ui = { path = "../crates/console-ui" }
+# Filesystem watch behind the shell::changed trigger type (FSEvents/inotify).
+notify = "8"
+schemars = { version = "0.8", features = ["uuid1"] }
+libc = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+uuid = { version = "1", features = ["v4"] }
+once_cell = "1"
+regex = "1"
+shell-words = "1"
+async-trait = "0.1"
+url = "2"
+base64 = "0.22"
+walkdir = "2"
+globset = "0.4"
+ignore = "0.4"
+sha2 = "0.10"
+portable-pty = "0.9.0"
+
+[dev-dependencies]
+tempfile = "3"
+cucumber = "0.22"
+
+[[test]]
+name = "bdd"
+harness = false

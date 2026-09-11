@@ -183,7 +183,7 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "editor",
         "lsp",
         "sandbox-code-runner",
-        "shell",
+        "ide",
         "voice",
         "workflow",
     }

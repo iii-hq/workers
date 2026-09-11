@@ -98,7 +98,7 @@ Some workers have harness-level e2e beyond unit tests:
 
 | Workflow | Worker |
 |---|---|
-| `shell-e2e.yml` | `shell` |
+| `ide-e2e.yml` | `shell` |
 | `database-e2e.yml` | `database` |
 | `storage-e2e.yml` | `storage` |
 | `rbac-proxy-e2e.yml` | `rbac-proxy` |

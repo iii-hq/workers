@@ -15,7 +15,7 @@
  * ---------------------------------------------------------------------------
  * The page renders files and diffs with `@pierre/diffs`. Bundled as-is that
  * costs 10,808,316 bytes — over the console's 8 MiB per-asset cap
- * (`console/src/ui_assets.rs`, MAX_ASSET_BYTES). Almost none of that is
+ * (`ade/src/ui_assets.rs`, MAX_ASSET_BYTES). Almost none of that is
  * pierre: its own code is 350 KB. The 10 MB is shiki's *full* bundle, which
  * pierre reaches because `shiki/bundle/full` builds its `createHighlighter`
  * from three statically-referenced catalogs:

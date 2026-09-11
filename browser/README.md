@@ -8,7 +8,7 @@ accessibility-tree outline, click and type against element refs, and read the
 page's own console and network history back as data. The single most
 important thing it gives you: "why is my dev server page blank?" becomes
 answerable, because the page's console errors are one
-`browser::console::read` away. The [console](https://github.com/iii-hq/workers/tree/main/console)
+`browser::console::read` away. The [console](https://github.com/iii-hq/workers/tree/main/ade)
 worker adds the human window: a Chrome-style tab strip over a streaming
 viewport (Chromium-pushed screencast frames), an address bar, developer tools
 behind the menu, and click-to-pick elements into chat.
@@ -94,10 +94,10 @@ machine; point `executable` at a specific binary if auto-detection picks the
 wrong one.
 
 To watch sessions live, pick elements into chat, and follow the agent's
-browsing from a UI, add the [console](https://github.com/iii-hq/workers/tree/main/console) worker as well:
+browsing from a UI, add the [console](https://github.com/iii-hq/workers/tree/main/ade) worker as well:
 
 ```bash
-iii trigger compose::add worker=console
+iii trigger compose::add worker=ade
 ```
 
 ## Quickstart

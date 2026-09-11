@@ -4,7 +4,7 @@
  * session tree renders for each token — the console maps
  * agent→Bot, code→Code2, search→Search, terminal→Terminal,
  * database→Database, test→FlaskConical, review→ClipboardCheck,
- * docs→FileText, design→Palette (see console/web
+ * docs→FileText, design→Palette (see ade/web
  * ActiveSubagentChips.tsx). Path data only; rendered as stroke icons
  * with the standard lucide attributes.
  */

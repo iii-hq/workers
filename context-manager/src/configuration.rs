@@ -1,6 +1,6 @@
 //! Integration with the `configuration` worker — register the schema,
 //! fetch the authoritative value at boot, and hot-reload it when it
-//! changes. Mirrors [`shell`](../../shell/src/configuration.rs) /
+//! changes. Mirrors [`ide`](../../ide/src/configuration.rs) /
 //! [`database`](../../database/src/configuration.rs) /
 //! [`coder`](../../coder/src/configuration.rs).
 //!

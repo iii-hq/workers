@@ -163,7 +163,7 @@ summary visible. Ordinary origin fields do not create rows.
 ## Keeping it honest
 
 The declarations are hand-modeled on the console's real components; two
-guards in `console/web` fail the build/tests when they drift:
+guards in `ade/web` fail the build/tests when they drift:
 
 - `src/lib/console-ui-conformance.test.ts` — type-level check that every
   declared component export is satisfied by the real component, plus runtime
