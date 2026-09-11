@@ -155,7 +155,8 @@ export function resolveTheme(deck: Pick<Deck, 'theme' | 'theme_overrides'>, bran
   return {
     ...base,
     dark,
-    colors: dark === base.dark ? colors : { ...colors, surface: dark ? mix(colors.background, '#ffffff', 0.08) : '#ffffff' },
+    colors:
+      dark === base.dark ? colors : { ...colors, surface: dark ? mix(colors.background, '#ffffff', 0.08) : '#ffffff' },
     fonts: {
       heading: overrides.font_heading ?? base.fonts.heading,
       body: overrides.font_body ?? base.fonts.body,
@@ -206,6 +207,8 @@ export function withAlpha(hex: string, alpha: number): string {
 
 export function googleFontsHref(theme: Theme): string {
   const families = [...new Set([theme.fonts.heading, theme.fonts.body, theme.fonts.mono])]
-  const query = families.map((family) => `family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@400;500;600;700;800`)
+  const query = families.map(
+    (family) => `family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@400;500;600;700;800`,
+  )
   return `https://fonts.googleapis.com/css2?${query.join('&')}&display=swap`
 }

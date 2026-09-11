@@ -17,8 +17,13 @@ const RuntimeFields = z.object({
   default_model: z
     .string()
     .default('')
-    .describe('Router model id used by slides::outline when the call names none; empty = first chat model in the router catalog'),
-  default_provider: z.string().default('').describe('Router provider id paired with default_model; empty = let the router choose'),
+    .describe(
+      'Router model id used by slides::outline when the call names none; empty = first chat model in the router catalog',
+    ),
+  default_provider: z
+    .string()
+    .default('')
+    .describe('Router provider id paired with default_model; empty = let the router choose'),
   outline_max_output_tokens: z
     .number()
     .int()

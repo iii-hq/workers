@@ -74,7 +74,8 @@ export function text(value: unknown): string | undefined {
 }
 
 function record(value: unknown, what: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`INVALID_${what}: expected an object`)
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error(`INVALID_${what}: expected an object`)
   return value as Record<string, unknown>
 }
 
@@ -142,7 +143,8 @@ export function normalizeSlide(input: unknown, index = 0): Slide {
   const raw = record(input, 'SLIDE')
   const layout = (LAYOUTS as readonly string[]).includes(String(raw.layout)) ? (raw.layout as Layout) : 'content'
   const rawBlocks = Array.isArray(raw.blocks) ? raw.blocks : []
-  if (rawBlocks.length > MAX_BLOCKS) throw new Error(`INVALID_SLIDE: slides[${index}] has more than ${MAX_BLOCKS} blocks`)
+  if (rawBlocks.length > MAX_BLOCKS)
+    throw new Error(`INVALID_SLIDE: slides[${index}] has more than ${MAX_BLOCKS} blocks`)
   const blocks = rawBlocks.map((block, blockIndex) => normalizeBlock(block, blockIndex))
   if (Array.isArray(raw.bullets) && raw.bullets.length) {
     blocks.push({ id: newId('block'), type: 'bullets', items: stringList(raw.bullets) })
