@@ -1,10 +1,9 @@
 //! HTTP server: routes `/`, `/assets/*`, `/ws` (WebSocket proxy), and —
 //! when injectable UI is enabled — `/ui`, `/ui/*`, and `/vendor/*`.
 //!
-//! Binds `<http_host>:<http_port>` — loopback unless the operator opts into
-//! `0.0.0.0` (`http_host` in the seed config or `--http-host`), the same
-//! default as the `http` and `rbac-proxy` workers. Front it with a reverse
-//! proxy when exposing it beyond the host.
+//! Binds `<http_host>:<http_port>` — `0.0.0.0` by default. Set `http_host`
+//! in the seed config or `--http-host` to select an interface. Front it
+//! with a reverse proxy when exposing it beyond the host.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -265,9 +264,7 @@ pub async fn start(http_port: u16, state: AppState) -> anyhow::Result<ServerHand
 }
 
 /// The interface every listener binds. Set once at boot from `http_host`
-/// (config seed or `--http-host`); loopback until then. The console used to
-/// bind `0.0.0.0` unconditionally, exposing the engine WebSocket proxy on every
-/// interface by default while `http` and `rbac-proxy` stay on loopback.
+/// (config seed or `--http-host`); loopback until then.
 static BIND_HOST: std::sync::OnceLock<std::net::IpAddr> = std::sync::OnceLock::new();
 
 /// Pin the bind interface for this process. A second call is ignored: the

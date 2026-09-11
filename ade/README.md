@@ -208,12 +208,14 @@ The local `config.yaml` is a first-registration seed and a fallback for direct
 runs where the configuration worker is unavailable:
 
 ```yaml
+http_host: 0.0.0.0    # HTTP bind address (default: all IPv4 interfaces)
 http_port: 3113       # initial port seed for the UI + /ws (default: 3113)
 injectable_ui: true   # kill switch for runtime-injected worker UI (default: true)
 ```
 
 | Key | Default | Description |
 |---|---|---|
+| `http_host` | `0.0.0.0` | HTTP bind address; set `127.0.0.1` for local access only. Applied at startup |
 | `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
 | `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
 
@@ -227,6 +229,7 @@ Console restart; the local `injectable_ui` kill switch remains startup-only.
 |---|---|---|
 | `--config <path>` | `./config.yaml` | Path to the first-registration YAML seed/fallback |
 | `--url <ws://…>` | `ws://127.0.0.1:49134` | iii engine WebSocket URL (`DEFAULT_ENGINE_URL` in [`src/config.rs`](src/config.rs)) |
+| `--http-host <address>` | from seed | Overrides the YAML bind address; applied at startup |
 | `--http-port <port>` | from seed | Overrides the YAML port seed; an existing configuration-worker value still wins |
 | `--manifest` | — | Print the publish manifest as JSON and exit (used by the registry pipeline) |
 
