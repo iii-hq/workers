@@ -4,6 +4,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "root_session_id": {
+        "description": "Any session in the tree. `session_id` is accepted as an alias, and a child id is walked up to its root, so the id that addresses `harness::status` addresses the tree here too.",
         "type": "string"
       }
     },
@@ -217,6 +218,7 @@
         "additionalProperties": false,
         "properties": {
           "cache_read_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -225,6 +227,7 @@
             ]
           },
           "cache_write_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -233,6 +236,7 @@
             ]
           },
           "cost_usd": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "double",
             "type": [
               "number",
@@ -250,6 +254,7 @@
             "type": "integer"
           },
           "input_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -258,6 +263,7 @@
             ]
           },
           "output_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -266,6 +272,7 @@
             ]
           },
           "reasoning_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -296,6 +303,7 @@
         "additionalProperties": false,
         "properties": {
           "cache_read_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -304,6 +312,7 @@
             ]
           },
           "cache_write_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -323,6 +332,7 @@
             "description": "The session's latest per-generation context snapshot (categories, budget, usage) — absent for sessions that have not generated since snapshots landed."
           },
           "cost_usd": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "double",
             "type": [
               "number",
@@ -345,6 +355,7 @@
             "type": "integer"
           },
           "input_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -353,6 +364,7 @@
             ]
           },
           "output_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -367,6 +379,7 @@
             ]
           },
           "reasoning_tokens": {
+            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [

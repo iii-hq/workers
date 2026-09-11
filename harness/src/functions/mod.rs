@@ -79,8 +79,10 @@ pub const SESSION_TREE_DESC: &str =
 
 pub const METRICS_ID: &str = "harness::metrics";
 pub const METRICS_DESC: &str =
-    "Aggregate durable model usage, function outcomes, and available trace/span observability. \
-     `complete` is true only after every session in the durable tree has reached a terminal turn.";
+    "Aggregate durable model usage, function outcomes, and available trace/span observability \
+     for the session tree `root_session_id` belongs to (`session_id` is accepted as an alias, \
+     and a sub-agent id is resolved to its root). `complete` is true only after every session \
+     in the durable tree has reached a terminal turn.";
 
 pub const TEARDOWN_ID: &str = "harness::teardown";
 pub const TEARDOWN_DESC: &str =
