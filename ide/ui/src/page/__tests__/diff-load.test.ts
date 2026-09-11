@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { loadDiffContents, loadTurnDiff, preImageBody, turnFileFor } from '../diff-load'
+import { createTurnCache, loadDiffContents, loadTurnDiff, preImageBody, turnFileFor } from '../diff-load'
 import type { SessionTurn } from '../turns'
 
 function exec(overrides: Partial<{ exit_code: number; stdout: string; stderr: string }> = {}) {
@@ -168,5 +168,25 @@ describe('loadTurnDiff', () => {
     expect(await loadTurnDiff(host, '/r', 'zzz.ts', turn([]))).toMatchObject({ noBaseline: true })
     expect(await loadTurnDiff(host, '/r', 'a.ts', turn([record({ before: { truncated: true } })]))).toMatchObject({ noBaseline: true })
     expect(turnFileFor(turn([record({})]), '/r', 'a.ts')?.path).toBe('/r/a.ts')
+  })
+})
+
+describe('createTurnCache', () => {
+  it('shares one read per turn but asks again after a miss or a failure', async () => {
+    const turn: SessionTurn = { turn_id: 't1', started_at: 1, files: [] }
+    const answers: Array<() => unknown> = [
+      () => {
+        throw new Error('worker restarting')
+      },
+      () => ({ turn: null }),
+      () => ({ turn }),
+    ]
+    const { host, trigger } = hostWith({ 'shell::turns::get': () => answers.shift()?.() })
+    const cache = createTurnCache(host, 's1')
+    expect(await cache.get('t1')).toBeNull()
+    expect(await cache.get('t1')).toBeNull()
+    expect(await cache.get('t1')).toBe(turn)
+    expect(await cache.get('t1')).toBe(turn)
+    expect(trigger).toHaveBeenCalledTimes(3)
   })
 })

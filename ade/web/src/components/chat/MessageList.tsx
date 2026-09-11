@@ -571,6 +571,10 @@ export function MessageList({
   const lastAnimationTimeRef = useRef<number | null>(null)
   const lastScrollTopRef = useRef(0)
   const lastTouchYRef = useRef<number | null>(null)
+  // A mouse button held on the list: a scrollbar drag or a selection
+  // auto-scroll is the one upward scroll that reaches handleScroll with no
+  // wheel, touch or key event of its own.
+  const mouseHeldRef = useRef(false)
   const tailStateRef = useRef<TailScrollState>('initializing')
   const [tailState, setTailState] = useState<TailScrollState>('initializing')
   // Any content image in the transcript opens in the viewer on click,
@@ -982,6 +986,7 @@ export function MessageList({
         tailStateRef.current,
         lastScrollTopRef.current,
         container,
+        mouseHeldRef.current,
       )
       if (nextState === 'paused') cancelTailAnimation()
       transitionTailState(nextState)
@@ -999,6 +1004,17 @@ export function MessageList({
     },
     [pauseTailFollow],
   )
+
+  const handleMouseDown = useCallback(() => {
+    mouseHeldRef.current = true
+    window.addEventListener(
+      'mouseup',
+      () => {
+        mouseHeldRef.current = false
+      },
+      { once: true },
+    )
+  }, [])
 
   const handleTouchStart = useCallback((event: TouchEvent<HTMLElement>) => {
     lastTouchYRef.current = event.touches[0]?.clientY ?? null
@@ -1044,6 +1060,10 @@ export function MessageList({
     }
 
     cancelTailAnimation()
+    // The scroll up to the card is this button's doing; the scroll handler
+    // no longer reads direction, so pause here. Landing on the tail (a card
+    // at the very end) re-arms following from the scroll event itself.
+    transitionTailState('paused')
     const containerRect = container.getBoundingClientRect()
     const approvalRect = approval.getBoundingClientRect()
     const centeredTop =
@@ -1068,6 +1088,7 @@ export function MessageList({
     cancelTailAnimation,
     handleJumpToLatest,
     newestPendingApprovalId,
+    transitionTailState,
     writeScrollTop,
   ])
 
@@ -1193,6 +1214,16 @@ export function MessageList({
         }}
         onKeyDown={(event) => {
           if (event.defaultPrevented) return
+          // The keys the browser scrolls a focused list up with.
+          if (
+            event.key === 'ArrowUp' ||
+            event.key === 'PageUp' ||
+            event.key === 'Home' ||
+            (event.key === ' ' && event.shiftKey)
+          ) {
+            pauseTailFollow()
+            return
+          }
           if (event.key !== 'Enter' && event.key !== ' ') return
           const zoom = imageZoomTarget(event.target)
           if (!zoom) return
@@ -1200,6 +1231,7 @@ export function MessageList({
           setZoomedImage(zoom)
         }}
         onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={clearTouchPosition}
