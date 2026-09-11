@@ -16,7 +16,7 @@
 
 /**
  * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
- * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition }} Step
+ * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string }} Step
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
 
@@ -48,8 +48,11 @@ export const TOURS = [
       {
         id: 'traces',
         title: 'Watch the work happen',
-        body: 'Open Traces from the command palette to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.',
+        body: 'Open Traces to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.',
         anchors: ['.onboarding-traces', 'section[aria-label="traces"]'],
+        // The step's button places this console screen beside the tour, so the
+        // operator reads the trace instead of hunting for the palette row.
+        screen: 'traces',
       },
       {
         id: 'triggers',

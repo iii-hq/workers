@@ -16,7 +16,12 @@
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 60;
+  /* Under the console's overlay band. Dropdowns, dialogs, the palette and
+     tooltips are all `z-50`, and the mobile sheet's scrim is `z-40`: a box
+     drawn over those frames the wrong thing — the operator sees a ring on top
+     of the menu they just opened. Above page chrome, below anything that
+     opens. */
+  z-index: 30;
   pointer-events: none;
   border: 2px solid var(--color-accent);
   border-radius: var(--radius-md);

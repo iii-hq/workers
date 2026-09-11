@@ -3,28 +3,33 @@ name: onboarding
 language: javascript
 deploy: bundle
 manifest: package.json
-license: Apache-2.0
 tags: [onboarding, tour, console, ui, docs]
 description: Guided console tour — step content, per-operator progress in state, and an injected page that spotlights the console element each step talks about.
 
 runtime:
   kind: javascript
   # The iii node image. With a base_image the worker runs in its own VM, and
-  # `scripts.install` runs inside that guest before `scripts.start` — so the
-  # worker builds itself instead of depending on someone having run a build in
-  # the checkout.
+  # `scripts.install` runs inside that guest before `scripts.start` — which is
+  # what lets a source checkout still build itself.
   base_image: docker.io/iiidev/node:latest
 
 scripts:
+  # Build only when there is nothing to run. A published artifact carries
+  # `dist/bundle` (CI builds it — see this worker's entry in
+  # `.deploy/workers.yaml`), so its guest goes straight to `start`. A source
+  # checkout has no `dist` to copy in — it is git-ignored — so its guest
+  # builds once, and keeps the output in its own writable layer.
+  #
+  # `install` runs when the guest is PREPARED, not on every boot, so a source
+  # edit reaches the worker on the next prepare (`iii compose --up`), not on a
+  # plain restart.
+  #
   # npm and esbuild only. The guest gets the worker directory alone, so the
   # build must not need the repo's pnpm workspace: `pnpm --dir ui build` adds
   # `tsc --noEmit` against `@iii-dev/console-ui`, which lives in that
   # workspace and is types-only anyway (esbuild treats it as external).
-  install: npm install && npm run build:bundle
-  # A published artifact already carries `dist/bundle`, so it starts as it is.
-  # A source checkout builds first: `install` runs once per prepared guest,
-  # and the build output is not in the guest the next boot.
-  start: (test -f dist/bundle/index.mjs || npm run build:bundle) && node ./dist/bundle/index.mjs
+  install: test -f dist/bundle/index.mjs || (npm install && npm run build:bundle)
+  start: node ./dist/bundle/index.mjs
 
 dependencies:
   console: "^1.9.11"

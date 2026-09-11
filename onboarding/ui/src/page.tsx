@@ -40,6 +40,8 @@ interface Step {
   body: string
   anchors?: string[]
   condition?: Condition
+  /** A console screen the step's button opens beside the tour, e.g. `traces`. */
+  screen?: string
 }
 
 interface Tour {
@@ -68,8 +70,9 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
-  // Which step's condition row is expanded. Independent of the step rows: a
-  // fired trigger stays readable while the operator reads on.
+  // Which step's condition row is expanded. Opened by the operator only — a
+  // trigger that fires does not throw its payload open over what is being
+  // read; the row is there when the detail is wanted.
   const [openSub, setOpenSub] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -104,9 +107,6 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
   const complete = useCallback(
     (stepId: string, fired?: Fired) => {
       if (!tour) return
-      // A trigger that just fired opens its own row, so the operator sees the
-      // payload arrive rather than having to hunt for it.
-      if (fired) setOpenSub(stepId)
       // The engine owns progress, so the list moves only once the write
       // lands. A rejected write leaves the step where it was, instead of
       // showing complete until the next reload disagrees.
@@ -137,6 +137,37 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
     },
     [host, records, tour],
+  )
+
+  /**
+   * The step's button. A step that names a screen opens it in the workspace
+   * first, to the RIGHT of this page rather than the console's default (right
+   * of chat) — a panel the tour is pointing at belongs on the far side of the
+   * tour, not wedged between the tour and the conversation.
+   *
+   * The widths ride along in the same call, so placement and sizing are one
+   * write: chat, the tour, then the panel. `sizes` is rejected outright when
+   * it does not match the column count, which is why it is sent only for the
+   * three-column layout this page knows it is making.
+   *
+   * The step closes whether or not the call lands: an older console rejects
+   * `relative_to`, and the step is about reading the panel, not about us.
+   */
+  const openScreen = useCallback(
+    (step: Step) => {
+      const placed = step.screen
+        ? host.iii
+            .trigger('console::workspace::open', {
+              screen: step.screen,
+              relative_to: 'ext:onboarding',
+              direction: 'right',
+              sizes: [0.3, 0.4, 0.3],
+            })
+            .catch(() => {})
+        : Promise.resolve()
+      void placed.then(() => complete(step.id))
+    },
+    [complete, host],
   )
 
   // Every step that is still open for business gets its condition bound, so a
@@ -239,10 +270,13 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
               {isOpen ? (
                 <div className="ob-open flex flex-col gap-3 px-4 pb-4 pl-11">
                   <p className="m-0 text-base leading-relaxed text-ink text-pretty">{step.body}</p>
+                  {step.condition?.prompt && state !== 'complete' ? (
+                    <Copyable label="or ask the agent" text={step.condition.prompt} />
+                  ) : null}
                   {step.id === 'stay-in-touch' ? <StayInTouch host={host} /> : null}
                   {state !== 'complete' && !step.condition ? (
-                    <Button className="self-start" onClick={() => complete(step.id)}>
-                      Got it
+                    <Button className="self-start" onClick={() => openScreen(step)}>
+                      {step.screen ? `Open ${step.screen}` : 'Got it'}
                     </Button>
                   ) : null}
                 </div>
@@ -323,7 +357,6 @@ function ConditionRow({
             <>
               <p className="m-0 text-base text-ink-faint">{condition.label}</p>
               {condition.hint ? <pre className="ob-pre select-all text-ink">{condition.hint}</pre> : null}
-              {condition.prompt ? <Copyable label="or ask the agent" text={condition.prompt} /> : null}
             </>
           )}
         </div>
