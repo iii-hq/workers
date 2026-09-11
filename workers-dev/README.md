@@ -169,6 +169,13 @@ UI-watch flag and last error. Row 0 is pinned:
 `compose (daemon)`, whose log is the daemon's own output — the startup tree, the
 adoption lines, the managed engine's pid and every `error[CODE]`.
 
+The footer always lists the keys the selected row accepts, and only those: the
+daemon row offers `^u` and nothing else, a repo worker that installs from the
+registry offers nothing at all, and `w` appears only on a worker that ships a
+watchable `ui/`. `Enter` opens the same list with a line of explanation each —
+the keys keep working while it is open, so it teaches the keyboard rather than
+replacing it.
+
 An action never takes the keyboard: it runs detached and reports in the footer,
 because a cold container can take minutes and the daemon owns its lifecycle
 either way. `Esc` cancels only the project start — the one operation compose
@@ -196,6 +203,7 @@ see inside its own operation, so without the feed thirteen containers would read
 | `/` | filter by name |
 | `a` | offer the workers in another directory (Tab completes, remembered) |
 | `Esc` | cancel the running operation (`compose::cancel`) |
+| `Enter` | what this row can do — the keys that apply to it, and what they mean here |
 | `?` | keys |
 | `q` | quit: `l` leave running · `s` stop everything · `Esc` cancel |
 | mouse | click a row to select it; the wheel scrolls whichever pane is under the pointer |

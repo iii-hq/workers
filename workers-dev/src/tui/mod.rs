@@ -52,10 +52,8 @@ const CONFIRM_DEPENDENTS_SHOWN: usize = 8;
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
 
-const HELP_FULL: &str =
-    " s up · x down · r restart · w ui-watch · d deps · f follow · / filter · ? keys · q quit ";
-const HELP_MID: &str = " s up · x down · r restart · / filter · ? keys · q quit ";
-const HELP_MIN: &str = " / filter · ? keys · q quit ";
+/// Always applicable, so always reserved: whatever the row is, these work.
+const TAIL: &str = " Enter menu · f follow · / filter · ? keys · q quit ";
 
 /// The row pinned above the containers. Its log is the compose daemon's own
 /// output — the only place the startup tree, the adoption lines, the managed
@@ -69,6 +67,10 @@ enum UiMode {
     /// footer prompt rather than a modal, so the list stays visible.
     AddDir(String),
     Help,
+    /// What the selected row can do, spelled out. No cursor: the keys are the
+    /// interface and they keep working while it is open, so the menu teaches
+    /// them instead of replacing them.
+    Menu,
     Deps {
         name: String,
         deps: Vec<String>,
@@ -87,6 +89,7 @@ enum ModeKind {
     Filter,
     AddDir,
     Help,
+    Menu,
     Deps,
     Confirm,
     Quit,
@@ -98,6 +101,7 @@ fn mode_kind(mode: &UiMode) -> ModeKind {
         UiMode::Filter => ModeKind::Filter,
         UiMode::AddDir(_) => ModeKind::AddDir,
         UiMode::Help => ModeKind::Help,
+        UiMode::Menu => ModeKind::Menu,
         UiMode::Deps { .. } => ModeKind::Deps,
         UiMode::ConfirmDown { .. } => ModeKind::Confirm,
         UiMode::Quit => ModeKind::Quit,
@@ -176,6 +180,7 @@ struct UiCtx<'a> {
     /// is a detached call to a daemon that owns the lifecycle, and a cold
     /// container takes minutes — the keyboard has no business being held.
     busy: Option<&'a str>,
+    selected: Option<RowRef>,
     spinner_frame: usize,
     color_enabled: bool,
     error: Option<&'a str>,
@@ -335,6 +340,7 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
                     log_height,
                     table_width,
                     busy: busy_note.as_deref(),
+                    selected,
                     spinner_frame,
                     color_enabled,
                     error: error_banner.as_deref(),
@@ -367,6 +373,29 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
                                 handle_add_dir_key(key, &mut mode, &mut busy_note, &actions)
                             }
                             ModeKind::Help | ModeKind::Deps => mode = UiMode::Dashboard,
+                            // The menu lists keys; the keys have to work while
+                            // you read it, or it is a picture of an interface.
+                            ModeKind::Menu => {
+                                mode = UiMode::Dashboard;
+                                if !matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                                    handle_dashboard_key(
+                                        key,
+                                        &mut mode,
+                                        &mut busy_note,
+                                        progress.live(),
+                                        panes.log.height.saturating_sub(3).max(1) as usize,
+                                        &mut table_state,
+                                        &rows,
+                                        &state,
+                                        selected,
+                                        &mut follow,
+                                        &mut log_scroll,
+                                        &mut log_height,
+                                        &mut table_width,
+                                        &actions,
+                                    );
+                                }
+                            }
                             ModeKind::Confirm => {
                                 handle_confirm_key(key, &mut mode, &mut busy_note, &actions)
                             }
@@ -537,6 +566,83 @@ fn project_of(compose: &Compose, state: &DashboardState, row: RowRef) -> PathBuf
         RowRef::Container(index) => state.containers[index].file.clone(),
         _ => compose.config.compose_path.clone(),
     }
+}
+
+/// What the selected row accepts, as `(key hint, what it does here)`.
+///
+/// The same rules `handle_dashboard_key` applies as match guards, written down
+/// once and a keypress earlier — a guard that refuses is silent, and the row
+/// selected at launch is the daemon row, where five of the keys are.
+fn row_actions(
+    is_container: bool,
+    local: bool,
+    watchable: bool,
+    in_stack: bool,
+    startable: bool,
+) -> Vec<(&'static str, &'static str)> {
+    if !is_container {
+        // A repo worker, or the daemon row. The daemon has no lifecycle of its
+        // own: the only thing to start from there is the project.
+        return match (startable, in_stack) {
+            (true, _) => vec![("s", "declare and start")],
+            // Not a Rust binary. `s` would only print where to get it, so the
+            // row says so instead of offering a key that refuses.
+            (false, false) => Vec::new(),
+            (false, true) => vec![("^u", "start the project")],
+        };
+    }
+
+    let mut actions = vec![if local {
+        ("s", "restart from the declaration")
+    } else {
+        ("s", "up")
+    }];
+    // Same word either way: on a stack row `x` opens a confirm that lists the
+    // blast radius, so the footer does not need to carry the warning too.
+    actions.push(("x", "stop"));
+    // On a local row `r` is what `s` already does, minus re-reading the
+    // declaration — one of them is enough.
+    if !local {
+        actions.push(("r", "restart just this"));
+    }
+    if watchable {
+        actions.push(("w", "ui watch"));
+    }
+    // `d` reads `start_after` and dependents out of the stack file; off it,
+    // both are empty by construction and the modal says `(none)` twice.
+    if in_stack {
+        actions.push(("d", "deps"));
+    }
+    actions
+}
+
+/// The five facts `row_actions` turns on, looked up for the current selection.
+fn actions_for(
+    compose: &Compose,
+    state: &DashboardState,
+    selected: Option<RowRef>,
+) -> Vec<(&'static str, &'static str)> {
+    let Some(row) = selected else {
+        return Vec::new();
+    };
+    let name = selected_name(state, selected);
+    let is_container = matches!(row, RowRef::Container(_));
+    let local = matches!(row, RowRef::Container(index) if state.containers[index].local);
+    row_actions(
+        is_container,
+        local,
+        // What `toggle_ui_watch` itself refuses on, not the watch flag.
+        name.as_deref()
+            .is_some_and(|name| compose.ui_dir(name).is_some()),
+        name.as_deref()
+            .is_some_and(|name| compose.config.worker(name).is_some())
+            || matches!(row, RowRef::Daemon),
+        matches!(row, RowRef::Repo(_))
+            && name
+                .as_deref()
+                .and_then(|name| compose.repo_worker(name))
+                .is_some_and(|worker| worker.bin.is_some()),
+    )
 }
 
 /// The name a row acts on, whether it is running or only offered by the repo.
@@ -730,6 +836,7 @@ fn handle_dashboard_key(
     match key.code {
         KeyCode::Char('q') => *mode = UiMode::Quit,
         KeyCode::Char('?') => *mode = UiMode::Help,
+        KeyCode::Enter => *mode = UiMode::Menu,
         KeyCode::Char('/') => *mode = UiMode::Filter,
         KeyCode::Char('a') => *mode = UiMode::AddDir(String::new()),
         // Only the daemon's own startup `--up` runs under an operation compose
@@ -1110,6 +1217,7 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) -> Panes {
             dependents,
         } => draw_deps_overlay(f, body, name, deps, dependents, ctx),
         UiMode::Help => draw_help_overlay(f, area, ctx.color_enabled),
+        UiMode::Menu => draw_menu_overlay(f, body, ctx),
         UiMode::Quit => draw_quit_overlay(f, body, ctx),
         _ => {}
     }
@@ -1495,20 +1603,35 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             format!(" worker dir: {input}_   (Tab complete · Enter add · Esc cancel) "),
             styled_if(color, Style::default().fg(Color::Cyan)),
         ),
-        _ => {
-            // Gate on the string's own width, not a hand-copied number — the
-            // full help outgrew its old gate once and clipped its own tail.
-            let help = if area.width as usize >= HELP_FULL.chars().count() {
-                HELP_FULL
-            } else if area.width >= 64 {
-                HELP_MID
-            } else {
-                HELP_MIN
-            };
-            (help.to_string(), styled_if(color, footer_style()))
-        }
+        // What this row accepts, not a fixed string: three of the five row
+        // kinds refuse most of the keys, and a guard that refuses is silent.
+        _ => return draw_row_help(f, area, ctx),
     };
     f.render_widget(Paragraph::new(text).style(style), area);
+}
+
+/// Keys for the selected row, then the ones that always work. The tail is
+/// reserved first, so narrowing drops row actions — which the `Enter` menu
+/// still lists — rather than the way out.
+fn draw_row_help(f: &mut Frame, area: Rect, ctx: &UiCtx) {
+    let color = ctx.color_enabled;
+    let mut spans = Vec::new();
+    let mut used = TAIL.chars().count();
+    for (key, label) in actions_for(ctx.compose, ctx.state, ctx.selected) {
+        let width = key.chars().count() + label.chars().count() + 4;
+        if used + width > area.width as usize {
+            break;
+        }
+        used += width;
+        spans.push(Span::styled(
+            format!(" {key} "),
+            styled_if(color, Style::default().fg(Color::Cyan)),
+        ));
+        spans.push(Span::styled(label, styled_if(color, footer_style())));
+        spans.push(Span::raw(" ·"));
+    }
+    spans.push(Span::styled(TAIL, styled_if(color, footer_style())));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn is_blank_line(line: &Line) -> bool {
@@ -1727,6 +1850,50 @@ fn draw_quit_overlay(f: &mut Frame, area: Rect, ctx: &UiCtx) {
     draw_dialog(f, area, " quit ".to_string(), lines, pinned, 62, color);
 }
 
+/// The applicable subset of `?`, named for the row it is about. A row that
+/// accepts nothing says so — that is the answer the dashboard never gave.
+fn draw_menu_overlay(f: &mut Frame, area: Rect, ctx: &UiCtx) {
+    let color = ctx.color_enabled;
+    let name = selected_name(ctx.state, ctx.selected).unwrap_or_else(|| DAEMON_ROW.to_string());
+    let actions = actions_for(ctx.compose, ctx.state, ctx.selected);
+
+    let mut lines = vec![Line::from("")];
+    if actions.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "   nothing to run from here",
+            styled_if(color, hint_style()),
+        )));
+        lines.push(Line::from(Span::styled(
+            "   it installs from the registry, not from this tree:",
+            styled_if(color, hint_style()),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("   iii trigger compose::add worker={name}"),
+            styled_if(color, hint_style()),
+        )));
+    }
+    for (key, label) in actions {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("   {key:<8}"),
+                styled_if(color, Style::default().fg(Color::Cyan)),
+            ),
+            Span::raw(label),
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    draw_dialog(
+        f,
+        area,
+        format!(" {name} · press a key, or Esc "),
+        lines,
+        Vec::new(),
+        58,
+        color,
+    );
+}
+
 fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
     let keys = [
         ("↑ ↓  k j", "select row"),
@@ -1749,6 +1916,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
             "Esc",
             "cancel the project start (only the cold boot can be)",
         ),
+        ("Enter", "what this row can do"),
         ("?", "toggle this help"),
         ("q", "quit (leave running, or stop everything)"),
     ];
@@ -1878,6 +2046,38 @@ mod tests {
         assert!(RowRef::Daemon.selectable());
         assert!(!RowRef::StackHeader.selectable());
         assert!(!RowRef::RepoHeader.selectable());
+    }
+
+    /// The matrix a guard refuses is the matrix the footer and the menu offer.
+    /// Drift here means the screen advertises a key that does nothing.
+    #[test]
+    fn a_row_offers_only_what_its_guards_accept() {
+        // is_container, local, watchable, in_stack, startable
+        fn keys(actions: Vec<(&'static str, &'static str)>) -> Vec<&'static str> {
+            actions.into_iter().map(|(key, _)| key).collect()
+        }
+
+        // The row selected at launch. Its own lifecycle keys are all no-ops.
+        assert_eq!(keys(row_actions(false, false, false, true, false)), ["^u"]);
+        // A stack container, with and without a watchable ui/.
+        assert_eq!(
+            keys(row_actions(true, false, true, true, false)),
+            ["s", "x", "r", "w", "d"]
+        );
+        assert_eq!(
+            keys(row_actions(true, false, false, true, false)),
+            ["s", "x", "r", "d"]
+        );
+        // Started on demand: `r` would duplicate `s`, and `d` can only read
+        // `(none)` twice off a project the stack file does not describe.
+        assert_eq!(
+            keys(row_actions(true, true, false, false, false)),
+            ["s", "x"]
+        );
+        // Offered by the repo, never started.
+        assert_eq!(keys(row_actions(false, false, false, false, true)), ["s"]);
+        // Not a Rust binary: the menu says where to get it instead.
+        assert!(keys(row_actions(false, false, false, false, false)).is_empty());
     }
 
     #[test]
