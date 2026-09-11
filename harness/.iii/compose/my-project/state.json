@@ -1,0 +1,142 @@
+{
+  "compose_path": "/Users/mikepiccolo/code/workers/harness/worker-compose.yaml",
+  "namespace": "my-project",
+  "containers": {
+    "ade": {
+      "pid": 89767,
+      "birth": {
+        "start_time": 1789119154421083
+      },
+      "status": "ready",
+      "started_at": 1789119157
+    },
+    "browser": {
+      "pid": 89775,
+      "birth": {
+        "start_time": 1789119155957334
+      },
+      "status": "ready",
+      "started_at": 1789119156
+    },
+    "context-manager": {
+      "pid": 90052,
+      "birth": {
+        "start_time": 1789119165131963
+      },
+      "status": "ready",
+      "started_at": 1789119165
+    },
+    "cron": {
+      "pid": 89757,
+      "birth": {
+        "start_time": 1789119153983241
+      },
+      "status": "ready",
+      "started_at": 1789119160
+    },
+    "github": {
+      "pid": 89772,
+      "birth": {
+        "start_time": 1789119154979694
+      },
+      "status": "ready",
+      "started_at": 1789119155
+    },
+    "harness": {
+      "pid": 90072,
+      "birth": {
+        "start_time": 1789119167198439
+      },
+      "status": "ready",
+      "started_at": 1789119175
+    },
+    "ide": {
+      "pid": 89759,
+      "birth": {
+        "start_time": 1789119153986234
+      },
+      "status": "ready",
+      "started_at": 1789119164
+    },
+    "iii-directory": {
+      "pid": 89760,
+      "birth": {
+        "start_time": 1789119153987741
+      },
+      "status": "ready",
+      "started_at": 1789119163
+    },
+    "llm-router": {
+      "pid": 90051,
+      "birth": {
+        "start_time": 1789119164493984
+      },
+      "status": "ready",
+      "started_at": 1789119165
+    },
+    "provider-anthropic": {
+      "pid": 90055,
+      "birth": {
+        "start_time": 1789119165137247
+      },
+      "status": "ready",
+      "started_at": 1789119167
+    },
+    "provider-openai": {
+      "pid": 90053,
+      "birth": {
+        "start_time": 1789119165133917
+      },
+      "status": "ready",
+      "started_at": 1789119166
+    },
+    "provider-openai-codex": {
+      "pid": 90054,
+      "birth": {
+        "start_time": 1789119165135556
+      },
+      "status": "ready",
+      "started_at": 1789119166
+    },
+    "queue": {
+      "pid": 89756,
+      "birth": {
+        "start_time": 1789119153981447
+      },
+      "status": "ready",
+      "started_at": 1789119155
+    },
+    "session-manager": {
+      "pid": 89761,
+      "birth": {
+        "start_time": 1789119153989638
+      },
+      "status": "ready",
+      "started_at": 1789119155
+    },
+    "state": {
+      "pid": 89758,
+      "birth": {
+        "start_time": 1789119153984738
+      },
+      "status": "ready",
+      "started_at": 1789119161
+    },
+    "tailscale": {
+      "pid": 24021,
+      "birth": {
+        "start_time": 1789126687344086
+      },
+      "status": "ready",
+      "started_at": 1789126687
+    },
+    "web": {
+      "pid": 89766,
+      "birth": {
+        "start_time": 1789119154420214
+      },
+      "status": "ready",
+      "started_at": 1789119154
+    }
+  }
+}

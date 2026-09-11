@@ -1,0 +1,6 @@
+{
+  "worker": "provider-anthropic",
+  "source": "registry",
+  "tag_or_version": "latest",
+  "schema": 1
+}

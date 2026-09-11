@@ -1,0 +1,136 @@
+version: 1
+containers:
+  browser:
+    worker: package://api.workers.iii.dev/browser
+    requested: 0.2.15
+    resolved:
+      name: browser
+      version: 0.2.15
+      type: binary
+      artifacts:
+        aarch64-apple-darwin:
+          sha256: c3b5c72b2ae60a378c485b3f8d4cfc64b0b8353e6bb888bb24aa1a772cfdd649
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/browser-aarch64-apple-darwin.tar.gz
+        aarch64-pc-windows-msvc:
+          sha256: b8d11c7a72305c4e27d904565bbe4c261772d3e5027a86bc0185a1307b66d0ea
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/browser-aarch64-pc-windows-msvc.zip
+        aarch64-unknown-linux-gnu:
+          sha256: 6f5b6dfb2ad0671e69ea41724e4b29ee47140dc29ff0528f3842fdcedd6c3c21
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/browser-aarch64-unknown-linux-gnu.tar.gz
+        armv7-unknown-linux-gnueabihf:
+          sha256: 7b938b3b9d0a6899cebab76c46f59b31d8c562ff475623323618217ae50e4558
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/browser-armv7-unknown-linux-gnueabihf.tar.gz
+        x86_64-pc-windows-msvc:
+          sha256: ce30c77b5eb950ff90173f81f63b40645521f1965ad8d5b37251a5105a3a20bb
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/browser-x86_64-pc-windows-msvc.zip
+        x86_64-unknown-linux-gnu:
+          sha256: 8775281fab2defdc6e6994723d01d2357c51b74201168e69beea33463da22d3f
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/browser-x86_64-unknown-linux-gnu.tar.gz
+        x86_64-unknown-linux-musl:
+          sha256: 72cf0aa08cd54bf3e5f0c7aabc3e27469738e58c276c5874e29c412dadd9af35
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/browser-x86_64-unknown-linux-musl.tar.gz
+      default_config: {}
+  github:
+    worker: package://api.workers.iii.dev/github
+    requested: 0.3.9
+    resolved:
+      name: github
+      version: 0.3.9
+      type: binary
+      artifacts:
+        aarch64-apple-darwin:
+          sha256: 1c9b1c31633658039cb18899743c6d84cccee3b687bbd4fb9de0d9a918bb821f
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/github-aarch64-apple-darwin.tar.gz
+        aarch64-pc-windows-msvc:
+          sha256: cab7cabe981fdd46704bda3d393b0c32c0ae73e66c92dcd06d8ca192d4ac0232
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/github-aarch64-pc-windows-msvc.zip
+        aarch64-unknown-linux-gnu:
+          sha256: 59401d0c9531f9fce3cc851ba38ad9c91406ea99cdfe6b03c3040383f909c897
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/github-aarch64-unknown-linux-gnu.tar.gz
+        armv7-unknown-linux-gnueabihf:
+          sha256: ccfc5403261dd28f0e51166c76408e9945e7fc104493f75a36156e12ccb2ee0b
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/github-armv7-unknown-linux-gnueabihf.tar.gz
+        x86_64-pc-windows-msvc:
+          sha256: 6978a962f7848d8c8849f96364317254ef05242855c3afda9865765ecf80679a
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/github-x86_64-pc-windows-msvc.zip
+        x86_64-unknown-linux-gnu:
+          sha256: 3c72c4624d3a829c213ec71a630a1c8e377c3845e6a19575fc402b1b677a5cf1
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/github-x86_64-unknown-linux-gnu.tar.gz
+        x86_64-unknown-linux-musl:
+          sha256: 685398b39e592165835d07000cd5a19823ed936b94544003ad4494111fdad43c
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/github-x86_64-unknown-linux-musl.tar.gz
+      default_config:
+        default_timeout_ms: 30000
+        gh_executable: ''
+        max_output_bytes: 1048576
+        max_timeout_ms: 120000
+  tailscale:
+    worker: package://api.workers.iii.dev/tailscale
+    requested: 0.1.10
+    resolved:
+      name: tailscale
+      version: 0.1.10
+      type: binary
+      artifacts:
+        aarch64-apple-darwin:
+          sha256: 6201f6147b0ad8a06285f67f73fe582e984c7dd98b6a060428f9eced2bfa1dba
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/tailscale-aarch64-apple-darwin.tar.gz
+        aarch64-pc-windows-msvc:
+          sha256: fd75911ce6649b53621a2bc75a851b5a2cb1ba48c00f0ce84ed2648bd08d3e41
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/tailscale-aarch64-pc-windows-msvc.zip
+        aarch64-unknown-linux-gnu:
+          sha256: 7671cfd5bb26d75b99aced15defc8f9da62154e81d6391890cfce63cafed688b
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/tailscale-aarch64-unknown-linux-gnu.tar.gz
+        armv7-unknown-linux-gnueabihf:
+          sha256: 17f9b2da98f482539ab305100f383887fceca8d5a0971db7aec047f2344b847c
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/tailscale-armv7-unknown-linux-gnueabihf.tar.gz
+        x86_64-pc-windows-msvc:
+          sha256: 69d12a00ba9bcefe96c6cc88231b50636378567c7d0bf5d15ba104284f290534
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/tailscale-x86_64-pc-windows-msvc.zip
+        x86_64-unknown-linux-gnu:
+          sha256: e9c4283be0832f66a2bf66da42f4aeffe5c2a7031c2825ac0712558fc970171e
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/tailscale-x86_64-unknown-linux-gnu.tar.gz
+        x86_64-unknown-linux-musl:
+          sha256: af567ea7beeafe2222242c00844c0e450e3d1b871d2350a8f108183a58c379f6
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/tailscale-x86_64-unknown-linux-musl.tar.gz
+      default_config: {}
+  web:
+    worker: package://api.workers.iii.dev/web
+    requested: 1.2.15
+    resolved:
+      name: web
+      version: 1.2.15
+      type: binary
+      artifacts:
+        aarch64-apple-darwin:
+          sha256: 9f3150a2dc48d4f5dbe7e78c08fd0227eee295fd5bf2e12e6959caf7f7d263b3
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/web-aarch64-apple-darwin.tar.gz
+        aarch64-pc-windows-msvc:
+          sha256: bbd4c76459d2555f664f4248143157c74dd7448626c6a9417e63a379707eeb17
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/web-aarch64-pc-windows-msvc.zip
+        aarch64-unknown-linux-gnu:
+          sha256: 61bad6706ba4f54e2c6c981bc10b4cf3281e770f384651e6a63dfb03012968c9
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/web-aarch64-unknown-linux-gnu.tar.gz
+        armv7-unknown-linux-gnueabihf:
+          sha256: 8a0a19ecf217685963db713505c69264f709a773ae3ea774f5b40f3956243f0c
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/web-armv7-unknown-linux-gnueabihf.tar.gz
+        x86_64-pc-windows-msvc:
+          sha256: adbfddac4a9863d5b54d476c596d75666f5b566c35e481ef103a2a83afb90d3c
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/web-x86_64-pc-windows-msvc.zip
+        x86_64-unknown-linux-gnu:
+          sha256: 8ed36d37c0f3097144b2c8536bc81c0ee4cd06a502b40561f7ead144bf940983
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/web-x86_64-unknown-linux-gnu.tar.gz
+        x86_64-unknown-linux-musl:
+          sha256: 2006fcce437cb1480473e33b40501ae08f6b5489e140b27f39352e945df92b51
+          url: https://github.com/iii-hq/workers/releases/download/build-cc167b2e911a7ab589995c43b1b54a3b0b0e97f6/web-x86_64-unknown-linux-musl.tar.gz
+      default_config: {}
+graphs:
+  browser:
+  - browser
+  github:
+  - github
+  tailscale:
+  - ade
+  - tailscale
+  web:
+  - web

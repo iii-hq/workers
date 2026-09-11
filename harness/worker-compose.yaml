@@ -139,3 +139,21 @@ containers:
       CI: "true"
     scripts:
       run: cargo run --bin harness
+  # added by compose::add
+  web:
+    worker: package://api.workers.iii.dev/web
+    version: "1.2.15"
+  # added by compose::add
+  github:
+    worker: package://api.workers.iii.dev/github
+    version: "0.3.9"
+  # added by compose::add
+  browser:
+    worker: package://api.workers.iii.dev/browser
+    version: "0.2.15"
+  # added by compose::add
+  tailscale:
+    worker: package://api.workers.iii.dev/tailscale
+    version: "0.1.10"
+    start_after:
+    - ade
