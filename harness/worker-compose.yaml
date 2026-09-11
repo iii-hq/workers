@@ -33,6 +33,9 @@ containers:
     worker: path://../llm-router
     start_after:
       - state
+    environment:
+      RUST_LOG: info
+      CI: "true"
     env_file: ['./.env']
     scripts:
       run: cargo run --bin llm-router
