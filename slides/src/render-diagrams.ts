@@ -144,17 +144,28 @@ export function matrixDiagram(spec: DiagramSpec): string {
       const a = byLabel.get(edge.from)
       const b = byLabel.get(edge.to)
       if (!a || !b) return ''
-      return `<line class="trail" style="--i:${i}" x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}"/>`
+      const dx = b[0] - a[0]
+      const dy = b[1] - a[1]
+      const len = Math.hypot(dx, dy) || 1
+      const ux = dx / len
+      const uy = dy / len
+      const endR = 6 + (((spec.nodes.findIndex((n) => n.label === edge.to) + 1) / Math.max(1, spec.nodes.length)) * 14)
+      const ex = b[0] - ux * (endR + 6)
+      const ey = b[1] - uy * (endR + 6)
+      const sx = a[0] + ux * 10
+      const sy = a[1] + uy * 10
+      const head = `M${(ex - ux * 10 - uy * 6).toFixed(1)} ${(ey - uy * 10 + ux * 6).toFixed(1)} L${ex.toFixed(1)} ${ey.toFixed(1)} L${(ex - ux * 10 + uy * 6).toFixed(1)} ${(ey - uy * 10 - ux * 6).toFixed(1)}`
+      return `<line class="trail" style="--i:${i}" x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}"/><path class="trail-head" d="${head}"/>`
     })
     .join('')
   const points = spec.nodes
     .map((node, i) => {
       const [px, py] = place(node)
-      const r = sequenced ? 7 : 8 + ((node.value ?? 40) / 100) * 18
+      const r = sequenced ? 6 + ((i + 1) / Math.max(1, spec.nodes.length)) * 14 : 8 + ((node.value ?? 40) / 100) * 18
       const anchor = sequenced ? (i % 2 === 0 ? 'start' : 'end') : px > right - 240 ? 'end' : 'start'
       const lx = anchor === 'start' ? px + r + 14 : px - r - 14
       const label = sequenced ? `${String(i + 1).padStart(2, '0')}  ${node.label}` : node.label
-      const halo = sequenced ? '' : `<circle class="halo" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(r + 10).toFixed(1)}"/>`
+      const halo = `<circle class="halo" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${(sequenced ? r * 2.2 : r + 10).toFixed(1)}"/>`
       const sub = node.text && !sequenced ? textLines(lx, py + 30, [node.text], 'sub', anchor) : ''
       return `<g class="point" style="--i:${i}">${halo}<circle class="dot" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${r.toFixed(1)}"/>${textLines(lx, py + 7, [label], sequenced ? 'point-label small' : 'point-label', anchor)}${sub}</g>`
     })

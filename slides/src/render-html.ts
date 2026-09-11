@@ -388,7 +388,9 @@ body.deck{overflow:hidden}
 .diagram .tick{font-family:var(--font-mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;fill:var(--muted)}
 .diagram .point-label{font-family:var(--font-heading);font-size:26px;letter-spacing:-0.01em}
 .diagram .point-label.small{font-size:21px}
-.diagram .trail{fill:none;stroke:var(--accent);stroke-width:1.2;stroke-dasharray:4 6;opacity:.7}
+.diagram .trail{fill:none;stroke:var(--accent);stroke-width:1.6;opacity:.8}
+.diagram .trail-head{fill:none;stroke:var(--accent);stroke-width:1.6;opacity:.8}
+.diagram-matrix .halo{opacity:.09}
 .r-stagger .slide.active .diagram .trail{stroke-dasharray:2400;stroke-dashoffset:2400;animation:draw 2.4s var(--ease) .6s forwards}
 .diagram .shape{fill:var(--accent);fill-opacity:.14;stroke:var(--accent);stroke-width:1.5}
 .diagram .arc{fill:none;stroke:var(--accent);stroke-width:1.5}
