@@ -57,11 +57,13 @@ export const blockSchema = object(
           y: { type: ['number', 'null'] },
           value: { type: ['number', 'null'] },
           hub: boolean,
+          group: nullableString,
+          emphasis: boolean,
         },
         ['label'],
       ),
     ),
-    edges: array(object({ from: string, to: string }, ['from', 'to'])),
+    edges: array(object({ from: string, to: string, weight: { type: ['number', 'null'] } }, ['from', 'to'])),
     axes: object({
       x: object({ label: string, low: nullableString, high: nullableString }, ['label']),
       y: object({ label: string, low: nullableString, high: nullableString }, ['label']),
@@ -73,7 +75,7 @@ export const blockSchema = object(
   ['type'],
   {
     description:
-      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text?, icon? }] (cards may be numbered; icon is one of the built-in icon names); chart uses kind (bar, line, donut), series [{ label, value }], unit, title; table uses columns [header...] and rows [[cell...]]; diagram uses kind (network: ring nodes plus hub: true nodes joined by edges; matrix: nodes with x/y 0-100 on axes {x,y} with optional quadrants; radar: nodes with value 0-100; loop: ordered nodes around a cycle with center; ladder: ordered nodes as a staircase), nodes [{ label, text?, x?, y?, value?, hub? }], edges [{ from, to }], axes, quadrants, center, title. column places the block in a two-column layout.',
+      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text?, icon? }] (cards may be numbered; icon is one of the built-in icon names); chart uses kind (bar, line, donut), series [{ label, value }], unit, title; table uses columns [header...] and rows [[cell...]]; diagram uses kind (network: ring nodes plus hub: true nodes joined by edges, weight thickens an edge; radial: one hub at the centre, ring nodes grouped by group; matrix: nodes with x/y 0-100 on axes {x,y}, edges draw a sequenced trajectory; radar: nodes with value 0-100; loop: ordered nodes around a cycle with center; ladder: ordered nodes as a staircase, hub highlights a rung; spans: non-hub nodes are the scale, hub nodes are bars from x to y (1-based rung indices), emphasis highlights one; weave: hub rows by non-hub columns, edges mark cells; coverage: like weave with edge weight 1 full / 0.5 partial and emphasis rows; stack: hub layers under non-hub columns; allocation: non-hub periods by hub series with edge weight as share; gate: stages then hub outcomes; flow: hub sources ribboned to non-hub targets by weight), nodes [{ label, text?, x?, y?, value?, hub? }], edges [{ from, to }], axes, quadrants, center, title. column places the block in a two-column layout.',
   },
 )
 

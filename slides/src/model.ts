@@ -1,7 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import { ICON_PATHS } from './deck-icons.js'
 
-export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'split', 'statement', 'image', 'blank'] as const
+export const LAYOUTS = [
+  'title',
+  'section',
+  'content',
+  'figure',
+  'two-column',
+  'split',
+  'statement',
+  'image',
+  'blank',
+] as const
 export const TRANSITIONS = ['fade', 'slide', 'zoom', 'none'] as const
 export type Transition = (typeof TRANSITIONS)[number]
 export const REVEALS = ['stagger', 'step', 'none'] as const
@@ -28,7 +38,21 @@ export const BLOCK_TYPES = [
   'table',
   'diagram',
 ] as const
-export const DIAGRAM_KINDS = ['network', 'matrix', 'radar', 'loop', 'ladder', 'weave', 'gate'] as const
+export const DIAGRAM_KINDS = [
+  'network',
+  'radial',
+  'matrix',
+  'radar',
+  'loop',
+  'ladder',
+  'spans',
+  'weave',
+  'coverage',
+  'stack',
+  'allocation',
+  'gate',
+  'flow',
+] as const
 export type DiagramKind = (typeof DIAGRAM_KINDS)[number]
 
 export interface DiagramNode {
@@ -38,6 +62,8 @@ export interface DiagramNode {
   y?: number
   value?: number
   hub?: boolean
+  group?: string
+  emphasis?: boolean
 }
 
 export interface DiagramAxis {
@@ -93,7 +119,7 @@ export type Block =
       type: 'diagram'
       kind: DiagramKind
       nodes: DiagramNode[]
-      edges?: { from: string; to: string }[]
+      edges?: { from: string; to: string; weight?: number }[]
       axes?: { x?: DiagramAxis; y?: DiagramAxis }
       quadrants?: string[]
       center?: string
@@ -296,6 +322,8 @@ export function normalizeBlock(input: unknown, index = 0): Block {
             ...(num(n.y) !== undefined ? { y: num(n.y) } : {}),
             ...(num(n.value) !== undefined ? { value: num(n.value) } : {}),
             ...(n.hub === true ? { hub: true } : {}),
+            ...(text(n.group) ? { group: text(n.group) } : {}),
+            ...(n.emphasis === true ? { emphasis: true } : {}),
           }
         })
         .filter((node): node is DiagramNode => node !== null)
@@ -303,16 +331,20 @@ export function normalizeBlock(input: unknown, index = 0): Block {
       if (!nodes.length) throw new Error(`INVALID_BLOCK: blocks[${index}] diagram needs nodes [{ label }]`)
       const edges = (Array.isArray(raw.edges) ? raw.edges : [])
         .map((edge) => {
-          if (Array.isArray(edge) && edge.length >= 2) return { from: String(edge[0]), to: String(edge[1]) }
+          if (Array.isArray(edge) && edge.length >= 2) {
+            const weight = typeof edge[2] === 'number' ? edge[2] : undefined
+            return { from: String(edge[0]), to: String(edge[1]), ...(weight !== undefined ? { weight } : {}) }
+          }
           if (edge && typeof edge === 'object') {
             const e = edge as Record<string, unknown>
             const from = text(e.from)
             const to = text(e.to)
-            return from && to ? { from, to } : null
+            const weight = num(e.weight)
+            return from && to ? { from, to, ...(weight !== undefined ? { weight } : {}) } : null
           }
           return null
         })
-        .filter((edge): edge is { from: string; to: string } => edge !== null)
+        .filter((edge): edge is { from: string; to: string; weight?: number } => edge !== null)
         .slice(0, 80)
       const axis = (v: unknown): DiagramAxis | undefined => {
         if (typeof v === 'string' && v.trim()) return { label: v.trim() }

@@ -1,4 +1,27 @@
-export type DiagramKind = 'network' | 'matrix' | 'radar' | 'loop' | 'ladder' | 'weave' | 'gate'
+import {
+  allocationDiagram,
+  coverageDiagram,
+  flowDiagram,
+  radialDiagram,
+  spansDiagram,
+  stackDiagram,
+  WIDE_W,
+} from './render-diagrams-extra.js'
+
+export type DiagramKind =
+  | 'network'
+  | 'radial'
+  | 'matrix'
+  | 'radar'
+  | 'loop'
+  | 'ladder'
+  | 'spans'
+  | 'weave'
+  | 'coverage'
+  | 'stack'
+  | 'allocation'
+  | 'gate'
+  | 'flow'
 
 export interface DiagramNode {
   label: string
@@ -7,11 +30,14 @@ export interface DiagramNode {
   y?: number
   value?: number
   hub?: boolean
+  group?: string
+  emphasis?: boolean
 }
 
 export interface DiagramEdge {
   from: string
   to: string
+  weight?: number
 }
 
 export interface DiagramAxis {
@@ -32,7 +58,7 @@ export interface DiagramSpec {
 export const DW = 1000
 export const DH = 560
 
-function esc(value: string): string {
+export function esc(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
@@ -90,7 +116,8 @@ export function networkDiagram(spec: DiagramSpec): string {
       const ringToRing = !hubs.some((h) => h.label === edge.from || h.label === edge.to)
       const mx = ringToRing ? cx + ((a[0] + b[0]) / 2 - cx) * 0.25 : (a[0] + b[0]) / 2 + 30
       const my = ringToRing ? cy + ((a[1] + b[1]) / 2 - cy) * 0.25 : (a[1] + b[1]) / 2
-      return `<path class="edge" style="--i:${i}" d="M${a[0].toFixed(1)} ${a[1].toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${b[0].toFixed(1)} ${b[1].toFixed(1)}"/>`
+      const width = 0.8 + (edge.weight ?? 1) * 0.8
+      return `<path class="edge" style="--i:${i};stroke-width:${width.toFixed(1)}" d="M${a[0].toFixed(1)} ${a[1].toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${b[0].toFixed(1)} ${b[1].toFixed(1)}"/>`
     })
     .join('')
   const ringSvg = `<circle class="guide" cx="${cx}" cy="${cy}" r="${r}"/>${ring
@@ -131,7 +158,9 @@ export function matrixDiagram(spec: DiagramSpec): string {
     [left + 16, bottom - 16, 'start'],
     [right - 16, bottom - 16, 'end'],
   ]
-    .map(([x, y, anchor], i) => (q[i] ? `<text class="quadrant" x="${x}" y="${y}" text-anchor="${anchor}">${esc(q[i])}</text>` : ''))
+    .map(([x, y, anchor], i) =>
+      q[i] ? `<text class="quadrant" x="${x}" y="${y}" text-anchor="${anchor}">${esc(q[i])}</text>` : '',
+    )
     .join('')
   const xAxis = spec.axes?.x
   const yAxis = spec.axes?.y
@@ -149,7 +178,7 @@ export function matrixDiagram(spec: DiagramSpec): string {
       const len = Math.hypot(dx, dy) || 1
       const ux = dx / len
       const uy = dy / len
-      const endR = 6 + (((spec.nodes.findIndex((n) => n.label === edge.to) + 1) / Math.max(1, spec.nodes.length)) * 14)
+      const endR = 6 + ((spec.nodes.findIndex((n) => n.label === edge.to) + 1) / Math.max(1, spec.nodes.length)) * 14
       const ex = b[0] - ux * (endR + 6)
       const ey = b[1] - uy * (endR + 6)
       const sx = a[0] + ux * 10
@@ -346,15 +375,39 @@ export function gateDiagram(spec: DiagramSpec): string {
 export function diagramSvg(spec: DiagramSpec, title?: string): string {
   const renderers: Record<DiagramKind, (s: DiagramSpec) => string> = {
     network: networkDiagram,
+    radial: radialDiagram,
     matrix: matrixDiagram,
     radar: radarDiagram,
     loop: loopDiagram,
     ladder: ladderDiagram,
+    spans: spansDiagram,
     weave: weaveDiagram,
+    coverage: coverageDiagram,
+    stack: stackDiagram,
+    allocation: allocationDiagram,
     gate: gateDiagram,
+    flow: flowDiagram,
   }
   const body = (renderers[spec.kind] ?? networkDiagram)(spec)
-  const height = spec.kind === 'weave' ? WEAVE_H : spec.kind === 'gate' ? 420 : DH
-  const width = spec.kind === 'weave' ? WEAVE_W : spec.kind === 'matrix' ? MATRIX_W : DW
+  const wide =
+    spec.kind === 'weave' ||
+    spec.kind === 'matrix' ||
+    spec.kind === 'coverage' ||
+    spec.kind === 'spans' ||
+    spec.kind === 'flow'
+  const rows = spec.nodes.filter((node) => node.hub).length
+  const height =
+    spec.kind === 'weave'
+      ? WEAVE_H
+      : spec.kind === 'gate'
+        ? 420
+        : spec.kind === 'radial'
+          ? 630
+          : spec.kind === 'coverage'
+            ? 96 + rows * 56 + 20
+            : spec.kind === 'spans'
+              ? 96 + Math.min(64, (DH - 156) / Math.max(1, rows)) * rows + 40
+              : DH
+  const width = wide ? WIDE_W : DW
   return `<svg class="diagram diagram-${spec.kind}" viewBox="0 0 ${width} ${height}" role="img"${title ? ` aria-label="${esc(title)}"` : ''}>${body}</svg>`
 }

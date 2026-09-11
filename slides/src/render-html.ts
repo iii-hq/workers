@@ -175,6 +175,8 @@ export function renderSlideBody(
       const src = image && image.type === 'image' ? safeUrl(image.src) : ''
       return `<div class="stack image-layout">${src ? `<img class="image-full" src="${src}" alt="${escapeHtml(image && image.type === 'image' ? (image.alt ?? '') : '')}" />` : ''}<div class="image-overlay">${kicker}${title}${subtitle}<div class="blocks">${rest}</div></div></div>`
     }
+    case 'figure':
+      return `<div class="stack figure"><div class="head">${title}${subtitle}</div><div class="blocks">${blocks()}</div></div>`
     case 'two-column':
       return `<div class="stack"><div class="head">${kicker}${title}${subtitle}</div>${columns()}</div>`
     case 'blank':
@@ -200,8 +202,14 @@ export function renderSlide(
         ? ` style="background-image:url('${safeUrl(slide.background)}')"`
         : ''
     : ''
-  const meta = `<header class="meta"><span class="meta-kicker">${slide.kicker ? inline(slide.kicker) : ''}</span><span class="meta-title">${inline(deck.title)}</span><span class="meta-index">${String(index + 1).padStart(2, '0')} <em>/ ${String(total).padStart(2, '0')}</em></span></header>`
-  const footer = `<footer class="slide-footer"><span>${theme.footer ? inline(theme.footer) : deck.author ? inline(deck.author) : ''}</span><span class="slide-number">${index + 1}</span></footer>`
+  const showTitle = deck.title.trim().toLowerCase() !== (slide.kicker ?? '').trim().toLowerCase()
+  const meta = `<header class="meta"><span class="meta-kicker">${slide.kicker ? inline(slide.kicker) : ''}</span><span class="meta-title">${showTitle ? inline(deck.title) : ''}</span><span class="meta-index">${String(index + 1).padStart(2, '0')} <em>/ ${String(total).padStart(2, '0')}</em></span></header>`
+  const footerText = theme.footer
+    ? inline(theme.footer)
+    : deck.author && slide.layout !== 'title' && deck.author.trim().toLowerCase() !== deck.title.trim().toLowerCase()
+      ? inline(deck.author)
+      : ''
+  const footer = `<footer class="slide-footer"><span>${footerText}</span><span class="slide-number">${index + 1}</span></footer>`
   const notes = slide.notes ? `<aside class="notes">${inline(slide.notes)}</aside>` : ''
   const variant = slide.variant ?? 'default'
   return `<section class="slide layout-${slide.layout} variant-${variant}" data-index="${index}" id="slide-${index + 1}"${background}>${STARFIELD}${GRAIN}${motifSvg(slide.visual)}${meta}<div class="body">${renderSlideBody(slide, index, deck)}</div>${footer}${notes}</section>`
@@ -298,6 +306,11 @@ body.deck{overflow:hidden}
 .split{display:grid;grid-template-columns:1fr 1fr;gap:88px;flex:1;min-height:0;align-items:center}
 .split-copy{display:flex;flex-direction:column;gap:22px;min-width:0}
 .split-copy .slide-title{font-size:74px}
+.figure .head{padding-bottom:20px;max-width:none}
+.figure .slide-title{font-size:48px}
+.figure .slide-subtitle{font-size:24px}
+.figure .blocks{flex:1}
+.figure .block-diagram,.figure .block-chart,.figure .block-table{flex:1}
 .split-panel{display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--hair);padding-left:64px;align-self:stretch;justify-content:center}
 .split-panel .blocks{gap:20px;flex:0 0 auto}
 .split-panel .block-cards{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -379,7 +392,7 @@ body.deck{overflow:hidden}
 .diagram .edge{fill:none;stroke:var(--accent);stroke-width:1.2;opacity:.45}
 .diagram .label{font-size:19px;fill:var(--ink)}
 .diagram .label-strong{font-family:var(--font-heading);font-size:26px;letter-spacing:-0.01em}
-.diagram .hub rect{fill:var(--card);stroke:var(--hair)}
+.diagram-network .hub rect{fill:var(--card);stroke:var(--hair)}
 .diagram .hub-label{font-family:var(--font-heading);font-size:26px;letter-spacing:-0.01em}
 .diagram .sub{font-family:var(--font-mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;fill:var(--muted)}
 .diagram .center{font-family:var(--font-heading);font-size:30px;fill:var(--ink);letter-spacing:-0.01em}
@@ -409,6 +422,30 @@ body.deck{overflow:hidden}
 .diagram .diamond{fill:var(--card);stroke:var(--accent);stroke-width:1.5}
 .diagram .branch{fill:none;stroke:var(--accent);stroke-width:1.2;opacity:.7}
 .diagram .sub-plain{font-size:16px;fill:var(--muted)}
+.diagram .group-arc{fill:none;stroke:var(--hair-strong);stroke-width:1}
+.diagram .group-label{font-family:var(--font-mono);font-size:13px;letter-spacing:.2em;text-transform:uppercase;fill:var(--accent)}
+.diagram .hub-disc{fill:var(--card);stroke:var(--accent);stroke-width:1.2}
+.diagram .half{fill:var(--accent);stroke:none}
+.diagram .none{stroke:var(--hair-strong);stroke-width:1}
+.diagram .row-emphasis{fill:var(--accent);opacity:.1}
+.diagram .emphasis .row-label,.diagram .row-label.emphasis{fill:var(--accent)}
+.diagram .pillar{fill:var(--card);stroke:var(--hair)}
+.diagram .pillar-cap{stroke:var(--accent);stroke-width:2}
+.diagram .pillar-label{font-family:var(--font-heading);font-size:22px;letter-spacing:-0.01em}
+.diagram .layer{fill:var(--accent);opacity:.9}
+.diagram .layer-label{font-family:var(--font-heading);font-size:24px;fill:var(--accent-ink)}
+.diagram .layer-text{font-family:var(--font-mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;fill:var(--accent-ink);opacity:.8}
+.diagram .span{stroke:var(--hair-strong);stroke-width:3}
+.diagram .span.emphasis{stroke:var(--accent);stroke-width:6}
+.diagram .alloc{stroke:var(--bg);stroke-width:2}
+.diagram .alloc-0{fill:var(--accent)}
+.diagram .alloc-1{fill:var(--accent);opacity:.55}
+.diagram .alloc-2{fill:var(--ink);opacity:.35}
+.diagram .alloc-3{fill:var(--ink);opacity:.18}
+.diagram .alloc-value{font-family:var(--font-mono);font-size:16px;fill:var(--bg);font-weight:500}
+.diagram .legend{font-size:20px}
+.diagram .ribbon{fill:var(--accent);opacity:.22;stroke:none}
+.diagram .flow-bar{fill:var(--accent)}
 .r-stagger .slide.active .diagram .band,.r-stagger .slide.active .diagram .rail,.r-stagger .slide.active .diagram .branch{stroke-dasharray:2400;stroke-dashoffset:2400;animation:draw 2s var(--ease) .5s forwards}
 .column .diagram,.split-panel .diagram{max-height:100%}
 .r-stagger .slide.active .diagram .node,.r-stagger .slide.active .diagram .hub,.r-stagger .slide.active .diagram .point{animation:rv .9s var(--ease) both;animation-delay:calc(var(--i,0) * 60ms + 400ms)}
