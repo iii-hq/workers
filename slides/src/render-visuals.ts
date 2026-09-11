@@ -112,9 +112,18 @@ export function motifSvg(visual: Visual | undefined): string {
   if (!visual || visual === 'none') return ''
   let body = ''
   switch (visual) {
-    case 'orbits':
-      body = `<g class="spin"><ellipse cx="500" cy="500" rx="420" ry="160"/><ellipse cx="500" cy="500" rx="420" ry="160" transform="rotate(60 500 500)"/><ellipse cx="500" cy="500" rx="420" ry="160" transform="rotate(120 500 500)"/></g><circle class="fill" cx="500" cy="500" r="26"/><circle class="fill" cx="920" cy="500" r="12"/><circle class="fill" cx="290" cy="136" r="10"/>`
+    case 'orbits': {
+      const cx = 500
+      const cy = 500
+      const a = 430
+      const b = 300
+      const focus = Math.sqrt(a * a - b * b)
+      const orbit = `M ${cx + a} ${cy} A ${a} ${b} 0 1 1 ${cx - a} ${cy} A ${a} ${b} 0 1 1 ${cx + a} ${cy}`
+      const inner = `M ${cx + 250} ${cy} A 250 175 0 1 1 ${cx - 250} ${cy} A 250 175 0 1 1 ${cx + 250} ${cy}`
+      const sunX = cx + focus
+      body = `<path d="${orbit}" stroke-width="1.5"/><path class="faint" d="${inner}" stroke-width="1" stroke-dasharray="4 8"/><path class="sweep" d="M ${sunX} ${cy} L ${cx + a * Math.cos(0.35)} ${cy - b * Math.sin(0.35)} A ${a} ${b} 0 0 0 ${cx + a * Math.cos(0.95)} ${cy - b * Math.sin(0.95)} Z"/><line class="faint" x1="${cx - a}" y1="${cy}" x2="${cx + a}" y2="${cy}" stroke-width="1"/><line class="faint" x1="${cx}" y1="${cy - b}" x2="${cx}" y2="${cy + b}" stroke-width="1"/><circle class="faint" cx="${cx - focus}" cy="${cy}" r="4" fill="currentColor" stroke="none"/><circle class="fill" cx="${sunX}" cy="${cy}" r="16"/><circle class="faint" cx="${sunX}" cy="${cy}" r="34" stroke-width="1"/><circle class="fill" r="7"><animateMotion dur="48s" repeatCount="indefinite" rotate="auto" path="${orbit}"/></circle><circle class="fill faint" r="4"><animateMotion dur="29s" repeatCount="indefinite" path="${inner}"/></circle>`
       break
+    }
     case 'grid':
       body = Array.from({ length: 10 }, (_, row) =>
         Array.from(

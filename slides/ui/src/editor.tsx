@@ -13,15 +13,16 @@ import {
   IconButton,
   Input,
   Select,
+  Skeleton,
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Api, downloadBytes } from './api'
+import { DeckFrame } from './deck-frame'
 import { ArrowDown, ArrowUp, Copy, Download, Notebook, Play, Trash, X } from './icons'
 import { AddSlideMenu, Inspector } from './inspector'
-import { SlideCanvas } from './slide-canvas'
-import { type Block, type Deck, defaultSlide, describeError, type Layout, newId, type Slide, type Theme } from './types'
+import { type Deck, defaultSlide, describeError, type Layout, newId, type Slide, type Theme } from './types'
 
 export function DraftDialog({
   open,
@@ -190,6 +191,7 @@ export function PresentOverlay({
 export interface DeckEditorProps {
   api: Api
   deck: Deck
+  html: string | null
   themes: Theme[]
   saving: 'idle' | 'saving' | 'saved' | 'error'
   onChangeDeck: (patch: Partial<Deck>) => void
@@ -201,6 +203,7 @@ export interface DeckEditorProps {
 export function DeckEditor({
   api,
   deck,
+  html,
   themes,
   saving,
   onChangeDeck,
@@ -237,8 +240,6 @@ export function DeckEditor({
 
   const index = Math.min(current, Math.max(0, deck.slides.length - 1))
   const slide = deck.slides[index] ?? null
-  const theme = themes.find((candidate) => candidate.id === deck.theme)
-
   useEffect(() => {
     setSelectedBlockId(null)
   }, [index])
@@ -250,13 +251,6 @@ export function DeckEditor({
       ),
     [deck.slides, onChangeSlides],
   )
-  const updateBlock = (slideId: string, blockId: string, patch: Partial<Block>) => {
-    const target = deck.slides.find((candidate) => candidate.id === slideId)
-    if (!target) return
-    updateSlide(slideId, {
-      blocks: target.blocks.map((block) => (block.id === blockId ? { ...block, ...patch } : block)),
-    })
-  }
   const addSlide = (layout: Layout) => {
     const next = defaultSlide(layout)
     const slides = [...deck.slides]
@@ -397,38 +391,31 @@ export function DeckEditor({
               aria-current={i === index ? 'true' : undefined}
             >
               <span className="sl-thumb-index">{i + 1}</span>
-              <SlideCanvas
-                slide={candidate}
-                index={i}
-                total={deck.slides.length}
-                theme={theme}
-                overrides={deck.theme_overrides}
-                className="sl-thumb-canvas"
-              />
+              {html ? (
+                <DeckFrame html={html} index={i} className="sl-thumb-canvas" title={`Slide ${i + 1} thumbnail`} />
+              ) : null}
             </button>
           ))}
         </nav>
         <div className="sl-stage">
-          {slide ? (
-            <SlideCanvas
-              slide={slide}
+          {slide && html ? (
+            <DeckFrame
+              html={html}
               index={index}
-              total={deck.slides.length}
-              theme={theme}
-              overrides={deck.theme_overrides}
-              footer={deck.theme_overrides?.footer}
-              author={deck.author}
-              editable
-              animate={deck.motion?.reveal !== 'none'}
+              interactive
               selectedBlockId={selectedBlockId}
-              onSelectBlock={(id) => {
+              onSelect={(id, at) => {
+                if (at !== index) setCurrent(at)
                 setSelectedBlockId(id)
                 if (id) setTab('slide')
               }}
-              onChangeSlide={(patch) => updateSlide(slide.id, patch)}
-              onChangeBlock={(blockId, patch) => updateBlock(slide.id, blockId, patch)}
               className="sl-stage-canvas"
+              title="Slide preview"
             />
+          ) : slide ? (
+            <div className="sl-loading">
+              <Skeleton />
+            </div>
           ) : (
             <StatusPanel variant="info" headline="No slides" detail="Add a slide to start." />
           )}

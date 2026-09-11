@@ -45,12 +45,14 @@ export const blockSchema = object(
     series: array(object({ label: string, value: { type: 'number' } }, ['label', 'value'])),
     unit: nullableString,
     title: nullableString,
+    columns: array(string),
+    rows: array(array(string)),
     column: { type: ['string', 'null'], enum: ['left', 'right', null] },
   },
   ['type'],
   {
     description:
-      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text?, icon? }] (cards may be numbered; icon is one of the built-in icon names); chart uses kind (bar, line, donut), series [{ label, value }], unit, title. column places the block in a two-column layout.',
+      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text?, icon? }] (cards may be numbered; icon is one of the built-in icon names); chart uses kind (bar, line, donut), series [{ label, value }], unit, title; table uses columns [header...] and rows [[cell...]]. column places the block in a two-column layout.',
   },
 )
 

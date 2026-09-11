@@ -390,20 +390,57 @@ iii.registerFunction(
 
 iii.registerFunction(
   'slides::render',
-  async (input: { deck_id: string }) => {
+  async (input: { deck_id: string; editing?: boolean }) => {
     const deck = await loadDeck(input?.deck_id)
-    return { deck_id: deck.id, revision: deck.revision, content_type: 'text/html', html: renderDeckHtml(deck, brand()) }
+    return {
+      deck_id: deck.id,
+      revision: deck.revision,
+      content_type: 'text/html',
+      html: renderDeckHtml(deck, brand(), { editing: input.editing === true }),
+    }
   },
   {
     description:
-      'Render a deck to a self-contained HTML presentation (keyboard navigation, speaker notes with n, print to PDF).',
-    request_format: object({ deck_id: string }, ['deck_id']),
+      'Render a deck to a self-contained HTML presentation (keyboard navigation, speaker notes with n, print to PDF). editing: true renders the Console editing view (no motion, block ids, click-to-select).',
+    request_format: object({ deck_id: string, editing: boolean }, ['deck_id']),
     response_format: object({ deck_id: string, revision: integer, content_type: string, html: string }, [
       'deck_id',
       'revision',
       'content_type',
       'html',
     ]),
+  },
+)
+
+iii.registerFunction(
+  'slides::preview',
+  async (input: { deck: CreateInput & { id?: string }; editing?: boolean }) => {
+    const raw = input?.deck ?? {}
+    const now = Date.now()
+    const slides = text(raw.markdown) ? slidesFromMarkdown(raw.markdown as string).slides : normalizeSlides(raw.slides)
+    const deck: Deck = {
+      id: text(raw.id) ?? 'preview',
+      title: text(raw.title) ?? 'Untitled deck',
+      ...(text(raw.subtitle) ? { subtitle: text(raw.subtitle) } : {}),
+      ...(text(raw.author) ? { author: text(raw.author) } : {}),
+      theme: chooseTheme(raw.theme),
+      ...(normalizeOverrides(raw.theme_overrides) ? { theme_overrides: normalizeOverrides(raw.theme_overrides) } : {}),
+      ...(normalizeMotion(raw.motion) ? { motion: normalizeMotion(raw.motion) } : {}),
+      slides,
+      revision: 0,
+      created_at_ms: now,
+      updated_at_ms: now,
+    }
+    return { content_type: 'text/html', html: renderDeckHtml(deck, brand(), { editing: input.editing === true }) }
+  },
+  {
+    description:
+      'Render a deck that is not saved (the same payload slides::create accepts, plus optional id) to HTML. The Console editor uses it for live preview; editing: true adds block ids and click-to-select.',
+    request_format: object(
+      { deck: object({ id: nullableString, ...createInputSchema.properties }), editing: boolean },
+      ['deck'],
+    ),
+    response_format: object({ content_type: string, html: string }, ['content_type', 'html']),
   },
 )
 

@@ -25,6 +25,7 @@ export const BLOCK_TYPES = [
   'steps',
   'timeline',
   'chart',
+  'table',
 ] as const
 export const VISUALS = ['none', 'orbits', 'grid', 'waves', 'arcs', 'rings'] as const
 export type Visual = (typeof VISUALS)[number]
@@ -59,6 +60,7 @@ export type Block =
   | { id: string; type: 'steps'; entries: Entry[]; column?: Column }
   | { id: string; type: 'timeline'; entries: Entry[]; column?: Column }
   | { id: string; type: 'chart'; kind: ChartKind; series: Series[]; unit?: string; title?: string; column?: Column }
+  | { id: string; type: 'table'; columns: string[]; rows: string[][]; column?: Column }
 
 export interface Slide {
   id: string
@@ -237,6 +239,15 @@ export function normalizeBlock(input: unknown, index = 0): Block {
     case 'steps':
     case 'timeline':
       return withColumn({ id, type, entries: entryList(raw.entries ?? raw.items) })
+    case 'table': {
+      const columns = stringList(raw.columns ?? raw.header)
+      const rows = (Array.isArray(raw.rows) ? raw.rows : [])
+        .map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? '').trim()) : stringList(row)))
+        .filter((row) => row.some(Boolean))
+        .slice(0, MAX_ENTRIES)
+      if (!rows.length) throw new Error(`INVALID_BLOCK: blocks[${index}] table needs rows`)
+      return withColumn({ id, type, columns, rows })
+    }
     case 'chart': {
       const kind = (CHART_KINDS as readonly string[]).includes(String(raw.kind)) ? (raw.kind as ChartKind) : 'bar'
       const series = seriesList(raw.series ?? raw.data ?? raw.items)
@@ -565,6 +576,12 @@ export function deckToMarkdown(deck: Deck): string {
           lines.push(
             `<!-- chart: ${block.kind} -->`,
             ...block.series.map((point) => `- ${point.label} | ${point.value}`),
+          )
+        } else if (block.type === 'table') {
+          lines.push(
+            '<!-- table -->',
+            `- ${block.columns.join(' | ')}`,
+            ...block.rows.map((row) => `- ${row.join(' | ')}`),
           )
         }
       }

@@ -20,9 +20,29 @@ export interface Theme {
   }
   heading_weight: number
   radius: number
+  fonts_href?: string
 }
 
 export const THEMES: Theme[] = [
+  {
+    id: 'kepler',
+    name: 'Kepler',
+    description: 'Near-black space blue, warm ink and a single gold accent; editorial serif display with mono labels.',
+    dark: true,
+    colors: {
+      background: '#07080c',
+      surface: '#0e1017',
+      ink: '#f2efe6',
+      muted: '#8a8f9c',
+      accent: '#e0b15a',
+      accent_ink: '#0b0b0f',
+    },
+    fonts: { heading: 'Instrument Serif', body: 'Geist', mono: 'Geist Mono' },
+    heading_weight: 400,
+    radius: 4,
+    fonts_href:
+      'https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap',
+  },
   {
     id: 'midnight',
     name: 'Midnight',
@@ -127,7 +147,7 @@ export const THEMES: Theme[] = [
   },
 ]
 
-export const DEFAULT_THEME = 'midnight'
+export const DEFAULT_THEME = 'kepler'
 
 export function themeById(id: string | undefined): Theme {
   return THEMES.find((theme) => theme.id === id) ?? (THEMES.find((theme) => theme.id === DEFAULT_THEME) as Theme)
@@ -206,10 +226,9 @@ export function withAlpha(hex: string, alpha: number): string {
 }
 
 export function googleFontsHref(theme: Theme): string {
+  if (theme.fonts_href) return theme.fonts_href
   const families = [...new Set([theme.fonts.heading, theme.fonts.body, theme.fonts.mono])]
-  const query = families.map(
-    (family) => `family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@300;400;500;600;700;800`,
-  )
+  const query = families.map((family) => `family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@400;700`)
   return `https://fonts.googleapis.com/css2?${query.join('&')}&display=swap`
 }
 

@@ -15,6 +15,20 @@ export function createApi(host: Host) {
     remove: (deck_id: string) => call<{ deleted: boolean }>('slides::delete', { deck_id }),
     themes: () => call<{ default_theme: string; themes: Theme[] }>('slides::themes::list'),
     render: (deck_id: string) => call<{ html: string; revision: number }>('slides::render', { deck_id }),
+    preview: (deck: Deck) =>
+      call<{ html: string }>('slides::preview', {
+        deck: {
+          id: deck.id,
+          title: deck.title,
+          subtitle: deck.subtitle ?? '',
+          author: deck.author ?? '',
+          theme: deck.theme,
+          theme_overrides: deck.theme_overrides ?? {},
+          motion: deck.motion ?? {},
+          slides: deck.slides,
+        },
+        editing: true,
+      }),
     exportDeck: (deck_id: string, format: ExportFormat) =>
       call<{ path: string; content_type: string; size: number; data_base64?: string }>(
         'slides::export',

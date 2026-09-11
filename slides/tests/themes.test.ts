@@ -13,8 +13,8 @@ import {
 
 describe('themes', () => {
   it('ships six distinct themes with a valid default', () => {
-    expect(THEMES.length).toBe(6)
-    expect(new Set(THEMES.map((theme) => theme.id)).size).toBe(6)
+    expect(THEMES.length).toBe(7)
+    expect(new Set(THEMES.map((theme) => theme.id)).size).toBe(7)
     expect(isThemeId(DEFAULT_THEME)).toBe(true)
     expect(themeById('nope').id).toBe(DEFAULT_THEME)
   })

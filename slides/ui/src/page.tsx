@@ -47,6 +47,9 @@ export function SlidesPage({ host, onRequestClose, panelSide, panelContext, comm
   const [draftOpen, setDraftOpen] = useState(false)
   const [drafting, setDrafting] = useState(false)
   const [draftError, setDraftError] = useState<string | null>(null)
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null)
+  const previewTimer = useRef<number | null>(null)
+  const previewSeq = useRef(0)
 
   const dirty = useRef(false)
   const savedRevision = useRef(0)
@@ -102,6 +105,24 @@ export function SlidesPage({ host, onRequestClose, panelSide, panelContext, comm
     if (selectedId) void loadDeck(selectedId)
     else setDeck(null)
   }, [selectedId, loadDeck])
+
+  useEffect(() => {
+    if (!deck) {
+      setPreviewHtml(null)
+      return
+    }
+    if (previewTimer.current !== null) window.clearTimeout(previewTimer.current)
+    const seq = (previewSeq.current += 1)
+    const snapshot = deck
+    previewTimer.current = window.setTimeout(() => {
+      api
+        .preview(snapshot)
+        .then(({ html }) => {
+          if (previewSeq.current === seq) setPreviewHtml(html)
+        })
+        .catch((cause) => notify('error', describeError(cause)))
+    }, 220)
+  }, [deck, api, notify])
 
   useEffect(() => {
     const context = panelContext?.context as { deck_id?: string } | null | undefined
@@ -326,6 +347,7 @@ export function SlidesPage({ host, onRequestClose, panelSide, panelContext, comm
             <DeckEditor
               api={api}
               deck={deck}
+              html={previewHtml}
               themes={themes}
               saving={saving}
               onChangeDeck={changeDeck}
