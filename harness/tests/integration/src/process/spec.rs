@@ -70,6 +70,9 @@ impl ProcessSpec {
             .stderr(Stdio::from(stderr))
             .env_clear()
             .envs(&self.env)
+            // Every supervised process is internal, including workers that
+            // launch nested III commands. Apply after explicit overrides.
+            .env("III_TELEMETRY_ENABLED", "false")
             // Zero asks the kernel to use the child's PID as its process
             // group ID. This runs between fork and exec without a closure.
             .process_group(0);

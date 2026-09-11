@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Internal validation, including installers and nested III commands.
+export III_TELEMETRY_ENABLED=false
+
 : "${III_BIN:?III_BIN must point to the pinned iii engine binary}"
 : "${HARNESS_E2E_SCENARIO:?HARNESS_E2E_SCENARIO is required}"
 : "${HARNESS_E2E_MODEL:?HARNESS_E2E_MODEL is required}"

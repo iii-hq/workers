@@ -13,6 +13,7 @@ Install these tools before you start:
 Check the required commands:
 
 ```bash
+export III_TELEMETRY_ENABLED=false
 iii --version
 cargo --version
 ```
@@ -25,6 +26,7 @@ starts and configures the iii engine. From the repository root, run:
 
 ```bash
 cd harness
+export III_TELEMETRY_ENABLED=false
 iii compose up
 ```
 

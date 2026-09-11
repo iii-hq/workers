@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 import tomllib
@@ -97,6 +98,7 @@ def trigger(
     try:
         completed = subprocess.run(
             command,
+            env={**os.environ, "III_TELEMETRY_ENABLED": "false"},
             cwd=REPO_ROOT,
             check=False,
             capture_output=True,

@@ -8,6 +8,9 @@
 # external object-storage process.
 set -euo pipefail
 
+# Internal validation, including installers and nested III commands.
+export III_TELEMETRY_ENABLED=false
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 host_home=$HOME
 

@@ -212,6 +212,7 @@ export const test = base.extend<FixtureValues>({
       ...workerArgs(),
     ]
     const child = spawn(required('HARNESS_INTEGRATION_BIN'), args, {
+      env: { ...process.env, III_TELEMETRY_ENABLED: 'false' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const exit = childExit(child)

@@ -53,6 +53,7 @@ async fn boot() -> Option<Harness> {
     let url = format!("ws://127.0.0.1:{port}");
 
     let mut iii = Command::new(&iii_bin)
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("--no-update-check")
         .arg("--config")
         .arg(&engine_config_path)

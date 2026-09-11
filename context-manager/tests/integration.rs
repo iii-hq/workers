@@ -31,6 +31,7 @@ async fn boot() -> Option<Harness> {
     let iii_bin = which::which("iii").ok()?;
 
     let iii = Command::new(&iii_bin)
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("--use-default-config")
         .stdout(Stdio::null())
         .stderr(Stdio::null())

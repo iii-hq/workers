@@ -71,6 +71,7 @@ fn spawn_engine(port: u16, home: &std::path::Path) -> std::process::Child {
     std::fs::write(&cfg_path, &cfg_body).expect("write engine config.yaml");
 
     std::process::Command::new(&iii_bin)
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("-c")
         .arg(&cfg_path)
         .arg("--no-update-check")

@@ -105,6 +105,7 @@ async fn spawn_engine() -> Option<Engine> {
         .expect("write engine config");
 
     let child = Command::new(binary)
+        .env("III_TELEMETRY_ENABLED", "false")
         .args(["--no-update-check", "--config"])
         .arg(&config_path)
         .current_dir(&directory)

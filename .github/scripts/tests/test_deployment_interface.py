@@ -456,14 +456,20 @@ def test_run_worker_applies_descriptor_environment_and_engine_url(tmp_path: Path
             "interface_capture": "required",
             "kind": "javascript-bundle",
             "cwd": str(tmp_path),
-            "prepare": [],
+            "prepare": [[
+                "python3", "-c",
+                "import os; assert os.environ['III_TELEMETRY_ENABLED'] == 'false'",
+            ]],
             "command": [
                 "python3",
                 "-c",
                 "import os; assert os.environ['WORKER_SETTING'] == 'prepared'; "
-                "assert os.environ['III_URL'] == 'ws://127.0.0.1:1234'",
+                "assert os.environ['III_URL'] == 'ws://127.0.0.1:1234'; "
+                "import subprocess; "
+                "assert subprocess.check_output(['sh', '-c', "
+                "'printf %s \"$III_TELEMETRY_ENABLED\"']) == b'false'",
             ],
-            "environment": {"WORKER_SETTING": "prepared"},
+            "environment": {"WORKER_SETTING": "prepared", "III_TELEMETRY_ENABLED": "true"},
         }),
         encoding="utf-8",
     )

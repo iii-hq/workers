@@ -78,6 +78,7 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
         command.extend(["--port", port])
     completed = subprocess.run(
         command,
+        env={**os.environ, "III_TELEMETRY_ENABLED": "false"},
         check=True,
         text=True,
         capture_output=True,

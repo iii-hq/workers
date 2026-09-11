@@ -118,6 +118,7 @@ async fn boot() -> Option<Harness> {
     }
 
     let iii = Command::new(&iii_bin)
+        .env("III_TELEMETRY_ENABLED", "false")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

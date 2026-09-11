@@ -1,0 +1,4 @@
+# Repository development and tests must not contribute product usage metrics.
+# Cargo passes this to test/run processes and their nested III commands.
+[env]
+III_TELEMETRY_ENABLED = { value = "false", force = true }

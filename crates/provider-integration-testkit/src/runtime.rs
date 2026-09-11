@@ -52,6 +52,7 @@ impl Engine {
         let stdout = File::create(directory.path().join("engine.stdout.log"))?;
         let stderr = File::create(directory.path().join("engine.stderr.log"))?;
         let child = Command::new(&binary)
+            .env("III_TELEMETRY_ENABLED", "false")
             .arg("--no-update-check")
             .arg("--config")
             .arg(&config_path)

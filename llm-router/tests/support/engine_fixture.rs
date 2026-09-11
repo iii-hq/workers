@@ -306,6 +306,7 @@ pub async fn spawn_engine_with(config_for: impl FnOnce(u16, &Path) -> String) ->
         .and_then(|mut f| f.write_all(config.as_bytes()))
         .expect("write config");
     let mut child = match Command::new(&bin)
+        .env("III_TELEMETRY_ENABLED", "false")
         .arg("--no-update-check")
         .arg("--config")
         .arg(&config_path)

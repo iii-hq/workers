@@ -1,3 +1,6 @@
+# Internal test/dev commands, including installers and subprocesses.
+export III_TELEMETRY_ENABLED := false
+
 III_WORKERS  ?= $(HOME)/.iii/workers
 PROFILE      ?= release
 RUN_PROFILE  ?= debug
@@ -167,7 +170,7 @@ engine: ensure-session
 	    exit 2; \
 	  fi; \
 	fi
-	@cmd="cd '$(REPO_ROOT)' && iii -c '$(ENGINE_CONFIG)'"; \
+	@cmd="cd '$(REPO_ROOT)' && III_TELEMETRY_ENABLED=false iii -c '$(ENGINE_CONFIG)'"; \
 	if tmux list-windows -t "$(TMUX_SESSION)" -F '#W' | grep -Fxq engine; then \
 	  tmux respawn-window -k -t "$(TMUX_SESSION):engine" -c "$(REPO_ROOT)" "$$cmd"; \
 	else \
@@ -275,14 +278,14 @@ restart-worker:
 	if [ "$$worker" = "scrapling" ]; then \
 	  test -f "$(SCRAPLING_ROOT)/pyproject.toml" || { echo "missing $(SCRAPLING_ROOT)/pyproject.toml"; exit 2; }; \
 	  $(MAKE) --no-print-directory prepare-scrapling || exit 1; \
-	  cmd="cd '$(SCRAPLING_ROOT)' && III_URL='$(ENGINE_URL)' '$(SCRAPLING_VENV)/bin/python' -m src.main"; \
+	  cmd="cd '$(SCRAPLING_ROOT)' && III_TELEMETRY_ENABLED=false III_URL='$(ENGINE_URL)' '$(SCRAPLING_VENV)/bin/python' -m src.main"; \
 	else \
 	  manifest="$(WORKTREE_ROOT_ABS)/$$worker/Cargo.toml"; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	  args="--url $(ENGINE_URL)"; \
 	  if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
 	  if [ "$$worker" = "ade" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
-	  cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
+	  cmd="cd '$(WORKTREE_ROOT_ABS)' && III_TELEMETRY_ENABLED=false RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
 	fi; \
 	if tmux list-windows -t "$(TMUX_SESSION)" -F '#W' | grep -Fxq "$$worker"; then \
 	  tmux respawn-window -k -t "$(TMUX_SESSION):$$worker" -c "$(WORKTREE_ROOT_ABS)" "$$cmd"; \

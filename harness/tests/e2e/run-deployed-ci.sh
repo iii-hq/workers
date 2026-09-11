@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Internal validation, including installers and nested III commands.
+export III_TELEMETRY_ENABLED=false
+
 # Run the checkout's E2E runner against workers resolved from the public registry.
 
 : "${HARNESS_E2E_RELEASE_WORKER:?HARNESS_E2E_RELEASE_WORKER is required}"

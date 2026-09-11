@@ -34,6 +34,9 @@ on:
         required: false
         default: ''
 
+env:
+  III_TELEMETRY_ENABLED: "false"
+
 jobs:
   validate:
     name: validate harness scenarios
