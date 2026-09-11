@@ -183,6 +183,28 @@ def test_harness_integration_downloads_latest_rc_engine_without_building_it() ->
     assert "database -> target" in stack_cache["with"]["workspaces"]
 
 
+def test_harness_integration_cache_key_ignores_preinstalled_toolchains() -> None:
+    # rust-cache hashes every installed toolchain into its key. The trusted
+    # main build (larger-runner image) and PR builds (ubuntu-latest) ship
+    # different preinstalled stables, so the extras must go before the key
+    # is computed or PRs never restore the cache main publishes.
+    integration = workflow("_harness-integration.yml")
+    steps = integration["jobs"]["build"]["steps"]
+    names = [step.get("name") or step.get("uses") for step in steps]
+    toolchain = next(
+        index for index, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith("dtolnay/rust-toolchain@")
+    )
+    prune = names.index("Keep only the pinned Rust toolchain")
+    restore = names.index("Restore integration Rust cache")
+    assert toolchain < prune < restore
+
+    run = named_step(steps, "Keep only the pinned Rust toolchain")["run"]
+    assert "rustup show active-toolchain" in run
+    assert "rustup toolchain uninstall" in run
+    assert "rustup toolchain list --quiet" in run
+
+
 def test_slow_rust_builds_upload_cargo_timing_reports() -> None:
     integration = workflow("_harness-integration.yml")
     integration_steps = integration["jobs"]["build"]["steps"]
