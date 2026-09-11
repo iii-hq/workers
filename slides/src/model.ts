@@ -3,7 +3,25 @@ import { randomUUID } from 'node:crypto'
 export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'statement', 'image', 'blank'] as const
 export type Layout = (typeof LAYOUTS)[number]
 
-export const BLOCK_TYPES = ['heading', 'text', 'bullets', 'image', 'code', 'quote', 'metric'] as const
+export const BLOCK_TYPES = [
+  'heading',
+  'text',
+  'bullets',
+  'image',
+  'code',
+  'quote',
+  'metric',
+  'cards',
+  'steps',
+  'timeline',
+] as const
+export const VARIANTS = ['default', 'accent', 'gradient', 'muted'] as const
+export type Variant = (typeof VARIANTS)[number]
+
+export interface Entry {
+  title: string
+  text?: string
+}
 export type BlockType = (typeof BLOCK_TYPES)[number]
 
 export type Column = 'left' | 'right'
@@ -16,10 +34,15 @@ export type Block =
   | { id: string; type: 'code'; code: string; language?: string; column?: Column }
   | { id: string; type: 'quote'; text: string; attribution?: string; column?: Column }
   | { id: string; type: 'metric'; value: string; label: string; column?: Column }
+  | { id: string; type: 'cards'; entries: Entry[]; numbered?: boolean; column?: Column }
+  | { id: string; type: 'steps'; entries: Entry[]; column?: Column }
+  | { id: string; type: 'timeline'; entries: Entry[]; column?: Column }
 
 export interface Slide {
   id: string
   layout: Layout
+  variant?: Variant
+  kicker?: string
   title?: string
   subtitle?: string
   blocks: Block[]
@@ -94,6 +117,28 @@ function column(value: unknown): Column | undefined {
   return value === 'left' || value === 'right' ? value : undefined
 }
 
+export const MAX_ENTRIES = 12
+
+export function entryList(value: unknown): Entry[] {
+  const raw = Array.isArray(value) ? value : typeof value === 'string' ? value.split('\n') : []
+  const entries: Entry[] = []
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      const [title, ...rest] = item.split(/\s\|\s|\s\u2014\s|:\s/)
+      const cleanTitle = title.replace(/^\s*[-*\u2022]\s*/, '').trim()
+      if (!cleanTitle) continue
+      entries.push({ title: cleanTitle, ...(rest.join(' ').trim() ? { text: rest.join(' ').trim() } : {}) })
+    } else if (item && typeof item === 'object') {
+      const entry = item as Record<string, unknown>
+      const title = text(entry.title) ?? text(entry.label) ?? text(entry.name) ?? text(entry.heading)
+      const body = text(entry.text) ?? text(entry.description) ?? text(entry.body) ?? text(entry.detail)
+      if (!title && !body) continue
+      entries.push({ title: title ?? (body as string), ...(title && body ? { text: body } : {}) })
+    }
+  }
+  return entries.slice(0, MAX_ENTRIES)
+}
+
 export function normalizeBlock(input: unknown, index = 0): Block {
   const raw = record(input, 'BLOCK')
   const id = text(raw.id) ?? newId('block')
@@ -134,6 +179,16 @@ export function normalizeBlock(input: unknown, index = 0): Block {
       })
     case 'metric':
       return withColumn({ id, type, value: text(raw.value) ?? '', label: text(raw.label) ?? '' })
+    case 'cards':
+      return withColumn({
+        id,
+        type,
+        entries: entryList(raw.entries ?? raw.items),
+        ...(raw.numbered === true ? { numbered: true } : {}),
+      })
+    case 'steps':
+    case 'timeline':
+      return withColumn({ id, type, entries: entryList(raw.entries ?? raw.items) })
     default:
       throw new Error(`INVALID_BLOCK: blocks[${index}] has unknown type ${String(type)}`)
   }
@@ -150,9 +205,15 @@ export function normalizeSlide(input: unknown, index = 0): Slide {
     blocks.push({ id: newId('block'), type: 'bullets', items: stringList(raw.bullets) })
   }
   if (text(raw.body)) blocks.push({ id: newId('block'), type: 'text', text: text(raw.body) as string })
+  const variant =
+    (VARIANTS as readonly string[]).includes(String(raw.variant)) && raw.variant !== 'default'
+      ? (raw.variant as Variant)
+      : undefined
   return {
     id: text(raw.id) ?? newId('slide'),
     layout,
+    ...(variant ? { variant } : {}),
+    ...(text(raw.kicker) ? { kicker: text(raw.kicker) } : {}),
     ...(text(raw.title) ? { title: text(raw.title) } : {}),
     ...(text(raw.subtitle) ? { subtitle: text(raw.subtitle) } : {}),
     blocks,
@@ -235,6 +296,8 @@ export function mergeSlide(current: Slide, patch: unknown): Slide {
   const raw = record(patch, 'SLIDE')
   const next = normalizeSlide({ ...current, ...raw, id: current.id })
   if (raw.title === null || raw.title === '') delete next.title
+  if (raw.kicker === null || raw.kicker === '') delete next.kicker
+  if (raw.variant === null || raw.variant === '' || raw.variant === 'default') delete next.variant
   if (raw.subtitle === null || raw.subtitle === '') delete next.subtitle
   if (raw.notes === null || raw.notes === '') delete next.notes
   if (raw.background === null || raw.background === '') delete next.background
@@ -242,7 +305,7 @@ export function mergeSlide(current: Slide, patch: unknown): Slide {
   return next
 }
 
-const DIRECTIVE = /^<!--\s*([a-z_]+)\s*:\s*([\s\S]*?)\s*-->$/i
+const DIRECTIVE = /^<!--\s*([a-z_]+)\s*(?::\s*([\s\S]*?))?\s*-->$/i
 
 export function slidesFromMarkdown(markdown: string): { title?: string; subtitle?: string; slides: Slide[] } {
   const sections = markdown
@@ -256,6 +319,7 @@ export function slidesFromMarkdown(markdown: string): { title?: string; subtitle
   for (const [sectionIndex, section] of sections.entries()) {
     const slide: Slide = { id: newId('slide'), layout: 'content', blocks: [] }
     let layoutSet = false
+    let pendingList: 'cards' | 'steps' | 'timeline' | null = null
     const lines = section.split('\n')
     let index = 0
     const paragraph: string[] = []
@@ -270,12 +334,17 @@ export function slidesFromMarkdown(markdown: string): { title?: string; subtitle
       const directive = trimmed.match(DIRECTIVE)
       if (directive) {
         flushParagraph()
-        const [, key, value] = directive
+        const [, key, rawValue] = directive
+        const value = rawValue ?? ''
         if (key === 'layout' && (LAYOUTS as readonly string[]).includes(value)) {
           slide.layout = value as Layout
           layoutSet = true
         } else if (key === 'notes') slide.notes = value.trim()
         else if (key === 'background') slide.background = value.trim()
+        else if (key === 'kicker') slide.kicker = value.trim()
+        else if (key === 'variant' && (VARIANTS as readonly string[]).includes(value.trim()))
+          slide.variant = value.trim() as Variant
+        else if ((key === 'cards' || key === 'steps' || key === 'timeline') && !value.trim()) pendingList = key
         index += 1
         continue
       }
@@ -337,7 +406,10 @@ export function slidesFromMarkdown(markdown: string): { title?: string; subtitle
           items.push(lines[index].replace(/^\s*[-*\u2022]\s+/, '').trim())
           index += 1
         }
-        slide.blocks.push({ id: newId('block'), type: 'bullets', items })
+        if (pendingList) {
+          slide.blocks.push({ id: newId('block'), type: pendingList, entries: entryList(items) })
+          pendingList = null
+        } else slide.blocks.push({ id: newId('block'), type: 'bullets', items })
         continue
       }
       if (trimmed.startsWith('>')) {
@@ -389,6 +461,8 @@ export function deckToMarkdown(deck: Deck): string {
     .map((slide) => {
       const lines: string[] = []
       if (slide.layout !== 'content') lines.push(`<!-- layout: ${slide.layout} -->`)
+      if (slide.variant) lines.push(`<!-- variant: ${slide.variant} -->`)
+      if (slide.kicker) lines.push(`<!-- kicker: ${slide.kicker} -->`)
       if (slide.title) lines.push(`${slide.layout === 'title' ? '#' : '##'} ${slide.title}`)
       if (slide.subtitle) lines.push(slide.layout === 'title' ? slide.subtitle : `## ${slide.subtitle}`)
       for (const block of slide.blocks) {
@@ -402,6 +476,12 @@ export function deckToMarkdown(deck: Deck): string {
           lines.push(`> ${block.text}`)
           if (block.attribution) lines.push(`> \u2014 ${block.attribution}`)
         } else if (block.type === 'metric') lines.push(`### ${block.value}`, block.label)
+        else if (block.type === 'cards' || block.type === 'steps' || block.type === 'timeline') {
+          lines.push(
+            `<!-- ${block.type} -->`,
+            ...block.entries.map((entry) => `- ${entry.title}${entry.text ? ` | ${entry.text}` : ''}`),
+          )
+        }
       }
       if (slide.notes) lines.push('', `<!-- notes: ${slide.notes} -->`)
       return lines.join('\n')

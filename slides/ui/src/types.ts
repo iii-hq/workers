@@ -1,6 +1,20 @@
 export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'statement', 'image', 'blank'] as const
 export type Layout = (typeof LAYOUTS)[number]
-export const BLOCK_TYPES = ['heading', 'text', 'bullets', 'image', 'code', 'quote', 'metric'] as const
+export const BLOCK_TYPES = [
+  'heading',
+  'text',
+  'bullets',
+  'image',
+  'code',
+  'quote',
+  'metric',
+  'cards',
+  'steps',
+  'timeline',
+] as const
+export const VARIANTS = ['default', 'accent', 'gradient', 'muted'] as const
+export type Variant = (typeof VARIANTS)[number]
+export type Entry = { title: string; text?: string }
 export type BlockType = (typeof BLOCK_TYPES)[number]
 export type Column = 'left' | 'right'
 
@@ -17,12 +31,16 @@ export type Block = {
   attribution?: string
   value?: string
   label?: string
+  entries?: Entry[]
+  numbered?: boolean
   column?: Column
 }
 
 export type Slide = {
   id: string
   layout: Layout
+  variant?: Variant
+  kicker?: string
   title?: string
   subtitle?: string
   blocks: Block[]
@@ -98,6 +116,32 @@ export const BLOCK_LABEL: Record<BlockType, string> = {
   code: 'Code',
   quote: 'Quote',
   metric: 'Metric',
+  cards: 'Cards',
+  steps: 'Steps',
+  timeline: 'Timeline',
+}
+
+export const VARIANT_LABEL: Record<Variant, string> = {
+  default: 'Default',
+  accent: 'Accent',
+  gradient: 'Gradient',
+  muted: 'Muted',
+}
+
+export function entriesToText(entries: Entry[] | undefined): string {
+  return (entries ?? []).map((entry) => (entry.text ? `${entry.title} | ${entry.text}` : entry.title)).join('\n')
+}
+
+export function textToEntries(value: string): Entry[] {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [title, ...rest] = line.split(' | ')
+      const text = rest.join(' | ').trim()
+      return text ? { title: title.trim(), text } : { title: title.trim() }
+    })
 }
 
 export function newId(prefix: string): string {
@@ -146,15 +190,46 @@ export function defaultBlock(type: BlockType): Block {
       return { id, type, text: 'A memorable sentence.', attribution: '' }
     case 'metric':
       return { id, type, value: '42%', label: 'What this number means' }
+    case 'cards':
+      return {
+        id,
+        type,
+        entries: [
+          { title: 'First', text: 'One line on why it matters' },
+          { title: 'Second', text: 'One line on why it matters' },
+          { title: 'Third', text: 'One line on why it matters' },
+        ],
+      }
+    case 'steps':
+      return { id, type, entries: [{ title: 'Discover' }, { title: 'Build' }, { title: 'Deploy' }, { title: 'Scale' }] }
+    case 'timeline':
+      return {
+        id,
+        type,
+        entries: [
+          { title: 'Now', text: 'Where we start' },
+          { title: 'Next', text: 'What follows' },
+          { title: 'Later', text: 'Where this leads' },
+        ],
+      }
   }
 }
 
 export function defaultSlide(layout: Layout = 'content'): Slide {
   const id = newId('slide')
   if (layout === 'title')
-    return { id, layout, title: 'Deck title', subtitle: 'One line on what this is about', blocks: [] }
-  if (layout === 'section') return { id, layout, title: 'Section', blocks: [] }
-  if (layout === 'statement') return { id, layout, title: 'One bold sentence that carries the slide.', blocks: [] }
+    return {
+      id,
+      layout,
+      variant: 'gradient',
+      kicker: 'Kicker',
+      title: 'Deck title',
+      subtitle: 'One line on what this is about',
+      blocks: [],
+    }
+  if (layout === 'section') return { id, layout, variant: 'accent', kicker: 'Part 01', title: 'Section', blocks: [] }
+  if (layout === 'statement')
+    return { id, layout, variant: 'muted', title: 'One bold sentence that carries the slide.', blocks: [] }
   if (layout === 'two-column')
     return {
       id,

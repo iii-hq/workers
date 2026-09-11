@@ -1,5 +1,5 @@
 import { type CSSProperties, type KeyboardEvent, type ReactElement, useEffect, useRef, useState } from 'react'
-import type { Block, Slide, Theme, ThemeOverrides } from './types'
+import type { Block, Entry, Slide, Theme, ThemeOverrides } from './types'
 
 export const CANVAS_W = 1600
 export const CANVAS_H = 900
@@ -23,7 +23,26 @@ function luminance(hex: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
+function mix(a: string, b: string, amount: number): string {
+  const [ar, ag, ab] = hexToRgb(a)
+  const [br, bg, bb] = hexToRgb(b)
+  const channel = (x: number, y: number) => Math.round(x + (y - x) * amount)
+  return `#${[channel(ar, br), channel(ag, bg), channel(ab, bb)].map((c) => c.toString(16).padStart(2, '0')).join('')}`
+}
+
+function alpha(hex: string, value: number): string {
+  const [r, g, b] = hexToRgb(hex)
+  return `rgba(${r}, ${g}, ${b}, ${value})`
+}
+
 const isHex = (value?: string) => !!value && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)
+
+export function gridColumns(count: number): number {
+  if (count <= 3) return Math.max(1, count)
+  if (count === 4) return 4
+  if (count <= 9) return 3
+  return 4
+}
 
 export function themeVars(
   theme: Theme | undefined,
@@ -42,16 +61,23 @@ export function themeVars(
   const background = isHex(overrides?.background) ? (overrides?.background as string) : colors.background
   const ink = isHex(overrides?.ink) ? (overrides?.ink as string) : colors.ink
   const dark = luminance(background) < 0.4
-  const [ar, ag, ab] = hexToRgb(accent)
+  const accentInk = luminance(accent) > 0.5 ? '#111111' : '#ffffff'
   const fonts = theme?.fonts ?? { heading: 'Inter', body: 'Inter', mono: 'JetBrains Mono' }
+  const surface = dark === (theme?.dark ?? true) ? colors.surface : dark ? mix(background, '#ffffff', 0.08) : '#ffffff'
   return {
     '--sl-bg': background,
-    '--sl-surface': dark === (theme?.dark ?? true) ? colors.surface : dark ? 'rgba(255,255,255,.08)' : '#ffffff',
+    '--sl-surface': surface,
     '--sl-ink': ink,
     '--sl-muted': colors.muted,
     '--sl-accent': accent,
-    '--sl-accent-ink': luminance(accent) > 0.5 ? '#111111' : '#ffffff',
-    '--sl-accent-soft': `rgba(${ar}, ${ag}, ${ab}, 0.16)`,
+    '--sl-accent-ink': accentInk,
+    '--sl-accent-soft': alpha(accent, 0.16),
+    '--sl-accent-glow': alpha(accent, dark ? 0.35 : 0.22),
+    '--sl-gradient-end': mix(background, accent, dark ? 0.35 : 0.18),
+    '--sl-grid': alpha(ink, dark ? 0.045 : 0.06),
+    '--sl-on-accent-muted': alpha(accentInk, 0.72),
+    '--sl-on-accent-surface': alpha(accentInk, 0.12),
+    '--sl-on-accent-soft': alpha(accentInk, 0.2),
     '--sl-font-heading': `'${overrides?.font_heading ?? fonts.heading}', ui-sans-serif, system-ui, sans-serif`,
     '--sl-font-body': `'${overrides?.font_body ?? fonts.body}', ui-sans-serif, system-ui, sans-serif`,
     '--sl-font-mono': `'${fonts.mono}', ui-monospace, SFMono-Regular, Menlo, monospace`,
@@ -121,6 +147,42 @@ function Editable({
   )
 }
 
+function EntryView({
+  entry,
+  editable,
+  titleClass,
+  textClass,
+  onChange,
+}: {
+  entry: Entry
+  editable: boolean
+  titleClass: string
+  textClass: string
+  onChange: (next: Entry) => void
+}) {
+  return (
+    <>
+      <Editable
+        value={entry.title}
+        placeholder="Title"
+        className={titleClass}
+        editable={editable}
+        onCommit={(title) => onChange({ ...entry, title })}
+      />
+      {entry.text || editable ? (
+        <Editable
+          value={entry.text ?? ''}
+          placeholder="One line"
+          className={textClass}
+          multiline
+          editable={editable}
+          onCommit={(text) => onChange(text ? { ...entry, text } : { title: entry.title })}
+        />
+      ) : null}
+    </>
+  )
+}
+
 function BlockView({
   block,
   selected,
@@ -141,6 +203,11 @@ function BlockView({
       onSelect()
     },
     'data-block-id': block.id,
+  }
+  const updateEntry = (index: number, next: Entry) => {
+    const entries = [...(block.entries ?? [])]
+    entries[index] = next
+    onChange({ entries })
   }
   switch (block.type) {
     case 'heading':
@@ -171,7 +238,7 @@ function BlockView({
     case 'bullets':
       return (
         <div {...common}>
-          <ul className="sl-bullets">
+          <ul className={`sl-bullets${(block.items?.length ?? 0) > 5 ? ' sl-dense' : ''}`}>
             {(block.items?.length ? block.items : ['']).map((item, index) => (
               <li key={`${block.id}-${index}`}>
                 <Editable
@@ -246,6 +313,68 @@ function BlockView({
           />
         </div>
       )
+    case 'cards': {
+      const entries = block.entries ?? []
+      const dense = entries.length > 6
+      return (
+        <div
+          {...common}
+          className={`${common.className}${dense ? ' sl-dense' : ''}`}
+          style={{ '--cols': gridColumns(entries.length) } as CSSProperties}
+        >
+          {entries.map((entry, index) => (
+            <div className="sl-card" key={`${block.id}-${index}`}>
+              {block.numbered ? <div className="sl-card-number">{String(index + 1).padStart(2, '0')}</div> : null}
+              <EntryView
+                entry={entry}
+                editable={editable}
+                titleClass="sl-card-title"
+                textClass="sl-card-text"
+                onChange={(next) => updateEntry(index, next)}
+              />
+            </div>
+          ))}
+        </div>
+      )
+    }
+    case 'steps': {
+      const entries = block.entries ?? []
+      return (
+        <div {...common} className={`${common.className}${entries.length > 4 ? ' sl-dense' : ''}`}>
+          {entries.map((entry, index) => (
+            <div className="sl-step" key={`${block.id}-${index}`}>
+              <div className="sl-step-number">{index + 1}</div>
+              <EntryView
+                entry={entry}
+                editable={editable}
+                titleClass="sl-step-title"
+                textClass="sl-step-text"
+                onChange={(next) => updateEntry(index, next)}
+              />
+            </div>
+          ))}
+        </div>
+      )
+    }
+    case 'timeline': {
+      const entries = block.entries ?? []
+      return (
+        <div {...common} style={{ '--cols': Math.max(1, entries.length) } as CSSProperties}>
+          {entries.map((entry, index) => (
+            <div className="sl-milestone" key={`${block.id}-${index}`}>
+              <div className="sl-milestone-dot" />
+              <EntryView
+                entry={entry}
+                editable={editable}
+                titleClass="sl-milestone-title"
+                textClass="sl-milestone-text"
+                onChange={(next) => updateEntry(index, next)}
+              />
+            </div>
+          ))}
+        </div>
+      )
+    }
     default:
       return null
   }
@@ -267,6 +396,7 @@ export interface SlideCanvasProps {
   theme?: Theme
   overrides?: ThemeOverrides
   footer?: string
+  author?: string
   editable?: boolean
   selectedBlockId?: string | null
   onSelectBlock?: (blockId: string | null) => void
@@ -282,6 +412,7 @@ export function SlideCanvas({
   theme,
   overrides,
   footer,
+  author,
   editable = false,
   selectedBlockId,
   onSelectBlock,
@@ -312,6 +443,16 @@ export function SlideCanvas({
         onChange={(patch) => patchBlock(block.id, patch)}
       />
     ))
+  const kicker =
+    slide.kicker || editable ? (
+      <Editable
+        value={slide.kicker ?? ''}
+        placeholder="Kicker"
+        className="sl-kicker"
+        onCommit={(value) => patchSlide({ kicker: value })}
+        editable={editable}
+      />
+    ) : null
   const title = (cls = 'sl-title') =>
     slide.layout === 'blank' ? null : (
       <Editable
@@ -323,7 +464,7 @@ export function SlideCanvas({
       />
     )
   const subtitle =
-    slide.layout === 'blank' ? null : (
+    slide.layout === 'blank' || (!slide.subtitle && !editable) ? null : (
       <Editable
         value={slide.subtitle ?? ''}
         placeholder="Subtitle"
@@ -336,10 +477,14 @@ export function SlideCanvas({
   let body: ReactElement
   if (slide.layout === 'title') {
     body = (
-      <div className="sl-stack sl-center">
-        <div className="sl-accent-bar" />
+      <div className="sl-stack sl-center sl-hero">
+        {kicker}
         {title('sl-deck-title')}
         {subtitle}
+        <div className="sl-hero-meta">
+          <div className="sl-accent-bar" />
+          {author ? <span>{author}</span> : null}
+        </div>
         <div className="sl-blocks">{blocks(slide.blocks)}</div>
       </div>
     )
@@ -347,6 +492,7 @@ export function SlideCanvas({
     body = (
       <div className="sl-stack sl-section">
         <div className="sl-section-number">{String(index + 1).padStart(2, '0')}</div>
+        {kicker}
         {title('sl-title sl-title-large')}
         {subtitle}
         <div className="sl-blocks">{blocks(slide.blocks)}</div>
@@ -355,6 +501,7 @@ export function SlideCanvas({
   } else if (slide.layout === 'statement') {
     body = (
       <div className="sl-stack sl-center sl-statement">
+        {kicker}
         {title('sl-title sl-title-statement')}
         {subtitle}
         <div className="sl-blocks">{blocks(slide.blocks)}</div>
@@ -371,6 +518,7 @@ export function SlideCanvas({
           <div className="sl-image-full sl-image-missing">Add an image block with a URL</div>
         )}
         <div className="sl-image-overlay">
+          {kicker}
           {title()}
           {subtitle}
           <div className="sl-blocks">{blocks(slide.blocks.filter((block) => block !== image))}</div>
@@ -381,8 +529,11 @@ export function SlideCanvas({
     const [left, right] = splitColumns(slide.blocks)
     body = (
       <div className="sl-stack">
-        {title()}
-        {subtitle}
+        <div className="sl-head">
+          {kicker}
+          {title()}
+          {subtitle}
+        </div>
         <div className="sl-columns">
           <div className="sl-column">{blocks(left)}</div>
           <div className="sl-column">{blocks(right)}</div>
@@ -392,15 +543,20 @@ export function SlideCanvas({
   } else {
     body = (
       <div className="sl-stack">
-        {title()}
-        {subtitle}
+        {slide.layout === 'blank' ? null : (
+          <div className="sl-head">
+            {kicker}
+            {title()}
+            {subtitle}
+          </div>
+        )}
         <div className="sl-blocks">{blocks(slide.blocks)}</div>
       </div>
     )
   }
 
   const background = isHex(slide.background)
-    ? { background: slide.background }
+    ? ({ '--sl-bg': slide.background } as CSSProperties)
     : slide.background && /^https?:/i.test(slide.background)
       ? { backgroundImage: `url('${slide.background.replace(/'/g, '')}')` }
       : undefined
@@ -413,7 +569,7 @@ export function SlideCanvas({
     >
       <div className="sl-scaler" style={{ transform: `scale(${scale})` }}>
         <section
-          className={`sl-slide sl-layout-${slide.layout}`}
+          className={`sl-slide sl-layout-${slide.layout} sl-variant-${slide.variant ?? 'default'}`}
           style={background}
           onClick={() => onSelectBlock?.(null)}
           onKeyDown={(event) => {
@@ -422,6 +578,8 @@ export function SlideCanvas({
           role={editable ? 'group' : undefined}
           aria-label={`Slide ${index + 1}`}
         >
+          <div className="sl-orb sl-orb-a" />
+          <div className="sl-orb sl-orb-b" />
           {body}
           <footer className="sl-footer">
             <span className="sl-footer-text" />

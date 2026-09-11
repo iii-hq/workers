@@ -1,4 +1,4 @@
-import { BLOCK_TYPES, LAYOUTS } from './model.js'
+import { BLOCK_TYPES, LAYOUTS, VARIANTS } from './model.js'
 
 export const object = (
   properties: Record<string, unknown> = {},
@@ -34,12 +34,14 @@ export const blockSchema = object(
     attribution: nullableString,
     value: nullableString,
     label: nullableString,
+    entries: array(object({ title: string, text: nullableString }, ['title'])),
+    numbered: boolean,
     column: { type: ['string', 'null'], enum: ['left', 'right', null] },
   },
   ['type'],
   {
     description:
-      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label. column places the block in a two-column layout.',
+      'One content block. heading/text/quote use text; bullets uses items; image uses src/alt/caption; code uses code/language; metric uses value/label; cards/steps/timeline use entries [{ title, text? }] (cards may be numbered). column places the block in a two-column layout.',
   },
 )
 
@@ -47,6 +49,8 @@ export const slideSchema = object(
   {
     id: nullableString,
     layout: { type: 'string', enum: [...LAYOUTS] },
+    variant: { type: ['string', 'null'], enum: [...VARIANTS, null] },
+    kicker: nullableString,
     title: nullableString,
     subtitle: nullableString,
     blocks: array(blockSchema),
@@ -56,7 +60,7 @@ export const slideSchema = object(
   [],
   {
     description:
-      'One slide. layout defaults to content; blocks render in order; notes are speaker notes; background is a hex color or image URL.',
+      'One slide. layout defaults to content; variant (accent, gradient, muted) changes the background treatment; kicker is a short eyebrow label above the title; blocks render in order; notes are speaker notes; background is a hex color or image URL.',
   },
 )
 

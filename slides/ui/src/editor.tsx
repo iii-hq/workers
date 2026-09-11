@@ -16,9 +16,9 @@ import {
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Api, downloadBytes } from './api'
-import { ArrowDown, ArrowUp, Copy, Download, Play, Trash, X } from './icons'
+import { ArrowDown, ArrowUp, Copy, Download, Notebook, Play, Trash, X } from './icons'
 import { AddSlideMenu, Inspector } from './inspector'
 import { SlideCanvas } from './slide-canvas'
 import { type Block, type Deck, defaultSlide, describeError, type Layout, newId, type Slide, type Theme } from './types'
@@ -215,6 +215,25 @@ export function DeckEditor({
   const [confirmDeck, setConfirmDeck] = useState(false)
   const [presenting, setPresenting] = useState<string | null>(null)
   const [exporting, setExporting] = useState<string | null>(null)
+  const [inspectorOpen, setInspectorOpen] = useState(true)
+  const [mode, setMode] = useState<'wide' | 'narrow' | 'compact'>('wide')
+  const root = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const node = root.current
+    if (!node) return
+    let previous: 'wide' | 'narrow' | 'compact' = 'wide'
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry.contentRect.width
+      const next = width < 640 ? 'compact' : width < 1000 ? 'narrow' : 'wide'
+      if (next === previous) return
+      previous = next
+      setMode(next)
+      setInspectorOpen(next === 'wide')
+    })
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
 
   const index = Math.min(current, Math.max(0, deck.slides.length - 1))
   const slide = deck.slides[index] ?? null
@@ -296,7 +315,7 @@ export function DeckEditor({
   }
 
   return (
-    <div className="sl-editor">
+    <div ref={root} className={`sl-editor${mode === 'compact' ? ' sl-compact' : ''}`}>
       <div className="sl-toolbar">
         <div className="sl-toolbar-group">
           <AddSlideMenu onAdd={addSlide} />
@@ -334,12 +353,13 @@ export function DeckEditor({
                   : `v${deck.revision}`}
           </Badge>
           <Button variant="ghost" size="sm" onClick={() => void present()} disabled={!deck.slides.length}>
-            <Play /> Present
+            <Play /> <span className="sl-label">Present</span>
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" disabled={exporting !== null}>
-                <Download /> {exporting ? `Exporting ${exporting.toUpperCase()}\u2026` : 'Export'}
+                <Download />{' '}
+                <span className="sl-label">{exporting ? `Exporting ${exporting.toUpperCase()}\u2026` : 'Export'}</span>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -348,12 +368,21 @@ export function DeckEditor({
               <DropdownMenuItem onSelect={() => void exportAs('html')}>HTML presentation</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          <IconButton
+            label={inspectorOpen ? 'Hide inspector' : 'Show inspector'}
+            variant="ghost"
+            onClick={() => setInspectorOpen((open) => !open)}
+          >
+            <Notebook />
+          </IconButton>
           <IconButton label="Delete deck" variant="ghost" onClick={() => setConfirmDeck(true)}>
             <Trash />
           </IconButton>
         </div>
       </div>
-      <div className="sl-workspace">
+      <div
+        className={`sl-workspace${inspectorOpen ? ' sl-inspector-open' : ''}${mode !== 'wide' ? ' sl-narrow' : ''}${mode === 'compact' ? ' sl-compact' : ''}`}
+      >
         <nav className="sl-rail" aria-label="Slides">
           {deck.slides.map((candidate, i) => (
             <button
@@ -388,6 +417,7 @@ export function DeckEditor({
               theme={theme}
               overrides={deck.theme_overrides}
               footer={deck.theme_overrides?.footer}
+              author={deck.author}
               editable
               selectedBlockId={selectedBlockId}
               onSelectBlock={(id) => {
@@ -408,6 +438,8 @@ export function DeckEditor({
           ) : null}
         </div>
         <Inspector
+          open={inspectorOpen}
+          onClose={() => setInspectorOpen(false)}
           deck={deck}
           slide={slide}
           themes={themes}

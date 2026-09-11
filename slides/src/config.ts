@@ -28,7 +28,7 @@ const RuntimeFields = z.object({
     .number()
     .int()
     .positive()
-    .default(8_000)
+    .default(24_000)
     .describe('Upper bound on tokens the drafting model may produce for one deck'),
   brand_accent: color.default('').describe('Accent color applied to every deck unless the deck overrides it'),
   brand_footer: z.string().default('').describe('Footer text shown on every slide unless the deck overrides it'),

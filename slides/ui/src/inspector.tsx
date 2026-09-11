@@ -10,7 +10,7 @@ import {
   uiClasses,
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
-import { ArrowDown, ArrowUp, Plus, Trash } from './icons'
+import { ArrowDown, ArrowUp, Plus, Trash, X } from './icons'
 import {
   BLOCK_LABEL,
   BLOCK_TYPES,
@@ -18,11 +18,16 @@ import {
   type BlockType,
   type Deck,
   defaultBlock,
+  entriesToText,
   LAYOUT_LABEL,
   LAYOUTS,
   type Layout,
   type Slide,
   type Theme,
+  textToEntries,
+  VARIANT_LABEL,
+  VARIANTS,
+  type Variant,
 } from './types'
 
 function Field({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
@@ -260,6 +265,31 @@ function BlockEditor({
         </>
       )
       break
+    case 'cards':
+    case 'steps':
+    case 'timeline':
+      fields = (
+        <>
+          <TextArea
+            id={id}
+            rows={Math.min(10, Math.max(4, (block.entries?.length ?? 0) + 1))}
+            value={entriesToText(block.entries)}
+            onChange={(value) => onChange({ entries: textToEntries(value) })}
+            placeholder="One entry per line: Title | one line of text"
+          />
+          {block.type === 'cards' ? (
+            <label className="sl-check">
+              <input
+                type="checkbox"
+                checked={block.numbered ?? false}
+                onChange={(event) => onChange({ numbered: event.target.checked })}
+              />
+              Numbered
+            </label>
+          ) : null}
+        </>
+      )
+      break
   }
   return (
     <div className={`sl-block-editor${selected ? ' sl-block-editor-active' : ''}`} data-block-id={block.id}>
@@ -332,8 +362,27 @@ export function SlideInspector({
           onChange={(layout) => onChange({ layout: layout as Layout })}
         />
       </Field>
+      <Field
+        id="sl-slide-variant"
+        label="Background"
+        hint="Accent for section breaks, gradient for openers and closers, muted for calm slides."
+      >
+        <Select
+          id="sl-slide-variant"
+          value={slide.variant ?? 'default'}
+          options={VARIANTS.map((variant) => ({ value: variant, label: VARIANT_LABEL[variant] }))}
+          onChange={(variant) => onChange({ variant: variant === 'default' ? undefined : (variant as Variant) })}
+        />
+      </Field>
       {slide.layout !== 'blank' ? (
         <>
+          <Field
+            id="sl-slide-kicker"
+            label="Kicker"
+            hint="Short label above the title, e.g. Part 02 or Operating model."
+          >
+            <Input id="sl-slide-kicker" value={slide.kicker ?? ''} onChange={(kicker) => onChange({ kicker })} />
+          </Field>
           <Field id="sl-slide-title" label="Title" hint="State the takeaway as a sentence.">
             <TextArea
               id="sl-slide-title"
@@ -380,7 +429,7 @@ export function SlideInspector({
       <Field id="sl-slide-notes" label="Speaker notes" hint="Press n while presenting to show them.">
         <TextArea id="sl-slide-notes" rows={4} value={slide.notes ?? ''} onChange={(notes) => onChange({ notes })} />
       </Field>
-      <Field id="sl-slide-background" label="Background" hint="Hex color or image URL; empty uses the theme.">
+      <Field id="sl-slide-background" label="Custom background" hint="Hex color or image URL; empty uses the theme.">
         <Input
           id="sl-slide-background"
           value={slide.background ?? ''}
@@ -393,6 +442,8 @@ export function SlideInspector({
 }
 
 export function Inspector({
+  open,
+  onClose,
   deck,
   slide,
   themes,
@@ -403,6 +454,8 @@ export function Inspector({
   onChangeDeck,
   onChangeSlide,
 }: {
+  open: boolean
+  onClose: () => void
   deck: Deck
   slide: Slide | null
   themes: Theme[]
@@ -414,7 +467,12 @@ export function Inspector({
   onChangeSlide: (patch: Partial<Slide>) => void
 }) {
   return (
-    <aside className="sl-inspector" aria-label="Inspector">
+    <aside className={`sl-inspector${open ? '' : ' sl-inspector-hidden'}`} aria-label="Inspector">
+      <div className="sl-inspector-close">
+        <IconButton label="Close inspector" variant="ghost" onClick={onClose}>
+          <X />
+        </IconButton>
+      </div>
       <Tabs value={tab} onValueChange={(value) => onTabChange(value as 'slide' | 'deck')} className="sl-inspector-tabs">
         <TabsList variant="line">
           <TabsTrigger value="slide">Slide</TabsTrigger>
