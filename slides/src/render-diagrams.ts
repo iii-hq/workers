@@ -243,25 +243,30 @@ export function ladderDiagram(spec: DiagramSpec): string {
   return `<path class="stair-fill" d="${fill}"/><path class="stair" d="${path}"/>${nodes}`
 }
 
-const WEAVE_H = 460
+const WEAVE_H = 520
+const WEAVE_W = 1400
 
 export function weaveDiagram(spec: DiagramSpec): string {
   const columns = spec.nodes.filter((node) => !node.hub)
   const rows = spec.nodes.filter((node) => node.hub)
-  const left = 250
-  const right = DW - 40
-  const top = 96
-  const bottom = WEAVE_H - 24
+  const left = 230
+  const right = WEAVE_W - 190
+  const top = 150
+  const bottom = WEAVE_H - 40
   const colGap = columns.length > 1 ? (right - left) / (columns.length - 1) : 0
   const rowGap = rows.length > 1 ? (bottom - top) / (rows.length - 1) : 0
   const hasEdges = (spec.edges ?? []).length > 0
   const marked = new Set((spec.edges ?? []).flatMap((edge) => [`${edge.from}|${edge.to}`, `${edge.to}|${edge.from}`]))
   const isOn = (row: string, col: string) => !hasEdges || marked.has(`${row}|${col}`)
+  const dense = columns.length > 7
   const colSvg = columns
     .map((node, i) => {
       const x = left + i * colGap
       const label = wrapLabel(node.label, 12)
-      return `<g class="node" style="--i:${i}"><line class="guide" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${top - 14}" y2="${bottom + 10}"/>${textLines(x, top - 30 - (label.length - 1) * 16, label, 'col-label', 'middle', 16)}${node.text ? textLines(x, bottom + 34, [node.text], 'sub', 'middle') : ''}</g>`
+      const heading = dense
+        ? `<text class="col-label" transform="translate(${(x + 4).toFixed(1)} ${top - 26}) rotate(-38)" text-anchor="start">${esc(node.label)}</text>`
+        : textLines(x, top - 30 - (label.length - 1) * 16, label, 'col-label', 'middle', 16)
+      return `<g class="node" style="--i:${i}"><line class="guide" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${top - 14}" y2="${bottom + 10}"/>${heading}${node.text ? textLines(x, bottom + 34, [node.text], 'sub', 'middle') : ''}</g>`
     })
     .join('')
   const rowSvg = rows
@@ -326,5 +331,6 @@ export function diagramSvg(spec: DiagramSpec, title?: string): string {
   }
   const body = (renderers[spec.kind] ?? networkDiagram)(spec)
   const height = spec.kind === 'weave' ? WEAVE_H : spec.kind === 'gate' ? 420 : DH
-  return `<svg class="diagram diagram-${spec.kind}" viewBox="0 0 ${DW} ${height}" role="img"${title ? ` aria-label="${esc(title)}"` : ''}>${body}</svg>`
+  const width = spec.kind === 'weave' ? WEAVE_W : DW
+  return `<svg class="diagram diagram-${spec.kind}" viewBox="0 0 ${width} ${height}" role="img"${title ? ` aria-label="${esc(title)}"` : ''}>${body}</svg>`
 }
