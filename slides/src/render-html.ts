@@ -208,8 +208,8 @@ export function deckCss(theme: ResolvedTheme): string {
 *{box-sizing:border-box}
 html,body{margin:0;background:#000;color:var(--ink);font-family:var(--font-body);height:100%;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 body.deck{overflow:hidden}
-.stage{position:fixed;inset:0;display:grid;place-items:center}
-.frame{position:relative;width:var(--w);height:var(--h);transform-origin:center center}
+.stage{position:fixed;inset:0;overflow:hidden}
+.frame{position:absolute;left:50%;top:50%;width:var(--w);height:var(--h);transform-origin:center center;transform:translate(-50%,-50%)}
 .slide{position:absolute;inset:0;width:var(--w);height:var(--h);background:var(--bg);color:var(--ink);padding:64px 96px 56px;overflow:hidden;background-size:cover;background-position:center;display:flex;flex-direction:column;isolation:isolate;opacity:0;visibility:hidden;pointer-events:none;will-change:opacity,transform}
 .slide.active{opacity:1;visibility:visible;pointer-events:auto;z-index:2}
 .slide.leaving{visibility:visible;z-index:1}
@@ -392,7 +392,7 @@ body.show-nav .nav{opacity:1}
 .r-stagger .slide.active .rv{animation:rv 1.1s var(--ease) forwards;animation-delay:calc(var(--i,0) * 90ms + 160ms)}
 .r-step .slide.active .rv.on{animation:rv .8s var(--ease) forwards}
 @keyframes rv{60%{clip-path:inset(0 0 0 -20px)}to{opacity:1;transform:none;clip-path:inset(-20px -20px -20px -20px)}}
-body.overview .frame{transform:none!important;width:100vw;height:100vh;display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:24px;padding:32px;overflow:auto;align-content:start;box-sizing:border-box}
+body.overview .frame{position:static;transform:none!important;width:100vw;height:100vh;display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:24px;padding:32px;overflow:auto;align-content:start;box-sizing:border-box}
 body.overview .slide{position:relative;inset:auto;opacity:1!important;visibility:visible!important;transform:none!important;transition:none!important;zoom:.22;cursor:pointer;outline:4px solid transparent;pointer-events:auto}
 body.overview .slide.active{outline-color:var(--accent)}
 body.overview .slide .rv{opacity:1!important;transform:none!important;clip-path:none!important;animation:none!important}
@@ -400,7 +400,7 @@ body.overview .progress,body.overview .nav{display:none}
 strong{font-weight:500}
 code{font-family:var(--font-mono);background:var(--accent-soft);padding:.05em .3em;border-radius:3px;font-size:.9em}
 @media (prefers-reduced-motion:reduce){.slide,.stars,.progress{animation:none!important;transition:none!important}.rv{opacity:1!important;transform:none!important;clip-path:none!important;animation:none!important}}
-@media print{html,body{background:#fff;overflow:visible;height:auto}.stage{position:static;display:block}.frame{transform:none!important;width:auto;height:auto}.slide{position:relative;display:flex!important;opacity:1!important;visibility:visible!important;transform:none!important;transition:none!important;page-break-after:always;break-after:page}.rv{opacity:1!important;transform:none!important;clip-path:none!important}.stars{animation:none!important}.notes,.progress,.nav{display:none!important}@page{size:${SLIDE_WIDTH}px ${SLIDE_HEIGHT}px;margin:0}}
+@media print{html,body{background:#fff;overflow:visible;height:auto}.stage{position:static;display:block;overflow:visible}.frame{position:static;transform:none!important;width:auto;height:auto}.slide{position:relative;display:flex!important;opacity:1!important;visibility:visible!important;transform:none!important;transition:none!important;page-break-after:always;break-after:page}.rv{opacity:1!important;transform:none!important;clip-path:none!important}.stars{animation:none!important}.notes,.progress,.nav{display:none!important}@page{size:${SLIDE_WIDTH}px ${SLIDE_HEIGHT}px;margin:0}}
 `
 }
 
@@ -472,7 +472,7 @@ const DECK_SCRIPT = `
   function fit(){
     var w = window.innerWidth, h = window.innerHeight;
     var scale = Math.min(w / ${SLIDE_WIDTH}, h / ${SLIDE_HEIGHT});
-    if (frame) frame.style.transform = 'scale(' + scale + ')';
+    if (frame) frame.style.transform = 'translate(-50%,-50%) scale(' + scale + ')';
   }
   function wakeNav(){ body.classList.add('show-nav'); clearTimeout(navTimer); navTimer = setTimeout(function(){ body.classList.remove('show-nav'); }, 2200); }
   document.addEventListener('keydown', function(e){
