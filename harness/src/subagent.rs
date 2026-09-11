@@ -233,6 +233,27 @@ struct ChildFunctions {
     dispatch_only: Vec<String>,
 }
 
+/// Which agent profile a child runs as: the one the spawn named, else the
+/// parent turn's. A spawn that names no profile continues the parent's
+/// identity — an agent running under a profile fans work out to itself, not
+/// to a stranger wearing the built-in identity. Like the inherited model this
+/// reaches only an IN-TURN spawn; a parentless one (console, workflow, CLI)
+/// has nothing to inherit from. A spawn that brings its own `system_prompt`
+/// inherits nothing: that prompt is the child's identity, and shedding the
+/// profile is what keeps the two from colliding.
+fn child_agent_id<'a>(
+    requested: Option<&'a str>,
+    parent_record: Option<&'a TurnRecord>,
+    names_own_prompt: bool,
+) -> Option<&'a str> {
+    requested.or_else(|| {
+        (!names_own_prompt)
+            .then(|| parent_record.and_then(|p| p.options.agent.as_ref()))
+            .flatten()
+            .map(|identity| identity.id.as_str())
+    })
+}
+
 /// Seed a child session + turn and enqueue its first step. When
 /// `parent_record` is set the policy is subset against it, `max_turns` is
 /// capped at the parent's remaining budget, and linkage metadata is recorded.
@@ -246,25 +267,41 @@ async fn seed_child(
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
 
-    // Resolve the agent profile (if named) before anything else fallible —
-    // an unknown id must not leave a session behind.
-    let agent = match req.agent.as_deref() {
-        Some(id) => {
-            if req
-                .options
-                .as_ref()
-                .is_some_and(|o| o.system_prompt.is_some())
-            {
-                return Err(HarnessError::InvalidRequest(
-                    "spawn `agent` supplies the child's system prompt; drop \
-                     `options.system_prompt` or drop `agent` (with `agent` set, \
-                     `system_prompt_strategy` is ignored: the profile's resolved \
-                     prompt is the child's whole identity)"
-                        .into(),
-                ));
-            }
-            Some(crate::agents::resolve(deps, cfg, id).await?)
-        }
+    let names_own_prompt = req
+        .options
+        .as_ref()
+        .is_some_and(|o| o.system_prompt.is_some());
+    if req.agent.is_some() && names_own_prompt {
+        return Err(HarnessError::InvalidRequest(
+            "spawn `agent` supplies the child's system prompt; drop \
+             `options.system_prompt` or drop `agent` (with `agent` set, \
+             `system_prompt_strategy` is ignored: the profile's resolved \
+             prompt is the child's whole identity)"
+                .into(),
+        ));
+    }
+    let agent_id = child_agent_id(req.agent.as_deref(), parent_record, names_own_prompt);
+    let inherited = agent_id.is_some() && req.agent.is_none();
+    // Resolve the agent profile (if any) before anything else fallible — an
+    // unknown id must not leave a session behind.
+    let agent = match agent_id {
+        Some(id) => Some(
+            crate::agents::resolve(deps, cfg, id)
+                .await
+                .map_err(|error| {
+                    if inherited {
+                        // The caller never named this profile; say where it came from
+                        // so the error is traceable to the parent's identity.
+                        HarnessError::InvalidRequest(format!(
+                            "sub-agent inherits the parent turn's agent profile `{id}`, which no \
+                     longer resolves: {error}. Name `agent` explicitly, or give the child \
+                     its own `options.system_prompt`."
+                        ))
+                    } else {
+                        error
+                    }
+                })?,
+        ),
         None => None,
     };
     let display = normalize_display(merged_display(req.display.as_ref(), agent.as_ref()).as_ref())?;
@@ -390,7 +427,8 @@ async fn seed_child(
                 .and_then(|o| o.filesystem_root.as_deref()),
             parent_record,
         )?,
-        // The child's OWN identity, never the parent's.
+        // The child's own resolved identity: the profile the spawn named, or
+        // the parent's when it named none.
         agent: agent.as_ref().map(|a| a.identity.clone()),
         max_validation_retries: req
             .options
@@ -784,6 +822,52 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    fn under_profile(id: &str) -> TurnRecord {
+        let mut record = parent_record(None);
+        record.options.agent = Some(crate::types::turn::AgentIdentity {
+            id: id.into(),
+            name: Some("Linkly".into()),
+            icon: None,
+            color: None,
+        });
+        record
+    }
+
+    #[test]
+    fn a_child_runs_as_the_named_profile_else_the_parents() {
+        let parent = under_profile("linkly");
+        assert_eq!(
+            child_agent_id(None, Some(&parent), false),
+            Some("linkly"),
+            "an in-turn spawn naming no profile continues the parent's"
+        );
+        assert_eq!(
+            child_agent_id(Some("reviewer"), Some(&parent), false),
+            Some("reviewer"),
+            "an explicit profile wins over the parent's"
+        );
+        assert_eq!(
+            child_agent_id(None, Some(&parent), true),
+            None,
+            "a child with its own system prompt sheds the inherited profile"
+        );
+        assert_eq!(
+            child_agent_id(None, Some(&parent_record(None)), false),
+            None,
+            "a parent running the built-in identity passes nothing down"
+        );
+        assert_eq!(
+            child_agent_id(None, None, false),
+            None,
+            "a parentless spawn has nothing to inherit from"
+        );
+        assert_eq!(
+            child_agent_id(Some("reviewer"), None, false),
+            Some("reviewer"),
+            "a parentless spawn still honours an explicit profile"
+        );
     }
 
     #[test]
