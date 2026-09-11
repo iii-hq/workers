@@ -28,7 +28,7 @@ export const BLOCK_TYPES = [
   'table',
   'diagram',
 ] as const
-export const DIAGRAM_KINDS = ['network', 'matrix', 'radar', 'loop', 'ladder'] as const
+export const DIAGRAM_KINDS = ['network', 'matrix', 'radar', 'loop', 'ladder', 'weave', 'gate'] as const
 export type DiagramKind = (typeof DIAGRAM_KINDS)[number]
 
 export interface DiagramNode {

@@ -120,7 +120,30 @@ function splitColumns(blocks: Block[]): [Block[], Block[]] {
   return [left, right]
 }
 
-export function renderSlideBody(slide: Slide, index: number, deck: Pick<Deck, 'author'>): string {
+function roman(value: number): string {
+  const table: [number, string][] = [
+    [10, 'X'],
+    [9, 'IX'],
+    [5, 'V'],
+    [4, 'IV'],
+    [1, 'I'],
+  ]
+  let rest = Math.max(1, Math.min(39, Math.floor(value)))
+  let out = ''
+  for (const [n, s] of table) {
+    while (rest >= n) {
+      out += s
+      rest -= n
+    }
+  }
+  return out
+}
+
+export function renderSlideBody(
+  slide: Slide,
+  index: number,
+  deck: Pick<Deck, 'author'> & { slides?: Slide[] },
+): string {
   const rv = new Reveal()
   const kicker = ''
   const title = slide.title ? `<h2${rv.wrap('slide-title')}>${inline(slide.title)}</h2>` : ''
@@ -133,8 +156,12 @@ export function renderSlideBody(slide: Slide, index: number, deck: Pick<Deck, 'a
   switch (slide.layout) {
     case 'title':
       return `<div class="stack center hero"><div${rv.wrap('accent-bar')}></div>${slide.title ? `<h1${rv.wrap('deck-title')}>${inline(slide.title)}</h1>` : ''}${subtitle}${deck.author ? `<div${rv.wrap('hero-meta')}><span>${inline(deck.author)}</span></div>` : ''}<div class="blocks">${blocks()}</div></div>`
-    case 'section':
-      return `<div class="section-decor" aria-hidden="true">${String(index + 1).padStart(2, '0')}</div><div class="stack section">${kicker}${title}${subtitle}<div class="blocks">${blocks()}</div></div>`
+    case 'section': {
+      const ordinal = deck.slides
+        ? deck.slides.slice(0, index + 1).filter((candidate) => candidate.layout === 'section').length
+        : index + 1
+      return `<div class="section-decor" aria-hidden="true">${roman(ordinal)}</div><div class="stack section">${kicker}${title}${subtitle}<div class="blocks">${blocks()}</div></div>`
+    }
     case 'statement':
       return `<div class="stack center statement">${kicker}${title}${subtitle}<div class="blocks">${blocks()}</div></div>`
     case 'split':
@@ -365,6 +392,19 @@ body.deck{overflow:hidden}
 .diagram .arrow{fill:none;stroke:var(--accent);stroke-width:1.5}
 .diagram .index{font-family:var(--font-mono);font-size:15px;letter-spacing:.16em;fill:var(--accent)}
 .diagram .stair{fill:none;stroke:var(--accent);stroke-width:1.5}
+.diagram .stair-fill{fill:var(--accent);opacity:.07}
+.diagram .highlight .dot{fill:var(--accent);stroke:var(--accent);stroke-width:8;stroke-opacity:.25}
+.diagram .highlight .label-strong{fill:var(--accent)}
+.diagram .col-label{font-family:var(--font-mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;fill:var(--ink)}
+.diagram .row-label{font-family:var(--font-heading);font-size:26px;letter-spacing:-0.01em}
+.diagram .band{stroke:var(--hair-strong);stroke-width:1}
+.diagram .hollow{fill:none;stroke:var(--hair-strong);stroke-width:1}
+.diagram .inherited{fill:var(--bg);stroke:var(--accent);stroke-width:2}
+.diagram .rail{stroke:var(--hair-strong);stroke-width:1}
+.diagram .diamond{fill:var(--card);stroke:var(--accent);stroke-width:1.5}
+.diagram .branch{fill:none;stroke:var(--accent);stroke-width:1.2;opacity:.7}
+.diagram .sub-plain{font-size:16px;fill:var(--muted)}
+.r-stagger .slide.active .diagram .band,.r-stagger .slide.active .diagram .rail,.r-stagger .slide.active .diagram .branch{stroke-dasharray:2400;stroke-dashoffset:2400;animation:draw 2s var(--ease) .5s forwards}
 .column .diagram,.split-panel .diagram{max-height:100%}
 .r-stagger .slide.active .diagram .node,.r-stagger .slide.active .diagram .hub,.r-stagger .slide.active .diagram .point{animation:rv .9s var(--ease) both;animation-delay:calc(var(--i,0) * 60ms + 400ms)}
 .r-stagger .slide.active .diagram .edge,.r-stagger .slide.active .diagram .arc,.r-stagger .slide.active .diagram .stair,.r-stagger .slide.active .diagram .shape{stroke-dasharray:2400;stroke-dashoffset:2400;animation:draw 2s var(--ease) .5s forwards}
