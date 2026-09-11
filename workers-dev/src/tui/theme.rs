@@ -1,7 +1,5 @@
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::discover::WorkerGroup;
-
 pub fn header_accent_style() -> Style {
     Style::default()
         .fg(Color::Cyan)
@@ -27,36 +25,14 @@ pub fn selection_row_style() -> Style {
     Style::default().bg(Color::Rgb(18, 28, 45))
 }
 
-pub fn group_header_style(group: WorkerGroup) -> Style {
-    match group {
-        WorkerGroup::Stack => Style::default().fg(Color::Cyan),
-        WorkerGroup::Other => muted_cell_style(),
-    }
-}
-
-pub fn status_style(display_status: &str) -> Style {
-    match display_status {
-        "connected" => Style::default().fg(Color::Green),
-        "compiling" | "disconnected" => Style::default().fg(Color::Yellow),
-        "crashed" => Style::default().fg(Color::Red),
+/// compose reports `ready`, `failed` or `stopped`; the progress feed overlays
+/// `queued` and `starting` while an operation is in flight.
+pub fn status_style(state: &str) -> Style {
+    match state {
+        "ready" => Style::default().fg(Color::Green),
+        "starting" | "queued" => Style::default().fg(Color::Yellow),
+        "failed" => Style::default().fg(Color::Red),
         _ => muted_cell_style(),
-    }
-}
-
-pub fn process_style(process_status: &str) -> Style {
-    match process_status {
-        "running" => Style::default().fg(Color::Green),
-        "compiling" => Style::default().fg(Color::Yellow),
-        "crashed" => Style::default().fg(Color::Red),
-        _ => muted_cell_style(),
-    }
-}
-
-pub fn engine_style(engine_status: &str) -> Style {
-    match engine_status {
-        "connected" => Style::default().fg(Color::Green),
-        "—" => muted_cell_style(),
-        _ => Style::default().fg(Color::Yellow),
     }
 }
 
@@ -67,10 +43,6 @@ pub fn engine_style(engine_status: &str) -> Style {
 /// still readable, just not muted.
 pub fn muted_cell_style() -> Style {
     Style::default().add_modifier(Modifier::DIM)
-}
-
-pub fn non_spawnable_style() -> Style {
-    muted_cell_style()
 }
 
 pub fn hint_style() -> Style {

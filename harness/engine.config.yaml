@@ -6,7 +6,7 @@
 # there at boot and hot-reloads on change.
 
 # The built-in `iii-state` is intentionally NOT listed: the repo's standalone
-# `state` worker (workers/state — start it via workers-dev) owns the `state`
+# `state` worker (workers/state — a container in worker-compose.yaml) owns the `state`
 # trigger type and the `state::*` functions now, and its boot guard refuses to
 # start while the builtin is active. If you need the builtin back, re-add
 # `- name: iii-state` and stop the standalone worker. (Its adapter value lives
