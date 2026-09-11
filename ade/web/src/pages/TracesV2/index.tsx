@@ -919,10 +919,12 @@ export function TracesV2({
   ) : null
 
   return (
+    /* onboarding-traces: tour anchor (workers/onboarding) — a selector,
+       not styling. Do not remove. */
     <section
       ref={rootRef}
       aria-label="traces"
-      className="flex-1 flex flex-col overflow-hidden"
+      className="onboarding-traces flex-1 flex flex-col overflow-hidden"
     >
       <PageHeader
         icon={<GitBranch />}

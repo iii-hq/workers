@@ -1,0 +1,26 @@
+{
+  "name": "onboarding",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Guided console tour: step content, progress in state, and a spotlight over the console.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.13.1",
+  "scripts": {
+    "build": "pnpm --dir ui build && node scripts/build-bundle.mjs",
+    "build:assets": "cd ui && node build.mjs",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "check": "node --check src/index.mjs && node --check src/tours.mjs",
+    "test": "node --test \"tests/*.test.mjs\"",
+    "start": "node dist/bundle/index.mjs"
+  },
+  "dependencies": {
+    "iii-sdk": "0.23.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

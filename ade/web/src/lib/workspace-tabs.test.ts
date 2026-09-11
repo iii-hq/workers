@@ -7,6 +7,7 @@ import {
   defaultTabs,
   isChatScreen,
   MAX_COLUMNS,
+  type OpenDirection,
   parseActivation,
   parseActiveTabId,
   parseWorkspaceTabs,
@@ -20,6 +21,7 @@ import {
   tabLabel,
   tabPaneIds,
   tabSizes,
+  type TabScreen,
   type WorkspaceTab,
   withActiveTabId,
   withColumnAdded,
@@ -627,6 +629,8 @@ describe('console::workspace fixtures (shared with the Rust worker)', () => {
         f.screen,
         () => 'tab-new',
         () => 'pane-new',
+        ('relativeTo' in f ? f.relativeTo : CHAT_SCREEN) as TabScreen,
+        ('direction' in f ? f.direction : 'right') as OpenDirection,
       )
       expect({ tabs: result.tabs, activeTabId: result.activeTabId }).toEqual(
         f.expect,

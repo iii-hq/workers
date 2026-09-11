@@ -1,0 +1,241 @@
+/*
+ * Onboarding styles. Two halves:
+ *   - `.onboarding-spotlight`, GLOBAL on purpose: the box lives in
+ *     `document.body` so it can frame any part of the console, not only this
+ *     page's pane.
+ *   - the tour list, scoped to the injected page like every other worker UI.
+ *
+ * Every colour, radius, shadow and duration is a console design token, so the
+ * page follows the operator's theme and goes still under
+ * `prefers-reduced-motion`.
+ */
+
+/* ------------------------------------------------------------------ box --- */
+
+.onboarding-spotlight {
+  position: fixed;
+  top: 0;
+  left: 0;
+  /* Under the console's overlay band. Dropdowns, dialogs, the palette and
+     tooltips are all `z-50`, and the mobile sheet's scrim is `z-40`: a box
+     drawn over those frames the wrong thing — the operator sees a ring on top
+     of the menu they just opened. Above page chrome, below anything that
+     opens. */
+  z-index: 30;
+  pointer-events: none;
+  border: 2px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  /* Ring and glow only. A full-screen scrim was tried and dropped: it dims
+     the console the operator is being taught, including this page. */
+  box-shadow:
+    0 0 0 1px var(--color-accent-border),
+    0 0 12px 2px var(--color-accent-muted);
+  opacity: 0;
+  transition:
+    translate var(--motion-duration-panel) var(--motion-ease-enter),
+    width var(--motion-duration-panel) var(--motion-ease-enter),
+    height var(--motion-duration-panel) var(--motion-ease-enter),
+    opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.onboarding-spotlight[data-visible='true'] {
+  opacity: 1;
+  animation: onboarding-breathe 2.4s var(--motion-ease-standard) infinite;
+}
+
+/* A slow breath on the ring only — the box never resizes on its own, so the
+   frame stays honest about what it points at. */
+@keyframes onboarding-breathe {
+  0%,
+  100% {
+    border-color: var(--color-accent);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
+  }
+}
+
+/* ---------------------------------------------------------------- rows --- */
+
+/* Everything else on the page is the console's own CSS: its utility classes
+   plus the `uiClasses` recipes (card, listItem, chip). What follows is only
+   what those cannot express. */
+
+/* The console's panel fill reads warm-gray beside this list; the page is
+   asked to be white. Dark theme keeps the console's own near-black panel. */
+[data-iii-ui='onboarding'] .ob-page {
+  background: #fff;
+}
+
+[data-theme='dark'] [data-iii-ui='onboarding'] .ob-page {
+  background: var(--color-panel);
+}
+
+[data-iii-ui='onboarding'] .ob-step[data-state='active'] {
+  border-color: var(--color-accent);
+}
+
+[data-iii-ui='onboarding'] .ob-step[data-state='pending'] {
+  background: var(--color-panel);
+}
+
+[data-iii-ui='onboarding'] .ob-sub[data-state='fired'] {
+  border-left: 2px solid var(--color-ok);
+}
+
+[data-iii-ui='onboarding'] .ob-sub[data-state='waiting'] {
+  border-left: 2px solid var(--color-accent);
+}
+
+/* The status dot: complete, current (breathing), or not yet reached. */
+[data-iii-ui='onboarding'] .ob-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-full);
+  background: var(--color-ink-ghost);
+}
+
+[data-iii-ui='onboarding'] .ob-dot[data-state='complete'] {
+  background: var(--color-ok);
+}
+
+[data-iii-ui='onboarding'] .ob-dot[data-state='active'] {
+  background: var(--color-accent);
+  animation: onboarding-pulse 1.8s var(--motion-ease-standard) infinite;
+}
+
+@keyframes onboarding-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--color-accent-muted);
+  }
+  50% {
+    box-shadow: 0 0 0 5px var(--color-accent-muted);
+  }
+}
+
+[data-iii-ui='onboarding'] .ob-pulse {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: var(--radius-full);
+  background: currentColor;
+  animation: onboarding-blink 1.4s var(--motion-ease-standard) infinite;
+}
+
+@keyframes onboarding-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* How far along the tour is. */
+[data-iii-ui='onboarding'] .ob-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+[data-iii-ui='onboarding'] .ob-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-ok);
+  transition: width var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+[data-iii-ui='onboarding'] .ob-caret {
+  line-height: 1;
+  font-size: 1rem;
+  transition: rotate var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui='onboarding'] .ob-caret[data-open] {
+  rotate: 90deg;
+}
+
+/* The signup box and the icon links. Console has no input or icon-link
+   recipe the page can borrow. */
+[data-iii-ui='onboarding'] .ob-input {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-sm);
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-size: 1rem;
+  font-family: inherit;
+}
+
+[data-iii-ui='onboarding'] .ob-input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+[data-iii-ui='onboarding'] .ob-social {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-ink-faint);
+  transition:
+    color var(--motion-duration-control) var(--motion-ease-standard),
+    background var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui='onboarding'] .ob-social:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+/* A payload or a command to copy. Console has no code-block recipe. */
+[data-iii-ui='onboarding'] .ob-pre {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-panel);
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Disclosure: the console animates its own collapsibles, this page opens by
+   mounting, so the entrance is here. */
+[data-iii-ui='onboarding'] .ob-open {
+  animation: onboarding-open var(--motion-duration-panel) var(--motion-ease-enter);
+}
+
+@keyframes onboarding-open {
+  from {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-spotlight,
+  .onboarding-spotlight[data-visible='true'],
+  [data-iii-ui='onboarding'] .ob-dot[data-state='active'],
+  [data-iii-ui='onboarding'] .ob-pulse,
+  [data-iii-ui='onboarding'] .ob-open,
+  [data-iii-ui='onboarding'] .ob-caret,
+  [data-iii-ui='onboarding'] .ob-bar > span {
+    transition: none;
+    animation: none;
+  }
+}
