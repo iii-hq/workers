@@ -1,0 +1,35 @@
+{
+  "name": "slides",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Slide decks as an iii worker: author, draft, render and export presentations with a Console editor.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.13.1",
+  "scripts": {
+    "build": "pnpm --dir ui build && node scripts/build-bundle.mjs",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --dir ui typecheck",
+    "test": "vitest run",
+    "start": "node dist/bundle/index.mjs"
+  },
+  "dependencies": {
+    "iii-sdk": "0.23.0",
+    "pdf-lib": "^1.17.1",
+    "pptxgenjs": "^4.0.1",
+    "yaml": "^2.6.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.0.0"
+  }
+}

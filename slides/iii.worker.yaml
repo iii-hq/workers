@@ -1,0 +1,21 @@
+iii: v1
+name: slides
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+tags: [slides, presentation, deck, pptx, pdf, console, ui]
+description: Slide decks as an iii worker — slides::* functions author, store, draft, render and export presentations (HTML, PDF, PPTX), with a Console page to edit and present them.
+
+runtime:
+  kind: javascript
+
+scripts:
+  start: node ./dist/bundle/index.mjs
+
+dependencies:
+  configuration: "0.x"
+  ade: "^1.9.11"
+  state: "^0.22.2"
+  llm-router: "^1.4.12"
+  harness: "^1.8.5"
