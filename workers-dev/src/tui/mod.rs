@@ -4,6 +4,7 @@
 
 mod theme;
 
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -63,9 +64,15 @@ const DAEMON_ROW: &str = "compose (daemon)";
 enum UiMode {
     Dashboard,
     Filter,
-    /// Typing a directory to offer workers from. Same shape as Filter — a
-    /// footer prompt rather than a modal, so the list stays visible.
-    AddDir(String),
+    /// Browsing for a directory to offer workers from. The scanned entries live
+    /// in the mode: labelling a directory costs a read_dir plus a stat per
+    /// child, which is nothing once per navigation and a stutter per frame.
+    Browse {
+        dir: PathBuf,
+        entries: Vec<BrowseEntry>,
+        cursor: usize,
+        filter: String,
+    },
     Help,
     /// What the selected row can do, spelled out. No cursor: the keys are the
     /// interface and they keep working while it is open, so the menu teaches
@@ -87,7 +94,7 @@ enum UiMode {
 enum ModeKind {
     Dashboard,
     Filter,
-    AddDir,
+    Browse,
     Help,
     Menu,
     Deps,
@@ -99,7 +106,7 @@ fn mode_kind(mode: &UiMode) -> ModeKind {
     match mode {
         UiMode::Dashboard => ModeKind::Dashboard,
         UiMode::Filter => ModeKind::Filter,
-        UiMode::AddDir(_) => ModeKind::AddDir,
+        UiMode::Browse { .. } => ModeKind::Browse,
         UiMode::Help => ModeKind::Help,
         UiMode::Menu => ModeKind::Menu,
         UiMode::Deps { .. } => ModeKind::Deps,
@@ -132,27 +139,54 @@ struct DashboardState {
 }
 
 /// Row 0 is always the daemon. Then the stack the compose file declares, then
-/// everything else the repo ships — running or not, so starting one is a
-/// keypress rather than a file edit.
+/// one group per directory workers are offered from — running or not, so
+/// starting one is a keypress rather than a file edit.
+///
+/// Every row is selectable, headers included: a group header is where a
+/// directory is dropped, and the stack header can start the project as
+/// honestly as the daemon row can.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RowRef {
     Daemon,
     StackHeader,
-    RepoHeader,
+    /// Index into `repo_workers` of the first worker of a directory. That
+    /// worker's `root` is the directory to label and to drop.
+    Group(usize),
     Container(usize),
     Repo(usize),
-}
-
-impl RowRef {
-    fn selectable(self) -> bool {
-        !matches!(self, Self::StackHeader | Self::RepoHeader)
-    }
 }
 
 struct Actions {
     compose: Arc<Compose>,
     in_flight: Arc<AtomicUsize>,
     errors: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+/// One directory in the browser, with what it holds. `offer` is how many of
+/// its workers are not already on the list — the number that decides whether
+/// Enter adds it or opens it.
+#[derive(Clone)]
+struct BrowseEntry {
+    name: String,
+    path: PathBuf,
+    /// Workers found under it at all.
+    total: usize,
+    /// Of those, the ones no configured directory already provides.
+    offer: usize,
+    /// Already in the list: nothing to add, and `a` cannot add it twice.
+    added: bool,
+}
+
+impl BrowseEntry {
+    fn label(&self) -> String {
+        match (self.added, self.total, self.offer) {
+            (true, _, _) => "added".to_string(),
+            (_, 0, _) => String::new(),
+            (_, 1, 1) => "1 worker".to_string(),
+            (_, total, offer) if total == offer => format!("{total} workers"),
+            (_, total, offer) => format!("{offer} new of {total}"),
+        }
+    }
 }
 
 /// Where the two panes landed, so a click or a wheel can be aimed at one.
@@ -369,8 +403,8 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
                         error_banner = None; // any keypress acknowledges the banner
                         match mode_kind(&mode) {
                             ModeKind::Filter => handle_filter_key(key, &mut filter, &mut mode),
-                            ModeKind::AddDir => {
-                                handle_add_dir_key(key, &mut mode, &mut busy_note, &actions)
+                            ModeKind::Browse => {
+                                handle_browse_key(key, &mut mode, &mut busy_note, &state, &actions)
                             }
                             ModeKind::Help | ModeKind::Deps => mode = UiMode::Dashboard,
                             // The menu lists keys; the keys have to work while
@@ -420,7 +454,9 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
                             ),
                         }
                     }
-                    Event::Mouse(mouse) => {
+                    // Only on the dashboard: a modal owns the screen, and the
+                    // wheel over it was moving a selection nobody could see.
+                    Event::Mouse(mouse) if mode_kind(&mode) == ModeKind::Dashboard => {
                         needs_redraw = true;
                         handle_mouse(
                             mouse,
@@ -539,25 +575,46 @@ fn build_rows(state: &DashboardState, filter: &str) -> Vec<RowRef> {
         rows.extend(stack);
     }
 
-    let mut repo = Vec::new();
+    // `discover_workers` keeps each directory's workers contiguous, so a header
+    // is due whenever the root changes. Pushed lazily on the first row that
+    // survives the filter, so a filter that empties a directory takes its
+    // header with it.
+    let mut last_root: Option<&Path> = None;
     for (index, worker) in state.repo_workers.iter().enumerate() {
         if !matches(&worker.name) {
             continue;
+        }
+        if last_root != Some(worker.root.as_path()) {
+            rows.push(RowRef::Group(index));
+            last_root = Some(worker.root.as_path());
         }
         match state
             .containers
             .iter()
             .position(|entry| entry.local && entry.status.container == worker.name)
         {
-            Some(container) => repo.push(RowRef::Container(container)),
-            None => repo.push(RowRef::Repo(index)),
+            Some(container) => rows.push(RowRef::Container(container)),
+            None => rows.push(RowRef::Repo(index)),
         }
     }
-    if !repo.is_empty() {
-        rows.push(RowRef::RepoHeader);
-        rows.extend(repo);
-    }
     rows
+}
+
+/// The directory a group header stands for, and how to name it. The repo root
+/// is `repo`; anything else is its own basename, which is what fits the column.
+fn group_label(compose: &Compose, state: &DashboardState, index: usize) -> (PathBuf, String) {
+    let Some(worker) = state.repo_workers.get(index) else {
+        return (PathBuf::new(), "repo".to_string());
+    };
+    let root = worker.root.clone();
+    if root == compose.config.repo_root {
+        return (root, "repo".to_string());
+    }
+    let label = root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| root.display().to_string());
+    (root, label)
 }
 
 /// The project that owns a row: the tracked stack, or the on-demand file.
@@ -625,6 +682,16 @@ fn actions_for(
     let Some(row) = selected else {
         return Vec::new();
     };
+    // A header is not a worker. It stands for a directory, and the things you
+    // do to a directory are add another and drop this one.
+    if let RowRef::Group(index) = row {
+        let (root, _) = group_label(compose, state, index);
+        return if root == compose.config.repo_root {
+            vec![("a", "add a directory")]
+        } else {
+            vec![("x", "drop this directory"), ("a", "add a directory")]
+        };
+    }
     let name = selected_name(state, selected);
     let is_container = matches!(row, RowRef::Container(_));
     let local = matches!(row, RowRef::Container(index) if state.containers[index].local);
@@ -636,7 +703,7 @@ fn actions_for(
             .is_some_and(|name| compose.ui_dir(name).is_some()),
         name.as_deref()
             .is_some_and(|name| compose.config.worker(name).is_some())
-            || matches!(row, RowRef::Daemon),
+            || matches!(row, RowRef::Daemon | RowRef::StackHeader),
         matches!(row, RowRef::Repo(_))
             && name
                 .as_deref()
@@ -700,18 +767,9 @@ fn clamp_selection(table_state: &mut TableState, rows: &[RowRef]) {
         table_state.select(None);
         return;
     }
-    let mut current = table_state.selected().unwrap_or(0).min(rows.len() - 1);
-    // A group header is a label, not a target; land on the next real row.
-    while current < rows.len() && !rows[current].selectable() {
-        current += 1;
-    }
-    if current >= rows.len() {
-        current = (0..rows.len())
-            .rev()
-            .find(|i| rows[*i].selectable())
-            .unwrap_or(0);
-    }
-    table_state.select(Some(current));
+    table_state.select(Some(
+        table_state.selected().unwrap_or(0).min(rows.len() - 1),
+    ));
 }
 
 fn set_terminal_title(branch: Option<&str>) {
@@ -838,7 +896,7 @@ fn handle_dashboard_key(
         KeyCode::Char('?') => *mode = UiMode::Help,
         KeyCode::Enter => *mode = UiMode::Menu,
         KeyCode::Char('/') => *mode = UiMode::Filter,
-        KeyCode::Char('a') => *mode = UiMode::AddDir(String::new()),
+        KeyCode::Char('a') => *mode = open_browser(compose, state),
         // Only the daemon's own startup `--up` runs under an operation compose
         // registered; a restart this dashboard asks for passes an id compose
         // never registers, so there is nothing to cancel and Esc says nothing.
@@ -906,6 +964,26 @@ fn handle_dashboard_key(
             (Some(name), None) => start_on_demand(actions, busy, name),
             _ => {}
         },
+        // Before the container arm: a group header drops its directory, which
+        // is the only `x` that is not about a container.
+        KeyCode::Char('x') if matches!(selected, Some(RowRef::Group(_))) => {
+            let Some(RowRef::Group(index)) = selected else {
+                return;
+            };
+            let (root, label) = group_label(compose, state, index);
+            if root == compose.config.repo_root {
+                return;
+            }
+            *busy = Some(format!("dropping {label}…"));
+            let compose = actions.compose.clone();
+            let errors = actions.errors.clone();
+            spawn_action(actions, async move {
+                let gone = compose.remove_worker_dir(&root)?;
+                let plural = if gone == 1 { "" } else { "s" };
+                let _ = errors.send(format!("✓ dropped {label} — {gone} worker{plural}"));
+                Ok(())
+            });
+        }
         KeyCode::Char('x') => {
             if let (Some(name), Some(file)) = (name, running) {
                 // An on-demand worker has no dependents to take down with it:
@@ -984,7 +1062,7 @@ fn handle_mouse(
                 return;
             }
             let index = table_state.offset() + (mouse.row - first_row) as usize;
-            if rows.get(index).is_some_and(|row| row.selectable()) {
+            if index < rows.len() {
                 table_state.select(Some(index));
                 *follow = true;
                 *log_scroll = 0;
@@ -995,15 +1073,15 @@ fn handle_mouse(
 }
 
 fn move_selection(table_state: &mut TableState, rows: &[RowRef], down: bool) {
-    let current = table_state.selected().unwrap_or(0);
-    let next = if down {
-        (current + 1..rows.len()).find(|i| rows[*i].selectable())
-    } else {
-        (0..current).rev().find(|i| rows[*i].selectable())
-    };
-    if let Some(next) = next {
-        table_state.select(Some(next));
+    if rows.is_empty() {
+        return;
     }
+    let current = table_state.selected().unwrap_or(0);
+    table_state.select(Some(if down {
+        (current + 1).min(rows.len() - 1)
+    } else {
+        current.saturating_sub(1)
+    }));
 }
 
 fn handle_filter_key(key: KeyEvent, filter: &mut String, mode: &mut UiMode) {
@@ -1023,79 +1101,189 @@ fn handle_filter_key(key: KeyEvent, filter: &mut String, mode: &mut UiMode) {
 
 /// Tab completes against the filesystem, because a path is the one thing here
 /// nobody wants to type in full and nobody remembers exactly.
-fn handle_add_dir_key(
-    key: KeyEvent,
-    mode: &mut UiMode,
-    busy: &mut Option<String>,
-    actions: &Actions,
-) {
-    let UiMode::AddDir(input) = mode else {
-        return;
+/// Label every visible subdirectory of `dir`.
+///
+/// Counted by the presence of a manifest, not by reading one: the authoritative
+/// scan opens three files and parses YAML per worker, and the directory beside
+/// this repo holds a dozen worktrees of it — some 850 workers, seconds of work
+/// for a label. A directory's own name is the worker's name everywhere in this
+/// tree, so the count is right where it matters, and the add itself still goes
+/// through `discover_workers`, which is never wrong.
+fn scan_dir(compose: &Compose, state: &DashboardState, dir: &Path) -> Vec<BrowseEntry> {
+    let configured = compose.worker_dirs();
+    let taken: HashSet<&str> = state
+        .repo_workers
+        .iter()
+        .map(|worker| worker.name.as_str())
+        .chain(
+            compose
+                .config
+                .workers
+                .iter()
+                .map(|worker| worker.name.as_str()),
+        )
+        .collect();
+
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
     };
-    match key.code {
-        KeyCode::Enter => {
-            let input = input.clone();
-            let compose = actions.compose.clone();
-            *busy = Some(format!("scanning {input}…"));
-            *mode = UiMode::Dashboard;
-            spawn_action(actions, async move {
-                compose.add_worker_dir(&input).map(|_| ())
-            });
-        }
-        KeyCode::Esc => *mode = UiMode::Dashboard,
-        KeyCode::Backspace => {
-            input.pop();
-        }
-        KeyCode::Tab => complete_path(input),
-        KeyCode::Char(ch) => input.push(ch),
-        _ => {}
+    let mut entries: Vec<BrowseEntry> = read
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            // `.git`, `.workers-dev` and friends: never what you are looking for.
+            if name.starts_with('.') {
+                return None;
+            }
+            let names = worker_names_under(&path);
+            Some(BrowseEntry {
+                offer: names
+                    .iter()
+                    .filter(|name| !taken.contains(name.as_str()))
+                    .count(),
+                total: names.len(),
+                added: path
+                    .canonicalize()
+                    .is_ok_and(|path| configured.contains(&path)),
+                name,
+                path,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+}
+
+/// The workers a directory would offer, by name, at one stat each — the same
+/// "it is one worker, or its children are" rule `discover_workers` applies.
+fn worker_names_under(dir: &Path) -> Vec<String> {
+    if dir.join("iii.worker.yaml").is_file() {
+        return dir
+            .file_name()
+            .map(|name| vec![name.to_string_lossy().to_string()])
+            .unwrap_or_default();
+    }
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    read.filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.join("iii.worker.yaml").is_file() {
+                return None;
+            }
+            Some(path.file_name()?.to_string_lossy().to_string())
+        })
+        .collect()
+}
+
+/// Open the browser where the answer usually is: beside the repo, which is
+/// where a sibling checkout like `harness-e2e` lives.
+fn open_browser(compose: &Compose, state: &DashboardState) -> UiMode {
+    let dir = compose
+        .config
+        .repo_root
+        .parent()
+        .unwrap_or(&compose.config.repo_root)
+        .to_path_buf();
+    UiMode::Browse {
+        entries: scan_dir(compose, state, &dir),
+        dir,
+        cursor: 0,
+        filter: String::new(),
     }
 }
 
-/// Extend the typed path by the longest prefix every matching directory shares,
-/// and add the separator when exactly one matches.
-fn complete_path(input: &mut String) {
-    let expanded = crate::config::expand_home(input);
-    let (dir, prefix) = if input.ends_with('/') {
-        (expanded.as_path(), String::new())
-    } else {
-        (
-            expanded.parent().unwrap_or(Path::new("/")),
-            expanded
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_default(),
-        )
-    };
-
-    let Ok(entries) = std::fs::read_dir(dir) else {
+fn handle_browse_key(
+    key: KeyEvent,
+    mode: &mut UiMode,
+    busy: &mut Option<String>,
+    state: &DashboardState,
+    actions: &Actions,
+) {
+    let UiMode::Browse {
+        dir,
+        entries,
+        cursor,
+        filter,
+    } = mode
+    else {
         return;
     };
-    let matches: Vec<String> = entries
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_dir())
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            name.starts_with(&prefix).then_some(name)
+    let visible: Vec<BrowseEntry> = entries
+        .iter()
+        .filter(|entry| {
+            filter.is_empty()
+                || entry
+                    .name
+                    .to_ascii_lowercase()
+                    .contains(&filter.to_ascii_lowercase())
         })
+        .cloned()
         .collect();
-    let Some(first) = matches.first() else {
-        return;
+    let at = visible.get(*cursor).cloned();
+
+    // Descend, rescanning where we land. The only navigation there is.
+    let go = |mode: &mut UiMode, to: PathBuf| {
+        *mode = UiMode::Browse {
+            entries: scan_dir(&actions.compose, state, &to),
+            dir: to,
+            cursor: 0,
+            filter: String::new(),
+        };
     };
 
-    let mut shared = first.clone();
-    for candidate in &matches {
-        while !candidate.starts_with(&shared) {
-            shared.pop();
+    match key.code {
+        KeyCode::Esc => *mode = UiMode::Dashboard,
+        KeyCode::Up | KeyCode::Char('\u{10}') => *cursor = cursor.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('\u{e}') => {
+            *cursor = (*cursor + 1).min(visible.len().saturating_sub(1))
         }
-    }
-    if shared.len() <= prefix.len() {
-        return;
-    }
-    input.truncate(input.len() - prefix.len());
-    input.push_str(&shared);
-    if matches.len() == 1 {
-        input.push('/');
+        // Up a level, but only once the filter is spent — the convention every
+        // fuzzy finder already taught.
+        KeyCode::Backspace => {
+            if filter.pop().is_none() {
+                let parent = dir.parent().unwrap_or(dir).to_path_buf();
+                go(mode, parent);
+            } else {
+                *cursor = 0;
+            }
+        }
+        // Look inside, whatever the label says.
+        KeyCode::Right => {
+            if let Some(entry) = at {
+                go(mode, entry.path);
+            }
+        }
+        // One rule: a directory that offers something new is added, anything
+        // else is opened. A worktree of this repo reads `0 new of 60` and
+        // opens, which is the answer to the question it raises.
+        KeyCode::Enter => {
+            let Some(entry) = at else { return };
+            if entry.offer > 0 && !entry.added {
+                let path = entry.path.to_string_lossy().to_string();
+                let label = entry.name.clone();
+                let compose = actions.compose.clone();
+                let errors = actions.errors.clone();
+                *busy = Some(format!("adding {label}…"));
+                *mode = UiMode::Dashboard;
+                spawn_action(actions, async move {
+                    let found = compose.add_worker_dir(&path)?;
+                    let plural = if found == 1 { "" } else { "s" };
+                    let _ = errors.send(format!("✓ {label} — {found} worker{plural} added"));
+                    Ok(())
+                });
+            } else {
+                go(mode, entry.path);
+            }
+        }
+        KeyCode::Char(ch) => {
+            filter.push(ch);
+            *cursor = 0;
+        }
+        _ => {}
     }
 }
 
@@ -1218,6 +1406,12 @@ fn draw_ui(f: &mut Frame, table_state: &mut TableState, ctx: &UiCtx) -> Panes {
         } => draw_deps_overlay(f, body, name, deps, dependents, ctx),
         UiMode::Help => draw_help_overlay(f, area, ctx.color_enabled),
         UiMode::Menu => draw_menu_overlay(f, body, ctx),
+        UiMode::Browse {
+            dir,
+            entries,
+            cursor,
+            filter,
+        } => draw_browse_overlay(f, body, dir, entries, *cursor, filter, ctx),
         UiMode::Quit => draw_quit_overlay(f, body, ctx),
         _ => {}
     }
@@ -1387,7 +1581,10 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
                 ])
             }
             RowRef::StackHeader => group_row(ctx, "stack", RowRef::StackHeader, color),
-            RowRef::RepoHeader => group_row(ctx, "repo", RowRef::RepoHeader, color),
+            RowRef::Group(index) => {
+                let (_, label) = group_label(ctx.compose, ctx.state, *index);
+                group_row(ctx, &label, RowRef::Group(*index), color)
+            }
             RowRef::Container(index) => {
                 let entry = &ctx.state.containers[*index];
                 let state = ctx.state_of(&entry.status);
@@ -1479,7 +1676,7 @@ fn group_row(ctx: &UiCtx, label: &str, header: RowRef, color: bool) -> Row<'stat
         .iter()
         .skip_while(|row| **row != header)
         .skip(1)
-        .take_while(|row| row.selectable())
+        .take_while(|row| !matches!(row, RowRef::StackHeader | RowRef::Group(_)))
         .count();
     Row::new(vec![Cell::from(Span::styled(
         format!("── {label} ({count}) ──"),
@@ -1574,11 +1771,15 @@ fn draw_log_pane(f: &mut Frame, area: Rect, ctx: &UiCtx) {
 
 fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
     let color = ctx.color_enabled;
-    if let Some(error) = ctx.error {
+    if let Some(notice) = ctx.error {
+        // The same channel carries both, because both have to survive until
+        // they are read. A message that brought its own glyph is good news.
+        let (text, style) = match notice.starts_with('✓') {
+            true => (format!(" {notice} "), Style::default().fg(Color::Green)),
+            false => (format!(" ⚠ {notice} "), Style::default().fg(Color::Red)),
+        };
         f.render_widget(
-            Paragraph::new(format!(" ⚠ {error} ")).style(
-                styled_if(color, Style::default().fg(Color::Red)).add_modifier(Modifier::BOLD),
-            ),
+            Paragraph::new(text).style(styled_if(color, style).add_modifier(Modifier::BOLD)),
             area,
         );
         return;
@@ -1599,10 +1800,7 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
             format!(" filter: {}_   (Enter apply · Esc clear) ", ctx.filter),
             styled_if(color, Style::default().fg(Color::Yellow)),
         ),
-        UiMode::AddDir(input) => (
-            format!(" worker dir: {input}_   (Tab complete · Enter add · Esc cancel) "),
-            styled_if(color, Style::default().fg(Color::Cyan)),
-        ),
+
         // What this row accepts, not a fixed string: three of the five row
         // kinds refuse most of the keys, and a guard that refuses is silent.
         _ => return draw_row_help(f, area, ctx),
@@ -1850,6 +2048,134 @@ fn draw_quit_overlay(f: &mut Frame, area: Rect, ctx: &UiCtx) {
     draw_dialog(f, area, " quit ".to_string(), lines, pinned, 62, color);
 }
 
+/// The directory browser. `draw_dialog` cannot scroll — it truncates from the
+/// bottom — so the window is computed here, with the same arithmetic, and the
+/// cursor rides the bottom edge the way a fuzzy finder does.
+#[allow(clippy::too_many_arguments)]
+/// Wide enough for a name column plus a label, and no wider: the dialog is
+/// centred over the table and a reader still needs the row behind it.
+const WIDTH: u16 = 62;
+
+fn draw_browse_overlay(
+    f: &mut Frame,
+    area: Rect,
+    dir: &Path,
+    entries: &[BrowseEntry],
+    cursor: usize,
+    filter: &str,
+    ctx: &UiCtx,
+) {
+    let color = ctx.color_enabled;
+    let needle = filter.to_ascii_lowercase();
+    let visible: Vec<&BrowseEntry> = entries
+        .iter()
+        .filter(|entry| needle.is_empty() || entry.name.to_ascii_lowercase().contains(&needle))
+        .collect();
+
+    let pinned = vec![Line::from(vec![
+        Span::styled(
+            format!("   {filter}_"),
+            styled_if(color, Style::default().fg(Color::Yellow)),
+        ),
+        Span::styled(
+            "   Enter add or open · → look inside · ⌫ up · Esc",
+            styled_if(color, hint_style()),
+        ),
+    ])];
+
+    let budget = (area.height.max(3) as usize)
+        .saturating_sub(2 + pinned.len())
+        .max(1);
+    let start = browse_window(cursor, visible.len(), budget);
+
+    let mut body: Vec<Line> = visible
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(budget)
+        .map(|(index, entry)| {
+            let label = entry.label();
+            let line = Line::from(vec![
+                Span::raw(format!("  {:<26}", entry.name)),
+                Span::styled(
+                    label.clone(),
+                    styled_if(
+                        color,
+                        // Only what can be added is worth the eye: everything
+                        // else on this screen is a place to go, not a choice.
+                        if entry.offer > 0 && !entry.added {
+                            Style::default().fg(Color::Green)
+                        } else {
+                            hint_style()
+                        },
+                    ),
+                ),
+            ]);
+            if index == cursor {
+                line.style(styled_if(color, selection_row_style()))
+            } else {
+                line
+            }
+        })
+        .collect();
+    if body.is_empty() {
+        body.push(Line::from(Span::styled(
+            "   (nothing here)",
+            styled_if(color, hint_style()),
+        )));
+    }
+
+    // The tail of a path is where you are; the head is how you got there. A
+    // long one loses its head rather than the counter.
+    let counter = match visible.len() {
+        0 => "   (empty)".to_string(),
+        len => format!("   {}/{len}", cursor + 1),
+    };
+    let room = (WIDTH as usize).saturating_sub(counter.chars().count() + 4);
+    let shown = shorten_home(dir);
+    let path = match shown.chars().count() > room {
+        true => format!(
+            "…{}",
+            shown
+                .chars()
+                .skip(shown.chars().count() - room + 1)
+                .collect::<String>()
+        ),
+        false => shown,
+    };
+    draw_dialog(
+        f,
+        area,
+        format!(" {path}{counter} "),
+        body,
+        pinned,
+        WIDTH,
+        color,
+    );
+}
+
+/// The first row to draw. `draw_dialog` truncates from the bottom and cannot
+/// scroll, so the window is chosen here with its own arithmetic: the cursor
+/// rides the bottom edge on the way down and the top edge on the way up, the
+/// way a fuzzy finder does.
+fn browse_window(cursor: usize, len: usize, budget: usize) -> usize {
+    if len <= budget {
+        return 0;
+    }
+    cursor
+        .saturating_sub(budget.saturating_sub(1))
+        .min(len - budget)
+}
+
+/// `~` is what a person recognises; the absolute path is noise in a title.
+fn shorten_home(dir: &Path) -> String {
+    let shown = dir.display().to_string();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && shown.starts_with(&home) => shown.replacen(&home, "~", 1),
+        _ => shown,
+    }
+}
+
 /// The applicable subset of `?`, named for the row it is about. A row that
 /// accepts nothing says so — that is the answer the dashboard never gave.
 fn draw_menu_overlay(f: &mut Frame, area: Rect, ctx: &UiCtx) {
@@ -1911,7 +2237,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         ("PgUp PgDn", "scroll logs"),
         ("+ -", "resize the log pane"),
         ("/", "filter workers by name"),
-        ("a", "offer the workers in another directory (remembered)"),
+        ("a", "browse for another directory of workers (remembered)"),
         (
             "Esc",
             "cancel the project start (only the cold boot can be)",
@@ -2003,49 +2329,110 @@ fn status_icon(state: &str, spinner_frame: usize) -> &'static str {
 mod tests {
     use super::*;
 
-    /// stack + repo means the table now carries rows that are labels, not
-    /// targets. Every index path has to step over them.
+    fn worker(name: &str, root: &str) -> crate::config::RepoWorker {
+        crate::config::RepoWorker {
+            name: name.to_string(),
+            dir: PathBuf::from(root).join(name),
+            root: PathBuf::from(root),
+            declared: None,
+            bin: Some(name.to_string()),
+            ui_dir: None,
+        }
+    }
+
+    /// One header per directory, in the order the directories were configured,
+    /// and never a header for a directory the filter emptied.
     #[test]
-    fn selection_steps_over_the_group_headers() {
+    fn every_directory_gets_its_own_group() {
+        let state = DashboardState {
+            repo_workers: vec![
+                worker("browser", "/repo"),
+                worker("database", "/repo"),
+                worker("harness-e2e", "/else/harness-e2e"),
+            ],
+            ..DashboardState::default()
+        };
+
+        let rows = build_rows(&state, "");
+        assert!(matches!(rows[0], RowRef::Daemon));
+        assert!(
+            matches!(rows[1], RowRef::Group(0)),
+            "the repo's own group comes first"
+        );
+        assert!(matches!(rows[2], RowRef::Repo(0)));
+        assert!(matches!(rows[3], RowRef::Repo(1)));
+        assert!(
+            matches!(rows[4], RowRef::Group(2)),
+            "a new root opens a new group"
+        );
+        assert!(matches!(rows[5], RowRef::Repo(2)));
+        assert_eq!(rows.len(), 6);
+
+        // The header is pushed on the first row that survives the filter, so
+        // filtering a directory away takes its header with it.
+        let filtered = build_rows(&state, "harness");
+        assert!(matches!(filtered[0], RowRef::Daemon));
+        assert!(matches!(filtered[1], RowRef::Group(2)));
+        assert!(matches!(filtered[2], RowRef::Repo(2)));
+        assert_eq!(filtered.len(), 3);
+    }
+
+    /// A list shorter than the box shows whole; a longer one scrolls with the
+    /// cursor and never past its own end.
+    #[test]
+    fn the_browser_window_follows_the_cursor() {
+        // Everything fits: always start at the top, wherever the cursor is.
+        assert_eq!(browse_window(0, 4, 19), 0);
+        assert_eq!(browse_window(3, 4, 19), 0);
+        // Longer than the box: the cursor rides the bottom edge going down.
+        assert_eq!(browse_window(0, 40, 10), 0);
+        assert_eq!(browse_window(9, 40, 10), 0, "last row that still fits");
+        assert_eq!(browse_window(10, 40, 10), 1);
+        // And stops at the end rather than scrolling past it.
+        assert_eq!(browse_window(39, 40, 10), 30);
+    }
+
+    /// Headers are targets now — `x` on one is how a directory is dropped.
+    #[test]
+    fn selection_lands_on_headers() {
         let rows = vec![
             RowRef::Daemon,
             RowRef::StackHeader,
             RowRef::Container(0),
-            RowRef::RepoHeader,
+            RowRef::Group(0),
             RowRef::Repo(0),
-            RowRef::Repo(1),
         ];
         let mut table = TableState::default();
-
         table.select(Some(0));
         move_selection(&mut table, &rows, true);
-        assert_eq!(table.selected(), Some(2), "skips the stack header");
+        assert_eq!(table.selected(), Some(1), "the stack header is selectable");
         move_selection(&mut table, &rows, true);
-        assert_eq!(table.selected(), Some(4), "skips the repo header");
-        move_selection(&mut table, &rows, false);
-        assert_eq!(table.selected(), Some(2), "and skips it going back");
+        move_selection(&mut table, &rows, true);
+        assert_eq!(table.selected(), Some(3), "and so is a group header");
 
-        // `G` lands on the last row, `g` on the first; neither may be a header.
-        table.select(Some(rows.len() - 1));
+        table.select(Some(99));
         clamp_selection(&mut table, &rows);
-        assert_eq!(table.selected(), Some(5));
-        table.select(Some(1));
-        clamp_selection(&mut table, &rows);
-        assert_eq!(table.selected(), Some(2));
+        assert_eq!(table.selected(), Some(4));
     }
 
-    /// A filter that hides a whole group drops its header with it, and the
-    /// daemon row — the only place the daemon's own errors show — always stays.
+    /// What a directory offers is add-another and drop-this; the repo's own
+    /// group cannot be dropped, so it does not say it can.
     #[test]
-    fn a_group_with_no_rows_keeps_no_header() {
-        let rows = vec![RowRef::Daemon];
-        let mut table = TableState::default();
-        table.select(Some(3));
-        clamp_selection(&mut table, &rows);
-        assert_eq!(table.selected(), Some(0));
-        assert!(RowRef::Daemon.selectable());
-        assert!(!RowRef::StackHeader.selectable());
-        assert!(!RowRef::RepoHeader.selectable());
+    fn a_group_header_offers_directory_actions() {
+        let entry = |total: usize, offer: usize, added: bool| BrowseEntry {
+            name: "x".into(),
+            path: PathBuf::from("/x"),
+            total,
+            offer,
+            added,
+        };
+        assert_eq!(entry(1, 1, false).label(), "1 worker");
+        assert_eq!(entry(63, 63, false).label(), "63 workers");
+        // The worktree case: everything it holds, the repo already provides.
+        assert_eq!(entry(60, 0, false).label(), "0 new of 60");
+        assert_eq!(entry(63, 4, false).label(), "4 new of 63");
+        assert_eq!(entry(1, 1, true).label(), "added");
+        assert_eq!(entry(0, 0, false).label(), "");
     }
 
     /// The matrix a guard refuses is the matrix the footer and the menu offer.

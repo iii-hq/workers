@@ -552,6 +552,41 @@ impl Compose {
             .cloned()
     }
 
+    /// The directories workers are offered from, besides the repo root, in the
+    /// order they were configured.
+    pub fn worker_dirs(&self) -> Vec<PathBuf> {
+        self.worker_dirs.lock().unwrap().clone()
+    }
+
+    /// Stop offering the workers in a directory, and forget it.
+    ///
+    /// Nothing is stopped: a container started from there keeps running under
+    /// its own compose project, it just leaves the list. Re-adding it with `a`
+    /// brings the rows back beside what is still up.
+    pub fn remove_worker_dir(&self, dir: &Path) -> Result<usize> {
+        let before = self.repo_workers.lock().unwrap().len();
+        {
+            let mut dirs = self.worker_dirs.lock().unwrap();
+            dirs.retain(|configured| configured != dir);
+            *self.repo_workers.lock().unwrap() = crate::config::discover_workers(
+                &self.config.repo_root,
+                &dirs,
+                &self.config.workers,
+            );
+        }
+
+        let path = crate::config::saved_dirs_path(&self.config.local_dir);
+        if let Ok(saved) = std::fs::read_to_string(&path) {
+            let kept: String = saved
+                .lines()
+                .filter(|line| line.trim() != dir.to_string_lossy())
+                .map(|line| format!("{line}\n"))
+                .collect();
+            std::fs::write(&path, kept).with_context(|| format!("write {}", path.display()))?;
+        }
+        Ok(before.saturating_sub(self.repo_workers.lock().unwrap().len()))
+    }
+
     /// Offer the workers in another directory, and remember it for next time.
     pub fn add_worker_dir(&self, input: &str) -> Result<usize> {
         let dir = crate::config::expand_home(input)
@@ -1214,6 +1249,24 @@ mod tests {
         assert!(!names.contains(&"WORKERS_DEV_MULTILINE_API_KEY"));
         assert!(!names.contains(&"WORKERS_DEV_TEST_TOKEN"));
         assert!(names.windows(2).all(|pair| pair[0] <= pair[1]), "sorted");
+    }
+
+    /// Dropping a directory takes its workers off the list and its line out of
+    /// the saved file, and leaves the other lines alone.
+    #[test]
+    fn removing_a_worker_dir_forgets_only_that_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::config::saved_dirs_path(dir.path());
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(&path, "/one\n/two\n/three\n").unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let kept: String = saved
+            .lines()
+            .filter(|line| line.trim() != "/two")
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_eq!(kept, "/one\n/three\n");
     }
 
     #[test]

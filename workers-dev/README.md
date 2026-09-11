@@ -134,9 +134,39 @@ install from the registry rather than from this tree, with
 
 ### Workers from another directory
 
-Press **`a`** in the dashboard, type a path (Tab completes), Enter. Its workers
-join the `repo` group immediately and the directory is remembered in
-`harness/.workers-dev/worker-dirs`, so the next session opens with it.
+Press **`a`** in the dashboard. A browser opens beside the repo — where a
+sibling checkout like `harness-e2e` lives — and labels every directory by what
+it holds:
+
+```
+┌ ~/project/iii   2/33 ────────────────────────────────────────┐
+│  harness-e2e               1 worker                          │
+│  iii.main                                                    │
+│  workers                   added                             │
+│  workers.feat-needle       4 new of 63                       │
+│   _   Enter add or open · → look inside · ⌫ up · Esc         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+One rule: a directory that offers something new is added; anything else is
+opened. So `harness-e2e` is added, `iii.main` is opened, and a worktree of this
+repo reads `0 new of 60` and opens — the repo already provides those names, and
+the label says so before you press anything. `→` looks inside one anyway.
+Typing filters; Backspace clears the filter, then goes up a level.
+
+What you add joins the table as **its own group**, so where a worker came from
+stays visible:
+
+```
+── stack (13) ──
+── repo (60) ──
+── harness-e2e (1) ──
+```
+
+Select a group header and press `x` to drop that directory. Nothing stops —
+a container started from there keeps running, it just leaves the list. The
+directories are remembered in `harness/.workers-dev/worker-dirs`, so the next
+session opens with them.
 
 The same thing without the dashboard:
 
@@ -201,7 +231,8 @@ see inside its own operation, so without the feed thirteen containers would read
 | `f`, `PgUp`/`PgDn` | follow / scroll the log pane |
 | `+`/`-` | move the divider |
 | `/` | filter by name |
-| `a` | offer the workers in another directory (Tab completes, remembered) |
+| `a` | browse for another directory of workers (remembered) |
+| `x` on a group header | stop offering that directory |
 | `Esc` | cancel the running operation (`compose::cancel`) |
 | `Enter` | what this row can do — the keys that apply to it, and what they mean here |
 | `?` | keys |

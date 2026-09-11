@@ -63,6 +63,10 @@ pub struct RepoWorker {
     pub name: String,
     /// Where it lives. Absolute, because it is not always under the repo root.
     pub dir: PathBuf,
+    /// The configured directory it was discovered under — the repo root, or one
+    /// `--worker-dir` entry. What the dashboard groups and labels rows by, and
+    /// the thing `x` on a group header drops.
+    pub root: PathBuf,
     /// The container this worker declares for itself, when it ships a
     /// `worker-compose.yaml`. It knows things a synthesized declaration cannot
     /// guess — `harness-e2e` refuses to start without the `config_override`
@@ -252,8 +256,11 @@ pub fn discover_workers(
     let mut seen: HashSet<String> = declared.iter().map(|worker| worker.name.clone()).collect();
 
     for root in std::iter::once(repo_root.to_path_buf()).chain(extra.iter().cloned()) {
+        // Sorted per root rather than globally: the dashboard draws one group
+        // per directory, and a global sort would interleave them.
+        let start = workers.len();
         let dirs: Vec<PathBuf> = if root.join(MANIFEST_FILE).is_file() {
-            vec![root]
+            vec![root.clone()]
         } else {
             let Ok(entries) = std::fs::read_dir(&root) else {
                 continue;
@@ -264,19 +271,19 @@ pub fn discover_workers(
                 .collect()
         };
         for dir in dirs {
-            let Some(worker) = read_worker(&dir) else {
+            let Some(worker) = read_worker(&dir, &root) else {
                 continue;
             };
             if seen.insert(worker.name.clone()) {
                 workers.push(worker);
             }
         }
+        workers[start..].sort_by(|a, b| a.name.cmp(&b.name));
     }
-    workers.sort_by(|a, b| a.name.cmp(&b.name));
     workers
 }
 
-fn read_worker(dir: &Path) -> Option<RepoWorker> {
+fn read_worker(dir: &Path, root: &Path) -> Option<RepoWorker> {
     let text = std::fs::read_to_string(dir.join(MANIFEST_FILE)).ok()?;
     let manifest: WorkerManifest = serde_yaml::from_str(&text).ok()?;
     let name = manifest
@@ -290,6 +297,7 @@ fn read_worker(dir: &Path) -> Option<RepoWorker> {
     Some(RepoWorker {
         ui_dir: watchable_ui_dir(dir),
         dir: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+        root: root.to_path_buf(),
         declared,
         name,
         bin,
@@ -654,6 +662,51 @@ mod tests {
         assert_eq!(offered[0].bin.as_deref(), Some("browser"));
         // Not a Rust binary: offered, but never started with `cargo run`.
         assert_eq!(offered[1].bin, None);
+    }
+
+    /// Every worker remembers the configured directory it came from, and the
+    /// directories stay contiguous: the dashboard draws one group per root, and
+    /// a global sort by name would interleave them.
+    #[test]
+    fn workers_are_grouped_by_the_directory_they_came_from() {
+        let repo = repo_fixture();
+        let outside = tempfile::tempdir().unwrap();
+        // Named so a global sort would interleave them with the repo's own.
+        for name in ["aaa", "zzz"] {
+            let dir = outside.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                format!("iii: v1\nname: {name}\ndeploy: binary\n"),
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(repo.path().join("mmm")).unwrap();
+        std::fs::write(
+            repo.path().join("mmm/iii.worker.yaml"),
+            "iii: v1\nname: mmm\ndeploy: binary\n",
+        )
+        .unwrap();
+
+        let offered = offered(&repo, vec![outside.path().to_path_buf()]);
+        let roots: Vec<&std::path::Path> =
+            offered.iter().map(|worker| worker.root.as_path()).collect();
+        let repo_root = repo.path().canonicalize().unwrap();
+        let outside_root = outside.path().canonicalize().unwrap();
+        assert_eq!(
+            roots,
+            [
+                repo_root.as_path(),
+                outside_root.as_path(),
+                outside_root.as_path()
+            ],
+            "the repo first, then the added directory, contiguous"
+        );
+        assert_eq!(
+            offered.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            ["mmm", "aaa", "zzz"],
+            "sorted within each root, not across them"
+        );
     }
 
     /// A sibling project that is itself one worker — the `harness-e2e` shape.
