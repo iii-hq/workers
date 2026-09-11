@@ -185,6 +185,10 @@ pub struct Compose {
     client: OnceCell<IIIClient>,
     daemon: tokio::sync::Mutex<Option<Daemon>>,
     progress: std::sync::Arc<Mutex<Progress>>,
+    /// Discovered at startup and again whenever a directory is added, so the
+    /// dashboard's list can grow without a relaunch.
+    repo_workers: Mutex<Vec<crate::config::RepoWorker>>,
+    worker_dirs: Mutex<Vec<PathBuf>>,
     watch: Mutex<HashMap<String, bool>>,
     ui_children: tokio::sync::Mutex<HashMap<String, Child>>,
     handles: Mutex<Option<(FunctionRef, Trigger)>>,
@@ -193,14 +197,18 @@ pub struct Compose {
 impl Compose {
     pub fn new(config: Config) -> Result<Self> {
         let persisted = read_watch_flags(&config.ui_watch_env_path)?;
-        let watch = config
+        let repo_workers = crate::config::discover_workers(
+            &config.repo_root,
+            &config.worker_dirs,
+            &config.workers,
+        );
+        let watch: HashMap<String, bool> = config
             .workers
             .iter()
             .filter(|worker| worker.ui_dir.is_some())
             .map(|worker| worker.name.clone())
             .chain(
-                config
-                    .repo_workers
+                repo_workers
                     .iter()
                     .filter(|worker| worker.ui_dir.is_some())
                     .map(|worker| worker.name.clone()),
@@ -215,6 +223,8 @@ impl Compose {
             })
             .collect();
         Ok(Self {
+            repo_workers: Mutex::new(repo_workers),
+            worker_dirs: Mutex::new(config.worker_dirs.clone()),
             config,
             client: OnceCell::new(),
             daemon: tokio::sync::Mutex::new(None),
@@ -527,12 +537,57 @@ impl Compose {
         file.is_file().then_some(file)
     }
 
+    /// Everything on offer for an on-demand start, in name order.
+    pub fn repo_workers(&self) -> Vec<crate::config::RepoWorker> {
+        self.repo_workers.lock().unwrap().clone()
+    }
+
     /// A repo worker this tool could start from source, if it is one.
-    pub fn repo_worker(&self, name: &str) -> Option<&crate::config::RepoWorker> {
-        self.config
-            .repo_workers
+    pub fn repo_worker(&self, name: &str) -> Option<crate::config::RepoWorker> {
+        self.repo_workers
+            .lock()
+            .unwrap()
             .iter()
             .find(|worker| worker.name == name)
+            .cloned()
+    }
+
+    /// Offer the workers in another directory, and remember it for next time.
+    pub fn add_worker_dir(&self, input: &str) -> Result<usize> {
+        let dir = crate::config::expand_home(input)
+            .canonicalize()
+            .with_context(|| format!("worker directory {input}"))?;
+
+        let before = self.repo_workers.lock().unwrap().len();
+        {
+            let mut dirs = self.worker_dirs.lock().unwrap();
+            if !dirs.contains(&dir) {
+                dirs.push(dir.clone());
+            }
+            *self.repo_workers.lock().unwrap() = crate::config::discover_workers(
+                &self.config.repo_root,
+                &dirs,
+                &self.config.workers,
+            );
+        }
+        let found = self.repo_workers.lock().unwrap().len() - before;
+        if found == 0 {
+            bail!("no new worker under {}", dir.display());
+        }
+        self.seed_watch_flags();
+
+        // Persisted only once it has proven to hold something.
+        let path = crate::config::saved_dirs_path(&self.config.local_dir);
+        std::fs::create_dir_all(&self.config.local_dir)?;
+        let mut saved = std::fs::read_to_string(&path).unwrap_or_default();
+        if !saved
+            .lines()
+            .any(|line| line.trim() == dir.to_string_lossy())
+        {
+            saved.push_str(&format!("{}\n", dir.display()));
+            std::fs::write(&path, saved).with_context(|| format!("write {}", path.display()))?;
+        }
+        Ok(found)
     }
 
     pub async fn status(&self) -> Result<ComposeStatus> {
@@ -755,6 +810,24 @@ impl Compose {
         self.watch.lock().unwrap().get(worker).copied()
     }
 
+    /// A directory added while the dashboard runs brings watchable workers the
+    /// startup seeding never saw.
+    fn seed_watch_flags(&self) {
+        let persisted = read_watch_flags(&self.config.ui_watch_env_path).unwrap_or_default();
+        let mut watch = self.watch.lock().unwrap();
+        for worker in self.repo_workers.lock().unwrap().iter() {
+            if worker.ui_dir.is_some() {
+                let name = worker.name.clone();
+                let on = self.config.ui_watch
+                    || persisted
+                        .get(&ui_watch_env(&name))
+                        .copied()
+                        .unwrap_or(false);
+                watch.entry(name).or_insert(on);
+            }
+        }
+    }
+
     /// Flip the watcher for one worker: rewrite the env file, start or stop the
     /// `pnpm watch` sidecar, and bounce that one container. `env_file` contents
     /// are the one thing compose re-reads at every spawn, which is what makes a
@@ -795,10 +868,7 @@ impl Compose {
             .worker(worker)
             .and_then(|spec| spec.ui_dir.clone())
             .or_else(|| {
-                self.config
-                    .repo_workers
-                    .iter()
-                    .find(|repo| repo.name == worker)
+                self.repo_worker(worker)
                     .and_then(|repo| repo.ui_dir.clone())
             })
     }

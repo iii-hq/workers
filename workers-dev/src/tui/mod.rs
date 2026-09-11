@@ -5,7 +5,7 @@
 mod theme;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -56,6 +56,9 @@ const DAEMON_ROW: &str = "compose (daemon)";
 enum UiMode {
     Dashboard,
     Filter,
+    /// Typing a directory to offer workers from. Same shape as Filter — a
+    /// footer prompt rather than a modal, so the list stays visible.
+    AddDir(String),
     Help,
     Deps {
         name: String,
@@ -74,6 +77,7 @@ enum UiMode {
 enum ModeKind {
     Dashboard,
     Filter,
+    AddDir,
     Help,
     Deps,
     Confirm,
@@ -85,6 +89,7 @@ fn mode_kind(mode: &UiMode) -> ModeKind {
     match mode {
         UiMode::Dashboard => ModeKind::Dashboard,
         UiMode::Filter => ModeKind::Filter,
+        UiMode::AddDir(_) => ModeKind::AddDir,
         UiMode::Help => ModeKind::Help,
         UiMode::Deps { .. } => ModeKind::Deps,
         UiMode::ConfirmDown { .. } => ModeKind::Confirm,
@@ -107,6 +112,9 @@ struct Entry {
 #[derive(Clone, Default)]
 struct DashboardState {
     containers: Vec<Entry>,
+    /// Snapshotted with the containers so a row index is stable for the frame,
+    /// and so a directory added mid-session shows up on the next tick.
+    repo_workers: Vec<crate::config::RepoWorker>,
     daemon_pid: u32,
     daemon_ours: bool,
     error: Option<String>,
@@ -260,7 +268,7 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
         let color_enabled = compose.config.color_mode.enabled_for_tui();
 
         while running {
-            let rows = build_rows(&compose, &state, &filter);
+            let rows = build_rows(&state, &filter);
             clamp_selection(&mut table_state, &rows);
             let selected = table_state.selected().and_then(|i| rows.get(i).copied());
             let progress = compose.progress();
@@ -325,6 +333,7 @@ pub async fn run(compose: Arc<Compose>) -> Result<()> {
                         error_banner = None; // any keypress acknowledges the banner
                         match mode_kind(&mode) {
                             ModeKind::Filter => handle_filter_key(key, &mut filter, &mut mode),
+                            ModeKind::AddDir => handle_add_dir_key(key, &mut mode, &actions),
                             ModeKind::Help | ModeKind::Deps => mode = UiMode::Dashboard,
                             ModeKind::Confirm => handle_confirm_key(key, &mut mode, &actions),
                             ModeKind::Quit => {
@@ -435,6 +444,7 @@ async fn snapshot(compose: &Compose, branch: Option<String>) -> DashboardState {
     );
 
     DashboardState {
+        repo_workers: compose.repo_workers(),
         daemon_pid: match &stack {
             Ok(status) if status.daemon_pid > 0 => status.daemon_pid,
             _ => listed_pid.max(daemon.as_ref().map(|info| info.pid).unwrap_or_default()),
@@ -448,7 +458,7 @@ async fn snapshot(compose: &Compose, branch: Option<String>) -> DashboardState {
 
 /// The daemon row, the stack, then the repo — a repo worker that is running
 /// shows as the container it became, so the two lists never disagree.
-fn build_rows(compose: &Compose, state: &DashboardState, filter: &str) -> Vec<RowRef> {
+fn build_rows(state: &DashboardState, filter: &str) -> Vec<RowRef> {
     let needle = filter.to_ascii_lowercase();
     let matches = |name: &str| needle.is_empty() || name.to_ascii_lowercase().contains(&needle);
 
@@ -467,7 +477,7 @@ fn build_rows(compose: &Compose, state: &DashboardState, filter: &str) -> Vec<Ro
     }
 
     let mut repo = Vec::new();
-    for (index, worker) in compose.config.repo_workers.iter().enumerate() {
+    for (index, worker) in state.repo_workers.iter().enumerate() {
         if !matches(&worker.name) {
             continue;
         }
@@ -496,14 +506,10 @@ fn project_of(compose: &Compose, state: &DashboardState, row: RowRef) -> PathBuf
 }
 
 /// The name a row acts on, whether it is running or only offered by the repo.
-fn selected_name(
-    compose: &Compose,
-    state: &DashboardState,
-    selected: Option<RowRef>,
-) -> Option<String> {
+fn selected_name(state: &DashboardState, selected: Option<RowRef>) -> Option<String> {
     match selected? {
         RowRef::Container(index) => Some(state.containers.get(index)?.status.container.clone()),
-        RowRef::Repo(index) => Some(compose.config.repo_workers.get(index)?.name.clone()),
+        RowRef::Repo(index) => Some(state.repo_workers.get(index)?.name.clone()),
         _ => None,
     }
 }
@@ -535,8 +541,7 @@ fn log_source(
         }
         // Nothing has run, so there is nothing to tail — the empty pane says so.
         Some(RowRef::Repo(index)) => (
-            compose
-                .config
+            state
                 .repo_workers
                 .get(index)
                 .map(|worker| worker.name.clone())
@@ -673,7 +678,7 @@ fn handle_dashboard_key(
     actions: &Actions,
 ) {
     let compose = &actions.compose;
-    let name = selected_name(compose, state, selected);
+    let name = selected_name(state, selected);
     // Only a row backed by a running container has a project to address.
     let running = selected
         .filter(|row| matches!(row, RowRef::Container(_)))
@@ -684,6 +689,7 @@ fn handle_dashboard_key(
         KeyCode::Char('q') => *mode = UiMode::Quit,
         KeyCode::Char('?') => *mode = UiMode::Help,
         KeyCode::Char('/') => *mode = UiMode::Filter,
+        KeyCode::Char('a') => *mode = UiMode::AddDir(String::new()),
         KeyCode::Up | KeyCode::Char('k') => {
             move_selection(table_state, rows, false);
             *follow = true;
@@ -812,6 +818,78 @@ fn handle_filter_key(key: KeyEvent, filter: &mut String, mode: &mut UiMode) {
         }
         KeyCode::Char(ch) => filter.push(ch),
         _ => {}
+    }
+}
+
+/// Tab completes against the filesystem, because a path is the one thing here
+/// nobody wants to type in full and nobody remembers exactly.
+fn handle_add_dir_key(key: KeyEvent, mode: &mut UiMode, actions: &Actions) {
+    let UiMode::AddDir(input) = mode else {
+        return;
+    };
+    match key.code {
+        KeyCode::Enter => {
+            let input = input.clone();
+            let compose = actions.compose.clone();
+            *mode = UiMode::Busy(format!("scanning {input}…"));
+            spawn_action(actions, async move {
+                compose.add_worker_dir(&input).map(|_| ())
+            });
+        }
+        KeyCode::Esc => *mode = UiMode::Dashboard,
+        KeyCode::Backspace => {
+            input.pop();
+        }
+        KeyCode::Tab => complete_path(input),
+        KeyCode::Char(ch) => input.push(ch),
+        _ => {}
+    }
+}
+
+/// Extend the typed path by the longest prefix every matching directory shares,
+/// and add the separator when exactly one matches.
+fn complete_path(input: &mut String) {
+    let expanded = crate::config::expand_home(input);
+    let (dir, prefix) = if input.ends_with('/') {
+        (expanded.as_path(), String::new())
+    } else {
+        (
+            expanded.parent().unwrap_or(Path::new("/")),
+            expanded
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        )
+    };
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let matches: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            name.starts_with(&prefix).then_some(name)
+        })
+        .collect();
+    let Some(first) = matches.first() else {
+        return;
+    };
+
+    let mut shared = first.clone();
+    for candidate in &matches {
+        while !candidate.starts_with(&shared) {
+            shared.pop();
+        }
+    }
+    if shared.len() <= prefix.len() {
+        return;
+    }
+    input.truncate(input.len() - prefix.len());
+    input.push_str(&shared);
+    if matches.len() == 1 {
+        input.push('/');
     }
 }
 
@@ -1110,7 +1188,7 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
             }
             // Declared by nothing yet: `s` is what turns it into a container.
             RowRef::Repo(index) => {
-                let worker = &ctx.compose.config.repo_workers[*index];
+                let worker = &ctx.state.repo_workers[*index];
                 let muted = styled_if(color, muted_cell_style());
                 let (state, state_style) = match worker.bin {
                     Some(_) => ("—", muted),
@@ -1275,6 +1353,10 @@ fn draw_footer(f: &mut Frame, area: Rect, ctx: &UiCtx) {
         UiMode::Filter => (
             format!(" filter: {}_   (Enter apply · Esc clear) ", ctx.filter),
             styled_if(color, Style::default().fg(Color::Yellow)),
+        ),
+        UiMode::AddDir(input) => (
+            format!(" worker dir: {input}_   (Tab complete · Enter add · Esc cancel) "),
+            styled_if(color, Style::default().fg(Color::Cyan)),
         ),
         _ => {
             // Gate on the string's own width, not a hand-copied number — the
@@ -1524,7 +1606,8 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         ("f", "toggle live log follow"),
         ("PgUp PgDn", "scroll logs"),
         ("+ -", "resize the log pane"),
-        ("/", "filter containers by name"),
+        ("/", "filter workers by name"),
+        ("a", "offer the workers in another directory (remembered)"),
         ("Esc", "cancel the running operation (while busy)"),
         ("?", "toggle this help"),
         ("q", "quit (leave running, or stop everything)"),

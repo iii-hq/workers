@@ -41,7 +41,8 @@ workers-dev status                # one compose::status table
 
 Flags: `--repo`, `--worker-dir`, `-n/--namespace`, `--color auto|always|never`,
 `--ui-watch`. Environment: `WORKERS_DEV_REPO` names the repo root,
-`WORKERS_DEV_WORKER_DIRS` adds worker directories (colon-separated, like `PATH`),
+`WORKERS_DEV_WORKER_DIRS` adds worker directories (colon-separated, like `PATH`;
+the `a` key writes to `harness/.workers-dev/worker-dirs` instead),
 `III_ENGINE_PORT` moves the engine, `NO_COLOR` disables color.
 
 For log history deeper than the pane keeps, the CLI that owns the logs is better
@@ -133,7 +134,11 @@ install from the registry rather than from this tree, with
 
 ### Workers from another directory
 
-`--worker-dir` offers a worker that does not live in this repo at all:
+Press **`a`** in the dashboard, type a path (Tab completes), Enter. Its workers
+join the `repo` group immediately and the directory is remembered in
+`harness/.workers-dev/worker-dirs`, so the next session opens with it.
+
+The same thing without the dashboard:
 
 ```bash
 workers-dev --worker-dir ~/project/iii/harness-e2e
@@ -182,6 +187,7 @@ see inside its own operation, so without the feed thirteen containers would read
 | `f`, `PgUp`/`PgDn` | follow / scroll the log pane |
 | `+`/`-` | move the divider |
 | `/` | filter by name |
+| `a` | offer the workers in another directory (Tab completes, remembered) |
 | `Esc` | cancel the running operation (`compose::cancel`) |
 | `?` | keys |
 | `q` | quit: `l` leave running · `s` stop everything · `Esc` cancel |

@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load(
         cli.repo,
-        config::worker_dirs(cli.worker_dirs)?,
+        cli.worker_dirs,
         cli.namespace,
         cli.color,
         cli.ui_watch,

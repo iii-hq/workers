@@ -87,9 +87,10 @@ pub struct Config {
     pub engine_host: String,
     pub engine_port: u16,
     pub workers: Vec<WorkerSpec>,
-    /// Everything else the repo ships, in name order — the list the dashboard
-    /// offers for an on-demand start.
-    pub repo_workers: Vec<RepoWorker>,
+    /// Directories to offer workers from, besides the repo root. Seeded from
+    /// `--worker-dir`, `WORKERS_DEV_WORKER_DIRS` and the dashboard's own list;
+    /// the dashboard can add to it while it runs.
+    pub worker_dirs: Vec<PathBuf>,
     pub color_mode: ColorMode,
     /// Turn every watchable container's UI watcher on at launch.
     pub ui_watch: bool,
@@ -141,13 +142,14 @@ struct UiPackage {
 impl Config {
     pub fn load(
         repo: Option<PathBuf>,
-        worker_dirs: Vec<PathBuf>,
+        explicit_dirs: Vec<PathBuf>,
         namespace: Option<String>,
         color: Option<String>,
         ui_watch: bool,
     ) -> Result<Self> {
         let repo_root = resolve_repo_root(repo)?;
         refuse_legacy_config(&repo_root)?;
+        let worker_dirs = worker_dirs(explicit_dirs, &repo_root.join(LOCAL_DIR_REL))?;
 
         let compose_path = repo_root
             .join(COMPOSE_FILE_REL)
@@ -179,8 +181,6 @@ impl Config {
         let (engine_host, engine_port) = parse_engine_url(&engine_url)?;
 
         let workers = parse_containers(&file.containers, &compose_dir)?;
-        let repo_workers = discover_workers(&repo_root, &worker_dirs, &workers);
-
         Ok(Self {
             local_dir: repo_root.join(LOCAL_DIR_REL),
             daemon_log_path: repo_root.join(DAEMON_LOG_REL),
@@ -192,7 +192,7 @@ impl Config {
             engine_host,
             engine_port,
             workers,
-            repo_workers,
+            worker_dirs,
             color_mode: color
                 .as_deref()
                 .and_then(ColorMode::parse)
@@ -243,7 +243,7 @@ impl Config {
 /// otherwise its children are scanned (a monorepo like this one). Read loosely:
 /// an unparsable manifest is a worker we cannot offer, not a reason to refuse
 /// to start. The repo comes first, so a name it already uses wins.
-fn discover_workers(
+pub fn discover_workers(
     repo_root: &Path,
     extra: &[PathBuf],
     declared: &[WorkerSpec],
@@ -313,9 +313,11 @@ fn declared_container(dir: &Path, name: &str) -> Option<serde_yaml::Value> {
         })
 }
 
-/// Colon-separated, like `PATH`: export it once rather than passing
-/// `--worker-dir` on every launch.
-pub fn worker_dirs(explicit: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+/// Three sources, in order: the flag, `WORKERS_DEV_WORKER_DIRS` (colon-separated
+/// like `PATH`, for a shell profile), and the list the dashboard's `a` key
+/// writes. A directory that no longer exists is dropped rather than fatal — the
+/// saved list outlives the checkout it named.
+fn worker_dirs(explicit: Vec<PathBuf>, local_dir: &Path) -> Result<Vec<PathBuf>> {
     let from_env = std::env::var("WORKERS_DEV_WORKER_DIRS")
         .unwrap_or_default()
         .split(':')
@@ -323,14 +325,46 @@ pub fn worker_dirs(explicit: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
         .map(PathBuf::from)
         .collect::<Vec<_>>();
 
-    explicit
+    let mut dirs = Vec::new();
+    for dir in explicit
         .into_iter()
         .chain(from_env)
-        .map(|dir| {
-            dir.canonicalize()
-                .with_context(|| format!("worker directory {}", dir.display()))
-        })
+        .chain(read_saved_dirs(local_dir))
+    {
+        match dir.canonicalize() {
+            Ok(dir) if !dirs.contains(&dir) => dirs.push(dir),
+            _ => {}
+        }
+    }
+    Ok(dirs)
+}
+
+/// One directory per line, written by the dashboard. Gitignored with the rest
+/// of that directory, and a missing file is the normal case.
+pub fn saved_dirs_path(local_dir: &Path) -> PathBuf {
+    local_dir.join("worker-dirs")
+}
+
+fn read_saved_dirs(local_dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_to_string(saved_dirs_path(local_dir))
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(PathBuf::from)
         .collect()
+}
+
+/// `~` is what a person types into a prompt; nothing else expands it.
+pub fn expand_home(input: &str) -> PathBuf {
+    let trimmed = input.trim();
+    match trimmed.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => match std::env::var_os("HOME") {
+            Some(home) => PathBuf::from(home).join(rest.trim_start_matches('/')),
+            None => PathBuf::from(trimmed),
+        },
+        _ => PathBuf::from(trimmed),
+    }
 }
 
 fn parse_containers(
@@ -529,6 +563,13 @@ mod tests {
         .unwrap()
     }
 
+    /// What the dashboard would offer: the repo's workers plus `extra`'s, minus
+    /// whatever the compose file already declares.
+    fn offered(repo: &tempfile::TempDir, extra: Vec<PathBuf>) -> Vec<RepoWorker> {
+        let config = load_with(repo, extra);
+        discover_workers(&config.repo_root, &config.worker_dirs, &config.workers)
+    }
+
     fn load(repo: &tempfile::TempDir) -> Config {
         load_with(repo, Vec::new())
     }
@@ -603,20 +644,16 @@ mod tests {
         )
         .unwrap();
 
-        let config = load(&repo);
-        let names: Vec<&str> = config
-            .repo_workers
-            .iter()
-            .map(|worker| worker.name.as_str())
-            .collect();
+        let offered = offered(&repo, Vec::new());
+        let names: Vec<&str> = offered.iter().map(|worker| worker.name.as_str()).collect();
         assert_eq!(
             names,
             ["browser", "scrapling"],
             "name order, stack excluded"
         );
-        assert_eq!(config.repo_workers[0].bin.as_deref(), Some("browser"));
+        assert_eq!(offered[0].bin.as_deref(), Some("browser"));
         // Not a Rust binary: offered, but never started with `cargo run`.
-        assert_eq!(config.repo_workers[1].bin, None);
+        assert_eq!(offered[1].bin, None);
     }
 
     /// A sibling project that is itself one worker — the `harness-e2e` shape.
@@ -633,9 +670,8 @@ mod tests {
         .unwrap();
 
         // Pointed at the worker itself, not at a directory of workers.
-        let config = load_with(&repo, vec![worker.clone()]);
-        let found = config
-            .repo_workers
+        let found = offered(&repo, vec![worker.clone()]);
+        let found = found
             .iter()
             .find(|candidate| candidate.name == "harness-e2e")
             .expect("the outside worker is offered");
@@ -643,9 +679,7 @@ mod tests {
         assert_eq!(found.dir, worker.canonicalize().unwrap());
 
         // Pointed at its parent, which is a directory of workers instead.
-        let config = load_with(&repo, vec![outside.path().to_path_buf()]);
-        assert!(config
-            .repo_workers
+        assert!(offered(&repo, vec![outside.path().to_path_buf()])
             .iter()
             .any(|candidate| candidate.name == "harness-e2e"));
     }
@@ -673,9 +707,8 @@ mod tests {
             .unwrap();
         }
 
-        let config = load_with(&repo, vec![outside.path().to_path_buf()]);
-        let browser: Vec<&RepoWorker> = config
-            .repo_workers
+        let offered = offered(&repo, vec![outside.path().to_path_buf()]);
+        let browser: Vec<&RepoWorker> = offered
             .iter()
             .filter(|worker| worker.name == "browser")
             .collect();
@@ -686,10 +719,7 @@ mod tests {
         );
         // `state` is a container in the compose file; it is the stack's, not a
         // candidate to start on demand.
-        assert!(!config
-            .repo_workers
-            .iter()
-            .any(|worker| worker.name == "state"));
+        assert!(!offered.iter().any(|worker| worker.name == "state"));
     }
 
     // The only check that fails when the tracked compose file drifts — the
@@ -738,19 +768,12 @@ mod tests {
         );
         assert_eq!(config.worker("harness").unwrap().deps.len(), 12);
         // The rest of the repo is what the dashboard can start on demand.
-        assert!(
-            config.repo_workers.len() > 40,
-            "{}",
-            config.repo_workers.len()
-        );
-        assert!(config
-            .repo_workers
+        let offered = discover_workers(&config.repo_root, &config.worker_dirs, &config.workers);
+        assert!(offered.len() > 40, "{}", offered.len());
+        assert!(offered
             .iter()
             .all(|worker| config.worker(&worker.name).is_none()));
-        assert!(config
-            .repo_workers
-            .iter()
-            .any(|worker| worker.name == "database"));
+        assert!(offered.iter().any(|worker| worker.name == "database"));
     }
 
     #[test]
