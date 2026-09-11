@@ -406,10 +406,9 @@ function StayInTouch({ host }: { host: Host }) {
       setStatus('sending')
       void host.iii
         .trigger('onboarding::subscribe', { email: email.trim(), source: 'onboarding_flow' })
-        .then((result: unknown) => {
-          const already = (result as { already?: boolean } | null)?.already
+        .then(() => {
           setStatus('done')
-          setMessage(already ? 'You are already on the list.' : 'You are on the list.')
+          setMessage('You are on the list.')
         })
         .catch((error: unknown) => {
           setStatus('failed')

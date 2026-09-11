@@ -266,16 +266,17 @@ iii.registerFunction(
       if (cause?.name === 'TimeoutError') throw new Error('the signup service did not answer in time')
       throw cause
     })
-    // 409 is "already on the list", which is a success for the operator.
-    if (!response.ok && response.status !== 409) {
+    if (!response.ok) {
       throw new Error(`the signup service answered ${response.status}`)
     }
-    return { subscribed: true, already: response.status === 409 }
+    // Mailmodo answers 200 "added/updated" for an address already on the list,
+    // so there is nothing to tell the caller apart from success.
+    return { subscribed: true }
   },
   {
     description: 'Add an email address to the iii product-update list.',
     request_format: object({ email: string, source: string }, ['email']),
-    response_format: object({ subscribed: { type: 'boolean' }, already: { type: 'boolean' } }, ['subscribed']),
+    response_format: object({ subscribed: { type: 'boolean' } }, ['subscribed']),
   },
 )
 

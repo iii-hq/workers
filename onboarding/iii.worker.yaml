@@ -32,5 +32,5 @@ scripts:
   start: node ./dist/bundle/index.mjs
 
 dependencies:
-  console: "^1.9.11"
+  console: "latest"
   state: "^0.22.2"
