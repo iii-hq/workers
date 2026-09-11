@@ -764,6 +764,40 @@ async function drawSlide(
         slide.blocks.filter((block) => block !== image),
         { ...full, y: MT, bottom: H - 1.7 },
       )
+  } else if (slide.layout === 'split') {
+    const lw = w * 0.42
+    const rx = MX + lw + 0.4
+    const rw = w - lw - 0.4
+    let y = drawKicker(p, slide, MX, 1.4, lw)
+    s.addText(plain(slide.title ?? ''), {
+      x: MX,
+      y,
+      w: lw,
+      h: 1.7,
+      fontSize: 30,
+      fontFace: heading,
+      color: ink,
+      bold: true,
+      valign: 'top',
+      margin: 0,
+      fit: 'shrink',
+    })
+    y += 1.75
+    if (slide.subtitle)
+      s.addText(plain(slide.subtitle), {
+        x: MX,
+        y,
+        w: lw,
+        h: 0.9,
+        fontSize: 14,
+        fontFace: body,
+        color: muted,
+        valign: 'top',
+        margin: 0,
+        fit: 'shrink',
+      })
+    panel(p, rx - 0.2, MT, rw + 0.4, FOOTER_Y - MT - 0.2)
+    await drawBlocks(p, slide.blocks, { x: rx, y: MT + 0.3, w: rw, bottom: FOOTER_Y - 0.5 }, 0.9)
   } else {
     let y = drawKicker(p, slide, MX, MT, w)
     if (slide.title) {

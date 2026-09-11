@@ -41,6 +41,7 @@ export const DESIGN_SYSTEM_PROMPT = [
   '- Processes, pipelines and loops (A -> B -> C) are a "steps" block with 3 to 6 entries.',
   '- Phases, roadmaps and eras are a "timeline" block with 3 to 6 entries.',
   '- Numbers are "metric" blocks, two or three per slide in a "two-column" layout with column set on each block.',
+  '- "split" puts one idea on the left (kicker, title, one-sentence subtitle) and its proof on the right in a panel: two or three metrics, a short cards block, or bullets. Use it two or three times per deck for the slides that carry the argument.',
   '- Comparisons and contrasts are "two-column": left the old way or problem, right the new way or answer, using headings and short text or bullets with column set.',
   '- The single most important line of the deck gets its own "statement" slide with variant "gradient" or "muted". Quotes with a real attribution also go on statement slides as a quote block.',
   '- Never put two bullet slides in a row, never three card slides in a row. Alternate density: after a dense cards slide put a statement, section or two-column slide.',

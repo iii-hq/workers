@@ -30,6 +30,7 @@ export function createApi(host: Host) {
         author: deck.author ?? '',
         theme: deck.theme,
         theme_overrides: deck.theme_overrides ?? {},
+        motion: deck.motion ?? {},
         slides,
       }),
   }

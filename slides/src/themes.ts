@@ -36,9 +36,9 @@ export const THEMES: Theme[] = [
       accent: '#4f8cff',
       accent_ink: '#ffffff',
     },
-    fonts: { heading: 'Inter', body: 'Inter', mono: 'JetBrains Mono' },
+    fonts: { heading: 'Sora', body: 'Inter', mono: 'JetBrains Mono' },
     heading_weight: 700,
-    radius: 16,
+    radius: 20,
   },
   {
     id: 'paper',
@@ -53,9 +53,9 @@ export const THEMES: Theme[] = [
       accent: '#d1552a',
       accent_ink: '#ffffff',
     },
-    fonts: { heading: 'Playfair Display', body: 'Source Sans 3', mono: 'JetBrains Mono' },
+    fonts: { heading: 'Fraunces', body: 'Inter', mono: 'JetBrains Mono' },
     heading_weight: 600,
-    radius: 8,
+    radius: 12,
   },
   {
     id: 'aurora',
@@ -87,9 +87,9 @@ export const THEMES: Theme[] = [
       accent: '#2f6f9f',
       accent_ink: '#ffffff',
     },
-    fonts: { heading: 'IBM Plex Sans', body: 'IBM Plex Sans', mono: 'IBM Plex Mono' },
-    heading_weight: 600,
-    radius: 10,
+    fonts: { heading: 'Manrope', body: 'IBM Plex Sans', mono: 'IBM Plex Mono' },
+    heading_weight: 700,
+    radius: 14,
   },
   {
     id: 'sunrise',
@@ -104,7 +104,7 @@ export const THEMES: Theme[] = [
       accent: '#ff6b57',
       accent_ink: '#ffffff',
     },
-    fonts: { heading: 'Poppins', body: 'Nunito', mono: 'JetBrains Mono' },
+    fonts: { heading: 'Outfit', body: 'Nunito', mono: 'JetBrains Mono' },
     heading_weight: 700,
     radius: 24,
   },
@@ -121,9 +121,9 @@ export const THEMES: Theme[] = [
       accent: '#a3e635',
       accent_ink: '#0d1b14',
     },
-    fonts: { heading: 'Manrope', body: 'Manrope', mono: 'JetBrains Mono' },
+    fonts: { heading: 'Syne', body: 'Manrope', mono: 'JetBrains Mono' },
     heading_weight: 800,
-    radius: 14,
+    radius: 18,
   },
 ]
 
@@ -208,7 +208,45 @@ export function withAlpha(hex: string, alpha: number): string {
 export function googleFontsHref(theme: Theme): string {
   const families = [...new Set([theme.fonts.heading, theme.fonts.body, theme.fonts.mono])]
   const query = families.map(
-    (family) => `family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@400;500;600;700;800`,
+    (family) => `family=${encodeURIComponent(family).replace(/%20/g, '+')}:wght@300;400;500;600;700;800`,
   )
   return `https://fonts.googleapis.com/css2?${query.join('&')}&display=swap`
+}
+
+export function hueShift(hex: string, degrees: number): string {
+  const [r, g, b] = hexToRgb(hex).map((c) => c / 255)
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  const d = max - min
+  let h = 0
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1))
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6
+    else if (max === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+  }
+  h = (((h * 60 + degrees) % 360) + 360) % 360
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = l - c / 2
+  const [r1, g1, b1] =
+    h < 60
+      ? [c, x, 0]
+      : h < 120
+        ? [x, c, 0]
+        : h < 180
+          ? [0, c, x]
+          : h < 240
+            ? [0, x, c]
+            : h < 300
+              ? [x, 0, c]
+              : [c, 0, x]
+  return `#${[r1, g1, b1]
+    .map((v) =>
+      Math.round((v + m) * 255)
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`
 }

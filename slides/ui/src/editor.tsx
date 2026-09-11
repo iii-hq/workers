@@ -419,6 +419,7 @@ export function DeckEditor({
               footer={deck.theme_overrides?.footer}
               author={deck.author}
               editable
+              animate={deck.motion?.reveal !== 'none'}
               selectedBlockId={selectedBlockId}
               onSelectBlock={(id) => {
                 setSelectedBlockId(id)

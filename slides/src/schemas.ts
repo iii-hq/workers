@@ -1,4 +1,4 @@
-import { BLOCK_TYPES, LAYOUTS, VARIANTS } from './model.js'
+import { BLOCK_TYPES, LAYOUTS, REVEALS, TRANSITIONS, VARIANTS } from './model.js'
 
 export const object = (
   properties: Record<string, unknown> = {},
@@ -77,6 +77,18 @@ export const themeOverridesSchema = object(
   { description: 'Per-deck overrides of the theme: hex colors, font family names, footer text.' },
 )
 
+export const motionSchema = object(
+  {
+    transition: { type: ['string', 'null'], enum: [...TRANSITIONS, null] },
+    reveal: { type: ['string', 'null'], enum: [...REVEALS, null] },
+  },
+  [],
+  {
+    description:
+      'Presentation motion: transition between slides (fade, slide, zoom, none) and how elements reveal (stagger on entry, step through with keys, none).',
+  },
+)
+
 export const deckSchema = object(
   {
     id: string,
@@ -85,6 +97,7 @@ export const deckSchema = object(
     author: nullableString,
     theme: string,
     theme_overrides: themeOverridesSchema,
+    motion: motionSchema,
     slides: array(slideSchema),
     revision: integer,
     created_at_ms: integer,

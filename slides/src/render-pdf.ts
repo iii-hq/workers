@@ -645,6 +645,38 @@ async function drawSlide(
         slide.blocks.filter((block) => block !== image),
         { ...full, y: y - 8 },
       )
+  } else if (slide.layout === 'split') {
+    const leftWidth = width * 0.42
+    const rightX = MARGIN_X + leftWidth + 40
+    const rightWidth = width - leftWidth - 40
+    let y = drawKicker(p, slide, MARGIN_X, PAGE_HEIGHT / 2 + 90)
+    const titleSize = fitSize(fonts.heading, slide.title ?? '', leftWidth, 34, 22, 4)
+    y =
+      drawLines(
+        page,
+        wrap(fonts.heading, titleSize, leftWidth, slide.title ?? ''),
+        { ...full, y, width: leftWidth },
+        fonts.heading,
+        titleSize,
+        ink,
+        1.1,
+      ) - 6
+    if (slide.subtitle)
+      drawLines(
+        page,
+        wrap(fonts.body, 16, leftWidth, slide.subtitle),
+        { ...full, y, width: leftWidth },
+        fonts.body,
+        16,
+        muted,
+      )
+    panel(p, rightX - 16, FOOTER_Y + 24, rightWidth + 32, PAGE_HEIGHT - MARGIN_TOP - FOOTER_Y - 24)
+    await drawBlocks(
+      p,
+      slide.blocks,
+      { x: rightX, y: PAGE_HEIGHT - MARGIN_TOP - 16, width: rightWidth, bottom: FOOTER_Y + 36 },
+      0.9,
+    )
   } else {
     let y = drawKicker(p, slide, MARGIN_X, full.y)
     if (slide.title) {

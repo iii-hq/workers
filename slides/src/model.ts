@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto'
 
-export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'statement', 'image', 'blank'] as const
+export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'split', 'statement', 'image', 'blank'] as const
+export const TRANSITIONS = ['fade', 'slide', 'zoom', 'none'] as const
+export type Transition = (typeof TRANSITIONS)[number]
+export const REVEALS = ['stagger', 'step', 'none'] as const
+export type Reveal = (typeof REVEALS)[number]
+
+export interface Motion {
+  transition?: Transition
+  reveal?: Reveal
+}
 export type Layout = (typeof LAYOUTS)[number]
 
 export const BLOCK_TYPES = [
@@ -66,6 +75,7 @@ export interface Deck {
   author?: string
   theme: string
   theme_overrides?: ThemeOverrides
+  motion?: Motion
   slides: Slide[]
   revision: number
   created_at_ms: number
@@ -242,6 +252,15 @@ export function normalizeOverrides(input: unknown): ThemeOverrides | undefined {
     const value = text(raw[key])
     if (value) out[key] = value
   }
+  return Object.keys(out).length ? out : undefined
+}
+
+export function normalizeMotion(input: unknown): Motion | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const raw = input as Record<string, unknown>
+  const out: Motion = {}
+  if ((TRANSITIONS as readonly string[]).includes(String(raw.transition))) out.transition = raw.transition as Transition
+  if ((REVEALS as readonly string[]).includes(String(raw.reveal))) out.reveal = raw.reveal as Reveal
   return Object.keys(out).length ? out : undefined
 }
 

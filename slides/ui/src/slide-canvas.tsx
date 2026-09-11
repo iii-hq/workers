@@ -35,6 +35,44 @@ function alpha(hex: string, value: number): string {
   return `rgba(${r}, ${g}, ${b}, ${value})`
 }
 
+function hueShift(hex: string, degrees: number): string {
+  const [r, g, b] = hexToRgb(hex).map((c) => c / 255)
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const l = (max + min) / 2
+  const d = max - min
+  let h = 0
+  const sat = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1))
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6
+    else if (max === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+  }
+  h = (((h * 60 + degrees) % 360) + 360) % 360
+  const c = (1 - Math.abs(2 * l - 1)) * sat
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
+  const m = l - c / 2
+  const [r1, g1, b1] =
+    h < 60
+      ? [c, x, 0]
+      : h < 120
+        ? [x, c, 0]
+        : h < 180
+          ? [0, c, x]
+          : h < 240
+            ? [0, x, c]
+            : h < 300
+              ? [x, 0, c]
+              : [c, 0, x]
+  return `#${[r1, g1, b1]
+    .map((v) =>
+      Math.round((v + m) * 255)
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`
+}
+
 const isHex = (value?: string) => !!value && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)
 
 export function gridColumns(count: number): number {
@@ -72,8 +110,16 @@ export function themeVars(
     '--sl-accent': accent,
     '--sl-accent-ink': accentInk,
     '--sl-accent-soft': alpha(accent, 0.16),
-    '--sl-accent-glow': alpha(accent, dark ? 0.35 : 0.22),
-    '--sl-gradient-end': mix(background, accent, dark ? 0.35 : 0.18),
+    '--sl-accent-glow': alpha(accent, dark ? 0.42 : 0.26),
+    '--sl-accent-2': hueShift(accent, dark ? 48 : -32),
+    '--sl-accent-2-glow': alpha(hueShift(accent, dark ? 48 : -32), dark ? 0.34 : 0.2),
+    '--sl-glass-a': dark ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.72)',
+    '--sl-glass-b': dark ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.42)',
+    '--sl-glass-border': dark ? 'rgba(255,255,255,0.14)' : alpha(ink, 0.1),
+    '--sl-glass-hi': dark ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.9)',
+    '--sl-shadow': dark ? '0 30px 80px rgba(0,0,0,.45)' : '0 30px 80px rgba(20,20,40,.14)',
+    '--sl-panel-fill': dark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.65)',
+    '--sl-gradient-end': mix(background, accent, dark ? 0.38 : 0.2),
     '--sl-grid': alpha(ink, dark ? 0.045 : 0.06),
     '--sl-on-accent-muted': alpha(accentInk, 0.72),
     '--sl-on-accent-surface': alpha(accentInk, 0.12),
@@ -183,6 +229,8 @@ function EntryView({
   )
 }
 
+const GLASS = new Set(['code', 'metric'])
+
 function BlockView({
   block,
   selected,
@@ -197,7 +245,7 @@ function BlockView({
   onChange: (patch: Partial<Block>) => void
 }) {
   const common = {
-    className: `sl-block sl-block-${block.type}${selected ? ' sl-selected' : ''}`,
+    className: `sl-block sl-block-${block.type}${GLASS.has(block.type) ? ' sl-glass' : ''}${selected ? ' sl-selected' : ''}`,
     onClick: (event: { stopPropagation: () => void }) => {
       event.stopPropagation()
       onSelect()
@@ -323,7 +371,7 @@ function BlockView({
           style={{ '--cols': gridColumns(entries.length) } as CSSProperties}
         >
           {entries.map((entry, index) => (
-            <div className="sl-card" key={`${block.id}-${index}`}>
+            <div className="sl-card sl-glass" key={`${block.id}-${index}`}>
               {block.numbered ? <div className="sl-card-number">{String(index + 1).padStart(2, '0')}</div> : null}
               <EntryView
                 entry={entry}
@@ -342,7 +390,7 @@ function BlockView({
       return (
         <div {...common} className={`${common.className}${entries.length > 4 ? ' sl-dense' : ''}`}>
           {entries.map((entry, index) => (
-            <div className="sl-step" key={`${block.id}-${index}`}>
+            <div className="sl-step sl-glass" key={`${block.id}-${index}`}>
               <div className="sl-step-number">{index + 1}</div>
               <EntryView
                 entry={entry}
@@ -398,6 +446,7 @@ export interface SlideCanvasProps {
   footer?: string
   author?: string
   editable?: boolean
+  animate?: boolean
   selectedBlockId?: string | null
   onSelectBlock?: (blockId: string | null) => void
   onChangeSlide?: (patch: Partial<Slide>) => void
@@ -414,6 +463,7 @@ export function SlideCanvas({
   footer,
   author,
   editable = false,
+  animate = false,
   selectedBlockId,
   onSelectBlock,
   onChangeSlide,
@@ -490,13 +540,17 @@ export function SlideCanvas({
     )
   } else if (slide.layout === 'section') {
     body = (
-      <div className="sl-stack sl-section">
-        <div className="sl-section-number">{String(index + 1).padStart(2, '0')}</div>
-        {kicker}
-        {title('sl-title sl-title-large')}
-        {subtitle}
-        <div className="sl-blocks">{blocks(slide.blocks)}</div>
-      </div>
+      <>
+        <div className="sl-section-decor" aria-hidden="true">
+          {String(index + 1).padStart(2, '0')}
+        </div>
+        <div className="sl-stack sl-section">
+          {kicker}
+          {title('sl-title sl-title-large')}
+          {subtitle}
+          <div className="sl-blocks">{blocks(slide.blocks)}</div>
+        </div>
+      </>
     )
   } else if (slide.layout === 'statement') {
     body = (
@@ -522,6 +576,19 @@ export function SlideCanvas({
           {title()}
           {subtitle}
           <div className="sl-blocks">{blocks(slide.blocks.filter((block) => block !== image))}</div>
+        </div>
+      </div>
+    )
+  } else if (slide.layout === 'split') {
+    body = (
+      <div className="sl-split">
+        <div className="sl-split-copy">
+          {kicker}
+          {title('sl-title sl-title-split')}
+          {subtitle}
+        </div>
+        <div className="sl-split-panel sl-glass">
+          <div className="sl-blocks">{blocks(slide.blocks)}</div>
         </div>
       </div>
     )
@@ -569,7 +636,8 @@ export function SlideCanvas({
     >
       <div className="sl-scaler" style={{ transform: `scale(${scale})` }}>
         <section
-          className={`sl-slide sl-layout-${slide.layout} sl-variant-${slide.variant ?? 'default'}`}
+          key={animate ? slide.id : undefined}
+          className={`sl-slide sl-layout-${slide.layout} sl-variant-${slide.variant ?? 'default'}${animate ? ' sl-animate' : ''}`}
           style={background}
           onClick={() => onSelectBlock?.(null)}
           onKeyDown={(event) => {
@@ -578,8 +646,11 @@ export function SlideCanvas({
           role={editable ? 'group' : undefined}
           aria-label={`Slide ${index + 1}`}
         >
-          <div className="sl-orb sl-orb-a" />
-          <div className="sl-orb sl-orb-b" />
+          <div className="sl-mesh" aria-hidden="true">
+            <i className="sl-blob sl-blob-a" />
+            <i className="sl-blob sl-blob-b" />
+            <i className="sl-blob sl-blob-c" />
+          </div>
           {body}
           <footer className="sl-footer">
             <span className="sl-footer-text" />

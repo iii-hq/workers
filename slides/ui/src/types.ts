@@ -1,4 +1,9 @@
-export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'statement', 'image', 'blank'] as const
+export const LAYOUTS = ['title', 'section', 'content', 'two-column', 'split', 'statement', 'image', 'blank'] as const
+export const TRANSITIONS = ['fade', 'slide', 'zoom', 'none'] as const
+export type Transition = (typeof TRANSITIONS)[number]
+export const REVEALS = ['stagger', 'step', 'none'] as const
+export type Reveal = (typeof REVEALS)[number]
+export type Motion = { transition?: Transition; reveal?: Reveal }
 export type Layout = (typeof LAYOUTS)[number]
 export const BLOCK_TYPES = [
   'heading',
@@ -64,6 +69,7 @@ export type Deck = {
   author?: string
   theme: string
   theme_overrides?: ThemeOverrides
+  motion?: Motion
   slides: Slide[]
   revision: number
   created_at_ms: number
@@ -103,6 +109,7 @@ export const LAYOUT_LABEL: Record<Layout, string> = {
   section: 'Section',
   content: 'Content',
   'two-column': 'Two columns',
+  split: 'Split panel',
   statement: 'Statement',
   image: 'Full image',
   blank: 'Blank',
@@ -239,6 +246,15 @@ export function defaultSlide(layout: Layout = 'content'): Slide {
         { ...defaultBlock('metric'), column: 'left' },
         { ...defaultBlock('bullets'), column: 'right' },
       ],
+    }
+  if (layout === 'split')
+    return {
+      id,
+      layout,
+      kicker: 'Kicker',
+      title: 'One idea on the left, proof on the right',
+      subtitle: 'A sentence that frames the panel.',
+      blocks: [defaultBlock('metric'), defaultBlock('bullets')],
     }
   if (layout === 'image') return { id, layout, title: 'Caption for the image', blocks: [defaultBlock('image')] }
   if (layout === 'blank') return { id, layout, blocks: [] }

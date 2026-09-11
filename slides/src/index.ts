@@ -14,6 +14,7 @@ import {
   isDeck,
   mergeSlide,
   newId,
+  normalizeMotion,
   normalizeOverrides,
   normalizeSlide,
   normalizeSlides,
@@ -34,6 +35,7 @@ import {
   deckSchema,
   deckSummarySchema,
   integer,
+  motionSchema,
   nullableString,
   object,
   slideSchema,
@@ -172,6 +174,7 @@ interface CreateInput {
   author?: string
   theme?: string
   theme_overrides?: unknown
+  motion?: unknown
   slides?: unknown
   markdown?: string
 }
@@ -192,6 +195,7 @@ async function createDeck(input: CreateInput): Promise<Deck> {
     ...(normalizeOverrides(input.theme_overrides)
       ? { theme_overrides: normalizeOverrides(input.theme_overrides) }
       : {}),
+    ...(normalizeMotion(input.motion) ? { motion: normalizeMotion(input.motion) } : {}),
     slides: slides.length
       ? slides
       : [{ id: newId('slide'), layout: 'title', title, ...(subtitle ? { subtitle } : {}), blocks: [] }],
@@ -209,6 +213,7 @@ const createInputSchema = object(
     author: nullableString,
     theme: { type: ['string', 'null'], enum: [...THEMES.map((theme) => theme.id), null] },
     theme_overrides: themeOverridesSchema,
+    motion: motionSchema,
     slides: array(slideSchema),
     markdown: {
       type: ['string', 'null'],
@@ -283,6 +288,11 @@ iii.registerFunction(
       if (overrides) next.theme_overrides = overrides
       else delete next.theme_overrides
     }
+    if (input.motion !== undefined) {
+      const motion = normalizeMotion(input.motion)
+      if (motion) next.motion = motion
+      else delete next.motion
+    }
     if (input.markdown !== undefined && text(input.markdown))
       next.slides = slidesFromMarkdown(input.markdown as string).slides
     else if (input.slides !== undefined) next.slides = normalizeSlides(input.slides)
@@ -290,7 +300,7 @@ iii.registerFunction(
   },
   {
     description:
-      'Update deck metadata, theme, overrides, or replace the whole slide array (or all slides from Markdown). Omitted fields are kept; empty strings clear optional fields.',
+      'Update deck metadata, theme, overrides, motion (transition, reveal), or replace the whole slide array (or all slides from Markdown). Omitted fields are kept; empty strings clear optional fields.',
     request_format: object({ deck_id: string, ...createInputSchema.properties }, ['deck_id']),
     response_format: deckResponse,
   },

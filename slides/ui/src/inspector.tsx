@@ -22,8 +22,12 @@ import {
   LAYOUT_LABEL,
   LAYOUTS,
   type Layout,
+  REVEALS,
+  type Reveal,
   type Slide,
   type Theme,
+  TRANSITIONS,
+  type Transition,
   textToEntries,
   VARIANT_LABEL,
   VARIANTS,
@@ -139,6 +143,32 @@ export function DeckInspector({
             onChange={(value) => setOverride('accent', value)}
           />
         </div>
+      </Field>
+      <Field id="sl-deck-transition" label="Slide transition" hint="How slides change when presenting.">
+        <Select
+          id="sl-deck-transition"
+          value={deck.motion?.transition ?? 'fade'}
+          options={TRANSITIONS.map((value) => ({
+            value,
+            label: value === 'none' ? 'None' : value[0].toUpperCase() + value.slice(1),
+          }))}
+          onChange={(value) => onChange({ motion: { ...(deck.motion ?? {}), transition: value as Transition } })}
+        />
+      </Field>
+      <Field
+        id="sl-deck-reveal"
+        label="Element reveal"
+        hint="Stagger animates everything in; Step reveals one element per key press."
+      >
+        <Select
+          id="sl-deck-reveal"
+          value={deck.motion?.reveal ?? 'stagger'}
+          options={REVEALS.map((value) => ({
+            value,
+            label: value === 'none' ? 'None' : value[0].toUpperCase() + value.slice(1),
+          }))}
+          onChange={(value) => onChange({ motion: { ...(deck.motion ?? {}), reveal: value as Reveal } })}
+        />
       </Field>
       <Field id="sl-deck-footer" label="Footer text" hint="Shown bottom-left on every slide.">
         <Input id="sl-deck-footer" value={overrides.footer ?? ''} onChange={(value) => setOverride('footer', value)} />
