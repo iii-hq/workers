@@ -42,6 +42,7 @@ import {
 } from '@/lib/attachments/draft-attachments'
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
+import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
@@ -111,6 +112,52 @@ function uid(): string {
 function sessionIdsFromSignature(signature: string): string[] {
   return JSON.parse(signature) as string[]
 }
+export interface PendingCompletionBell {
+  event: StatusChangedEvent
+  previousConversation?: Conversation
+}
+
+export function shouldQueueCompletionBell(
+  event: StatusChangedEvent,
+  conversation: Conversation | undefined,
+): boolean {
+  return (
+    conversation?.hierarchyResolved !== true &&
+    event.previous_status === 'working' &&
+    (event.status === 'done' || event.status === 'error')
+  )
+}
+
+export function pendingCompletionBellAfterStatus(
+  pending: PendingCompletionBell | undefined,
+  event: StatusChangedEvent,
+  conversation: Conversation | undefined,
+): PendingCompletionBell | undefined {
+  if (pending && event.timestamp <= pending.event.timestamp) return pending
+  if (!shouldQueueCompletionBell(event, conversation)) return undefined
+  return { event, previousConversation: conversation }
+}
+
+export function conversationBeforeQueuedCompletion(
+  resolvedConversation: Conversation,
+  pending: PendingCompletionBell,
+): Conversation {
+  return {
+    ...resolvedConversation,
+    status: pending.event.previous_status,
+    serverStatusUpdatedAt: pending.previousConversation?.serverStatusUpdatedAt,
+  }
+}
+
+export function shouldReplayQueuedCompletion(
+  pending: PendingCompletionBell,
+  meta: SessionMeta,
+): boolean {
+  return (
+    meta.status === pending.event.status &&
+    meta.updated_at >= pending.event.timestamp
+  )
+}
 
 /** Composer-draft save cadence (`session::set-draft` is event-silent, so the
  *  only costs are the RPC and one JSONL append per flush). */
@@ -178,6 +225,7 @@ function emptyConversation(
     status: 'idle',
     draft: true,
     hydrated: true,
+    hierarchyResolved: true,
     createdAt: now,
     updatedAt: now,
   }
@@ -654,6 +702,7 @@ function conversationFromMeta(
     serverMetadataUpdatedAt: meta.updated_at,
     serverStatusUpdatedAt: meta.updated_at,
     subagentAppearance: decodeSubagentAppearance(md.subagent_display),
+    hierarchyResolved: true,
     parentId:
       typeof md.parent_session_id === 'string'
         ? md.parent_session_id
@@ -906,6 +955,7 @@ export function mergeConversationMeta(
       subagentAppearance: existing.subagentAppearance,
       parentId: existing.parentId,
       parentFunctionCallId: existing.parentFunctionCallId,
+      hierarchyResolved: existing.hierarchyResolved,
       depth: existing.depth,
       spawnedBy: existing.spawnedBy,
       serverMetadataUpdatedAt: existing.serverMetadataUpdatedAt,
@@ -1393,6 +1443,9 @@ export function useConversations(
   )
   const directoryRefreshGenerationRef = useRef(0)
   const pendingSelectIdRef = useRef<string | null>(null)
+  const pendingCompletionBellRef = useRef(
+    new Map<string, PendingCompletionBell>(),
+  )
 
   /** Highest seen `message-updated` revision per (session, entry). */
   const revisionsRef = useRef(new Map<string, Map<string, number>>())
@@ -1497,6 +1550,24 @@ export function useConversations(
               })
               markConversationMissing(sessionId)
             }
+            const pending = pendingCompletionBellRef.current.get(sessionId)
+            if (!meta) {
+              pendingCompletionBellRef.current.delete(sessionId)
+            } else if (pending) {
+              pendingCompletionBellRef.current.delete(sessionId)
+              if (shouldReplayQueuedCompletion(pending, meta)) {
+                const existing = conversationsRef.current.find(
+                  (conversation) => conversation.id === sessionId,
+                )
+                const merged = existing
+                  ? mergeConversationMeta(existing, meta)
+                  : conversationFromMeta(meta)
+                void ringForCompletionEvent(
+                  pending.event,
+                  conversationBeforeQueuedCompletion(merged, pending),
+                )
+              }
+            }
             setConversations((current) => {
               const existing = current.find(
                 (conversation) => conversation.id === sessionId,
@@ -1508,11 +1579,12 @@ export function useConversations(
                     )
                   : current
               }
-              if (!existing) return [conversationFromMeta(meta), ...current]
+              const merged = existing
+                ? mergeConversationMeta(existing, meta)
+                : conversationFromMeta(meta)
+              if (!existing) return [merged, ...current]
               return current.map((conversation) =>
-                conversation.id === sessionId
-                  ? mergeConversationMeta(conversation, meta)
-                  : conversation,
+                conversation.id === sessionId ? merged : conversation,
               )
             })
           })
@@ -1719,6 +1791,7 @@ export function useConversations(
                     conversation.serverMetaUpdatedAt ?? -Infinity,
                     event.created_at,
                   ),
+                  hierarchyResolved: true,
                   serverMetadataUpdatedAt: Math.max(
                     conversation.serverMetadataUpdatedAt ?? -Infinity,
                     event.created_at,
@@ -1779,11 +1852,23 @@ export function useConversations(
         onStatusChanged: (event) => {
           clearConversationMissing(event.session_id)
           missingSessionLookupGenerationRef.current.delete(event.session_id)
-          const known = conversationsRef.current.some(
-            (conversation) => conversation.id === event.session_id,
+          const conversation = conversationsRef.current.find(
+            (candidate) => candidate.id === event.session_id,
           )
-          patchConversation(event.session_id, (conversation) =>
-            applyConversationStatusEvent(conversation, event),
+          const known = conversation !== undefined
+          const pending = pendingCompletionBellAfterStatus(
+            pendingCompletionBellRef.current.get(event.session_id),
+            event,
+            conversation,
+          )
+          if (pending) {
+            pendingCompletionBellRef.current.set(event.session_id, pending)
+          } else {
+            pendingCompletionBellRef.current.delete(event.session_id)
+            void ringForCompletionEvent(event, conversation)
+          }
+          patchConversation(event.session_id, (current) =>
+            applyConversationStatusEvent(current, event),
           )
           if (!known) {
             const requireWatched =
@@ -1797,6 +1882,7 @@ export function useConversations(
         onDeleted: (event) => {
           markConversationMissing(event.session_id)
           invalidateSessionMetaLookup(event.session_id)
+          pendingCompletionBellRef.current.delete(event.session_id)
           missingSessionLookupGenerationRef.current.set(event.session_id, {
             lookupGeneration:
               sessionMetaLookupGenerationRef.current.get(event.session_id) ?? 0,
@@ -2110,6 +2196,7 @@ export function useConversations(
         sessionMetaLookupGenerationRef.current.set(sessionId, generation + 1)
       }
       missingSessionLookupGenerationRef.current.clear()
+      pendingCompletionBellRef.current.clear()
     },
     [],
   )

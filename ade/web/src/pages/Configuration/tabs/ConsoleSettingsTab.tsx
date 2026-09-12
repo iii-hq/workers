@@ -14,6 +14,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from '@/components/ui/Settings'
+import { Switch } from '@/components/ui/Switch'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import type { Theme } from '@/hooks/use-theme'
@@ -24,6 +25,12 @@ import {
   saveApprovalGateDefaults,
 } from '@/lib/backend/approval-gate-config'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
+import {
+  loadCompletionBellEnabled,
+  playCompletionBell,
+  saveCompletionBellEnabled,
+  subscribeCompletionBellPreference,
+} from '@/lib/completion-bell'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 
@@ -62,6 +69,22 @@ export function ConsoleSettingsTab({
   const [defaultMode, setDefaultMode] = useState<PermissionMode>('manual')
   const [allowlist, setAllowlist] = useState<string[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [completionBellEnabled, setCompletionBellEnabled] = useState(
+    loadCompletionBellEnabled,
+  )
+
+  useEffect(
+    () =>
+      subscribeCompletionBellPreference(() => {
+        setCompletionBellEnabled(loadCompletionBellEnabled())
+      }),
+    [],
+  )
+
+  const handleCompletionBellChange = useCallback((enabled: boolean) => {
+    setCompletionBellEnabled(enabled)
+    saveCompletionBellEnabled(enabled)
+  }, [])
 
   useEffect(() => {
     if (!approvalGateAvailable) return
@@ -166,6 +189,42 @@ export function ConsoleSettingsTab({
                     { value: 'dark', label: 'Dark' },
                   ]}
                 />
+              }
+            />
+          </SettingsList>
+        </SettingsSection>
+
+        <SettingsSection
+          title="Notifications"
+          description="Local sounds from this open Console. No notification permission is required."
+        >
+          <SettingsList>
+            <SettingsRow
+              label="Completion bell"
+              description="Play a gentle bell when a top-level conversation finishes. Failures use a distinct tone; stopped turns stay silent."
+              layout="inline"
+              control={
+                <Switch
+                  aria-label="Completion bell"
+                  checked={completionBellEnabled}
+                  onChange={(event) =>
+                    handleCompletionBellChange(event.currentTarget.checked)
+                  }
+                />
+              }
+            />
+            <SettingsRow
+              label="Sound check"
+              description="Play the success tone now. Your first tap also enables audio for later completions."
+              action={
+                <Button
+                  type="button"
+                  variant="pill"
+                  size="sm"
+                  onClick={() => void playCompletionBell('completed', true)}
+                >
+                  Test bell
+                </Button>
               }
             />
           </SettingsList>
