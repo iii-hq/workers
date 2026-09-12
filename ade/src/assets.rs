@@ -1,9 +1,12 @@
 //! Embedded SPA bundle.
 //!
 //! `web/dist/` is included into the binary at compile time via
-//! [`rust_embed::RustEmbed`]. The two public handlers are:
+//! [`rust_embed::RustEmbed`]. The public handlers are:
 //!
 //! - [`index_handler`] — serves the SPA shell at `/`.
+//! - [`manifest_handler`] and [`service_worker_handler`] — serve the
+//!   installable-PWA metadata without long-lived caching.
+//! - [`icon_handler`] — serves install icons with immutable caching.
 //! - [`asset_handler`] — serves `/assets/<file>` with an
 //!   `immutable` cache header (Vite emits content-hashed filenames).
 //!
@@ -28,6 +31,38 @@ pub async fn index_handler() -> Response {
 
 pub async fn asset_handler(Path(path): Path<String>) -> Response {
     let key = format!("assets/{path}");
+    serve_embedded(&key, true)
+}
+pub async fn manifest_handler() -> Response {
+    let mut response = serve_embedded("manifest.webmanifest", false);
+    if response.status() == StatusCode::OK {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/manifest+json"),
+        );
+    }
+    response
+}
+
+pub async fn service_worker_handler() -> Response {
+    let mut response = serve_embedded("sw.js", false);
+    if response.status() == StatusCode::OK {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/javascript; charset=utf-8"),
+        );
+        // The worker lives at the Console mount root. Relative scope keeps it
+        // valid when a reverse proxy mounts the application under a subpath.
+        response.headers_mut().insert(
+            header::HeaderName::from_static("service-worker-allowed"),
+            HeaderValue::from_static("./"),
+        );
+    }
+    response
+}
+
+pub async fn icon_handler(Path(path): Path<String>) -> Response {
+    let key = format!("icons/{path}");
     serve_embedded(&key, true)
 }
 
@@ -102,6 +137,26 @@ mod tests {
         assert!(
             WebDist::get("index.html").is_some(),
             "web/dist/index.html missing from the embed"
+        );
+        assert!(
+            WebDist::get("manifest.webmanifest").is_some(),
+            "web/dist/manifest.webmanifest missing from the embed"
+        );
+        assert!(
+            WebDist::get("sw.js").is_some(),
+            "web/dist/sw.js missing from the embed"
+        );
+        assert!(
+            WebDist::get("icons/icon.svg").is_some(),
+            "web/dist/icons/icon.svg missing from the embed"
+        );
+        assert!(
+            WebDist::get("icons/iii-192.png").is_some(),
+            "web/dist/icons/iii-192.png missing from the embed"
+        );
+        assert!(
+            WebDist::get("icons/iii-512.png").is_some(),
+            "web/dist/icons/iii-512.png missing from the embed"
         );
     }
 }

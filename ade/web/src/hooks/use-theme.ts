@@ -3,6 +3,10 @@ import { useCallback, useEffect, useState } from 'react'
 export type Theme = 'light' | 'dark'
 
 const KEY = 'iii-theme'
+const THEME_COLORS: Record<Theme, string> = {
+  light: '#f2f0ed',
+  dark: '#0a0a0a',
+}
 
 function readTheme(): Theme {
   if (typeof document === 'undefined') return 'light'
@@ -10,11 +14,22 @@ function readTheme(): Theme {
   return attr === 'dark' ? 'dark' : 'light'
 }
 
+export function applyDocumentTheme(theme: Theme): void {
+  const root = document.documentElement
+  const color = THEME_COLORS[theme]
+  root.dataset.theme = theme
+  root.style.colorScheme = theme
+  root.style.backgroundColor = color
+  document
+    .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    ?.setAttribute('content', color)
+}
+
 export function useTheme(): [Theme, (next: Theme) => void] {
   const [theme, setThemeState] = useState<Theme>(() => readTheme())
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme
+    applyDocumentTheme(theme)
     try {
       localStorage.setItem(KEY, theme)
     } catch {
