@@ -12,7 +12,6 @@ import { getIiiClient } from '@/lib/iii-client'
 import { registerServiceWorker } from '@/lib/register-service-worker'
 import { setUiAssetsStatus } from '@/lib/ui-slots'
 import { App } from './App'
-import faviconUrl from './icons/favicon.svg?url'
 import './index.css'
 
 // Back-fills crypto.randomUUID on insecure origins (http://<LAN-IP>) —
@@ -60,9 +59,8 @@ const favicon =
   document.createElement('link')
 favicon.rel = 'icon'
 favicon.type = 'image/svg+xml'
-favicon.href = faviconUrl
+favicon.href = new URL('./icons/icon.svg', document.baseURI).href
 if (!favicon.isConnected) document.head.appendChild(favicon)
-
 registerServiceWorker()
 
 const root = document.getElementById('root')

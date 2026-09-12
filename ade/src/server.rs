@@ -458,7 +458,7 @@ mod tests {
             "./"
         );
 
-        let icon = get_response(router(state), "/icons/icon-192.png", &[]).await;
+        let icon = get_response(router(state), "/icons/iii-192.png", &[]).await;
         assert_eq!(icon.status(), StatusCode::OK);
         assert_eq!(
             icon.headers().get(header::CONTENT_TYPE).unwrap(),

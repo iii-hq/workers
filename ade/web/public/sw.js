@@ -13,7 +13,7 @@ const scopePath = scopeUrl.pathname.endsWith('/')
   : `${scopeUrl.pathname}/`
 const scopeKey = scopePath.replace(/[^a-z0-9]/gi, '-') || 'root'
 const cachePrefix = `iii-console-shell-${scopeKey}-`
-const cacheName = `${cachePrefix}v2`
+const cacheName = `${cachePrefix}v3`
 const shellUrl = new URL('./', self.registration.scope).href
 
 function relativePath(url) {

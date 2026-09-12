@@ -147,12 +147,16 @@ mod tests {
             "web/dist/sw.js missing from the embed"
         );
         assert!(
-            WebDist::get("icons/icon-192.png").is_some(),
-            "web/dist/icons/icon-192.png missing from the embed"
+            WebDist::get("icons/icon.svg").is_some(),
+            "web/dist/icons/icon.svg missing from the embed"
         );
         assert!(
-            WebDist::get("icons/icon-512.png").is_some(),
-            "web/dist/icons/icon-512.png missing from the embed"
+            WebDist::get("icons/iii-192.png").is_some(),
+            "web/dist/icons/iii-192.png missing from the embed"
+        );
+        assert!(
+            WebDist::get("icons/iii-512.png").is_some(),
+            "web/dist/icons/iii-512.png missing from the embed"
         );
     }
 }
