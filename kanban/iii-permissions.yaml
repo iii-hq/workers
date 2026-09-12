@@ -1,0 +1,24 @@
+# Agent permissions for the kanban worker.
+version: 1
+
+rules:
+  # Console asset delivery and the configuration reload sink are engine
+  # plumbing, never agent-callable.
+  - '!kanban::ui-content'
+  - '!kanban::on-config-change'
+  # Deleting and restoring a ticket is the human's call, made from the
+  # ticket screen (see skills/kanban-tickets.md). Agents move tickets.
+  - '!kanban::ticket::delete'
+  - '!kanban::ticket::restore'
+  # Reads and the ticket working loop are safe to allow by default.
+  - kanban::config::info
+  - kanban::board::get
+  - kanban::ticket::list
+  - kanban::ticket::get
+  - kanban::ticket::create
+  - kanban::ticket::update
+  - kanban::ticket::move
+  - kanban::comment::create
+  - kanban::comment::list
+  - kanban::activity::list
+  - kanban::agent::list

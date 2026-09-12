@@ -1,0 +1,37 @@
+iii: v1
+name: kanban
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: kanban
+tags: [kanban, tickets, board, agents, console-ui]
+description: File-backed kanban board — tickets, threaded comments, agent assignment, the kanban:change and kanban:comment trigger types, and an injectable console board with agent profiles for planning and review.
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run --bin kanban
+
+config:
+  data_path: data/kanban
+  id_prefix: KAN
+  default_status: backlog
+  columns:
+    - id: backlog
+      label: Backlog
+    - id: todo
+      label: To do
+    - id: in_progress
+      label: In progress
+    - id: in_review
+      label: In review
+    - id: done
+      label: Done
+  priorities: [low, medium, high, urgent]
+  agents_path: agents
+
+dependencies:
+  configuration: "0.x"

@@ -5,9 +5,10 @@
 //! step all bypass them, and a session reopened later showed "0 files" for
 //! turns full of such work. This module puts an OS watch on the session's
 //! workspace root for the duration of each turn and records what it sees as
-//! `observed` changes: no pre-image (the watch fires after the write), so a
-//! reopened review diffs them against the committed version when one exists
-//! and says "nothing to diff" quietly when one does not.
+//! `observed` changes: no pre-image of its own (the watch fires after the
+//! write). Their sides come from the root's tree snapshots (`turn_snapshot`)
+//! when the turn has them; a turn without falls back to the committed
+//! version when one exists and says "nothing to diff" quietly otherwise.
 //!
 //! The watch starts on the first hooked call of a turn — the pre-trigger
 //! hook is an awaited barrier, so the watcher is live before that call can
