@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use voice::audio;
-use voice::config::WorkerConfig;
+use voice::config::{SttBackend, WorkerConfig};
 use voice::engine::Engine;
 
 fn models_dir() -> Option<PathBuf> {
@@ -95,4 +95,38 @@ async fn the_local_engine_loads_and_transcribes() {
             );
         }
     }
+}
+
+/// The direct whisper.cpp adapter against a real host command and model. CI
+/// stays offline unless `VOICE_TEST_WHISPER_CPP_MODEL` names an existing GGML
+/// model; `VOICE_TEST_WHISPER_CPP_COMMAND`, `VOICE_TEST_WAV`, and
+/// `VOICE_TEST_LANGUAGE` are optional overrides.
+#[tokio::test]
+async fn whisper_cpp_transcribes_when_configured() {
+    let Some(model) = std::env::var_os("VOICE_TEST_WHISPER_CPP_MODEL") else {
+        eprintln!("skipping: set VOICE_TEST_WHISPER_CPP_MODEL");
+        return;
+    };
+    let mut cfg = WorkerConfig::default();
+    cfg.stt.backend = SttBackend::WhisperCpp;
+    cfg.stt.whisper_cpp.model = PathBuf::from(model).to_string_lossy().into_owned();
+    if let Some(command) = std::env::var_os("VOICE_TEST_WHISPER_CPP_COMMAND") {
+        cfg.stt.whisper_cpp.command = PathBuf::from(command).to_string_lossy().into_owned();
+    }
+    let samples = match std::env::var_os("VOICE_TEST_WAV") {
+        Some(path) => {
+            let bytes = std::fs::read(path).expect("clip readable");
+            audio::decode_wav(&bytes).expect("clip decodes").samples
+        }
+        None => tone_clip(),
+    };
+    let language = std::env::var("VOICE_TEST_LANGUAGE").ok();
+    let engine = Engine::new();
+    let (transcript, backend, returned_model) = engine
+        .transcribe(&cfg, samples, language.as_deref())
+        .await
+        .expect("whisper.cpp transcribes");
+    assert_eq!(backend, "whisper_cpp");
+    assert_eq!(returned_model, cfg.stt.whisper_cpp.model);
+    assert!(transcript.duration_secs > 0.0);
 }

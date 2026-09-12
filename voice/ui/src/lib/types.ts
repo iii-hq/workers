@@ -79,7 +79,7 @@ export interface TranscribeResponse {
   segments: Segment[]
   duration_secs: number
   model: string
-  backend: 'local' | 'openai' | 'router'
+  backend: 'local' | 'whisper_cpp' | 'openai' | 'router'
 }
 
 export type SpeakRequest = {
@@ -149,7 +149,7 @@ export interface ModelsRemoveResponse {
 
 export interface DoctorResponse {
   stt: {
-    backend: 'local' | 'openai' | 'router'
+    backend: 'local' | 'whisper_cpp' | 'openai' | 'router'
     model: string
     installed: boolean
     loaded: boolean
