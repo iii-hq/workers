@@ -6,6 +6,8 @@
 //! `harness::turn-completed` event its finalize emits. The `ParentLink` is
 //! kept for event filters and console nesting, not for result delivery.
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value};
 
 use crate::config::WorkerConfig;
@@ -18,6 +20,7 @@ use crate::policy;
 use crate::prompt;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
+use crate::types::model::ThinkingLevel;
 use crate::types::turn::{fs_scope_metadata, FunctionPolicy, ParentLink, TurnOptions, TurnRecord};
 
 /// The ids of a freshly-seeded child turn.
@@ -233,6 +236,25 @@ struct ChildFunctions {
     dispatch_only: Vec<String>,
 }
 
+/// The reasoning settings a child starts from: its own if the spawn named one,
+/// else the parent turn's.
+///
+/// A child already inherits the parent's model; inheriting the effort that goes
+/// with it is the same rule. The alternative is what the code did before: a
+/// spend-and-latency control set on the root silently stopped at the first
+/// spawn, while the tree does most of the work. `SpawnOptions` carries no
+/// provider options of its own, so the parent's are the only ones a child can
+/// have. A profile's own effort is applied after this, and still wins.
+fn child_reasoning(
+    requested: Option<ThinkingLevel>,
+    parent_record: Option<&TurnRecord>,
+) -> (Option<ThinkingLevel>, Option<BTreeMap<String, Value>>) {
+    (
+        requested.or_else(|| parent_record.and_then(|p| p.options.thinking_level)),
+        parent_record.and_then(|p| p.options.provider_options.clone()),
+    )
+}
+
 /// Seed a child session + turn and enqueue its first step. When
 /// `parent_record` is set the policy is subset against it, `max_turns` is
 /// capped at the parent's remaining budget, and linkage metadata is recorded.
@@ -339,8 +361,10 @@ async fn seed_child(
     // session that a later call can reuse around the fan-out budget.
     let task = normalize_message(req.task.clone())?;
     let (entry_id, origin) = (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })));
-    let mut thinking_level = req.options.as_ref().and_then(|o| o.thinking_level);
-    let mut provider_options = None;
+    let (mut thinking_level, mut provider_options) = child_reasoning(
+        req.options.as_ref().and_then(|o| o.thinking_level),
+        parent_record,
+    );
     if let Some(agent) = agent.as_ref() {
         agent.apply_reasoning(
             provider.as_deref(),
@@ -784,6 +808,43 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         }
+    }
+
+    #[test]
+    fn a_child_starts_from_its_parents_reasoning_unless_the_spawn_names_its_own() {
+        let mut parent = parent_record(None);
+        parent.options.thinking_level = Some(ThinkingLevel::Low);
+        parent.options.provider_options = Some(BTreeMap::from([(
+            "deepseek".to_string(),
+            json!({ "thinking": "disabled" }),
+        )]));
+
+        let (level, options) = child_reasoning(None, Some(&parent));
+        assert_eq!(
+            level,
+            Some(ThinkingLevel::Low),
+            "an in-turn spawn naming no effort continues the parent's"
+        );
+        assert_eq!(
+            options, parent.options.provider_options,
+            "and carries the parent's provider-native options with it"
+        );
+
+        assert_eq!(
+            child_reasoning(Some(ThinkingLevel::Xhigh), Some(&parent)).0,
+            Some(ThinkingLevel::Xhigh),
+            "an explicit spawn effort wins over the parent's"
+        );
+        assert_eq!(
+            child_reasoning(None, Some(&parent_record(None))),
+            (None, None),
+            "a parent that set nothing passes nothing down"
+        );
+        assert_eq!(
+            child_reasoning(None, None),
+            (None, None),
+            "a parentless spawn has nothing to inherit from"
+        );
     }
 
     #[test]
