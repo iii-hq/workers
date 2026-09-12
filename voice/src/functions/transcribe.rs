@@ -37,7 +37,7 @@ pub struct Response {
     pub segments: Vec<Segment>,
     pub duration_secs: f32,
     pub model: String,
-    /// `local`, `openai`, or `router`.
+    /// `local`, `whisper_cpp`, `openai`, or `router`.
     pub backend: String,
 }
 

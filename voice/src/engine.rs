@@ -673,6 +673,10 @@ impl Engine {
                 "the router engine is served by voice::transcribe, not the local engine"
                     .to_string(),
             ),
+            SttBackend::WhisperCpp => {
+                let transcript = crate::whisper_cpp::transcribe(cfg, &samples, language).await?;
+                Ok((transcript, "whisper_cpp", cfg.stt.whisper_cpp.model.clone()))
+            }
             SttBackend::Local => {
                 let loaded = self.ensure_loaded(cfg, None).await?;
                 let refiner = self.ensure_final_loaded(cfg, None).await?;

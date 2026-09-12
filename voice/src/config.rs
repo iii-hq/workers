@@ -7,8 +7,8 @@
 //!
 //! Speech-to-text runs locally by default: a small streaming model is
 //! downloaded on first use into `models_dir` and nothing leaves the machine.
-//! Pointing `stt.backend` at an OpenAI-compatible audio endpoint (a local
-//! whisper server or a hosted API) swaps the engine without touching callers.
+//! `stt.backend` can also invoke a local `whisper-cli` process directly, use an
+//! OpenAI-compatible audio endpoint, or route through llm-router.
 //! Read-aloud has no local engine in this release: it uses the host's own
 //! speech command or an OpenAI-compatible speech endpoint.
 
@@ -56,6 +56,8 @@ pub struct WorkerConfig {
 pub enum SttBackend {
     /// The bundled streaming recognizer with a model from `models_dir`.
     Local,
+    /// A local whisper.cpp `whisper-cli` process and GGML model.
+    WhisperCpp,
     /// An OpenAI-compatible `/v1/audio/transcriptions` endpoint.
     Openai,
     /// llm-router's `router::transcribe`: any speech provider registered
@@ -66,7 +68,7 @@ pub enum SttBackend {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SttConfig {
-    /// `local` (default), `openai`, or `router`.
+    /// `local` (default), `whisper_cpp`, `openai`, or `router`.
     #[serde(default = "default_stt_backend")]
     pub backend: SttBackend,
 
@@ -109,6 +111,10 @@ pub struct SttConfig {
     /// Settings for the `router` backend.
     #[serde(default)]
     pub router: RouterSttConfig,
+
+    /// Settings for the direct `whisper_cpp` backend.
+    #[serde(default)]
+    pub whisper_cpp: WhisperCppSttConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
@@ -144,6 +150,27 @@ pub struct OpenaiSttConfig {
     /// Language hint (ISO 639-1) sent with each request. Empty means detect.
     #[serde(default)]
     pub language: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WhisperCppSttConfig {
+    /// `whisper-cli` command name on PATH, or an explicit executable path.
+    #[serde(default = "default_whisper_cpp_command")]
+    pub command: String,
+
+    /// Multilingual whisper.cpp GGML model path. Relative paths resolve from
+    /// the Compose project directory.
+    #[serde(default = "default_whisper_cpp_model")]
+    pub model: String,
+
+    /// ISO 639-1 language code such as `pt`; empty or `auto` detects it.
+    #[serde(default = "default_whisper_cpp_language")]
+    pub language: String,
+
+    /// Maximum seconds allowed for one `whisper-cli` process.
+    #[serde(default = "default_whisper_cpp_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 /// Which read-aloud engine answers.
@@ -313,6 +340,22 @@ fn default_max_utterance_secs() -> f64 {
     20.0
 }
 
+fn default_whisper_cpp_command() -> String {
+    "whisper-cli".to_string()
+}
+
+fn default_whisper_cpp_model() -> String {
+    iii_worker_paths::default_path("data/voice/models/ggml-large-v3-turbo.bin")
+}
+
+fn default_whisper_cpp_language() -> String {
+    "auto".to_string()
+}
+
+fn default_whisper_cpp_timeout_secs() -> u64 {
+    300
+}
+
 fn default_openai_base_url() -> String {
     "https://api.openai.com/v1".to_string()
 }
@@ -362,6 +405,18 @@ impl Default for SttConfig {
             max_utterance_secs: default_max_utterance_secs(),
             openai: OpenaiSttConfig::default(),
             router: RouterSttConfig::default(),
+            whisper_cpp: WhisperCppSttConfig::default(),
+        }
+    }
+}
+
+impl Default for WhisperCppSttConfig {
+    fn default() -> Self {
+        Self {
+            command: default_whisper_cpp_command(),
+            model: default_whisper_cpp_model(),
+            language: default_whisper_cpp_language(),
+            timeout_secs: default_whisper_cpp_timeout_secs(),
         }
     }
 }
@@ -432,6 +487,17 @@ impl WorkerConfig {
         }
         if self.stt.num_threads == 0 {
             return Err("stt.num_threads must be at least 1".to_string());
+        }
+        if self.stt.backend == SttBackend::WhisperCpp {
+            if self.stt.whisper_cpp.command.trim().is_empty() {
+                return Err("stt.whisper_cpp.command must not be empty".to_string());
+            }
+            if self.stt.whisper_cpp.model.trim().is_empty() {
+                return Err("stt.whisper_cpp.model must not be empty".to_string());
+            }
+            if self.stt.whisper_cpp.timeout_secs == 0 {
+                return Err("stt.whisper_cpp.timeout_secs must be at least 1".to_string());
+            }
         }
         for (name, value) in [
             (
@@ -572,6 +638,25 @@ mod tests {
         .expect("parses");
         assert_eq!(cfg.stt.backend, SttBackend::Openai);
         assert_eq!(cfg.stt.openai.api_key, "secret");
+    }
+
+    #[test]
+    fn whisper_cpp_config_parses() {
+        let cfg = WorkerConfig::from_yaml(
+            "stt:\n  backend: whisper_cpp\n  whisper_cpp:\n    command: /usr/local/bin/whisper-cli\n    model: /models/ggml-large-v3.bin\n    language: pt\n    timeout_secs: 120\n",
+        )
+        .expect("parses");
+        assert_eq!(cfg.stt.backend, SttBackend::WhisperCpp);
+        assert_eq!(cfg.stt.whisper_cpp.language, "pt");
+    }
+
+    #[test]
+    fn whisper_cpp_requires_a_model() {
+        let err = WorkerConfig::from_json(&serde_json::json!({
+            "stt": { "backend": "whisper_cpp", "whisper_cpp": { "model": "" } }
+        }))
+        .unwrap_err();
+        assert!(err.contains("stt.whisper_cpp.model"), "{err}");
     }
 
     #[test]

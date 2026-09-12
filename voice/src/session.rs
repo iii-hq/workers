@@ -48,6 +48,7 @@ pub fn now_ms() -> i64 {
 /// the transcript.
 pub enum Refiner {
     Local(Arc<FinalLoaded>),
+    WhisperCpp(Arc<WorkerConfig>),
     Remote {
         iii: Arc<IIIClient>,
         cfg: Arc<WorkerConfig>,
@@ -67,6 +68,9 @@ impl Refiner {
                     .await
                     .map_err(|e| format!("second pass task failed: {e}"))
             }
+            Refiner::WhisperCpp(cfg) => crate::whisper_cpp::transcribe(cfg, &audio, None)
+                .await
+                .map(|transcript| transcript.text),
             Refiner::Remote { iii, cfg } => match cfg.stt.backend {
                 SttBackend::Router => crate::router::transcribe_within(
                     iii,
@@ -84,7 +88,7 @@ impl Refiner {
                 .await
                 .map_err(|_| "second pass timed out".to_string())?
                 .map(|transcript| transcript.text),
-                SttBackend::Local => Ok(String::new()),
+                SttBackend::Local | SttBackend::WhisperCpp => Ok(String::new()),
             },
         }
     }
@@ -92,11 +96,12 @@ impl Refiner {
     fn label(&self) -> String {
         match self {
             Refiner::Local(loaded) => loaded.key.model.clone(),
+            Refiner::WhisperCpp(cfg) => cfg.stt.whisper_cpp.model.clone(),
             Refiner::Remote { cfg, .. } => match cfg.stt.backend {
                 SttBackend::Router if cfg.stt.router.model.trim().is_empty() => "router".into(),
                 SttBackend::Router => cfg.stt.router.model.trim().to_string(),
                 SttBackend::Openai => cfg.stt.openai.model.clone(),
-                SttBackend::Local => String::new(),
+                SttBackend::Local | SttBackend::WhisperCpp => String::new(),
             },
         }
     }
@@ -331,6 +336,7 @@ impl Sessions {
                     None
                 }
             },
+            SttBackend::WhisperCpp => Some(Refiner::WhisperCpp(cfg.clone())),
             SttBackend::Router | SttBackend::Openai => Some(Refiner::Remote {
                 iii: self.iii.clone(),
                 cfg: cfg.clone(),

@@ -2,16 +2,15 @@
 
 Speak to the console. The voice worker turns microphone audio into text as
 you talk, transcribes recordings to timestamped segments, and reads replies
-aloud. Speech-to-text runs on the machine running the worker with a small
-streaming model it downloads once; nothing leaves the machine unless you point
-it at an OpenAI-compatible audio endpoint.
+aloud. Speech-to-text can use bundled English models or a host-installed
+`whisper.cpp` command and multilingual GGML model; nothing leaves the machine
+unless you select a remote backend.
 
-Recognition is two passes. A small streaming model produces the words as
-you speak and decides where utterances end; a large second-pass model
-(Parakeet TDT 0.6B v2) then re-decodes each finished utterance for the final
-text, with punctuation and casing and the accuracy of hosted dictation
-tools. The second pass downloads in the background the first time it is
-needed (about 660 MB); until it lands, the streaming text stands.
+Dictation is two passes. A small streaming model produces words as you speak
+and decides where utterances end. The final pass can use the bundled Parakeet
+TDT 0.6B v2 model, a local `whisper-cli` process, or a remote speech backend.
+The selected final pass re-decodes each finished utterance with punctuation and
+casing; until it answers, the streaming text remains visible.
 
 Three surfaces, one worker:
 
@@ -39,6 +38,30 @@ The first dictation or transcription downloads the streaming model (about
 well under a second; the second-pass model (about 660 MB, CC-BY-4.0) follows
 in the background. `voice::models::download id=parakeet-tdt-0.6b-v2` fetches
 it ahead of time.
+
+## Direct whisper.cpp
+
+Set `stt.backend` to `whisper_cpp` to invoke an existing `whisper-cli` binary
+without running an HTTP server. The worker writes a temporary 16 kHz mono WAV,
+asks the CLI for JSON, parses its timestamped segments, and removes the
+temporary files. The command is executed directly, never through a shell.
+
+```yaml
+stt:
+  backend: whisper_cpp
+  model: zipformer-en-20m       # live dictation preview and boundaries
+  num_threads: 4
+  whisper_cpp:
+    command: whisper-cli
+    model: /models/ggml-large-v3-turbo.bin
+    language: pt
+    timeout_secs: 300
+```
+
+Use a multilingual GGML model for Portuguese; `.en` models only recognize
+English. `voice::doctor` reports a missing command or model before the first
+transcription. The configured language is used unless a `voice::transcribe`
+request supplies its own `language` value.
 
 ## Quickstart
 
@@ -99,7 +122,7 @@ endpointing change reloads the recognizer on next use.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `models_dir` | `data/voice/models` | Where models live (relative to the project directory). |
-| `stt.backend` | `local` | `local` (bundled recognizer), `openai` (any `/v1/audio/transcriptions` server), or `router` (llm-router's `router::transcribe`, any registered speech provider). |
+| `stt.backend` | `local` | `local` (bundled recognizer), `whisper_cpp` (host `whisper-cli`), `openai` (any `/v1/audio/transcriptions` server), or `router` (any speech provider registered with llm-router). |
 | `stt.model` | `zipformer-en-20m` | Streaming model for live words and sentence boundaries: `zipformer-en-20m` (44 MB, fastest) or `zipformer-en-large` (73 MB, fewer misheard words in the preview). |
 | `stt.final_model` | `parakeet-tdt-0.6b-v2` | Second-pass model that re-decodes each utterance for the final text. Empty disables the second pass. |
 | `stt.num_threads` | `2` | Decoder threads. |
@@ -108,6 +131,9 @@ endpointing change reloads the recognizer on next use.
 | `stt.max_utterance_secs` | `20` | Longest utterance before a forced commit. |
 | `stt.openai.base_url`, `api_key`, `model`, `language` | OpenAI defaults | The remote transcription endpoint. `api_key` accepts `${OPENAI_API_KEY}`. |
 | `stt.router.model`, `language` | empty | Router model (`provider::model`) for `voice::transcribe` and for the second pass of every dictated sentence; empty lets the router pick. Keys live in the router's Settings, not here. |
+| `stt.whisper_cpp.command` | `whisper-cli` | Command on `PATH`, or an explicit executable path. |
+| `stt.whisper_cpp.model` | `data/voice/models/ggml-large-v3-turbo.bin` | Existing multilingual whisper.cpp GGML model; the worker does not download it. |
+| `stt.whisper_cpp.language`, `timeout_secs` | `auto`, `300` | ISO 639-1 language hint (`pt`) or detection, and the per-process timeout. |
 | `tts.backend` | `host` | `host` (`say` on macOS, `espeak-ng` on Linux), `openai` (`/v1/audio/speech`, audio returned to the caller), `router` (llm-router's `router::speak`, any registered speech provider, audio returned to the caller), or `off`. |
 | `tts.voice`, `tts.rate_wpm` | system default | Host voice and speaking rate. |
 | `tts.max_speak_chars` | `4000` | Longest text one `voice::speak` call reads. |
@@ -137,8 +163,8 @@ Triggers: `voice::transcript`, `voice::session-started`,
 
 ## Limits
 
-- The bundled model is English only; other languages need the `openai`
-  backend.
+- The bundled models are English only. Other languages require a multilingual
+  whisper.cpp model or a remote `openai`/`router` backend.
 - WAV is the only container decoded. Convert other formats first, for
   example `ffmpeg -i in.m4a -ac 1 -ar 16000 out.wav`.
 - Read-aloud on the `host` backend plays on the worker's machine. In a remote
@@ -150,7 +176,7 @@ Triggers: `voice::transcript`, `voice::session-started`,
 
 ## Licenses
 
-The worker is Apache-2.0. Everything it links, downloads or runs is listed with its license and source in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). In short: sherpa-onnx and its Kaldi-derived libraries are Apache-2.0, ONNX Runtime is MIT, KISS FFT is BSD-3-Clause; the streaming Zipformer model is Apache-2.0 and Parakeet TDT 0.6B v2 is NVIDIA's under CC BY 4.0, with the attribution text in the notices file. The build links the no-TTS archives and drops espeak-ng and its `ucd` tables (GPL-3.0), so no GPL code is in the binary; on Linux, read-aloud runs `espeak-ng` as a separate program when it is installed. Models are downloaded on the user's machine from Hugging Face on first use, and `voice::models::list` reports each model's license, author and source.
+The worker is Apache-2.0. Everything it links, downloads or runs as a configured child process is listed with its license and source in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). In short: sherpa-onnx and its Kaldi-derived libraries are Apache-2.0, ONNX Runtime is MIT, KISS FFT is BSD-3-Clause; the streaming Zipformer model is Apache-2.0 and Parakeet TDT 0.6B v2 is NVIDIA's under CC BY 4.0, with the attribution text in the notices file. The build links the no-TTS archives and drops espeak-ng and its `ucd` tables (GPL-3.0), so no GPL code is in the binary; on Linux, read-aloud runs `espeak-ng` as a separate program when it is installed. Models are downloaded on the user's machine from Hugging Face on first use, and `voice::models::list` reports each model's license, author and source.
 
 ## Development
 
