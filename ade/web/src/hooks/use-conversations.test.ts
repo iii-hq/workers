@@ -288,6 +288,7 @@ describe('mergeConversationMeta', () => {
     expect(next.updatedAt).toBe(4_000)
     expect(next.parentId).toBe('console-parent')
     expect(next.messages).toBe(existing.messages)
+    expect(next.hierarchyResolved).toBe(true)
     expect(next.hydrated).toBe(true)
   })
 
@@ -402,6 +403,7 @@ describe('mergeConversationMeta', () => {
 
     expect(next.parentId).toBe('console-parent')
     expect(next.parentFunctionCallId).toBe('call-spawn-1')
+    expect(next.hierarchyResolved).toBe(true)
   })
 
   it('retains raw harness metadata for subsequent whole-object writes', () => {

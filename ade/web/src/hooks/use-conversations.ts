@@ -179,6 +179,7 @@ function emptyConversation(
     status: 'idle',
     draft: true,
     hydrated: true,
+    hierarchyResolved: true,
     createdAt: now,
     updatedAt: now,
   }
@@ -655,6 +656,7 @@ function conversationFromMeta(
     serverMetadataUpdatedAt: meta.updated_at,
     serverStatusUpdatedAt: meta.updated_at,
     subagentAppearance: decodeSubagentAppearance(md.subagent_display),
+    hierarchyResolved: true,
     parentId:
       typeof md.parent_session_id === 'string'
         ? md.parent_session_id
@@ -907,6 +909,7 @@ export function mergeConversationMeta(
       subagentAppearance: existing.subagentAppearance,
       parentId: existing.parentId,
       parentFunctionCallId: existing.parentFunctionCallId,
+      hierarchyResolved: existing.hierarchyResolved,
       depth: existing.depth,
       spawnedBy: existing.spawnedBy,
       serverMetadataUpdatedAt: existing.serverMetadataUpdatedAt,
@@ -1720,6 +1723,7 @@ export function useConversations(
                     conversation.serverMetaUpdatedAt ?? -Infinity,
                     event.created_at,
                   ),
+                  hierarchyResolved: true,
                   serverMetadataUpdatedAt: Math.max(
                     conversation.serverMetadataUpdatedAt ?? -Infinity,
                     event.created_at,

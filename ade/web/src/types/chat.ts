@@ -532,6 +532,8 @@ export interface Conversation {
   /** Last authoritative lifecycle timestamp for unordered status events. */
   serverStatusUpdatedAt?: number
   messages: Message[]
+  /** Whether authoritative session metadata established root vs child. */
+  hierarchyResolved?: boolean
   /**
    * Spawn-parent session id, from the child session's
    * `SessionMeta.metadata.parent_session_id` (set by the harness on spawn).
