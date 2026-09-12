@@ -42,6 +42,7 @@ import {
 } from '@/lib/attachments/draft-attachments'
 import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
+import { ringForCompletionEvent } from '@/lib/completion-bell'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { errText, isFunctionNotFound } from '@/lib/errors'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
@@ -1779,11 +1780,13 @@ export function useConversations(
         onStatusChanged: (event) => {
           clearConversationMissing(event.session_id)
           missingSessionLookupGenerationRef.current.delete(event.session_id)
-          const known = conversationsRef.current.some(
-            (conversation) => conversation.id === event.session_id,
+          const conversation = conversationsRef.current.find(
+            (candidate) => candidate.id === event.session_id,
           )
-          patchConversation(event.session_id, (conversation) =>
-            applyConversationStatusEvent(conversation, event),
+          const known = conversation !== undefined
+          void ringForCompletionEvent(event, conversation)
+          patchConversation(event.session_id, (current) =>
+            applyConversationStatusEvent(current, event),
           )
           if (!known) {
             const requireWatched =

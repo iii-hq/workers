@@ -56,6 +56,7 @@ import {
   type UseWorkspaceTabsReturn,
   useWorkspaceTabs,
 } from '@/hooks/use-workspace-tabs'
+import { armCompletionBell } from '@/lib/completion-bell'
 import {
   ConversationsProvider,
   type InjectableUiRuntime,
@@ -197,6 +198,7 @@ export function App({
   injectableUiRuntime?: Promise<InjectableUiRuntime>
 }) {
   const [theme, setTheme] = useTheme()
+  useEffect(() => armCompletionBell(), [])
   const { setDirty: setSettingsDirty, tryNavigate: trySettingsNavigation } =
     useUnsavedGuard({ guardHashNavigation: true })
   const [view, setView] = useHashRoute()
