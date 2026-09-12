@@ -43,6 +43,7 @@ futures = "0.3"
 sha2 = "0.10"
 hound = "3"
 tempfile = "3"
+which = "8"
 
 [patch.crates-io]
 sherpa-onnx-sys = { path = "vendor/sherpa-onnx-sys" }

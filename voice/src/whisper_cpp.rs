@@ -24,14 +24,9 @@ pub fn command_path(command: &str) -> Option<PathBuf> {
     }
     let path = Path::new(command);
     if path.is_absolute() || path.components().count() > 1 {
-        let resolved = iii_worker_paths::resolve_path(command);
-        return resolved.is_file().then_some(resolved);
+        return which::which(iii_worker_paths::resolve_path(command)).ok();
     }
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|dir| dir.join(command))
-            .find(|candidate| candidate.is_file())
-    })
+    which::which(command).ok()
 }
 
 /// Resolve the configured model relative to the Compose project when needed.
@@ -232,5 +227,22 @@ mod tests {
         let error = parse_output(r#"{"result": {"language": "pt"}}"#, 1.0)
             .expect_err("missing transcription must fail");
         assert_eq!(error, "whisper.cpp output has no `transcription` array");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_path_rejects_a_regular_non_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let command = temp.path().join("whisper-cli");
+        std::fs::write(&command, b"not executable").expect("write command candidate");
+        let mut permissions = std::fs::metadata(&command)
+            .expect("command candidate metadata")
+            .permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(&command, permissions).expect("set non-executable mode");
+
+        assert_eq!(command_path(command.to_str().expect("UTF-8 path")), None);
     }
 }

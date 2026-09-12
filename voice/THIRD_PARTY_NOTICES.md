@@ -41,7 +41,7 @@ Read-aloud with the `host` engine and transcription with the `whisper_cpp` engin
 | --- | --- | --- |
 | `say` (macOS) | Part of macOS | Used through its command line |
 | `espeak-ng` (Linux) | GPL-3.0-or-later | Only used when the user has installed it; invoked as a separate program, never linked, so its license does not extend to the worker |
-| `whisper-cli` (whisper.cpp) | MIT | Optional speech-to-text process supplied by the user; its GGML model is also user-supplied and keeps its own license |
+| Documented `whisper-cli` integration (whisper.cpp) | MIT | Optional speech-to-text process supplied by the user. Custom command replacements and GGML models require separate license review. |
 
 ## Optional network services
 
