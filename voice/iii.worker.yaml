@@ -7,6 +7,14 @@ license: Apache-2.0
 bin: voice
 tags: [voice, speech, dictation, transcription, stt, tts, audio]
 description: Speak to the console — bundled streaming speech-to-text for live dictation, optional host whisper.cpp for final-pass and file transcription, read-aloud, and remote speech providers, with a mic chip and a voice page.
+
+runtime:
+  kind: rust
+
+# How Compose starts this worker from a source checkout.
+scripts:
+  install: cargo build
+  start: cargo run --bin voice
 dependencies:
   configuration: "0.x"
 
