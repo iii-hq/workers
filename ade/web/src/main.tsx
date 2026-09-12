@@ -9,6 +9,7 @@ import { TooltipProvider } from '@/components/ui/Tooltip'
 import { buildConsoleApi } from '@/lib/console-api'
 import { installRandomUUIDPolyfill } from '@/lib/crypto-polyfill'
 import { getIiiClient } from '@/lib/iii-client'
+import { registerServiceWorker } from '@/lib/register-service-worker'
 import { setUiAssetsStatus } from '@/lib/ui-slots'
 import { App } from './App'
 import faviconUrl from './icons/favicon.svg?url'
@@ -61,6 +62,8 @@ favicon.rel = 'icon'
 favicon.type = 'image/svg+xml'
 favicon.href = faviconUrl
 if (!favicon.isConnected) document.head.appendChild(favicon)
+
+registerServiceWorker()
 
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root container')

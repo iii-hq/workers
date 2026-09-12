@@ -1,6 +1,6 @@
-//! HTTP server: routes `/`, `/assets/*`, `/ws` (WebSocket proxy), and —
-//! when injectable UI is enabled — `/ui`, `/ui/*`, and `/vendor/*`.
-//!
+//! HTTP server: routes `/`, the installable-PWA resources, `/assets/*`,
+//! `/ws`, and — when injectable UI is enabled — `/ui`, `/ui/*`, and
+//! `/vendor/*`.
 //! Binds `<http_host>:<http_port>` — loopback unless the operator opts into
 //! `0.0.0.0` (`http_host` in the seed config or `--http-host`), the same
 //! default as the `http` and `rbac-proxy` workers. Front it with a reverse
@@ -109,6 +109,9 @@ impl FromRef<AppState> for proxy::ProxyConfig {
 pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/", get(assets::index_handler))
+        .route("/manifest.webmanifest", get(assets::manifest_handler))
+        .route("/sw.js", get(assets::service_worker_handler))
+        .route("/icons/*path", get(assets::icon_handler))
         .route("/assets/*path", get(assets::asset_handler))
         .route("/runtime", get(runtime_handler))
         .route("/ws", get(proxy::ws_proxy));
@@ -417,6 +420,57 @@ mod tests {
         assert_eq!(v["disabled"], serde_json::json!(false));
         assert_eq!(v["assets"][0]["path"], "state/page.js");
         assert_eq!(v["assets"][0]["kind"], "script");
+    }
+
+    #[tokio::test]
+    async fn pwa_assets_have_installable_types_and_safe_cache_headers() {
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
+
+        let manifest = get_response(router(state.clone()), "/manifest.webmanifest", &[]).await;
+        assert_eq!(manifest.status(), StatusCode::OK);
+        assert_eq!(
+            manifest.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/manifest+json"
+        );
+        assert_eq!(
+            manifest.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache, must-revalidate"
+        );
+
+        let service_worker = get_response(router(state.clone()), "/sw.js", &[]).await;
+        assert_eq!(service_worker.status(), StatusCode::OK);
+        assert!(service_worker
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript"));
+        assert_eq!(
+            service_worker.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache, must-revalidate"
+        );
+        assert_eq!(
+            service_worker
+                .headers()
+                .get("service-worker-allowed")
+                .unwrap(),
+            "./"
+        );
+
+        let icon = get_response(router(state), "/icons/icon-192.png", &[]).await;
+        assert_eq!(icon.status(), StatusCode::OK);
+        assert_eq!(
+            icon.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert!(icon
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("immutable"));
     }
 
     #[tokio::test]

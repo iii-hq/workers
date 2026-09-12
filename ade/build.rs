@@ -31,6 +31,7 @@ fn ensure_web_bundle() {
     // listing it would create a dependency cycle (touching dist forces a
     // rebuild that touches dist again).
     println!("cargo:rerun-if-changed=web/src");
+    println!("cargo:rerun-if-changed=web/public");
     println!("cargo:rerun-if-changed=web/index.html");
     println!("cargo:rerun-if-changed=web/package.json");
     println!("cargo:rerun-if-changed=web/pnpm-lock.yaml");
