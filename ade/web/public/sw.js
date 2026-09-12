@@ -83,7 +83,11 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          if (response.ok) {
+          if (
+            response.ok &&
+            url.href === shellUrl &&
+            response.url === shellUrl
+          ) {
             const copy = response.clone()
             event.waitUntil(
               caches.open(cacheName).then((cache) => cache.put(shellUrl, copy)),

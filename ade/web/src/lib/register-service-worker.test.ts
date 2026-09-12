@@ -28,4 +28,14 @@ describe('service worker registration', () => {
     expect(worker).toContain('html.matchAll')
     expect(worker).toContain('cache.addAll')
   })
+
+  it('refreshes the offline shell only from an exact shell navigation', () => {
+    const worker = readFileSync(
+      new URL('../../public/sw.js', import.meta.url),
+      'utf8',
+    )
+    expect(worker).toMatch(
+      /response\.ok\s*&&\s*url\.href === shellUrl\s*&&\s*response\.url === shellUrl/,
+    )
+  })
 })
