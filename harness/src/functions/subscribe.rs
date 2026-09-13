@@ -604,10 +604,8 @@ async fn handle(
     // absolute deadline on every retry and defeat the dedup.
     let dedup = registration_dedup_key(&req, once);
     resolve_timer_request(&mut req)?;
-    let expires_at = resolved_expires_at(
-        req.lifecycle.as_ref(),
-        crate::types::message::AgentMessage::now_ms(),
-    );
+    let now_ms = crate::types::message::AgentMessage::now_ms();
+    let expires_at = resolved_expires_at(req.lifecycle.as_ref(), now_ms);
 
     reject_leaf_control_plane(
         policy,
@@ -615,9 +613,13 @@ async fn handle(
             .as_ref()
             .map(|t| t.function_id.as_str())
             .or(req.function_id.as_deref()),
-        once,
-        expires_at,
     )?;
+    let expires_at = leaf_wake_deadline(
+        policy,
+        expires_at,
+        now_ms,
+        deps.cfg().await.default_pending_timeout_ms,
+    );
     let target = resolve_target(deps, &req, session_id, policy).await?;
     authorize_conditions(deps, &req.conditions, session_id, policy).await?;
 
@@ -780,30 +782,51 @@ fn reject_forbidden_type(trigger_type: &str) -> Result<(), HarnessError> {
 /// the assignment, and cannot be cleaned up by a leaf, whose
 /// `engine::unregister_trigger` stays walled off.
 ///
-/// Self-limiting means `once: true` or an explicit `lifecycle.expires_in_ms`.
-/// Without one, a leaf could arm a permanent wake into a session that ends
-/// minutes later and nobody left alive could retract it.
+/// The deadline half lives in [`leaf_wake_deadline`]: a leaf's wake is stamped
+/// rather than refused, because a leaf with no way to wait is the problem this
+/// set out to fix.
 fn reject_leaf_control_plane(
     policy: &CompiledPolicy,
     explicit_target: Option<&str>,
-    once: bool,
-    expires_at: Option<i64>,
 ) -> Result<(), HarnessError> {
     if !crate::policy::is_leaf(policy) {
         return Ok(());
     }
     if let Some(target) = explicit_target {
         return Err(HarnessError::InvalidRequest(format!(
-            "a sub-agent cannot bind a mechanical call to `{target}`: that installs durable              machinery it does not own and cannot unregister. Omit `function_id` to register a              wake for your own session instead — the fire comes back to you as a message and you              make the call yourself."
+            "a sub-agent cannot bind a mechanical call to `{target}`: that installs durable \
+             machinery it does not own and cannot unregister. Omit `function_id` to register a \
+             wake for your own session instead — the fire comes back to you as a message and you \
+             make the call yourself."
         )));
     }
-    if !once && expires_at.is_none() {
-        return Err(HarnessError::InvalidRequest(
-            "a sub-agent's wake must be self-limiting: pass `once: true`, or a              `lifecycle.expires_in_ms` deadline. A sub-agent cannot unregister a binding, so an              open-ended one would outlive the session that armed it."
-                .into(),
-        ));
-    }
     Ok(())
+}
+
+/// Give a leaf's wake a deadline when it asked for none.
+///
+/// `once: true` is NOT one. It caps how many times a binding may fire, not how
+/// long it waits, so a `once` wake that never fires is exactly as eternal as an
+/// open-ended one — and a leaf cannot unregister it. A child that armed two
+/// `once` compose-operation wakes and ended its turn hung forever, and because
+/// an incomplete child keeps `tree_complete` false it hung the whole run with
+/// it: 15 idle minutes and a RESOURCE LIMIT on a run whose work was done
+/// (MOT-4766).
+///
+/// A root keeps whatever it asked for — it can unregister, and whoever drives
+/// it has its own timeout. The leaf's cap is the harness's existing patience
+/// for pending work, so its wake can never outlive that.
+fn leaf_wake_deadline(
+    policy: &CompiledPolicy,
+    requested: Option<i64>,
+    now_ms: i64,
+    pending_timeout_ms: u64,
+) -> Option<i64> {
+    if !crate::policy::is_leaf(policy) {
+        return requested;
+    }
+    let cap = now_ms.saturating_add(pending_timeout_ms as i64);
+    Some(requested.map_or(cap, |asked| asked.min(cap)))
 }
 
 /// Resolve and VALIDATE the target a registration asks for. Two shapes
@@ -2028,35 +2051,51 @@ mod tests {
 
     // The half a leaf keeps: park on your own work instead of polling for it.
     #[test]
-    fn a_leaf_may_arm_a_self_limiting_wake() {
-        let leaf = leaf_policy();
-        assert!(reject_leaf_control_plane(&leaf, None, true, None).is_ok());
-        assert!(reject_leaf_control_plane(&leaf, None, false, Some(1_000)).is_ok());
+    fn a_leaf_may_arm_a_wake_for_itself() {
+        assert!(reject_leaf_control_plane(&leaf_policy(), None).is_ok());
     }
 
     // The half it does not: durable machinery pointed at someone else's
     // function, which it could not unregister afterwards.
     #[test]
-    fn a_leaf_may_not_bind_a_mechanical_call_or_an_open_ended_wake() {
-        let leaf = leaf_policy();
-        let err = reject_leaf_control_plane(&leaf, Some("database::execute"), true, None)
+    fn a_leaf_may_not_bind_a_mechanical_call() {
+        let err = reject_leaf_control_plane(&leaf_policy(), Some("database::execute"))
             .expect_err("a mechanical call is control plane");
         let text = format!("{err:?}");
         assert!(text.contains("database::execute"), "{text}");
         assert!(text.contains("Omit `function_id`"), "{text}");
-
-        let err = reject_leaf_control_plane(&leaf, None, false, None)
-            .expect_err("an open-ended wake outlives the leaf");
-        assert!(format!("{err:?}").contains("self-limiting"));
+        // A root (or an explicit orchestrator child) keeps both shapes.
+        assert!(
+            reject_leaf_control_plane(&policy_allowing(&["*"]), Some("database::execute")).is_ok()
+        );
     }
 
-    // A root (or an explicit orchestrator child) is unaffected: both shapes
-    // and an open-ended binding stay available.
+    // `once: true` caps fires, not time: the run-30 hang was two `once`
+    // compose-operation wakes that never fired, on a child that cannot
+    // unregister. Every leaf wake gets a deadline whether it asked or not.
     #[test]
-    fn a_non_leaf_keeps_both_binding_shapes() {
+    fn a_leaf_wake_always_carries_a_deadline() {
+        let leaf = leaf_policy();
+        let now = 1_000_000;
+        let cap = now + 1_800_000;
+
+        assert_eq!(leaf_wake_deadline(&leaf, None, now, 1_800_000), Some(cap));
+        // A shorter request is honoured; a longer one is capped.
+        assert_eq!(
+            leaf_wake_deadline(&leaf, Some(now + 5_000), now, 1_800_000),
+            Some(now + 5_000)
+        );
+        assert_eq!(
+            leaf_wake_deadline(&leaf, Some(now + 9_000_000), now, 1_800_000),
+            Some(cap)
+        );
+        // A root is left exactly as it asked, open-ended included.
         let root = policy_allowing(&["*"]);
-        assert!(reject_leaf_control_plane(&root, Some("database::execute"), false, None).is_ok());
-        assert!(reject_leaf_control_plane(&root, None, false, None).is_ok());
+        assert_eq!(leaf_wake_deadline(&root, None, now, 1_800_000), None);
+        assert_eq!(
+            leaf_wake_deadline(&root, Some(now + 9_000_000), now, 1_800_000),
+            Some(now + 9_000_000)
+        );
     }
 
     #[test]
