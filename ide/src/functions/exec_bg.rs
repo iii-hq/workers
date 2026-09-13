@@ -292,8 +292,12 @@ pub(crate) async fn spawn_host_job(
         if h.record.finished_at_ms.is_none() {
             h.record.finished_at_ms = Some(jobs::now_ms());
         }
+        let finished = h.record.clone();
         drop(h);
         jobs::unregister_kill_signal(&id_clone);
+        // Announce AFTER the lock is released: a slow subscriber must never
+        // hold up the job that woke it, or the next job's finalize.
+        crate::job_events::fire(&finished).await;
     });
 
     Ok(ExecBgResponse { job_id: id, argv })
@@ -440,6 +444,9 @@ pub(crate) async fn spawn_sandbox_job(
         if !already_killed {
             h.record.finished_at_ms = Some(jobs::now_ms());
         }
+        let finished = h.record.clone();
+        drop(h);
+        crate::job_events::fire(&finished).await;
     });
 
     Ok(ExecBgResponse { job_id: id, argv })

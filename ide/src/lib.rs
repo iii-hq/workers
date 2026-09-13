@@ -11,6 +11,7 @@ pub mod exec_dispatch;
 pub mod filesystem_access;
 pub mod fs;
 pub mod functions;
+pub mod job_events;
 pub mod jobs;
 pub mod path;
 pub mod pty;

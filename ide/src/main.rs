@@ -15,6 +15,7 @@ mod exec_dispatch;
 mod filesystem_access;
 mod fs;
 mod functions;
+mod job_events;
 mod jobs;
 mod path;
 mod pty;
@@ -422,6 +423,10 @@ async fn main() -> Result<()> {
     // shell::changed trigger type — subscribers name the directory in their
     // binding config.
     events::register_changed_trigger(&iii, watch_resolver.clone());
+
+    // The background-job completion feed: subscribers name a job_id in their
+    // binding config and are woken once, instead of polling shell::status.
+    job_events::register_job_finished_trigger(&iii);
 
     // Durable per-session change history: harness hooks on shell/coder
     // writes, read back by shell::turns::list / shell::turns::get.

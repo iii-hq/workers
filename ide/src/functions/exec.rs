@@ -53,20 +53,74 @@ pub async fn handle(
     overrides.stdin = req.stdin;
 
     let timeout = cfg.resolve_timeout(req.timeout_ms);
+    // `resolve_timeout` clamps a longer request down silently. Remember what
+    // was asked for so a kill can say why it happened (see `timeout_note`).
+    let requested = req.timeout_ms;
 
     let backend = pick_exec_backend(req.target, cfg, iii);
 
-    let out = backend
+    let mut out = backend
         .run(&argv, timeout, &overrides)
         .await
         .map_err(iii_sdk::errors::Error::from)?;
 
+    if out.timed_out {
+        let note = timeout_note(requested, timeout);
+        // Append; never discard what the command printed before it was killed.
+        if out.stderr.is_empty() {
+            out.stderr = note;
+        } else {
+            out.stderr.push('\n');
+            out.stderr.push_str(&note);
+        }
+    }
+
     Ok(ExecResponse::from(out))
+}
+
+/// Why the command was killed, and what to reach for instead.
+///
+/// A caller that asked for 60s and was clamped to 30s otherwise gets a bare
+/// `timed_out: true` at 30s and no hint that its own number was ignored — so
+/// it asks again with the same number. Five such retries inside one chapter
+/// of `linkly_tutorial` were what surfaced MOT-4766.
+fn timeout_note(requested: Option<u64>, effective: u64) -> String {
+    let cause = match requested {
+        Some(requested) if requested > effective => format!(
+            "shell::exec is capped at {effective}ms and the requested {requested}ms was clamped to it;              the command was killed at the cap"
+        ),
+        _ => format!("shell::exec exceeded its {effective}ms timeout and the command was killed"),
+    };
+    format!(
+        "{cause}. For work that runs longer, start it with shell::exec_bg and bind the          shell::job-finished trigger to that job_id to be woken when it ends, instead of          waiting or re-running it."
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::timeout_note;
     use crate::target::Target;
+
+    // The clamp is the part a caller cannot see: it asked for 60s, the cap is
+    // 30s, and without this the kill looks like the command's own fault.
+    #[test]
+    fn the_note_names_the_clamp_and_points_at_the_background_path() {
+        let clamped = timeout_note(Some(60_000), 30_000);
+        assert!(clamped.contains("60000ms was clamped"), "{clamped}");
+        assert!(clamped.contains("capped at 30000ms"), "{clamped}");
+        assert!(clamped.contains("shell::exec_bg"), "{clamped}");
+        assert!(clamped.contains("shell::job-finished"), "{clamped}");
+
+        // Asking for exactly the cap, or not asking at all, is an honest
+        // timeout — do not accuse the runtime of clamping.
+        for note in [
+            timeout_note(Some(30_000), 30_000),
+            timeout_note(None, 10_000),
+        ] {
+            assert!(!note.contains("clamped"), "{note}");
+            assert!(note.contains("shell::exec_bg"), "{note}");
+        }
+    }
     use serde_json::{json, Value};
 
     #[test]
