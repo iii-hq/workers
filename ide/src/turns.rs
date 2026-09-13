@@ -177,11 +177,17 @@ pub struct TurnSnapshot {
     /// The tree when the turn started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<String>,
-    /// The tree when the turn ended. Absent while it runs, and dropped
-    /// again when a write lands after it was taken (a sub-agent still at
-    /// work): the working copy is the after side then.
+    /// When `before` was taken, unix ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_at: Option<u64>,
+    /// The tree when the turn ended; absent while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<String>,
+    /// When `after` was taken. A file the turn was still gaining after
+    /// that (a sub-agent at work past its parent's end) is not in the
+    /// tree; its after side is the working copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
@@ -205,7 +211,11 @@ pub struct HookResult {
     pub is_error: bool,
 }
 
-/// The part of the harness hook envelope this module reads.
+/// The part of the harness hook envelope this module reads. One shape
+/// serves every hook point: `call` and `result` are the trigger hooks'
+/// (`result` as `{ is_error }`), while the `post_turn` envelope puts the
+/// turn's own result under `result`, whatever JSON that is, so that field
+/// is read leniently rather than typed.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HookInput {
     #[serde(default)]
@@ -216,8 +226,23 @@ pub struct HookInput {
     pub session_id: Option<String>,
     #[serde(default)]
     pub turn_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_hook_result")]
     pub result: Option<HookResult>,
+}
+
+/// `{ is_error: true }` reads as a failed call; any other JSON, including
+/// the `post_turn` envelope's turn result, reads as not failed.
+fn lenient_hook_result<'de, D>(deserializer: D) -> Result<Option<HookResult>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.map(|value| HookResult {
+        is_error: value
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }))
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -569,11 +594,6 @@ async fn read_revision(path: &str) -> Option<String> {
 /// wins (it is the true "before" for the turn), kinds compose (`created` then
 /// `modified` stays `created`; anything then `deleted` is `deleted`).
 pub fn record_file(turn: &mut TurnRecord, change: FileRecord) {
-    // A hooked write landing after the turn ended (a sub-agent's) is not
-    // in the after tree.
-    if turn.ended_at.is_some() {
-        drop_after(turn);
-    }
     if let Some(existing) = turn.files.iter_mut().find(|f| f.path == change.path) {
         existing.last_seen = change.last_seen;
         existing.cause = change.cause;
@@ -613,11 +633,6 @@ pub fn record_observed(
     at: u64,
     agent: Option<AgentRef>,
 ) {
-    // The turn's own last burst predates its after tree; a child's write
-    // after the turn ended does not.
-    if turn.ended_at.is_some() && agent.is_some() {
-        drop_after(turn);
-    }
     if let Some(existing) = turn.files.iter_mut().find(|f| f.path == path) {
         existing.last_seen = at;
         existing.kind = match (existing.kind.as_str(), kind) {
@@ -644,13 +659,6 @@ pub fn record_observed(
         agent,
         after: None,
     });
-}
-
-/// The after tree no longer describes the end of the turn.
-fn drop_after(turn: &mut TurnRecord) {
-    if let Some(snapshot) = turn.snapshot.as_mut() {
-        snapshot.after = None;
-    }
 }
 
 /// A tree body as the image `shell::turns::get` returns, charged to the
@@ -1152,7 +1160,12 @@ impl TurnLog {
 
     /// The sides of every file under the snapshot root, from the trees.
     /// The after tree is the turn's own, else the next later turn's before
-    /// on the same root; with neither, the working copy stands.
+    /// on the same root; with neither, the working copy stands. A tree
+    /// describes the root at the instant it was taken: a file the turn
+    /// was still gaining after that (a sub-agent at work past its
+    /// parent's end) is not in it, and a file the record says exists but
+    /// the tree lacks is outside what a photo sees, so those two keep the
+    /// working copy as their after side.
     async fn inflate_from_trees(
         &self,
         later: &[&TurnRecord],
@@ -1162,14 +1175,23 @@ impl TurnLog {
         let Some(snapshot) = turn.snapshot.clone() else {
             return;
         };
-        let after = snapshot.after.clone().or_else(|| {
-            later.iter().find_map(|next| {
-                next.snapshot
-                    .as_ref()
-                    .filter(|candidate| candidate.root == snapshot.root)
-                    .and_then(|candidate| candidate.before.clone())
-            })
-        });
+        let (after, after_at) = match &snapshot.after {
+            Some(tree) => (Some(tree.clone()), snapshot.after_at),
+            None => later
+                .iter()
+                .find_map(|next| {
+                    let candidate = next.snapshot.as_ref()?;
+                    if candidate.root != snapshot.root {
+                        return None;
+                    }
+                    let tree = candidate.before.clone()?;
+                    Some((
+                        Some(tree),
+                        Some(candidate.before_at.unwrap_or(next.started_at)),
+                    ))
+                })
+                .unwrap_or((None, None)),
+        };
         let Some(repo) = SnapshotRepo::open(
             &self.repos_dir(),
             Path::new(&snapshot.root),
@@ -1202,10 +1224,26 @@ impl TurnLog {
                 let Some(body) = bodies.get(rel) else {
                     continue;
                 };
-                let image = image_from_body(body, budget);
                 let file = &mut turn.files[*index];
+                if side == Side::After {
+                    let stale = after_at.is_some_and(|at| file.last_seen > at);
+                    let contradicts = matches!(body, Body::Missing) && file.kind != "deleted";
+                    if stale || contradicts {
+                        continue;
+                    }
+                }
+                let image = image_from_body(body, budget);
                 match side {
-                    Side::Before => file.before = Some(image),
+                    Side::Before => {
+                        // The tree knows whether the path existed; the
+                        // watcher only guessed from the events it saw.
+                        if image.missing && file.kind == "modified" {
+                            file.kind = "created".to_string();
+                        } else if !image.missing && file.kind == "created" {
+                            file.kind = "modified".to_string();
+                        }
+                        file.before = Some(image);
+                    }
                     Side::After => file.after = Some(image),
                 }
             }
@@ -1347,6 +1385,7 @@ impl TurnLog {
             return;
         };
         let stem = session_file_stem(&target.session_id);
+        let taken_at = now_ms();
         let tree = match repo.snapshot(&stem).await {
             Ok(tree) => tree,
             Err(e) => {
@@ -1369,7 +1408,9 @@ impl TurnLog {
                 let snapshot = turn.snapshot.get_or_insert_with(|| TurnSnapshot {
                     root: canonical_root.clone(),
                     before: None,
+                    before_at: None,
                     after: None,
+                    after_at: None,
                 });
                 if snapshot.root != canonical_root {
                     // The session moved roots mid-turn: trees of another
@@ -1377,12 +1418,20 @@ impl TurnLog {
                     *snapshot = TurnSnapshot {
                         root: canonical_root,
                         before: None,
+                        before_at: None,
                         after: None,
+                        after_at: None,
                     };
                 }
                 match side {
-                    Side::Before => snapshot.before = Some(tree),
-                    Side::After => snapshot.after = Some(tree),
+                    Side::Before => {
+                        snapshot.before = Some(tree);
+                        snapshot.before_at = Some(taken_at);
+                    }
+                    Side::After => {
+                        snapshot.after = Some(tree);
+                        snapshot.after_at = Some(taken_at);
+                    }
                 }
             })
             .await;
@@ -2098,21 +2147,24 @@ pub fn revert_step(file: &FileRecord) -> RevertStep {
             overwritten: stored_revision,
         };
     }
+    // A body kept from before the turn is the undo, whatever the watcher
+    // called the change: FSEvents reports a truncating write to an
+    // existing file as a creation, and removing it would lose the file.
+    if let Some(revision) = stored_revision {
+        return RevertStep::Restore { revision };
+    }
     match file.kind.as_str() {
-        "created" => RevertStep::Remove,
         "deleted" if missing_before => RevertStep::Skip,
         // The path did not exist before the turn, whatever the watcher
         // called the change.
+        "created" => RevertStep::Remove,
         _ if missing_before => RevertStep::Remove,
-        _ => match stored_revision {
-            Some(revision) => RevertStep::Restore { revision },
-            None if file.before.is_none() => RevertStep::Unavailable(
-                "no pre-image was recorded for this change (observed through the watcher)",
-            ),
-            None => RevertStep::Unavailable(
-                "the pre-image body is not in the store (too large, binary, or pruned)",
-            ),
-        },
+        _ if file.before.is_none() => RevertStep::Unavailable(
+            "no pre-image was recorded for this change (observed through the watcher)",
+        ),
+        _ => RevertStep::Unavailable(
+            "the pre-image body is not in the store (too large, binary, or pruned)",
+        ),
     }
 }
 
@@ -2543,6 +2595,41 @@ mod tests {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
+    /// The `post_turn` envelope carries the turn's result under `result`,
+    /// whatever JSON the turn produced; a hook input that only accepts the
+    /// `{ is_error }` shape of a call result rejects the whole envelope,
+    /// and the harness skips the hook fail-open: no after tree, ever.
+    #[test]
+    fn turn_hook_envelopes_deserialize_whatever_result_they_carry() {
+        for result in [
+            json!("the assistant's closing text"),
+            json!(["a", "list"]),
+            json!(42),
+            json!({ "summary": "an object without is_error" }),
+        ] {
+            let input: HookInput = serde_json::from_value(json!({
+                "point": "post_turn",
+                "session_id": "s1",
+                "turn_id": "t1",
+                "step": 3,
+                "depth": 0,
+                "metadata": { "fs_scope": { "root": "/w" } },
+                "result": result,
+            }))
+            .unwrap_or_else(|e| panic!("post_turn envelope with result {result}: {e}"));
+            assert_eq!(input.turn_id.as_deref(), Some("t1"));
+            assert!(!input.result.unwrap_or_default().is_error);
+        }
+        let failed: HookInput = serde_json::from_value(json!({
+            "point": "post_trigger",
+            "session_id": "s1",
+            "turn_id": "t1",
+            "result": { "function_call_id": "c1", "is_error": true },
+        }))
+        .unwrap();
+        assert!(failed.result.unwrap().is_error);
+    }
+
     #[tokio::test]
     async fn tree_snapshots_give_exact_sides_to_writes_the_hooks_never_saw() {
         let dir = tempfile::tempdir().unwrap();
@@ -2576,18 +2663,33 @@ mod tests {
             "t1",
             &root_s,
             vec![
-                (a.to_string_lossy().into_owned(), "modified"),
+                // FSEvents calls a truncating write to an existing file a
+                // creation; the tree knows better.
+                (a.to_string_lossy().into_owned(), "created"),
                 (born.to_string_lossy().into_owned(), "created"),
             ],
         )
         .await;
         log.on_post_turn(turn_hook("s1", "t1", &root_s)).await;
+        // A sub-agent still at work after the parent's after photo: its
+        // file is credited to the turn but is not in the tree.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let late = root.join("late.txt");
+        std::fs::write(&late, "late\n").unwrap();
+        log.fold_observed(
+            "s1",
+            "t1",
+            &root_s,
+            vec![(late.to_string_lossy().into_owned(), "created")],
+        )
+        .await;
         log.on_turn_completed("s1", "t1").await.unwrap();
 
         let record = log.load("s1").await.unwrap();
         let turn = record.turns[0].clone();
         let snapshot = turn.snapshot.as_ref().expect("trees kept");
         assert!(snapshot.before.is_some() && snapshot.after.is_some());
+        assert!(snapshot.before_at.unwrap() <= snapshot.after_at.unwrap());
         let inflated = log.inflate(&record, turn).await;
         let side = |path: &Path, after: bool| -> PreImage {
             let file = inflated
@@ -2601,14 +2703,34 @@ mod tests {
         };
         assert_eq!(side(&a, false).content.as_deref(), Some("v1\n"));
         assert_eq!(side(&a, true).content.as_deref(), Some("v2\n"));
+        assert_eq!(
+            inflated
+                .files
+                .iter()
+                .find(|file| file.path == a.to_string_lossy())
+                .unwrap()
+                .kind,
+            "modified"
+        );
         assert!(side(&born, false).missing);
         assert_eq!(side(&born, true).content.as_deref(), Some("born\n"));
+        let late_record = inflated
+            .files
+            .iter()
+            .find(|file| file.path == late.to_string_lossy())
+            .unwrap();
+        assert!(late_record.before.as_ref().unwrap().missing);
+        assert!(
+            late_record.after.is_none(),
+            "the working copy is the after side of a late write"
+        );
 
         // The revert reads the same tree: the hand-made patch is undone too.
         let out = log.revert("s1", "t1", None, &|_| Ok(())).await.unwrap();
         assert_eq!(out.failed, 0, "{:?}", out.results);
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "v1\n");
         assert!(!born.exists());
+        assert!(!late.exists());
 
         // The developer's repository was only read: a clean status, no refs.
         assert_eq!(
