@@ -22,13 +22,34 @@ pub const SUBMIT_RESULT_NAME: &str = "submit_result";
 /// [`subset_policy`], so a leaf's own children stay leaves
 /// whatever they request. Enforcement is the ordinary dispatch gates — the
 /// same fail-closed globs every call already passes through.
-pub const CONTROL_PLANE_DENY: [&str; 5] = [
+///
+/// `engine::register_trigger` is deliberately NOT here. Walling it off left a
+/// leaf with no way to wait at all: it could not park on its own background
+/// job or its own compose operation, so an obedient child polled, and a
+/// resourceful one ran `shell::exec sleep` (MOT-4766 — 9 denied registrations
+/// and 176s of sleeping in one measured run). Arming a wake for your own
+/// session is the leaf's own work, not the control plane. The control-plane
+/// half of that function — a binding that mechanically calls some OTHER
+/// function — stays refused for leaves, by shape, in
+/// `functions::subscribe::reject_leaf_control_plane`. Unregistration stays
+/// walled off because it can reach another session's bindings; a leaf's wake
+/// is required to be self-limiting instead.
+pub const CONTROL_PLANE_DENY: [&str; 4] = [
     "harness::spawn",
     "harness::send",
-    "engine::register_trigger",
     "engine::unregister_trigger",
     "engine::registered-triggers::*",
 ];
+
+/// Whether a dispatch policy belongs to a leaf — a session that performs an
+/// assignment rather than running the control plane.
+///
+/// The spawn wall IS the marker: [`CONTROL_PLANE_DENY`] takes `harness::spawn`
+/// away from every non-orchestrator child and nothing gives it back, so no
+/// call site needs lineage plumbed into it to ask this question.
+pub fn is_leaf(policy: &CompiledPolicy) -> bool {
+    !policy.allows(crate::functions::SPAWN_ID)
+}
 
 /// The contract-discovery pair every spawned child keeps callable. The
 /// sub-agent contract mandates a `functions::list`/`::info` round before the
@@ -327,6 +348,16 @@ mod tests {
         }
     }
 
+    // `is_leaf` reads the spawn wall, so a session that can spawn is never
+    // one — including the `*` root that every scenario starts from.
+    #[test]
+    fn a_session_that_can_spawn_is_not_a_leaf() {
+        assert!(!is_leaf(&CompiledPolicy::from(Some(&policy(&["*"], &[])))));
+        // Absent policy denies everything, spawn included: fail-closed means
+        // fail-closed as a leaf, the more restricted of the two.
+        assert!(is_leaf(&CompiledPolicy::from(None)));
+    }
+
     #[test]
     fn absent_policy_denies_everything() {
         let p = CompiledPolicy::from(None);
@@ -345,13 +376,17 @@ mod tests {
         for id in [
             "harness::spawn",
             "harness::send",
-            "engine::register_trigger",
             "engine::unregister_trigger",
             "engine::registered-triggers::list",
             "engine::registered-triggers::info",
         ] {
             assert!(!compiled.allows(id), "{id} must be walled off");
         }
+        // Registration is NOT walled off at dispatch: a leaf with no way to
+        // arm a wake polls or sleeps instead (MOT-4766). The control-plane
+        // half of it is refused by shape, in `functions::subscribe`.
+        assert!(compiled.allows("engine::register_trigger"));
+        assert!(is_leaf(&compiled), "the spawn wall marks a leaf");
         for id in ["state::set", "database::execute", "harness::status"] {
             assert!(compiled.allows(id), "{id} is data-plane and must survive");
         }

@@ -609,6 +609,15 @@ async fn handle(
         crate::types::message::AgentMessage::now_ms(),
     );
 
+    reject_leaf_control_plane(
+        policy,
+        req.target
+            .as_ref()
+            .map(|t| t.function_id.as_str())
+            .or(req.function_id.as_deref()),
+        once,
+        expires_at,
+    )?;
     let target = resolve_target(deps, &req, session_id, policy).await?;
     authorize_conditions(deps, &req.conditions, session_id, policy).await?;
 
@@ -756,6 +765,43 @@ fn reject_forbidden_type(trigger_type: &str) -> Result<(), HarnessError> {
              agent-bindable. Watch what the work WRITES instead — register a wake (omit \
              `function_id`) on the state keys or database rows the tasks update."
         )));
+    }
+    Ok(())
+}
+
+/// A leaf may arm a wake for ITSELF; it may not wire a binding that
+/// mechanically calls another function, and it may not leave one behind.
+///
+/// Those are the two halves of `engine::register_trigger`. The first is the
+/// leaf's own work — park until your background job ends instead of polling
+/// `shell::status` or running `sleep`, which is what a leaf with no wake
+/// mechanism actually did (MOT-4766). The second is control plane: it installs
+/// durable machinery that fires into a function the leaf does not own, outlives
+/// the assignment, and cannot be cleaned up by a leaf, whose
+/// `engine::unregister_trigger` stays walled off.
+///
+/// Self-limiting means `once: true` or an explicit `lifecycle.expires_in_ms`.
+/// Without one, a leaf could arm a permanent wake into a session that ends
+/// minutes later and nobody left alive could retract it.
+fn reject_leaf_control_plane(
+    policy: &CompiledPolicy,
+    explicit_target: Option<&str>,
+    once: bool,
+    expires_at: Option<i64>,
+) -> Result<(), HarnessError> {
+    if !crate::policy::is_leaf(policy) {
+        return Ok(());
+    }
+    if let Some(target) = explicit_target {
+        return Err(HarnessError::InvalidRequest(format!(
+            "a sub-agent cannot bind a mechanical call to `{target}`: that installs durable              machinery it does not own and cannot unregister. Omit `function_id` to register a              wake for your own session instead — the fire comes back to you as a message and you              make the call yourself."
+        )));
+    }
+    if !once && expires_at.is_none() {
+        return Err(HarnessError::InvalidRequest(
+            "a sub-agent's wake must be self-limiting: pass `once: true`, or a              `lifecycle.expires_in_ms` deadline. A sub-agent cannot unregister a binding, so an              open-ended one would outlive the session that armed it."
+                .into(),
+        ));
     }
     Ok(())
 }
@@ -1950,8 +1996,10 @@ mod tests {
         assert_eq!(names, ["engine::register_trigger"]);
 
         let mut walled = policy_allowing(&["*"]);
-        // The leaf wall's denies must hide both controls from the toolset.
         assert!(native_control_tools(&walled).len() == 2);
+        // Under the leaf wall the toolset keeps registration and loses
+        // unregistration: a leaf arms its own wake but cannot retract anyone's
+        // binding, which is why its wake must be self-limiting (MOT-4766).
         walled = CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
             allow: vec!["*".into()],
             deny: crate::policy::CONTROL_PLANE_DENY
@@ -1960,7 +2008,55 @@ mod tests {
                 .collect(),
             expose: Default::default(),
         }));
-        assert!(native_control_tools(&walled).is_empty());
+        let names: Vec<String> = native_control_tools(&walled)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["engine::register_trigger"]);
+    }
+
+    fn leaf_policy() -> CompiledPolicy {
+        CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+            allow: vec!["*".into()],
+            deny: crate::policy::CONTROL_PLANE_DENY
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            expose: Default::default(),
+        }))
+    }
+
+    // The half a leaf keeps: park on your own work instead of polling for it.
+    #[test]
+    fn a_leaf_may_arm_a_self_limiting_wake() {
+        let leaf = leaf_policy();
+        assert!(reject_leaf_control_plane(&leaf, None, true, None).is_ok());
+        assert!(reject_leaf_control_plane(&leaf, None, false, Some(1_000)).is_ok());
+    }
+
+    // The half it does not: durable machinery pointed at someone else's
+    // function, which it could not unregister afterwards.
+    #[test]
+    fn a_leaf_may_not_bind_a_mechanical_call_or_an_open_ended_wake() {
+        let leaf = leaf_policy();
+        let err = reject_leaf_control_plane(&leaf, Some("database::execute"), true, None)
+            .expect_err("a mechanical call is control plane");
+        let text = format!("{err:?}");
+        assert!(text.contains("database::execute"), "{text}");
+        assert!(text.contains("Omit `function_id`"), "{text}");
+
+        let err = reject_leaf_control_plane(&leaf, None, false, None)
+            .expect_err("an open-ended wake outlives the leaf");
+        assert!(format!("{err:?}").contains("self-limiting"));
+    }
+
+    // A root (or an explicit orchestrator child) is unaffected: both shapes
+    // and an open-ended binding stay available.
+    #[test]
+    fn a_non_leaf_keeps_both_binding_shapes() {
+        let root = policy_allowing(&["*"]);
+        assert!(reject_leaf_control_plane(&root, Some("database::execute"), false, None).is_ok());
+        assert!(reject_leaf_control_plane(&root, None, false, None).is_ok());
     }
 
     #[test]

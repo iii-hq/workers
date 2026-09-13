@@ -1246,12 +1246,18 @@ mod tests {
         for id in [
             "harness::spawn",
             "harness::send",
-            "engine::register_trigger",
             "engine::unregister_trigger",
             "engine::registered-triggers::list",
         ] {
             assert!(!compiled.allows(id), "{id} must be denied to a leaf child");
         }
+        // A leaf keeps registration so it can park on its own work instead of
+        // polling for it; `functions::subscribe` refuses the control-plane
+        // shapes of it. See MOT-4766.
+        assert!(
+            compiled.allows("engine::register_trigger"),
+            "a leaf must be able to arm its own wake"
+        );
     }
 
     #[test]
