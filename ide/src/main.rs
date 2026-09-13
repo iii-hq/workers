@@ -23,6 +23,7 @@ mod target;
 mod telemetry;
 mod triggers;
 mod turn_observe;
+mod turn_snapshot;
 mod turns;
 mod ui;
 mod ui_state;

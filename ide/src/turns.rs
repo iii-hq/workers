@@ -37,12 +37,18 @@ use tokio::sync::Mutex;
 
 use crate::code::functions::create_file::content_revision;
 use crate::config::TurnsConfig;
+use crate::turn_snapshot::{ref_name, rel_under, Body, Side, SnapshotRepo};
 
 const PRE_HOOK_FN_ID: &str = "shell::turns::on-pre-trigger";
 const POST_HOOK_FN_ID: &str = "shell::turns::on-post-trigger";
 const STARTED_FN_ID: &str = "shell::turns::on-turn-started";
 const COMPLETED_FN_ID: &str = "shell::turns::on-turn-completed";
 const ADOPT_ROOT_FN_ID: &str = "shell::turns::adopt-root";
+const PRE_TURN_FN_ID: &str = "shell::turns::on-pre-turn";
+const POST_TURN_FN_ID: &str = "shell::turns::on-post-turn";
+/// A cold snapshot hashes every file under the root once; a large tree
+/// takes a while the first time. Fail-open either way.
+const SNAPSHOT_TIMEOUT_MS: u64 = 60_000;
 // Every shell call is hooked, not only the file verbs: calls that name no
 // paths (`shell::exec`, pty writes) still tell the observer which
 // session, turn and root are live so the workspace watch can start.
@@ -158,6 +164,30 @@ pub struct TurnRecord {
     pub title: Option<String>,
     #[serde(default)]
     pub files: Vec<FileRecord>,
+    /// Trees of the root around the turn (see `turn_snapshot`): where
+    /// `shell::turns::get` reads the sides of every file from, hooked or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<TurnSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct TurnSnapshot {
+    /// The canonical root the trees describe.
+    pub root: String,
+    /// The tree when the turn started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// When `before` was taken, unix ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_at: Option<u64>,
+    /// The tree when the turn ended; absent while it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// When `after` was taken. A file the turn was still gaining after
+    /// that (a sub-agent at work past its parent's end) is not in the
+    /// tree; its after side is the working copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
@@ -181,7 +211,11 @@ pub struct HookResult {
     pub is_error: bool,
 }
 
-/// The part of the harness hook envelope this module reads.
+/// The part of the harness hook envelope this module reads. One shape
+/// serves every hook point: `call` and `result` are the trigger hooks'
+/// (`result` as `{ is_error }`), while the `post_turn` envelope puts the
+/// turn's own result under `result`, whatever JSON that is, so that field
+/// is read leniently rather than typed.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HookInput {
     #[serde(default)]
@@ -192,8 +226,23 @@ pub struct HookInput {
     pub session_id: Option<String>,
     #[serde(default)]
     pub turn_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_hook_result")]
     pub result: Option<HookResult>,
+}
+
+/// `{ is_error: true }` reads as a failed call; any other JSON, including
+/// the `post_turn` envelope's turn result, reads as not failed.
+fn lenient_hook_result<'de, D>(deserializer: D) -> Result<Option<HookResult>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.map(|value| HookResult {
+        is_error: value
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }))
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -612,6 +661,52 @@ pub fn record_observed(
     });
 }
 
+/// A tree body as the image `shell::turns::get` returns, charged to the
+/// response budget.
+fn image_from_body(body: &Body, budget: &mut usize) -> PreImage {
+    let blank = PreImage {
+        revision: None,
+        content: None,
+        truncated: false,
+        stored: false,
+        missing: false,
+        binary: false,
+    };
+    match body {
+        Body::Missing => PreImage {
+            missing: true,
+            ..blank
+        },
+        Body::TooLarge => PreImage {
+            truncated: true,
+            ..blank
+        },
+        Body::Bytes(bytes) => {
+            let revision = Some(content_revision(bytes));
+            match std::str::from_utf8(bytes) {
+                Err(_) => PreImage {
+                    revision,
+                    binary: true,
+                    ..blank
+                },
+                Ok(_) if bytes.len() > *budget => PreImage {
+                    revision,
+                    truncated: true,
+                    ..blank
+                },
+                Ok(text) => {
+                    *budget -= bytes.len();
+                    PreImage {
+                        revision,
+                        content: Some(text.to_string()),
+                        ..blank
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Newest turns win once a session passes its cap.
 pub fn enforce_budgets(record: &mut SessionRecord) {
     if record.turns.len() > MAX_TURNS_PER_SESSION {
@@ -629,6 +724,7 @@ fn turn_mut<'a>(record: &'a mut SessionRecord, turn_id: &str, at: u64) -> &'a mu
         started_at: at,
         ended_at: None,
         title: None,
+        snapshot: None,
         files: Vec::new(),
     });
     record.turns.last_mut().expect("just pushed")
@@ -1029,11 +1125,10 @@ impl TurnLog {
         self.store.load(session_id).await
     }
 
-    /// A turn with its pre-image bodies read back from the blob store, within
-    /// the response budget.
-    /// Fill a turn's pre-image bodies from the blob store, and each file's
-    /// `after` body from the first later turn that kept the same path as its
-    /// own pre-image — the exact state the file was left in by this turn.
+    /// A turn with the bodies of its files filled in, within the response
+    /// budget: from the root's tree snapshots when the turn has them, else
+    /// from the hooks' pre-image blobs, with each file's `after` taken from
+    /// the first later turn that kept the same path as its own pre-image.
     pub async fn inflate(&self, record: &SessionRecord, mut turn: TurnRecord) -> TurnRecord {
         let mut budget = MAX_RESPONSE_BODY_BYTES;
         let later: Vec<&TurnRecord> = record
@@ -1049,6 +1144,10 @@ impl TurnLog {
                     .find_map(|candidate| candidate.files.iter().find(|f| f.path == file.path))
                     .and_then(|next| next.before.clone());
             }
+        }
+        self.inflate_from_trees(&later, &mut turn, &mut budget)
+            .await;
+        for file in &mut turn.files {
             if let Some(before) = &mut file.before {
                 self.inflate_image(before, &mut budget).await;
             }
@@ -1057,6 +1156,98 @@ impl TurnLog {
             }
         }
         turn
+    }
+
+    /// The sides of every file under the snapshot root, from the trees.
+    /// The after tree is the turn's own, else the next later turn's before
+    /// on the same root; with neither, the working copy stands. A tree
+    /// describes the root at the instant it was taken: a file the turn
+    /// was still gaining after that (a sub-agent at work past its
+    /// parent's end) is not in it, and a file the record says exists but
+    /// the tree lacks is outside what a photo sees, so those two keep the
+    /// working copy as their after side.
+    async fn inflate_from_trees(
+        &self,
+        later: &[&TurnRecord],
+        turn: &mut TurnRecord,
+        budget: &mut usize,
+    ) {
+        let Some(snapshot) = turn.snapshot.clone() else {
+            return;
+        };
+        let (after, after_at) = match &snapshot.after {
+            Some(tree) => (Some(tree.clone()), snapshot.after_at),
+            None => later
+                .iter()
+                .find_map(|next| {
+                    let candidate = next.snapshot.as_ref()?;
+                    if candidate.root != snapshot.root {
+                        return None;
+                    }
+                    let tree = candidate.before.clone()?;
+                    Some((
+                        Some(tree),
+                        Some(candidate.before_at.unwrap_or(next.started_at)),
+                    ))
+                })
+                .unwrap_or((None, None)),
+        };
+        let Some(repo) = SnapshotRepo::open(
+            &self.repos_dir(),
+            Path::new(&snapshot.root),
+            &self.store.dir,
+        )
+        .await
+        else {
+            return;
+        };
+        let rels: Vec<(usize, String)> = turn
+            .files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, file)| {
+                rel_under(&snapshot.root, &file.path).map(|rel| (index, rel))
+            })
+            .collect();
+        let paths: Vec<String> = rels.iter().map(|(_, rel)| rel.clone()).collect();
+        for (tree, side) in [
+            (snapshot.before.as_deref(), Side::Before),
+            (after.as_deref(), Side::After),
+        ] {
+            let Some(tree) = tree else {
+                continue;
+            };
+            let bodies = repo
+                .bodies(tree, &paths, MAX_RESPONSE_BODY_BYTES as u64)
+                .await;
+            for (index, rel) in &rels {
+                let Some(body) = bodies.get(rel) else {
+                    continue;
+                };
+                let file = &mut turn.files[*index];
+                if side == Side::After {
+                    let stale = after_at.is_some_and(|at| file.last_seen > at);
+                    let contradicts = matches!(body, Body::Missing) && file.kind != "deleted";
+                    if stale || contradicts {
+                        continue;
+                    }
+                }
+                let image = image_from_body(body, budget);
+                match side {
+                    Side::Before => {
+                        // The tree knows whether the path existed; the
+                        // watcher only guessed from the events it saw.
+                        if image.missing && file.kind == "modified" {
+                            file.kind = "created".to_string();
+                        } else if !image.missing && file.kind == "created" {
+                            file.kind = "modified".to_string();
+                        }
+                        file.before = Some(image);
+                    }
+                    Side::After => file.after = Some(image),
+                }
+            }
+        }
     }
 
     async fn inflate_image(&self, image: &mut PreImage, budget: &mut usize) {
@@ -1085,10 +1276,171 @@ impl TurnLog {
     {
         let lock = self.session_lock(session_id).await;
         let _guard = lock.lock().await;
+        self.update_locked(session_id, apply).await
+    }
+
+    /// `update` for a caller already holding the session lock.
+    async fn update_locked<F>(&self, session_id: &str, apply: F) -> Result<(), Error>
+    where
+        F: FnOnce(&mut SessionRecord),
+    {
         let mut record = self.store.load(session_id).await?;
+        let pinned: Vec<(String, TurnSnapshot)> = record
+            .turns
+            .iter()
+            .filter_map(|turn| Some((turn.turn_id.clone(), turn.snapshot.clone()?)))
+            .collect();
         apply(&mut record);
         enforce_budgets(&mut record);
-        self.store.store(&record).await
+        self.store.store(&record).await?;
+        // A turn the cap dropped takes its trees with it.
+        let dropped: Vec<(String, TurnSnapshot)> = pinned
+            .into_iter()
+            .filter(|(turn_id, _)| !record.turns.iter().any(|turn| &turn.turn_id == turn_id))
+            .collect();
+        if !dropped.is_empty() {
+            let repos_dir = self.repos_dir();
+            let store_dir = self.store.dir.clone();
+            let stem = session_file_stem(session_id);
+            tokio::spawn(async move {
+                for (turn_id, snapshot) in dropped {
+                    let Some(repo) =
+                        SnapshotRepo::open(&repos_dir, Path::new(&snapshot.root), &store_dir).await
+                    else {
+                        continue;
+                    };
+                    for side in [Side::Before, Side::After] {
+                        repo.drop_ref(&ref_name(&stem, &turn_id, side)).await;
+                    }
+                }
+            });
+        }
+        Ok(())
+    }
+
+    fn repos_dir(&self) -> PathBuf {
+        self.store.dir.join("repos")
+    }
+
+    /// `pre_turn`: photograph the root before a turn's first call. A
+    /// child's turn maps to the top-level turn its work is recorded under;
+    /// a before taken once that turn has written would misdate those
+    /// writes, so only a turn with nothing recorded yet takes one.
+    pub async fn on_pre_turn(&self, input: HookInput) {
+        let (Some(session_id), Some(turn_id)) = (input.session_id, input.turn_id) else {
+            return;
+        };
+        if let Some((parent_session, parent_turn)) = parent_of(input.metadata.as_ref()) {
+            self.link_parent(&session_id, &parent_session, &parent_turn);
+        }
+        let Some(root) = session_root(input.metadata.as_ref()) else {
+            return;
+        };
+        let target = self.resolve_root(&session_id, &turn_id);
+        self.snapshot_turn(&target, &root, Side::Before).await;
+    }
+
+    /// `post_turn`: photograph the root as the turn leaves it. A child's
+    /// completion retakes its parent's after: the parent may have ended
+    /// first, with the child still writing.
+    pub async fn on_post_turn(&self, input: HookInput) {
+        let (Some(session_id), Some(turn_id)) = (input.session_id, input.turn_id) else {
+            return;
+        };
+        if let Some((parent_session, parent_turn)) = parent_of(input.metadata.as_ref()) {
+            self.link_parent(&session_id, &parent_session, &parent_turn);
+        }
+        let Some(root) = session_root(input.metadata.as_ref()) else {
+            return;
+        };
+        let target = self.resolve_root(&session_id, &turn_id);
+        self.snapshot_turn(&target, &root, Side::After).await;
+    }
+
+    async fn snapshot_turn(&self, target: &RootTurn, root: &str, side: Side) {
+        let lock = self.session_lock(&target.session_id).await;
+        let _guard = lock.lock().await;
+        if side == Side::Before {
+            let Ok(record) = self.store.load(&target.session_id).await else {
+                return;
+            };
+            let taken = record
+                .turns
+                .iter()
+                .find(|turn| turn.turn_id == target.turn_id)
+                .is_some_and(|turn| {
+                    !turn.files.is_empty()
+                        || turn
+                            .snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.before.is_some())
+                });
+            if taken {
+                return;
+            }
+        }
+        let Some(repo) =
+            SnapshotRepo::open(&self.repos_dir(), Path::new(root), &self.store.dir).await
+        else {
+            return;
+        };
+        let stem = session_file_stem(&target.session_id);
+        let taken_at = now_ms();
+        let tree = match repo.snapshot(&stem).await {
+            Ok(tree) => tree,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %target.session_id,
+                    side = side.as_str(),
+                    "turn snapshot: not taken"
+                );
+                return;
+            }
+        };
+        repo.keep_ref(&ref_name(&stem, &target.turn_id, side), &tree)
+            .await;
+        let canonical_root = repo.root().to_string_lossy().into_owned();
+        let at = now_ms();
+        let result = self
+            .update_locked(&target.session_id, |record| {
+                let turn = turn_mut(record, &target.turn_id, at);
+                let snapshot = turn.snapshot.get_or_insert_with(|| TurnSnapshot {
+                    root: canonical_root.clone(),
+                    before: None,
+                    before_at: None,
+                    after: None,
+                    after_at: None,
+                });
+                if snapshot.root != canonical_root {
+                    // The session moved roots mid-turn: trees of another
+                    // root say nothing about this one.
+                    *snapshot = TurnSnapshot {
+                        root: canonical_root,
+                        before: None,
+                        before_at: None,
+                        after: None,
+                        after_at: None,
+                    };
+                }
+                match side {
+                    Side::Before => {
+                        snapshot.before = Some(tree);
+                        snapshot.before_at = Some(taken_at);
+                    }
+                    Side::After => {
+                        snapshot.after = Some(tree);
+                        snapshot.after_at = Some(taken_at);
+                    }
+                }
+            })
+            .await;
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "turn snapshot: not recorded");
+        }
+        if side == Side::After {
+            tokio::spawn(async move { repo.gc_auto().await });
+        }
     }
 
     /// Open a top-level turn without a title (tests and older callers).
@@ -1473,6 +1825,55 @@ pub fn register(
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
     }
+    {
+        let log = log.clone();
+        iii.register_function(
+            PRE_TURN_FN_ID,
+            RegisterFunction::new_async(move |input: HookInput| {
+                let log = log.clone();
+                async move {
+                    log.on_pre_turn(input).await;
+                    Ok::<HookOutput, Error>(HookOutput::default())
+                }
+            })
+            .description(
+                "Internal: photographs the session's workspace root before a turn's first call, \
+                 so every file the turn changes has an exact before, however it is written. \
+                 Observes only; always continues.",
+            )
+            .metadata(json!({ "internal": true, "trace_hidden": true })),
+        );
+    }
+    {
+        let log = log.clone();
+        iii.register_function(
+            POST_TURN_FN_ID,
+            RegisterFunction::new_async(move |input: HookInput| {
+                let log = log.clone();
+                async move {
+                    log.on_post_turn(input).await;
+                    Ok::<HookOutput, Error>(HookOutput::default())
+                }
+            })
+            .description(
+                "Internal: photographs the session's workspace root as a turn ends, the after \
+                 side of every file it changed. Observes only; always continues.",
+            )
+            .metadata(json!({ "internal": true, "trace_hidden": true })),
+        );
+    }
+    for (point, function_id) in [
+        ("harness::hook::pre-turn", PRE_TURN_FN_ID),
+        ("harness::hook::post-turn", POST_TURN_FN_ID),
+    ] {
+        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+            point.to_string(),
+            function_id.to_string(),
+            json!({ "timeout_ms": SNAPSHOT_TIMEOUT_MS, "on_error": "fail_open" }),
+        )) {
+            tracing::warn!(error = %e, point, "turn log: snapshot binding failed; turn diffs fall back to hook pre-images");
+        }
+    }
     for (point, function_id) in [
         ("harness::hook::pre-trigger", PRE_HOOK_FN_ID),
         ("harness::hook::post-trigger", POST_HOOK_FN_ID),
@@ -1625,10 +2026,10 @@ pub fn register(
             .description(
                 "Fetch one turn of a session's change history: every file it changed, the \
                  change kind, the function that made it, the sub-agent that did it when one \
-                 did, the file's pre-image (revision and body up to 64 KiB each, 1 MiB per \
-                 response) and, when a later turn kept it, the body the turn left behind \
-                 (`after`), so the exact patch of that turn can be shown later. Omit turn_id \
-                 for the newest turn.",
+                 did, the file's body before the turn and, once the turn has ended or a later \
+                 turn kept it, the body it left behind (`after`). Bodies come from the root's \
+                 tree snapshots when the turn has them, hooked or not, else from the hooks' \
+                 pre-images; 1 MiB of bodies per response. Omit turn_id for the newest turn.",
             ),
         );
     }
@@ -1746,18 +2147,24 @@ pub fn revert_step(file: &FileRecord) -> RevertStep {
             overwritten: stored_revision,
         };
     }
+    // A body kept from before the turn is the undo, whatever the watcher
+    // called the change: FSEvents reports a truncating write to an
+    // existing file as a creation, and removing it would lose the file.
+    if let Some(revision) = stored_revision {
+        return RevertStep::Restore { revision };
+    }
     match file.kind.as_str() {
-        "created" => RevertStep::Remove,
         "deleted" if missing_before => RevertStep::Skip,
-        _ => match stored_revision {
-            Some(revision) => RevertStep::Restore { revision },
-            None if file.before.is_none() => RevertStep::Unavailable(
-                "no pre-image was recorded for this change (observed through the watcher)",
-            ),
-            None => RevertStep::Unavailable(
-                "the pre-image body is not in the store (too large, binary, or pruned)",
-            ),
-        },
+        // The path did not exist before the turn, whatever the watcher
+        // called the change.
+        "created" => RevertStep::Remove,
+        _ if missing_before => RevertStep::Remove,
+        _ if file.before.is_none() => RevertStep::Unavailable(
+            "no pre-image was recorded for this change (observed through the watcher)",
+        ),
+        _ => RevertStep::Unavailable(
+            "the pre-image body is not in the store (too large, binary, or pruned)",
+        ),
     }
 }
 
@@ -1778,6 +2185,7 @@ impl TurnLog {
             .into_iter()
             .find(|turn| turn.turn_id == turn_id)
             .ok_or_else(|| Error::Handler("turn is not present in session history".into()))?;
+        let turn = self.seed_before_from_tree(turn).await;
         let wanted: Option<std::collections::HashSet<&str>> =
             only.map(|paths| paths.iter().map(String::as_str).collect());
         // Later changes are undone first so a file moved and then edited
@@ -1866,6 +2274,59 @@ impl TurnLog {
         }
     }
 
+    /// Before a revert: the before tree knows every file's body, hooked or
+    /// not. Put the bodies into the blob store so the plan finds them under
+    /// a stored revision like any hook-kept pre-image.
+    async fn seed_before_from_tree(&self, mut turn: TurnRecord) -> TurnRecord {
+        let Some((root, tree)) = turn
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| Some((snapshot.root.clone(), snapshot.before.clone()?)))
+        else {
+            return turn;
+        };
+        let Some(repo) =
+            SnapshotRepo::open(&self.repos_dir(), Path::new(&root), &self.store.dir).await
+        else {
+            return turn;
+        };
+        let rels: Vec<(usize, String)> = turn
+            .files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, file)| rel_under(&root, &file.path).map(|rel| (index, rel)))
+            .collect();
+        let paths: Vec<String> = rels.iter().map(|(_, rel)| rel.clone()).collect();
+        let bodies = repo.bodies(&tree, &paths, u64::MAX).await;
+        for (index, rel) in rels {
+            let image = match bodies.get(&rel) {
+                Some(Body::Bytes(bytes)) => {
+                    let revision = content_revision(bytes);
+                    let stored = self.store.put_blob(&revision, bytes).await;
+                    PreImage {
+                        revision: Some(revision),
+                        content: None,
+                        truncated: false,
+                        stored,
+                        missing: false,
+                        binary: false,
+                    }
+                }
+                Some(Body::Missing) => PreImage {
+                    revision: None,
+                    content: None,
+                    truncated: false,
+                    stored: false,
+                    missing: true,
+                    binary: false,
+                },
+                _ => continue,
+            };
+            turn.files[index].before = Some(image);
+        }
+        turn
+    }
+
     async fn write_blob(&self, path: &str, revision: &str) -> Result<(), String> {
         let Some(body) = self.store.get_blob(revision).await else {
             return Err("the pre-image body is no longer in the store".into());
@@ -1919,6 +2380,7 @@ mod tests {
             started_at: 1,
             ended_at: None,
             title: None,
+            snapshot: None,
             files: vec![FileRecord {
                 path: "/w/a.txt".into(),
                 root: Some("/w".into()),
@@ -1956,6 +2418,7 @@ mod tests {
             started_at: 1,
             ended_at: None,
             title: None,
+            snapshot: None,
             files: Vec::new(),
         };
         record_observed(&mut turn, "/w/gen.txt".into(), "/w", "created", 5, None);
@@ -2049,6 +2512,7 @@ mod tests {
             started_at: 1,
             ended_at: None,
             title: None,
+            snapshot: None,
             files: Vec::new(),
         };
         let before = PreImage {
@@ -2093,12 +2557,192 @@ mod tests {
                 started_at: i as u64,
                 ended_at: None,
                 title: None,
+                snapshot: None,
                 files: Vec::new(),
             });
         }
         enforce_budgets(&mut record);
         assert_eq!(record.turns.len(), MAX_TURNS_PER_SESSION);
         assert_eq!(record.turns[0].turn_id, "t3");
+    }
+
+    fn turn_hook(session: &str, turn: &str, root: &str) -> HookInput {
+        HookInput {
+            metadata: Some(json!({ "fs_scope": { "root": root } })),
+            call: None,
+            session_id: Some(session.to_string()),
+            turn_id: Some(turn.to_string()),
+            result: None,
+        }
+    }
+
+    /// git in `root`, with the developer's own config out of the way.
+    async fn git_in(root: &Path, args: &[&str]) -> Option<String> {
+        let out = tokio::process::Command::new("git")
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "iii")
+            .env("GIT_AUTHOR_EMAIL", "iii@test")
+            .env("GIT_COMMITTER_NAME", "iii")
+            .env("GIT_COMMITTER_EMAIL", "iii@test")
+            .args(args)
+            .output()
+            .await
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// The `post_turn` envelope carries the turn's result under `result`,
+    /// whatever JSON the turn produced; a hook input that only accepts the
+    /// `{ is_error }` shape of a call result rejects the whole envelope,
+    /// and the harness skips the hook fail-open: no after tree, ever.
+    #[test]
+    fn turn_hook_envelopes_deserialize_whatever_result_they_carry() {
+        for result in [
+            json!("the assistant's closing text"),
+            json!(["a", "list"]),
+            json!(42),
+            json!({ "summary": "an object without is_error" }),
+        ] {
+            let input: HookInput = serde_json::from_value(json!({
+                "point": "post_turn",
+                "session_id": "s1",
+                "turn_id": "t1",
+                "step": 3,
+                "depth": 0,
+                "metadata": { "fs_scope": { "root": "/w" } },
+                "result": result,
+            }))
+            .unwrap_or_else(|e| panic!("post_turn envelope with result {result}: {e}"));
+            assert_eq!(input.turn_id.as_deref(), Some("t1"));
+            assert!(!input.result.unwrap_or_default().is_error);
+        }
+        let failed: HookInput = serde_json::from_value(json!({
+            "point": "post_trigger",
+            "session_id": "s1",
+            "turn_id": "t1",
+            "result": { "function_call_id": "c1", "is_error": true },
+        }))
+        .unwrap();
+        assert!(failed.result.unwrap().is_error);
+    }
+
+    #[tokio::test]
+    async fn tree_snapshots_give_exact_sides_to_writes_the_hooks_never_saw() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        if git_in(&root, &["init", "-q"]).await.is_none() {
+            eprintln!("git is not available; skipping");
+            return;
+        }
+        let root = std::fs::canonicalize(&root).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let a = root.join("a.txt");
+        std::fs::write(&a, "v1\n").unwrap();
+        assert!(git_in(&root, &["add", "-A"]).await.is_some());
+        assert!(git_in(
+            &root,
+            &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]
+        )
+        .await
+        .is_some());
+        let log = log_in(dir.path());
+
+        log.on_turn_started("s1", "t1").await.unwrap();
+        log.on_pre_turn(turn_hook("s1", "t1", &root_s)).await;
+        // Writes no hook saw: a patch applied by hand and a file born.
+        std::fs::write(&a, "v2\n").unwrap();
+        let born = root.join("new.txt");
+        std::fs::write(&born, "born\n").unwrap();
+        log.fold_observed(
+            "s1",
+            "t1",
+            &root_s,
+            vec![
+                // FSEvents calls a truncating write to an existing file a
+                // creation; the tree knows better.
+                (a.to_string_lossy().into_owned(), "created"),
+                (born.to_string_lossy().into_owned(), "created"),
+            ],
+        )
+        .await;
+        log.on_post_turn(turn_hook("s1", "t1", &root_s)).await;
+        // A sub-agent still at work after the parent's after photo: its
+        // file is credited to the turn but is not in the tree.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let late = root.join("late.txt");
+        std::fs::write(&late, "late\n").unwrap();
+        log.fold_observed(
+            "s1",
+            "t1",
+            &root_s,
+            vec![(late.to_string_lossy().into_owned(), "created")],
+        )
+        .await;
+        log.on_turn_completed("s1", "t1").await.unwrap();
+
+        let record = log.load("s1").await.unwrap();
+        let turn = record.turns[0].clone();
+        let snapshot = turn.snapshot.as_ref().expect("trees kept");
+        assert!(snapshot.before.is_some() && snapshot.after.is_some());
+        assert!(snapshot.before_at.unwrap() <= snapshot.after_at.unwrap());
+        let inflated = log.inflate(&record, turn).await;
+        let side = |path: &Path, after: bool| -> PreImage {
+            let file = inflated
+                .files
+                .iter()
+                .find(|file| file.path == path.to_string_lossy())
+                .unwrap();
+            if after { &file.after } else { &file.before }
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(side(&a, false).content.as_deref(), Some("v1\n"));
+        assert_eq!(side(&a, true).content.as_deref(), Some("v2\n"));
+        assert_eq!(
+            inflated
+                .files
+                .iter()
+                .find(|file| file.path == a.to_string_lossy())
+                .unwrap()
+                .kind,
+            "modified"
+        );
+        assert!(side(&born, false).missing);
+        assert_eq!(side(&born, true).content.as_deref(), Some("born\n"));
+        let late_record = inflated
+            .files
+            .iter()
+            .find(|file| file.path == late.to_string_lossy())
+            .unwrap();
+        assert!(late_record.before.as_ref().unwrap().missing);
+        assert!(
+            late_record.after.is_none(),
+            "the working copy is the after side of a late write"
+        );
+
+        // The revert reads the same tree: the hand-made patch is undone too.
+        let out = log.revert("s1", "t1", None, &|_| Ok(())).await.unwrap();
+        assert_eq!(out.failed, 0, "{:?}", out.results);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "v1\n");
+        assert!(!born.exists());
+        assert!(!late.exists());
+
+        // The developer's repository was only read: a clean status, no refs.
+        assert_eq!(
+            git_in(&root, &["status", "--porcelain"]).await.as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            git_in(&root, &["for-each-ref", "refs/turns"])
+                .await
+                .as_deref(),
+            Some("")
+        );
     }
 
     #[tokio::test]
@@ -2405,6 +3049,7 @@ mod tests {
                     started_at: 1,
                     ended_at: Some(9),
                     title: None,
+                    snapshot: None,
                     files: vec![
                         record(&p("a.txt"), "modified", Some(stored(&ra)), None, 2),
                         record(&p("b.txt"), "created", Some(missing.clone()), None, 3),
@@ -2621,6 +3266,7 @@ mod tests {
                     started_at: 1,
                     ended_at: Some(2),
                     title: Some("first".into()),
+                    snapshot: None,
                     files: vec![record("/w/a.txt", "modified", Some(stored(&r1)), None, 1)],
                 },
                 TurnRecord {
@@ -2628,6 +3274,7 @@ mod tests {
                     started_at: 3,
                     ended_at: Some(4),
                     title: None,
+                    snapshot: None,
                     files: vec![record("/w/a.txt", "modified", Some(stored(&r2)), None, 3)],
                 },
             ],

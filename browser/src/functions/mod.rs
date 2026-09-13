@@ -95,8 +95,9 @@ pub const SNAPSHOT_DESC: &str =
      browser::screenshot; it is cheaper and machine-readable.";
 pub const SCREENSHOT_ID: &str = "browser::screenshot";
 pub const SCREENSHOT_DESC: &str =
-    "Screenshot the session's current page as a JPEG. Use browser::snapshot for \
-     machine-readable structure; screenshot when layout or rendering matters.";
+    "Screenshot the session's current page as a JPEG (or a lossless PNG with \
+     format=png). Use browser::snapshot for machine-readable structure; \
+     screenshot when layout or rendering matters.";
 pub const ACT_ID: &str = "browser::act";
 pub const ACT_DESC: &str =
     "Interact with the page: click (left/right/middle, single or double), hover, type, press, \
@@ -889,11 +890,20 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session.touch();
                 let cfg = sx.config.load_full();
 
-                let params = ScreenshotParams::builder()
-                    .format(CaptureScreenshotFormat::Jpeg)
-                    .quality(cfg.screenshot_quality as i64)
-                    .full_page(req.full_page.unwrap_or(false))
-                    .build();
+                let png = matches!(
+                    req.format.as_deref().map(str::trim),
+                    Some("png") | Some("PNG")
+                );
+                let mut params =
+                    ScreenshotParams::builder().full_page(req.full_page.unwrap_or(false));
+                params = if png {
+                    params.format(CaptureScreenshotFormat::Png)
+                } else {
+                    params
+                        .format(CaptureScreenshotFormat::Jpeg)
+                        .quality(cfg.screenshot_quality as i64)
+                };
+                let params = params.build();
                 let bytes = session
                     .page
                     .screenshot(params)
@@ -906,7 +916,7 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     content: vec![
                         screenshot::ContentBlock {
                             r#type: "image".to_string(),
-                            mime: Some("image/jpeg".to_string()),
+                            mime: Some(if png { "image/png" } else { "image/jpeg" }.to_string()),
                             data: Some(STANDARD.encode(&bytes)),
                             text: None,
                         },

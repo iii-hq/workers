@@ -1,20 +1,37 @@
 iii: v1
 name: kanban
-language: javascript
-deploy: bundle
-manifest: package.json
+language: rust
+deploy: binary
+manifest: Cargo.toml
 license: Apache-2.0
-tags: [kanban, workers, tasks, runs, console, ui]
-description: Repository-aware multi-worker runs with Harness sessions, isolated worktrees, and Git review.
+bin: kanban
+tags: [kanban, tickets, board, agents, console-ui]
+description: File-backed kanban board — tickets, threaded comments, agent assignment, the kanban:change and kanban:comment trigger types, and an injectable console board with agent profiles for planning and review.
 
 runtime:
-  kind: javascript
+  kind: rust
 
 scripts:
-  start: node ./dist/bundle/index.mjs
+  install: cargo build
+  start: cargo run --bin kanban
+
+config:
+  data_path: data/kanban
+  id_prefix: KAN
+  default_status: backlog
+  columns:
+    - id: backlog
+      label: Backlog
+    - id: todo
+      label: To do
+    - id: in_progress
+      label: In progress
+    - id: in_review
+      label: In review
+    - id: done
+      label: Done
+  priorities: [low, medium, high, urgent]
+  agents_path: agents
 
 dependencies:
-  ade: "^1.9.11"
-  state: "^0.22.2"
-  harness: "^1.8.5"
-  worktree: "^0.3.4-rc.1"
+  configuration: "0.x"

@@ -1,3 +1,15 @@
+/**
+ * Build the worker's two console assets:
+ *
+ *   page.tsx   → dist/page.js    (injected over `console:script`)
+ *   styles.css → dist/styles.css (injected over `console:style`)
+ *
+ * The five shared specifiers stay EXTERNAL — they resolve at runtime through
+ * the console's import map (a bundled React copy surfaces as a cryptic
+ * "Invalid hook call"). `--watch` pairs with the worker's
+ * III_KANBAN_UI_WATCH poller for the hot-reload dev loop.
+ */
+
 import esbuild from 'esbuild'
 
 const options = {
@@ -6,13 +18,19 @@ const options = {
   format: 'esm',
   jsx: 'automatic',
   outdir: 'dist',
-  external: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', '@iii-dev/console-ui'],
+  external: [
+    'react',
+    'react-dom',
+    'react-dom/client',
+    'react/jsx-runtime',
+    '@iii-dev/console-ui',
+  ],
   logLevel: 'info',
 }
 
 if (process.argv.includes('--watch')) {
-  const context = await esbuild.context(options)
-  await context.watch()
+  const ctx = await esbuild.context(options)
+  await ctx.watch()
 } else {
   await esbuild.build(options)
 }

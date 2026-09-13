@@ -24,7 +24,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use iii_sdk::IIIClient;
 
 use crate::ui_assets::UiRegistry;
-use crate::{assets, probe, proxy};
+use crate::{assets, probe, proxy, ui_files};
 
 /// Grace period before a superseded listener is hard-aborted. Graceful
 /// shutdown is the primary path; the abort only bounds how long a stuck
@@ -118,7 +118,12 @@ pub fn router(state: AppState) -> Router {
     // Only mounted when an engine client is present; the target host is derived
     // server-side, never taken from the request, so it cannot be an SSRF lever.
     if state.iii.is_some() {
-        router = router.route("/probe", axum::routing::post(probe::probe_handler));
+        router = router
+            .route("/probe", axum::routing::post(probe::probe_handler))
+            // Documents and assets a worker serves for its own iframes (the
+            // stories worker's built story pages), pulled through
+            // `<worker>::ui-file { path }` and framed by the console only.
+            .route("/ui-files/:worker/*path", get(ui_files::ui_file_handler));
     }
 
     if state.ui.is_some() {
