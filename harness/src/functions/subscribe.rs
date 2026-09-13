@@ -607,6 +607,7 @@ async fn handle(
     let now_ms = crate::types::message::AgentMessage::now_ms();
     let expires_at = resolved_expires_at(req.lifecycle.as_ref(), now_ms);
 
+    reject_settled_compose_operation(deps, &req).await?;
     reject_leaf_control_plane(
         policy,
         req.target
@@ -782,6 +783,63 @@ fn reject_forbidden_type(trigger_type: &str) -> Result<(), HarnessError> {
 /// the assignment, and cannot be cleaned up by a leaf, whose
 /// `engine::unregister_trigger` stays walled off.
 ///
+/// Refuse a `compose-operation` wake whose operation has ALREADY settled.
+///
+/// A binding only sees what happens after it exists, and an operation reaches a
+/// terminal status exactly once. Arm the wake after `compose::add` returns and
+/// the event you are waiting for is already in the past: the binding is created,
+/// looks armed, reports zero fires, and the session that ended its turn on it
+/// waits until something else gives up. Two `linkly_tutorial` runs died that way
+/// — a child parked on a settled operation, and because an incomplete child
+/// keeps `tree_complete` false it took a finished run down with it (MOT-4766).
+///
+/// The doctrine (register first, start the operation in the same message) is in
+/// the prompt and was not enough; an agent that gets the order wrong deserves an
+/// answer it cannot park on. A probe that cannot reach Compose registers as
+/// normal: never fail a registration because a diagnostic was unavailable.
+async fn reject_settled_compose_operation(
+    deps: &Deps,
+    req: &SubscribeRequest,
+) -> Result<(), HarnessError> {
+    if req.trigger_type != COMPOSE_OPERATION_TRIGGER {
+        return Ok(());
+    }
+    let Some(operation_id) = req.config.get("operation_id").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Ok(snapshot) = deps
+        .engine()
+        .await
+        .dispatch(
+            "compose::operation",
+            json!({ "operation_id": operation_id }),
+        )
+        .await
+    else {
+        return Ok(());
+    };
+    let status = snapshot
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !is_settled_operation(status) {
+        return Ok(());
+    }
+    Err(HarnessError::InvalidRequest(format!(
+        "operation `{operation_id}` already reached `{status}`, so this wake could never fire: a \
+         binding only sees what happens after it exists. Read the result with `compose::operation` \
+         now — and register the wake BEFORE starting the operation next time, in the same message."
+    )))
+}
+
+/// A compose operation reaches one of these exactly once, and never leaves it —
+/// so a wake armed afterwards has nothing left to wait for. Anything else
+/// (`running`, or a status this harness does not know) is still in flight and
+/// registers normally: an unknown status must not silently swallow a wake.
+fn is_settled_operation(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "cancelled")
+}
+
 /// The deadline half lives in [`leaf_wake_deadline`]: a leaf's wake is stamped
 /// rather than refused, because a leaf with no way to wait is the problem this
 /// set out to fix.
@@ -2068,6 +2126,20 @@ mod tests {
         assert!(
             reject_leaf_control_plane(&policy_allowing(&["*"]), Some("database::execute")).is_ok()
         );
+    }
+
+    // Which statuses mean "nothing left to wait for". Getting this wrong in
+    // either direction is silent: too narrow and the wake still strands, too
+    // wide and a live operation's wake is refused. An unknown status must read
+    // as in-flight (MOT-4766).
+    #[test]
+    fn only_the_three_terminal_operation_statuses_are_settled() {
+        for status in ["succeeded", "failed", "cancelled"] {
+            assert!(is_settled_operation(status), "{status} is terminal");
+        }
+        for status in ["running", "", "queued", "Succeeded", "partial"] {
+            assert!(!is_settled_operation(status), "{status} is still in flight");
+        }
     }
 
     // `once: true` caps fires, not time: the run-30 hang was two `once`
