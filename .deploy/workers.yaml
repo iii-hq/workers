@@ -2207,3 +2207,29 @@ workers:
         outputs:
         - dist
     publish: true
+  agent-guild:
+    source:
+      path: agent-guild
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: agent-guild
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: npm
+        version: 10.9.3
+      lockfile: package-lock.json
+      install_command:
+      - npm
+      - ci
+      - --ignore-scripts
+      build_command:
+      - npm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
