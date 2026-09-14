@@ -146,14 +146,15 @@
 
 - **A turn waited ~50s on the snapshot of a VM disk image.** The turn
   history photographs the session root before each turn with `git add -A`,
-  and its exclude list did not cover `.iii/` — the engine's own runtime
-  state under a compose root. One root there held a 16 GiB sparse
+  and its exclude list did not cover `.iii/compose/` — the engine's own
+  runtime state under a compose root. One root there held a 16 GiB sparse
   `upper.ext4` that the VM rewrote between turns, so every turn re-read and
   hashed 16 GiB before the model was called (~50s, and another ~46MB blob
-  of a disk image no turn can revert to). `.iii/` is now excluded like
-  `node_modules/` and `target/`. A snapshot repository created before this
-  already tracks the image; delete its folder under the turn store to stop
-  refreshing it.
+  of a disk image no turn can revert to). `.iii/compose/` is now excluded
+  like `node_modules/` and `target/`; the rest of `.iii/` is project
+  configuration and is still photographed. A snapshot repository created
+  before this already tracks the image; delete its folder under the turn
+  store to stop refreshing it.
 - **The Timeline showed other chats' files.** The turn history's workspace
   watch records writes that bypass the shell and coder hooks (`sed -i`, a
   formatter, a build step), and two chats working in the same folder at
