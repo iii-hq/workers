@@ -111,32 +111,28 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
       // lands. A rejected write leaves the step where it was, instead of
       // showing complete until the next reload disagrees.
       void host.iii
-        .trigger('onboarding::steps::complete', {
+        .trigger<{ step?: StepRecord }>('onboarding::steps::complete', {
           tour_id: tour.id,
           step_id: stepId,
           ...(fired ? { fired: { trigger_type: fired.trigger_type, payload: fired.payload } } : {}),
         })
-        .then(() => {
-          setRecords((current) =>
-            current[stepId]?.status === 'complete'
-              ? current
-              : {
-                  ...current,
-                  [stepId]: {
-                    status: 'complete',
-                    at: Date.now(),
-                    fired: fired ? { trigger_type: fired.trigger_type, payload: fired.payload, at: fired.at } : null,
-                  },
-                },
-          )
-          // Finishing a step opens the next one that is still open for
-          // business, so the list reads as one moving front instead of a
-          // closed accordion.
-          setOpen(tour.steps.find((step) => step.id !== stepId && records[step.id]?.status !== 'complete')?.id ?? null)
+        .then((result) => {
+          setRecords((current) => {
+            if (current[stepId]?.status === 'complete') return current
+            // The worker's own record, not a second copy of it: its payload is
+            // capped and its timestamps are the ones a reload will show.
+            const next = { ...current, [stepId]: result.step ?? { status: 'complete' as const, at: Date.now() } }
+            // Finishing a step opens the next one that is still open for
+            // business, so the list reads as one moving front instead of a
+            // closed accordion. Read from `next`, so two completions landing
+            // together cannot reopen a step the other just closed.
+            setOpen(firstIncomplete(tour, next)?.id ?? null)
+            return next
+          })
         })
         .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
     },
-    [host, records, tour],
+    [host, tour],
   )
 
   /**
@@ -155,14 +151,19 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
    */
   const openScreen = useCallback(
     (step: Step) => {
+      const open = (sizes?: number[]) =>
+        host.iii.trigger('console::workspace::open', {
+          screen: step.screen,
+          relative_to: 'ext:onboarding',
+          direction: 'right',
+          ...(sizes ? { sizes } : {}),
+        })
       const placed = step.screen
-        ? host.iii
-            .trigger('console::workspace::open', {
-              screen: step.screen,
-              relative_to: 'ext:onboarding',
-              direction: 'right',
-              sizes: [0.3, 0.4, 0.3],
-            })
+        ? // A reused tab keeps its own column count, and a `sizes` that does
+          // not match it is rejected outright. The widths are the nicety; the
+          // screen is the step, so a rejection retries without them.
+          open([0.3, 0.4, 0.3])
+            .catch(() => open())
             .catch(() => {})
         : Promise.resolve()
       void placed.then(() => complete(step.id))
@@ -476,8 +477,13 @@ function Copyable({ label, text }: { label: string; text: string }) {
   // back. It says `copied` until the text itself changes, which is the only
   // thing that makes the old label wrong.
   const [copied, setCopied] = useState<string | null>(null)
+  // A denied clipboard permission leaves the label alone: the text below is
+  // selectable, which is the fallback either way.
   const copy = useCallback(() => {
-    void navigator.clipboard?.writeText(text).then(() => setCopied(text))
+    void navigator.clipboard
+      ?.writeText(text)
+      .then(() => setCopied(text))
+      .catch(() => setCopied(null))
   }, [text])
   return (
     <div className="flex flex-col gap-1">

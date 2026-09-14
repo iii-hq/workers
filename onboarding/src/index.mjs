@@ -198,6 +198,9 @@ iii.registerFunction(
 iii.registerFunction(
   'onboarding::steps::reset',
   async (input) => {
+    // Without this an unknown id reports success and leaves its own null key
+    // under `tours` forever.
+    if (!getTour(input.tour_id)) throw new Error(`unknown tour: ${input.tour_id}`)
     const subject = input.subject ?? 'local'
     const at = Date.now()
     await stateUpdate(progressKey(subject), [
@@ -231,6 +234,12 @@ const SIGNUP_URL =
   process.env.III_ONBOARDING_SIGNUP_URL ??
   'https://api.mailmodo.com/api/v1/at/f/y0trGR0lfL/c6aefeeb-e66a-5c8a-9c71-4733d9ea1836'
 
+// The operator's address goes over this URL, so an override that downgrades it
+// to plain HTTP is refused rather than used.
+if (URL.parse(SIGNUP_URL)?.protocol !== 'https:') {
+  throw new Error(`III_ONBOARDING_SIGNUP_URL must be an https URL: ${SIGNUP_URL}`)
+}
+
 // Mailmodo matches the Origin against an allowlist and this one literal is on
 // it. `localhost` and `[::1]` are refused even though they name the same host,
 // so the value is fixed rather than derived from wherever the engine happens to
@@ -261,6 +270,9 @@ iii.registerFunction(
       // or the submission lands with its mapping unresolved, so `email` is the
       // only one we send.
       body: JSON.stringify({ email, data: { email } }),
+      // A redirect would carry the address to a host we never checked, so a
+      // moved endpoint is an error here rather than a silent second request.
+      redirect: 'error',
       signal: AbortSignal.timeout(SIGNUP_TIMEOUT_MS),
     }).catch((cause) => {
       if (cause?.name === 'TimeoutError') throw new Error('the signup service did not answer in time')

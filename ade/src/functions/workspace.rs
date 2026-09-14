@@ -330,7 +330,9 @@ fn anchor_column(screens: &[Option<String>], relative_to: &str) -> Option<usize>
             .iter()
             .position(|s| s.as_deref().is_some_and(is_chat_screen));
     }
-    screens.iter().position(|s| s.as_deref() == Some(relative_to))
+    screens
+        .iter()
+        .position(|s| s.as_deref() == Some(relative_to))
 }
 
 fn place_beside(
@@ -562,7 +564,15 @@ fn validated_sizes(sizes: &[f64], columns: usize) -> Result<Vec<f64>, Error> {
             "every entry of `sizes` must be a finite number greater than zero",
         ));
     }
+    // Widths large enough to overflow the sum would normalize to zero, which
+    // the parser later rejects as an invalid tab.
     let total: f64 = sizes.iter().sum();
+    if !total.is_finite() {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            "the entries of `sizes` are too large to normalize",
+        ));
+    }
     Ok(sizes.iter().map(|s| s / total).collect())
 }
 
@@ -891,12 +901,24 @@ mod tests {
 
     #[test]
     fn sizes_are_normalized_and_checked_against_the_column_count() {
-        assert_eq!(validated_sizes(&[3.0, 4.0, 3.0], 3).unwrap(), vec![0.3, 0.4, 0.3]);
-        assert_eq!(validated_sizes(&[0.3, 0.4, 0.3], 3).unwrap(), vec![0.3, 0.4, 0.3]);
+        assert_eq!(
+            validated_sizes(&[3.0, 4.0, 3.0], 3).unwrap(),
+            vec![0.3, 0.4, 0.3]
+        );
+        assert_eq!(
+            validated_sizes(&[0.3, 0.4, 0.3], 3).unwrap(),
+            vec![0.3, 0.4, 0.3]
+        );
         for bad in [vec![0.5, 0.5], vec![0.3, 0.4, 0.3, 0.1]] {
             assert!(validated_sizes(&bad, 3).is_err(), "{bad:?}");
         }
-        for bad in [vec![0.5, 0.0, 0.5], vec![0.5, -0.1, 0.6], vec![0.5, f64::NAN, 0.5]] {
+        for bad in [
+            vec![0.5, 0.0, 0.5],
+            vec![0.5, -0.1, 0.6],
+            vec![0.5, f64::NAN, 0.5],
+            // Finite on their own, infinite once summed.
+            vec![f64::MAX, f64::MAX, f64::MAX],
+        ] {
             assert!(validated_sizes(&bad, 3).is_err(), "{bad:?}");
         }
     }
@@ -965,7 +987,15 @@ mod tests {
         let tabs = tabs_from(&json!([
             { "id": "a", "columns": 2, "screens": ["chat", "ext:shell"] }
         ]));
-        let opened = open_screen(&tabs, "a", "ext:shell", CHAT_SCREEN, Direction::Right, fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:shell",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::Existing);
         assert!(opened.tabs.is_none());
         assert_eq!(opened.column, 1);
@@ -981,7 +1011,15 @@ mod tests {
                 "paneIds": ["pane-chat", "pane-traces"]
             }
         ]));
-        let opened = open_screen(&tabs, "a", "ext:shell", CHAT_SCREEN, Direction::Right, fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:shell",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         let opened_tabs = opened.tabs.unwrap();
         assert_eq!(
             opened_tabs[0].rest.get("paneIds"),
@@ -1015,7 +1053,15 @@ mod tests {
             sizes: None,
             rest: Map::new(),
         };
-        let opened = open_screen(&[full], "a", "ext:shell", CHAT_SCREEN, Direction::Right, fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[full],
+            "a",
+            "ext:shell",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.tab_id, "tab-new");
         let next = opened.tabs.unwrap();
@@ -1039,7 +1085,15 @@ mod tests {
             sizes: None,
             rest: Map::new(),
         };
-        let opened = open_screen(&[full], "a", "chat:child", CHAT_SCREEN, Direction::Right, fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[full],
+            "a",
+            "chat:child",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.column, 0);
         let next = opened.tabs.unwrap();
@@ -1083,7 +1137,15 @@ mod tests {
         ];
         let tabs: Vec<Tab> = raw.iter().filter_map(parse_tab).collect();
         assert_eq!(tabs.len(), 2);
-        let opened = open_screen(&tabs, "a", "ext:shell", CHAT_SCREEN, Direction::Right, fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:shell",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         let merged = merge_tabs(&raw, &opened.tabs.unwrap());
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0]["screens"], json!(["chat", "ext:shell"]));
@@ -1093,9 +1155,17 @@ mod tests {
 
         let appended = merge_tabs(
             &raw,
-            &open_screen(&tabs, "c", "workers", CHAT_SCREEN, Direction::Right, fixed_id, fixed_pane_id)
-                .tabs
-                .unwrap(),
+            &open_screen(
+                &tabs,
+                "c",
+                "workers",
+                CHAT_SCREEN,
+                Direction::Right,
+                fixed_id,
+                fixed_pane_id,
+            )
+            .tabs
+            .unwrap(),
         );
         assert_eq!(appended.len(), 3);
         assert_eq!(appended[2]["screens"], json!(["chat", "workers", "traces"]));
@@ -1106,7 +1176,15 @@ mod tests {
     #[test]
     fn empty_layouts_never_panic() {
         assert!(resolve_active(&[], Some("x")).is_none());
-        let opened = open_screen(&[], "x", "workers", CHAT_SCREEN, Direction::Right, fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[],
+            "x",
+            "workers",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.tabs.unwrap().len(), 1);
         let stale = open_screen(

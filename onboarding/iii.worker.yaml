@@ -2,6 +2,7 @@ iii: v1
 name: onboarding
 language: javascript
 deploy: bundle
+license: Apache-2.0
 manifest: package.json
 tags: [onboarding, tour, console, ui, docs]
 description: Guided console tour — step content, per-operator progress in state, and an injected page that spotlights the console element each step talks about.
