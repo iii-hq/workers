@@ -703,6 +703,10 @@ async fn handle(
         }
     }
 
+    // A preflight snapshot cannot close the provider's asynchronous activation
+    // window. Recover a missed terminal event now and through the durable sweep.
+    crate::bindings::compose::schedule(deps, &binding);
+
     let notes: Vec<String> = [
         provider_presence_note(deps, &req.trigger_type).await,
         prewritten_key_advisory(deps, &req).await,
@@ -782,31 +786,11 @@ fn reject_forbidden_type(trigger_type: &str) -> Result<(), HarnessError> {
     Ok(())
 }
 
-/// A leaf may arm a wake for ITSELF; it may not wire a binding that
-/// mechanically calls another function, and it may not leave one behind.
-///
-/// Those are the two halves of `engine::register_trigger`. The first is the
-/// leaf's own work — park until your background job ends instead of polling
-/// `shell::status` or running `sleep`, which is what a leaf with no wake
-/// mechanism actually did (MOT-4766). The second is control plane: it installs
-/// durable machinery that fires into a function the leaf does not own, outlives
-/// the assignment, and cannot be cleaned up by a leaf, whose
-/// `engine::unregister_trigger` stays walled off.
-///
-/// Refuse a `compose-operation` wake whose operation has ALREADY settled.
-///
-/// A binding only sees what happens after it exists, and an operation reaches a
-/// terminal status exactly once. Arm the wake after `compose::add` returns and
-/// the event you are waiting for is already in the past: the binding is created,
-/// looks armed, reports zero fires, and the session that ended its turn on it
-/// waits until something else gives up. Two `linkly_tutorial` runs died that way
-/// — a child parked on a settled operation, and because an incomplete child
-/// keeps `tree_complete` false it took a finished run down with it (MOT-4766).
-///
-/// The doctrine (register first, start the operation in the same message) is in
-/// the prompt and was not enough; an agent that gets the order wrong deserves an
-/// answer it cannot park on. A probe that cannot reach Compose registers as
-/// normal: never fail a registration because a diagnostic was unavailable.
+/// Refuse a wake when the operation is already settled at preflight: its result
+/// is available now, so direct the caller to read it instead of parking.
+/// Completion after this read is recovered from Compose's persisted terminal
+/// event after registration and by the binding sweep. An unknown status or an
+/// unavailable diagnostic still permits registration.
 async fn reject_settled_compose_operation(
     deps: &Deps,
     req: &SubscribeRequest,
@@ -836,9 +820,9 @@ async fn reject_settled_compose_operation(
         return Ok(());
     }
     Err(HarnessError::InvalidRequest(format!(
-        "operation `{operation_id}` already reached `{status}`, so this wake could never fire: a \
-         binding only sees what happens after it exists. Read the result with `compose::operation` \
-         now — and register the wake BEFORE starting the operation next time, in the same message."
+        "operation `{operation_id}` already reached `{status}`. Read the result with \
+         `compose::operation` now instead of arming a wake, and register the wake BEFORE \
+         starting the operation next time, in the same message."
     )))
 }
 
@@ -850,7 +834,8 @@ fn is_settled_operation(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "cancelled")
 }
 
-/// The deadline half lives in [`leaf_wake_deadline`]: a leaf's wake is stamped
+/// A leaf may arm its own wake, but may not install a mechanical call it cannot
+/// unregister. The deadline half lives in [`leaf_wake_deadline`]: a leaf's wake is stamped
 /// rather than refused, because a leaf with no way to wait is the problem this
 /// set out to fix.
 fn reject_leaf_control_plane(

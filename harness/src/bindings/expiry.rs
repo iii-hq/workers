@@ -63,6 +63,13 @@ pub async fn sweep(deps: &Deps) -> usize {
         }
     };
     super::gc::reconcile_orphan_delivery_triggers(deps, &bindings).await;
+    // Recovery runs independently with bounded concurrency and probe timeouts;
+    // an unavailable Compose diagnostic must not hold up wake expiry. Repeating
+    // from the durable watch closes even a provider activation after the first
+    // snapshot, including after reconnect or a harness restart.
+    for binding in &bindings {
+        super::compose::schedule(deps, binding);
+    }
     let now = AgentMessage::now_ms();
     let mut retired = 0usize;
     for binding in bindings.into_iter().filter(|b| b.is_exhausted(now)) {

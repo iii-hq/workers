@@ -87,12 +87,15 @@ pub async fn handle(
 fn timeout_note(requested: Option<u64>, effective: u64) -> String {
     let cause = match requested {
         Some(requested) if requested > effective => format!(
-            "shell::exec is capped at {effective}ms and the requested {requested}ms was clamped to it;              the command was killed at the cap"
+            "shell::exec is capped at {effective}ms and the requested {requested}ms was clamped to it; \
+             the command was killed at the cap"
         ),
         _ => format!("shell::exec exceeded its {effective}ms timeout and the command was killed"),
     };
     format!(
-        "{cause}. For work that runs longer, start it with shell::exec_bg and bind the          shell::job-finished trigger to that job_id to be woken when it ends, instead of          waiting or re-running it."
+        "{cause}. For work that runs longer, start it with shell::exec_bg and bind the \
+         shell::job-finished trigger to that job_id to be woken when it ends, instead of \
+         waiting or re-running it."
     )
 }
 

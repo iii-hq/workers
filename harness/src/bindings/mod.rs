@@ -14,6 +14,7 @@
 //! delivering entirely, and a startup reconciler existed only to GC the
 //! wreckage.
 
+pub(crate) mod compose;
 pub mod expiry;
 pub mod gc;
 mod store;
