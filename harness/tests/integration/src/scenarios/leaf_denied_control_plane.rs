@@ -175,6 +175,8 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
+                        json!({ "role": "assistant" }),
+                        json!({ "role": "function_result" }),
                         json!({ "role": "assistant", "content": [
                             { "type": "function_call", "id": "call-bind" }
                         ] }),
@@ -199,6 +201,8 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
+                        json!({ "role": "assistant" }),
+                        json!({ "role": "function_result" }),
                         json!({ "role": "assistant" }),
                         json!({ "role": "function_result" }),
                         json!({ "role": "assistant", "content": [
