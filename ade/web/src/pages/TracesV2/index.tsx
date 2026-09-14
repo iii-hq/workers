@@ -67,6 +67,7 @@ import { WorkerBreakdown } from './components/WorkerBreakdown'
 import { useAllSpans } from './hooks/useAllSpans'
 import { useFollowLiveTurn } from './hooks/useFollowLiveTurn'
 import { useFollowTurns } from './hooks/useFollowTurns'
+import { turnTracesFor } from './lib/followTurn'
 import {
   showsWithoutProbe,
   useSpanFilteredTraceRows,
@@ -177,6 +178,7 @@ export function TracesV2({
   // — selecting another conversation re-scopes.
   const conversationsCtx = useConversationsCtxOptional()
   const activeConversation = conversationsCtx?.active ?? null
+  const activeSessionId = conversationsCtx?.activeId ?? null
   const [scopeDismissedFor, setScopeDismissedFor] = useState<string | null>(
     null,
   )
@@ -695,7 +697,7 @@ export function TracesV2({
   )
   useFollowLiveTurn({
     enabled: followTurns && !isPaused,
-    activeSessionId: conversationsCtx?.activeId ?? null,
+    activeSessionId,
     spans: allSpans,
     selectedTraceId,
     onOpenTrace: openFollowedTrace,
@@ -739,6 +741,20 @@ export function TracesV2({
     initialAppliedRef.current = true
     selectTrace(initialTraceId)
   }, [initialTraceId, selectTrace])
+
+  // Opening traces beside a conversation is almost always a question about
+  // THAT conversation, so the newest turn of the active chat opens with the
+  // pane. Once only, and never over a deep link or a trace the operator
+  // already chose — after that the surface is theirs.
+  const sessionSeedRef = useRef(false)
+  useEffect(() => {
+    if (sessionSeedRef.current || initialTraceId || !activeSessionId) return
+    const turns = turnTracesFor(allSpans, activeSessionId)
+    if (turns.size === 0) return
+    sessionSeedRef.current = true
+    const newest = [...turns].reduce((a, b) => (b[1] > a[1] ? b : a))
+    selectTrace(newest[0])
+  }, [activeSessionId, allSpans, initialTraceId, selectTrace])
 
   // Esc walks back out: span panel first, then the expanded detail. A
   // pane-scoped command when the host offers one, so it only fires while

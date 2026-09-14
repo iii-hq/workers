@@ -8,6 +8,11 @@
  *     tests/); the ones after it are the console's own stable hooks, so the
  *     spotlight still lands on a console build that predates the anchor
  *     classes.
+ *   - `ask` (optional): a prompt the step's button puts in the chat composer
+ *     and sends, so the operator talks to the agent instead of copying text
+ *     out of the tour.
+ *   - `action` (optional): a console move the step's button performs, named
+ *     here and carried out by the page.
  *   - `condition` (optional): a real engine trigger the step waits for. The
  *     page binds it, shows what it is waiting for, and when it fires shows
  *     the trigger and its payload. A step with no condition is closed by the
@@ -16,7 +21,8 @@
 
 /**
  * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
- * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string }} Step
+ * @typedef {{ text: string, label: string }} Ask
+ * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string, ask?: Ask, action?: 'move-traces' }} Step
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
 
@@ -29,6 +35,10 @@ export const TOURS = [
     steps: [
       {
         id: "message",
+        ask: {
+          text: "hello",
+          label: "Say hi",
+        },
         title: "Send a message",
         body: "Say 'hello' to the agent. We've setup a trigger to run when you get the agent's response. The iii ade (agentic development environment) is an example of a iii Worker. Database and state are other examples of workers. Every Worker in the iii system can be composed, observed, and reacted to in the same way.",
         anchors: [".onboarding-composer", ".composer-shell"],
@@ -56,9 +66,12 @@ export const TOURS = [
       },
       {
         id: "composability",
+        ask: {
+          text: "Add a database worker to this project, then tell me what it can do.",
+          label: "Ask the agent",
+        },
         title: "Composability",
         body: "iii is composable like Node or Python, except when you add to iii you're adding a working service and not a library. Let's ask the agent to add a database worker.",
-        anchors: [],
       },
       {
         id: "observability",
@@ -71,21 +84,31 @@ export const TOURS = [
       },
       {
         id: "discoverability",
+        action: "move-traces",
+        ask: {
+          text: "What can this system do right now? List the workers that are registered and the functions each one exposes.",
+          label: "Ask the agent",
+        },
         title: "Discover",
         body: "See what the system can do. Let's ask the agent what the current capabilities are.",
-        anchors: [],
       },
       {
         id: "extensibility",
+        ask: {
+          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI, and open that page for me when it is done.",
+          label: "Ask the agent",
+        },
         title: "Extensibility",
         body: "Great! Now let's use that database worker. Ask the agent to create a simple CRUD app like a TODO list and to create console injectable UI for it as well and to open it for you when it's done.",
-        anchors: [],
       },
       {
         id: "reactivity",
+        ask: {
+          text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off.",
+          label: "Ask the agent",
+        },
         title: "Reactivity",
         body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers to listen for when they're done. Watch the Triggers react as you check the boxes.",
-        anchors: [],
       },
       {
         id: "stay-in-touch",

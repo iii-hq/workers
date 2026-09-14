@@ -28,7 +28,7 @@ test('every tour and step is addressable', () => {
  * alone. This is the check that fails when one is renamed or dropped.
  */
 test('every step anchors on a console class that still exists', () => {
-  const consoleSrc = join(root, '..', 'console', 'web', 'src')
+  const consoleSrc = join(root, '..', 'ade', 'web', 'src')
   for (const tour of TOURS) {
     for (const step of tour.steps) {
       if (!step.anchors) continue
@@ -59,4 +59,29 @@ test('every condition is a complete trigger binding', () => {
 test('the injected page ships the box it draws', () => {
   const css = readFileSync(join(root, 'ui', 'styles.css'), 'utf8')
   assert.match(css, /\.onboarding-spotlight/)
+})
+
+/**
+ * A step's button either sends a prompt, performs a console move, or opens a
+ * screen. Whichever it is, the page needs the fields to render it.
+ */
+test('every ask carries a prompt and a button label', () => {
+  for (const tour of TOURS) {
+    for (const step of tour.steps) {
+      if (!step.ask) continue
+      assert.ok(step.ask.text?.trim(), `${step.id}: ask has no text`)
+      assert.ok(step.ask.label?.trim(), `${step.id}: ask has no label`)
+    }
+  }
+})
+
+/** The page carries out actions by name, so an unknown one would do nothing. */
+test('every action is one the page implements', () => {
+  const known = new Set(['move-traces'])
+  for (const tour of TOURS) {
+    for (const step of tour.steps) {
+      if (!step.action) continue
+      assert.ok(known.has(step.action), `${step.id}: unknown action ${step.action}`)
+    }
+  }
 })

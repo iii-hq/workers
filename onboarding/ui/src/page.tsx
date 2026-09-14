@@ -28,6 +28,9 @@ import { disposeSpotlight, hideSpotlight, showSpotlight } from './spotlight'
 
 /** Console class recipes, with a literal fallback for an older build that
     does not publish them. */
+/** Long enough to read one line of narration before the next move. */
+const MOVE_STEP_MS = 700
+
 const ui = uiClasses ?? {
   card: 'iii-ui-card',
   listItem: 'iii-ui-list-item',
@@ -42,6 +45,10 @@ interface Step {
   condition?: Condition
   /** A console screen the step's button opens beside the tour, e.g. `traces`. */
   screen?: string
+  /** A prompt the step hands to the chat composer and sends. */
+  ask?: { text: string; label: string }
+  /** A console move the step performs, named in the tour content. */
+  action?: 'move-traces'
 }
 
 interface Tour {
@@ -171,6 +178,62 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
     [complete, host],
   )
 
+  /**
+   * Hand the step's prompt to the chat composer and send it. The console does
+   * the sending, so the message is a normal turn — the same one the step's
+   * condition is waiting for.
+   *
+   * A step with a condition closes when its trigger fires; one without closes
+   * here, because sending WAS the step.
+   */
+  const ask = useCallback(
+    (step: Step) => {
+      if (!step.ask) return
+      if (!host.chat?.compose) {
+        setError('This console is too old to send a prompt for you. Type it in the chat instead.')
+        return
+      }
+      host.chat.compose({ text: step.ask.text, submit: true })
+      if (!step.condition) complete(step.id)
+    },
+    [complete, host],
+  )
+
+  /**
+   * Discoverability, performed rather than described: close the traces pane,
+   * then open traces again in a tab of its own while the operator stays where
+   * they are. Narrated step by step — the point is watching one surface move
+   * between workspaces, which is lost if both writes land in one frame.
+   */
+  const [moving, setMoving] = useState<string | null>(null)
+  const moveTraces = useCallback(
+    (step: Step) => {
+      const pause = () => new Promise((resolve) => setTimeout(resolve, MOVE_STEP_MS))
+      void (async () => {
+        try {
+          setMoving('Closing traces on this tab…')
+          await host.iii.trigger('console::workspace::close', { screen: 'traces' })
+          await pause()
+          setMoving('Opening traces in a tab of its own…')
+          await host.iii.trigger('console::workspace::open', {
+            screen: 'traces',
+            placement: 'new-tab',
+            activate: false,
+          })
+          await pause()
+          setMoving('Traces moved to its own tab. You stayed on this one.')
+          // A step that also asks something closes on the ask, not here:
+          // closing now would take the second button away with it.
+          if (!step.ask) complete(step.id)
+        } catch (cause) {
+          setMoving(null)
+          setError(cause instanceof Error ? cause.message : String(cause))
+        }
+      })()
+    },
+    [complete, host],
+  )
+
   // Every step that is still open for business gets its condition bound, so a
   // step can be satisfied before the operator reads down to it.
   useEffect(() => {
@@ -275,7 +338,27 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
                   {step.id === 'stay-in-touch' ? <StayInTouch host={host} /> : null}
-                  {state !== 'complete' && !step.condition ? (
+                  {step.action === 'move-traces' && state !== 'complete' ? (
+                    <div className="flex flex-col gap-2">
+                      <Button className="self-start" onClick={() => moveTraces(step)} disabled={moving !== null}>
+                        Move traces to its own tab
+                      </Button>
+                      {moving ? (
+                        <p className="m-0 text-base text-ink-faint" role="status">
+                          {moving}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {step.ask && state !== 'complete' ? (
+                    <div className="flex flex-col gap-2">
+                      <Button className="self-start" onClick={() => ask(step)}>
+                        {step.ask.label}
+                      </Button>
+                      <p className="ob-pre m-0">{step.ask.text}</p>
+                    </div>
+                  ) : null}
+                  {state !== 'complete' && !step.condition && !step.ask && !step.action ? (
                     <Button className="self-start" onClick={() => openScreen(step)}>
                       {step.screen ? `Open ${step.screen}` : 'Got it'}
                     </Button>

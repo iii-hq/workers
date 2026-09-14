@@ -502,7 +502,18 @@ export interface Host {
      * drop or a paste would, and put the caret there. Files become
      * attachments. Absent on older consoles; feature-detect.
      */
-    compose?(draft: { text?: string; files?: File[]; inline?: boolean }): void
+    compose?(draft: {
+      text?: string
+      files?: File[]
+      inline?: boolean
+      /**
+       * Send the draft once the text lands, rather than leaving it for the
+       * user to send. For a surface handing over a whole prompt, where the
+       * click already WAS the decision to send. Ignored by a composer that
+       * cannot send right now (streaming, blocked): the text stays a draft.
+       */
+      submit?: boolean
+    }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void

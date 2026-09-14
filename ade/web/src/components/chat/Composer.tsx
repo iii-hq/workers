@@ -500,6 +500,11 @@ export function Composer({
   // focus request is then replayed: the editor's own listener already ran
   // against a hidden node.
   const refocusAfterUnfoldRef = useRef(false)
+  // An insert that asked to be sent. The text arrives through Lexical, so the
+  // send waits for the editor's own change to land in `textRef` — see the
+  // `onChange` below. Held in a ref because the insert and the change are two
+  // separate turns of the event loop.
+  const pendingSubmitRef = useRef(false)
   useEffect(() => {
     const unfold = () => {
       if (!collapsedRef.current) return
@@ -507,7 +512,10 @@ export function Composer({
       setFolded(false)
     }
     const offFocus = onComposerFocusRequest(unfold)
-    const offInsert = onComposerInsert(unfold)
+    const offInsert = onComposerInsert((insert) => {
+      if (insert.submit) pendingSubmitRef.current = true
+      unfold()
+    })
     return () => {
       offFocus()
       offInsert()
@@ -653,6 +661,13 @@ export function Composer({
               textRef.current = text
               setHasText(text.trim().length > 0)
               if (browseIdRef.current === null) onTextChange?.(text)
+              // The editor has the inserted text now, so a send that came in
+              // with it can go. Out of band: `handleSubmit` clears the editor,
+              // which must not run inside its own change.
+              if (pendingSubmitRef.current && text.trim().length > 0) {
+                pendingSubmitRef.current = false
+                queueMicrotask(handleSubmit)
+              }
             }}
             onSubmit={handleSubmit}
             clearToken={clearToken}

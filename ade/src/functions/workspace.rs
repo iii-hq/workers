@@ -296,6 +296,19 @@ pub enum Direction {
     Left,
 }
 
+/// Where the caller wants the screen to land.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementRequest {
+    /// Reuse a tab already showing the screen, else place it beside
+    /// `relative_to` in the active tab, else open a fresh tab.
+    #[default]
+    Auto,
+    /// Always open a fresh tab, even when the screen is mounted elsewhere and
+    /// even when the active tab has room.
+    NewTab,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
@@ -438,6 +451,13 @@ pub fn open_screen(
             tabs: Some(next),
         };
     }
+    open_in_new_tab(tabs, screen, new_id)
+}
+
+/// A fresh tab carrying `screen`, appended after the ones that exist. Every
+/// screen but chat gets a chat column beside it, so a new tab is never a lone
+/// panel with no conversation next to it.
+pub fn open_in_new_tab(tabs: &[Tab], screen: &str, new_id: impl FnOnce() -> String) -> Opened {
     let (screens, column) = if is_chat_screen(screen) {
         (vec![Some(screen.to_string())], 0)
     } else {
@@ -552,7 +572,7 @@ fn validated_sizes(sizes: &[f64], columns: usize) -> Result<Vec<f64>, Error> {
     if sizes.len() != columns {
         return Err(remote(
             CODE_INVALID_SIZES,
-            &format!(
+            format!(
                 "`sizes` must carry one width per column: got {}, the tab has {columns}",
                 sizes.len()
             ),
@@ -690,6 +710,11 @@ pub struct OpenInput {
     /// Make the tab holding the screen the active one (default true).
     #[serde(default)]
     pub activate: Option<bool>,
+    /// `auto` (default) reuses a tab already showing the screen; `new-tab`
+    /// always opens a fresh one. Pair `new-tab` with `activate: false` to put
+    /// a screen aside without moving the operator off the tab they are on.
+    #[serde(default)]
+    pub placement: Option<PlacementRequest>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -771,15 +796,18 @@ pub fn register(iii: &Arc<IIIClient>) {
                 let activate = input.activate.unwrap_or(true);
                 let _guard = lock.lock().await;
                 let layout = load_layout(&iii).await?;
-                let opened = open_screen(
-                    &layout.tabs,
-                    &layout.active_tab_id,
-                    &screen,
-                    &relative_to,
-                    direction,
-                    new_tab_id,
-                    new_pane_id,
-                );
+                let opened = match input.placement.unwrap_or_default() {
+                    PlacementRequest::NewTab => open_in_new_tab(&layout.tabs, &screen, new_tab_id),
+                    PlacementRequest::Auto => open_screen(
+                        &layout.tabs,
+                        &layout.active_tab_id,
+                        &screen,
+                        &relative_to,
+                        direction,
+                        new_tab_id,
+                        new_pane_id,
+                    ),
+                };
                 let active_tab_id = if activate {
                     opened.tab_id.clone()
                 } else {
@@ -1171,6 +1199,40 @@ mod tests {
         assert_eq!(appended[2]["screens"], json!(["chat", "workers", "traces"]));
         let brand_new = merge_tabs(&[], &default_tabs());
         assert_eq!(brand_new[0]["id"], json!("tab-home"));
+    }
+
+    #[test]
+    fn a_new_tab_is_forced_even_when_the_screen_is_already_mounted() {
+        let tabs = tabs_from(&json!([
+            { "id": "a", "columns": 2, "screens": ["chat", "traces"] }
+        ]));
+        // `open_screen` would hand back the tab that already shows it.
+        assert_eq!(
+            open_screen(
+                &tabs,
+                "a",
+                "traces",
+                CHAT_SCREEN,
+                Direction::Right,
+                fixed_id,
+                fixed_pane_id
+            )
+            .placement,
+            Placement::Existing
+        );
+        let opened = open_in_new_tab(&tabs, "traces", fixed_id);
+        assert_eq!(opened.placement, Placement::NewTab);
+        assert_ne!(opened.tab_id, "a");
+        // Chat rides along, and the caller is told which column it landed in.
+        assert_eq!(
+            opened.screens,
+            vec![Some("chat".into()), Some("traces".into())]
+        );
+        assert_eq!(opened.column, 1);
+        // The tab it was already on is left alone.
+        let next = opened.tabs.unwrap();
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].screens, tabs[0].screens);
     }
 
     #[test]

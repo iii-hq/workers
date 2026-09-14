@@ -539,7 +539,18 @@ export interface Host {
      * last line (a `#file(path:from-to)` reference, say) instead of
      * starting a paragraph of its own.
      */
-    compose(draft: { text?: string; files?: File[]; inline?: boolean }): void
+    compose(draft: {
+      text?: string
+      files?: File[]
+      inline?: boolean
+      /**
+       * Send the draft once the text lands, rather than leaving it for the
+       * user to send. For a surface handing over a whole prompt, where the
+       * click already WAS the decision to send. Ignored by a composer that
+       * cannot send right now (streaming, blocked): the text stays a draft.
+       */
+      submit?: boolean
+    }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     registerComposerAction(action: ComposerActionRegistration): () => void
