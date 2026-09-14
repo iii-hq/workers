@@ -9,8 +9,8 @@
 //! downloaded on first use into `models_dir` and nothing leaves the machine.
 //! `stt.backend` can also invoke a local `whisper-cli` process directly, use an
 //! OpenAI-compatible audio endpoint, or route through llm-router.
-//! Read-aloud has no local engine in this release: it uses the host's own
-//! speech command or an OpenAI-compatible speech endpoint.
+//! Read-aloud generates audio through the host command, local neural Piper,
+//! an OpenAI-compatible endpoint, or llm-router, and returns it to the caller.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

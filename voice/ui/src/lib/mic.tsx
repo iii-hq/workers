@@ -29,7 +29,6 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
   const [errorFlash, setErrorFlash] = useState<string | null>(null)
   const holdTimerRef = useRef<number | null>(null)
   const heldRef = useRef(false)
-  const pendingRef = useRef<'finish' | 'cancel' | null>(null)
   const messageTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -48,23 +47,12 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
   )
 
   const listening = state.status === 'listening' || state.status === 'starting'
-  const canStart = state.status === 'idle' || state.status === 'error'
 
   const finish = useCallback(async () => {
     const text = (await stop()).trim()
     if (text) onFinish(text)
   }, [stop, onFinish])
 
-  useEffect(() => {
-    if (state.status === 'listening' && pendingRef.current) {
-      const pending = pendingRef.current
-      pendingRef.current = null
-      if (pending === 'finish') finish()
-      else cancel()
-    } else if (state.status === 'idle' || state.status === 'error') {
-      pendingRef.current = null
-    }
-  }, [state.status, finish, cancel])
 
   function clearHold() {
     if (holdTimerRef.current !== null) {
@@ -80,26 +68,27 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
       heldRef.current = false
       holdTimerRef.current = window.setTimeout(() => {
         heldRef.current = true
-        if (canStart) start()
+        const status = controller.getState().status
+        if (status === 'idle' || status === 'error') void start()
       }, HOLD_THRESHOLD_MS)
     },
     onPointerUp() {
       clearHold()
+      const status = controller.getState().status
       if (heldRef.current) {
         heldRef.current = false
-        if (state.status === 'listening') finish()
-        else if (state.status === 'starting') pendingRef.current = 'finish'
+        if (status === 'listening' || status === 'starting') void finish()
         return
       }
-      if (canStart) start()
-      else if (state.status === 'listening') finish()
+      if (status === 'idle' || status === 'error') void start()
+      else if (status === 'listening' || status === 'starting') void finish()
     },
     onPointerCancel() {
       clearHold()
       if (heldRef.current) {
         heldRef.current = false
-        if (state.status === 'listening') cancel()
-        else if (state.status === 'starting') pendingRef.current = 'cancel'
+        const status = controller.getState().status
+        if (status === 'listening' || status === 'starting') void cancel()
       }
     },
   }

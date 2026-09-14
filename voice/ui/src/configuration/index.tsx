@@ -119,7 +119,7 @@ export function createVoiceConfigForm(host: Host) {
     const streaming = (models ?? []).filter((m) => m.kind === 'streaming_transducer')
     const whisper = (models ?? []).filter((m) => m.kind === 'whisper_ggml')
     const whisperModel = stringAt(value, ['stt', 'whisper_cpp', 'model'], DEFAULTS.whisperCppModel)
-    const customWhisper = !whisper.some((m) => m.id === whisperModel)
+    const customWhisper = models !== null && !whisper.some((m) => m.id === whisperModel)
     const routerStt = useRouterSpeechModels(host.iii, 'stt', sttBackend === 'router')
     const routerTts = useRouterSpeechModels(host.iii, 'tts', ttsBackend === 'router')
 

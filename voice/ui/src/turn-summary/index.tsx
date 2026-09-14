@@ -2,7 +2,7 @@
 
 import type { Host, SessionTurnSummaryProps, SessionTurnSummaryRegistration } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
-import { doctor, speak } from '../lib/client'
+import { speak } from '../lib/client'
 import { errorMessage } from '../lib/format'
 import { SpeakerIcon } from '../lib/icons'
 import { useBrowserPlayback } from '../lib/playback'
@@ -10,7 +10,6 @@ import { fetchSpokenReply, selectedChatText, subscribeAutoReplies, type SpokenRe
 
 export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistration {
   function VoiceTurnSummary({ sessionId, isStreaming }: SessionTurnSummaryProps) {
-    const [ttsOff, setTtsOff] = useState(false)
     const { state: speakState, play, stop: onStop } = useBrowserPlayback()
     const [lastReply, setLastReply] = useState<SpokenReply | null>(null)
     const [selected, setSelected] = useState('')
@@ -32,7 +31,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
     }, [sessionId])
 
     useEffect(() => {
-      if (!autoRead || ttsOff) return
+      if (!autoRead) return
       try {
         return subscribeAutoReplies(host.iii, sessionId, {
           initialReplyId: replyRef.current?.id,
@@ -47,7 +46,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
       } catch (error) {
         setAutoError(errorMessage(error))
       }
-    }, [sessionId, autoRead, ttsOff, play, onStop])
+    }, [sessionId, autoRead, play, onStop])
 
     useEffect(() => {
       if (isStreaming) return
@@ -64,19 +63,9 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
       }
     }, [sessionId, isStreaming])
 
-    useEffect(() => {
-      let cancelled = false
-      doctor(host.iii)
-        .then((res) => {
-          if (!cancelled) setTtsOff(res.tts.backend === 'off' || !res.tts.available)
-        })
-        .catch(() => {
-          if (!cancelled) setTtsOff(false)
-        })
-      return () => {
-        cancelled = true
-      }
-    }, [])
+    // Never freeze availability from a mount-time doctor snapshot. Each
+    // explicit attempt is validated by voice::speak against the current config
+    // and installed models; failures remain actionable and the buttons retryable.
 
     // A different chat must not inherit playback or a pending response.
     useEffect(() => () => onStop(), [sessionId, onStop])
@@ -94,12 +83,12 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
     return (
       <div className="voice-turn-summary">
         <button type="button" className="voice-turn-action" aria-pressed={autoRead}
-          disabled={ttsOff} title="Read new completed replies automatically in this browser. Does not send messages or keep the microphone open."
+          title="Read new completed replies automatically in this browser. Does not send messages or keep the microphone open."
           onClick={() => { setAutoError(null); setAutoSession(autoRead ? null : sessionId); if (autoRead) onStop() }}>
           <SpeakerIcon />
           {autoRead ? 'Voice chat on' : 'Voice chat'}
         </button>
-        {selected && !busy ? <button type="button" className="voice-turn-action" disabled={ttsOff}
+        {selected && !busy ? <button type="button" className="voice-turn-action"
           onPointerDown={(event) => event.preventDefault()}
           onClick={() => { const text = selected; void play(() => speak(host.iii, { text })) }}
           title={`Read only the selected passage (${selected.length} characters)`}>
@@ -108,8 +97,8 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
         <button
           type="button"
           className="voice-turn-action"
-          disabled={ttsOff || (!busy && (!hasReply || isStreaming))}
-          title={ttsOff ? 'text-to-speech is off' : busy ? 'Stop reading' : 'Read the last reply aloud'}
+          disabled={!busy && (!hasReply || isStreaming)}
+          title={busy ? 'Stop reading' : 'Read the last reply aloud; uses the current voice configuration'}
           aria-label={busy ? 'Stop reading aloud' : 'Read aloud'}
           onClick={busy ? () => { setAutoSession(null); onStop() } : onReadAloud}
         >

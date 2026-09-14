@@ -193,15 +193,18 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
             problem: None,
             device: None,
         },
-        TtsBackend::Router => TtsReport {
-            backend: "router".into(),
-            command: crate::router::problem(&state.iii, "tts").await,
-            available: crate::router::problem(&state.iii, "tts").await.is_none(),
-            playing: 0,
-            model: String::new(),
-            problem: None,
-            device: None,
-        },
+        TtsBackend::Router => {
+            let problem = crate::router::problem(&state.iii, "tts").await;
+            TtsReport {
+                backend: "router".into(),
+                command: None,
+                available: problem.is_none(),
+                playing: 0,
+                model: String::new(),
+                problem,
+                device: None,
+            }
+        }
         TtsBackend::Off => TtsReport {
             backend: "off".into(),
             command: None,

@@ -116,8 +116,8 @@ pub fn progress_sink(state: &AppState) -> ProgressSink {
 
 pub const REMOVE_ID: &str = "voice::models::remove";
 pub const REMOVE_DESC: &str =
-    "Delete a downloaded local model from models_dir. A model still named in the \
-                               configuration downloads again on its next use.";
+    "Delete a downloaded local model from models_dir. Configured ONNX transcription \
+     models may download on use; Whisper and Piper models require an explicit download.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RemoveRequest {

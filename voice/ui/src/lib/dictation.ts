@@ -77,6 +77,13 @@ interface PushQueueItem {
   pcm16Base64: string
 }
 
+interface StartAttempt {
+  generation: number
+  cancelled: boolean
+  discard: boolean
+  cancel: () => void
+}
+
 export class DictationController {
   private state: DictationReduceState = initialDictationReduceState
   private readonly listeners = new Set<() => void>()
@@ -86,7 +93,9 @@ export class DictationController {
   private starting = false
   private stopping = false
   private startPromise: Promise<void> | null = null
+  private opening: StartAttempt | null = null
   private stopPromise: Promise<string> | null = null
+  private stopMode: { discard: boolean; opening: StartAttempt | null } | null = null
   private generation = 0
   private seq = 0
   private inflight = 0
@@ -163,8 +172,21 @@ export class DictationController {
     this.offHandler = null
   }
 
+  /** getUserMedia cannot be aborted; invalidate it and release the UI now. */
+  private cancelOpening(discard: boolean): void {
+    const attempt = this.opening
+    if (!attempt) return
+    attempt.discard = discard
+    attempt.cancelled = true
+    attempt.cancel()
+    this.opening = null
+    this.starting = false
+    this.startPromise = null
+  }
+
   /** Detach first, then stop capture: its final flush must not revive a closed session. */
   private releaseSession(): void {
+    this.cancelOpening(true)
     const capture = this.capture
     this.capture = null
     this.sessionId = null
@@ -183,18 +205,27 @@ export class DictationController {
     this.queue = []
     this.inflight = 0
     this.set({ ...initialDictationReduceState, status: 'starting' })
-    this.startPromise = this.openSession(generation).finally(() => {
+    let cancel!: () => void
+    const cancelled = new Promise<void>((resolve) => { cancel = resolve })
+    const attempt: StartAttempt = { generation, cancelled: false, discard: true, cancel }
+    this.opening = attempt
+    this.startPromise = Promise.race([this.openSession(attempt), cancelled]).finally(() => {
+      // A cancelled acquisition may settle after the next session has started.
+      if (this.opening !== attempt) return
+      this.opening = null
       this.starting = false
       this.startPromise = null
     })
     return this.startPromise
   }
 
-  private async openSession(generation: number): Promise<void> {
+  private async openSession(attempt: StartAttempt): Promise<void> {
+    const { generation } = attempt
+    const obsolete = () => attempt.cancelled || generation !== this.generation
     try {
       let active = true
       const off = this.host.iii.on<TranscriptEvent>(LOCAL_FN, (event) => {
-        if (!active || generation !== this.generation || event.session_id !== this.sessionId) return
+        if (!active || obsolete() || event.session_id !== this.sessionId) return
         const next = reduceTranscriptEvent(this.state, event)
         if (next === this.state) return
         if (event.kind === 'closed' || event.kind === 'error') this.releaseSession()
@@ -206,20 +237,26 @@ export class DictationController {
       const res = await dictationStart(this.host.iii, {
         output_function_id: `${LOCAL_FN}::${this.host.iii.browserId}`,
       })
+      if (obsolete()) {
+        // Stop can finish before the server responds. Retire only that late session.
+        await dictationStop(this.host.iii, attempt.discard
+          ? { session_id: res.session_id, discard: true } : { session_id: res.session_id }).catch(() => undefined)
+        return
+      }
       this.sessionId = res.session_id
       // Stop can be requested while the worker is loading its streaming model.
       if (this.stopping) return
       const capture = await startCapture({
         onChunk: ({ pcm16 }) => {
-          if (generation !== this.generation || this.sessionId !== res.session_id) return
+          if (obsolete() || this.sessionId !== res.session_id) return
           if (this.starting && this.stopping) return
           const seq = this.seq++
           this.queue.push({ seq, pcm16Base64: base64FromInt16(pcm16) })
           this.drainQueue()
         },
       })
-      if (this.sessionId !== res.session_id) {
-        // The worker may close while the browser is still asking for permission.
+      if (obsolete() || this.sessionId !== res.session_id) {
+        // Permission may resolve after cancellation, closure or a newer start.
         await capture.stop()
         return
       }
@@ -227,6 +264,7 @@ export class DictationController {
       // A pending Stop owns this newly opened capture and will release it next.
       if (!this.stopping) this.set((s) => ({ ...s, status: 'listening' }))
     } catch (err) {
+      if (obsolete()) return
       const sessionId = this.sessionId
       this.releaseSession()
       if (sessionId) {
@@ -239,37 +277,48 @@ export class DictationController {
   stop = (): Promise<string> => this.finish(false)
 
   private finish(discard: boolean): Promise<string> {
-    if (this.stopPromise) return this.stopPromise
+    if (this.stopPromise) {
+      if (discard && this.stopMode) {
+        this.stopMode.discard = true
+        if (this.stopMode.opening) this.stopMode.opening.discard = true
+      }
+      return this.stopPromise
+    }
+    const mode = { discard, opening: this.opening }
+    this.stopMode = mode
     this.stopping = true
+    this.cancelOpening(discard)
     this.set((s) => ({ ...s, status: 'stopping', partial: '' }))
-    this.stopPromise = this.closeSession(discard).finally(() => {
+    this.stopPromise = this.closeSession(mode).finally(() => {
       this.stopping = false
       this.stopPromise = null
+      this.stopMode = null
     })
     return this.stopPromise
   }
 
-  private async closeSession(discard: boolean): Promise<string> {
+  private async closeSession(mode: { discard: boolean }): Promise<string> {
     try {
-      // Never lose a Stop made before session creation or microphone permission.
-      await this.startPromise
+      // Never wait on microphone permission. A cancelled attempt cleans up its
+      // own late session/stream without touching the current controller.
       const sessionId = this.sessionId
       const capture = this.capture
       this.capture = null
       await capture?.stop()
-      if (!discard) await this.flushPushes(FLUSH_PUSHES_MS)
+      if (!mode.discard) await this.flushPushes(FLUSH_PUSHES_MS)
       this.queue = []
       // Keep sessionId attached until the response so final events stay scoped.
       const res = sessionId ? await dictationStop(this.host.iii,
-        discard ? { session_id: sessionId, discard: true } : { session_id: sessionId }) : null
+        mode.discard ? { session_id: sessionId, discard: true } : { session_id: sessionId }) : null
       this.releaseSession()
-      this.set(discard ? { ...initialDictationReduceState }
+      // A later Cancel suppresses the result even if Stop was already sent.
+      this.set(mode.discard ? { ...initialDictationReduceState }
         : { ...this.state, status: this.state.error ? 'error' : 'idle', partial: '' })
-      return discard ? '' : res?.text ?? this.state.committed.join(' ')
+      return mode.discard ? '' : res?.text ?? this.state.committed.join(' ')
     } catch (err) {
       this.releaseSession()
-      this.set((s) => ({ ...s, status: 'error', partial: '', error: errorMessage(err) }))
-      return this.state.committed.join(' ')
+      this.set((s) => ({ ...(mode.discard ? initialDictationReduceState : s), status: 'error', partial: '', error: errorMessage(err) }))
+      return mode.discard ? '' : this.state.committed.join(' ')
     }
   }
 

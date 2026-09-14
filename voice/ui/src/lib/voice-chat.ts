@@ -5,6 +5,7 @@ export interface SpokenReply { id: string; text: string }
 interface TurnEvent {
   session_id: string
   turn_id: string
+  timestamp: number
   status?: string
   terminal?: boolean
   result_error?: string
@@ -47,6 +48,14 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
   let generation = 0
   let lastReplyId = options.initialReplyId
   const seen = new Set<string>()
+  const started = new Set<string>()
+  let latest: { id: string; timestamp: number } | null = null
+  const remember = (set: Set<string>, id: string) => {
+    set.add(id)
+    if (set.size > 128) set.delete(set.values().next().value!)
+  }
+  const outdated = (event: TurnEvent) => !Number.isFinite(event.timestamp) || (latest !== null
+    && (event.timestamp < latest.timestamp || (event.timestamp === latest.timestamp && event.turn_id !== latest.id)))
   const offs: Array<() => void> = []
   const bind = (kind: 'started' | 'completed', handler: (event: TurnEvent) => void) => {
     const id = `iii::voice-ui::auto-${kind}::${sessionId}`
@@ -56,15 +65,22 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
   }
   try {
     bind('started', (event) => {
-      if (!active || event?.session_id !== sessionId) return
+      if (!active || event?.session_id !== sessionId || !event.turn_id || outdated(event)
+        || started.has(event.turn_id) || seen.has(event.turn_id)) return
+      remember(started, event.turn_id)
+      latest = { id: event.turn_id, timestamp: event.timestamp }
       generation += 1
       options.onStarted()
     })
     bind('completed', (event) => {
       if (!active || event?.session_id !== sessionId || event.status !== 'completed'
         || event.terminal === false || event.result_error || !event.turn_id || seen.has(event.turn_id)) return
-      seen.add(event.turn_id)
-      if (seen.size > 128) seen.delete(seen.values().next().value!)
+      if (outdated(event)) return
+      // A completion from a superseded turn is never allowed to replace the
+      // current one, even if transport delivers it after a newer start.
+      if (latest && latest.id !== event.turn_id && started.has(event.turn_id)) return
+      remember(seen, event.turn_id)
+      latest = { id: event.turn_id, timestamp: event.timestamp }
       const request = ++generation
       void options.readReply(event.turn_id).then((reply) => {
         if (!active || generation !== request || !reply?.text || reply.id === lastReplyId) return

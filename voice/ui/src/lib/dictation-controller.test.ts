@@ -56,9 +56,11 @@ describe('DictationController shutdown shared by Voice and chat', () => {
     const starting = rig.controller.start()
     const stopping = rig.controller.stop()
     expect(rig.controller.getState().status).toBe('stopping')
-    response.resolve({ session_id: 'opening', model: 'test', sample_rate: 16000 })
-    await starting
     await stopping
+    await starting
+    expect(rig.controller.getState().status).toBe('idle')
+    response.resolve({ session_id: 'opening', model: 'test', sample_rate: 16000 })
+    await vi.waitFor(() => expect(rig.stop).toHaveBeenCalledOnce())
     expect(startCapture).not.toHaveBeenCalled()
     expect(rig.stop).toHaveBeenCalledWith({ session_id: 'opening' })
     expect(rig.controller.getState().status).toBe('idle')
@@ -76,10 +78,12 @@ describe('DictationController shutdown shared by Voice and chat', () => {
     await requested.promise
     const stopping = rig.controller.stop()
     expect(rig.controller.getState().status).toBe('stopping')
-    microphone.resolve({ stop: rig.captureStop })
-    await starting
     expect(await stopping).toBe('Kept text.')
-    expect(rig.captureStop).toHaveBeenCalledOnce()
+    await starting
+    expect(rig.stop).toHaveBeenCalledOnce()
+    expect(rig.captureStop).not.toHaveBeenCalled()
+    microphone.resolve({ stop: rig.captureStop })
+    await vi.waitFor(() => expect(rig.captureStop).toHaveBeenCalledOnce())
     expect(rig.controller.listening).toBe(false)
     expect(rig.controller.getState().status).toBe('idle')
   })
@@ -132,13 +136,95 @@ describe('DictationController shutdown shared by Voice and chat', () => {
     vi.mocked(startCapture).mockImplementationOnce(() => { requested.resolve(); return microphone.promise })
     const starting = rig.controller.start()
     await requested.promise
-    const cancelling = rig.controller.cancel()
-    microphone.resolve({ stop: rig.captureStop })
+    await rig.controller.cancel()
     await starting
-    await cancelling
-    expect(rig.captureStop).toHaveBeenCalledOnce()
+    expect(rig.captureStop).not.toHaveBeenCalled()
+    expect(rig.controller.getState().status).toBe('idle')
+    microphone.resolve({ stop: rig.captureStop })
+    await vi.waitFor(() => expect(rig.captureStop).toHaveBeenCalledOnce())
     expect(rig.stop).toHaveBeenCalledWith({ session_id: 's1', discard: true })
     expect(rig.controller.getState()).toMatchObject({ status: 'idle', partial: '', committed: [] })
+  })
+
+  it('a late permission result cannot overwrite a newly started session', async () => {
+    const rig = setup()
+    const microphone = deferred<CaptureHandle>()
+    const requested = deferred<void>()
+    vi.mocked(startCapture).mockImplementationOnce(() => { requested.resolve(); return microphone.promise })
+    const starting = rig.controller.start()
+    await requested.promise
+    await rig.controller.cancel()
+    await starting
+    await rig.controller.start()
+    const oldStop = vi.fn().mockResolvedValue(undefined)
+    microphone.resolve({ stop: oldStop })
+    await vi.waitFor(() => expect(oldStop).toHaveBeenCalledOnce())
+    expect(rig.captureStop).not.toHaveBeenCalled()
+    expect(rig.controller.getState().status).toBe('listening')
+    await rig.controller.cancel()
+  })
+
+  it('a late permission rejection cannot clear a newer session', async () => {
+    const rig = setup()
+    const microphone = deferred<CaptureHandle>()
+    const requested = deferred<void>()
+    vi.mocked(startCapture).mockImplementationOnce(() => { requested.resolve(); return microphone.promise })
+    void rig.controller.start()
+    await requested.promise
+    await rig.controller.cancel()
+    await rig.controller.start()
+    microphone.reject(new Error('old permission denied'))
+    await Promise.resolve(); await Promise.resolve()
+    expect(rig.controller.getState().status).toBe('listening')
+    expect(rig.stop).toHaveBeenCalledTimes(1)
+    await rig.controller.cancel()
+  })
+
+  it('a late server start is discarded without cancelling a newer session', async () => {
+    const rig = setup()
+    const response = deferred<Awaited<ReturnType<typeof rig.start>>>()
+    rig.start.mockReturnValueOnce(response.promise)
+    const first = rig.controller.start()
+    await rig.controller.cancel()
+    await first
+    await rig.controller.start()
+    response.resolve({ session_id: 'late-old', model: 'test', sample_rate: 16000 })
+    await vi.waitFor(() => expect(rig.stop).toHaveBeenCalledWith({ session_id: 'late-old', discard: true }))
+    expect(rig.controller.getState().status).toBe('listening')
+    await rig.controller.cancel()
+  })
+
+  it('Cancel escalates a pending Stop before the remote request', async () => {
+    const rig = setup()
+    const capture = deferred<void>()
+    rig.captureStop.mockReturnValueOnce(capture.promise)
+    await rig.controller.start()
+    rig.emit({ kind: 'final', text: 'Do not keep this.' })
+    const stopping = rig.controller.stop()
+    const cancelling = rig.controller.cancel()
+    expect(rig.controller.stop()).toBe(stopping)
+    capture.resolve()
+    expect(await stopping).toBe('')
+    await cancelling
+    expect(rig.stop).toHaveBeenCalledExactlyOnceWith({ session_id: 's1', discard: true })
+    expect(rig.controller.getState().committed).toEqual([])
+  })
+
+  it('Cancel after Stop is sent still suppresses its result and clears the transcript', async () => {
+    const rig = setup()
+    const response = deferred<Awaited<ReturnType<typeof rig.stop>>>()
+    const requested = deferred<void>()
+    rig.stop.mockImplementationOnce(() => { requested.resolve(); return response.promise })
+    await rig.controller.start()
+    rig.emit({ kind: 'final', text: 'Discard me.' })
+    const stopping = rig.controller.stop()
+    await requested.promise
+    const cancelling = rig.controller.cancel()
+    response.resolve({ session_id: 's1', text: 'Discard me.', segments: [], duration_secs: 1 })
+    expect(await stopping).toBe('')
+    await cancelling
+    expect(rig.controller.getState().committed).toEqual([])
+    expect(rig.stop).toHaveBeenCalledOnce()
   })
 
   it('releases local capture and accepts a new start after the worker closes the session', async () => {

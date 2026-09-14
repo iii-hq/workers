@@ -259,6 +259,16 @@ The chat footer has three independent controls:
   **Stop** also turns automatic reading off. Switching chats, closing the view,
   or a playback error disables it; other clients are unaffected.
 
+Stop/Cancel finishes even if the microphone permission prompt remains unanswered.
+The browser cannot abort that prompt; if permission is granted later, the obsolete
+capture is immediately released without reviving dictation. Cancel during Stop
+clears and suppresses the result; if the remote Stop request was already sent,
+it cannot be retroactively changed, but its returned text is not delivered.
+
+Chat reading controls validate the current configuration on each attempt rather
+than staying disabled from an old availability snapshot. After installing a voice
+or fixing its executable, retry Read aloud without reloading the conversation.
+
 The browser may block automatic playback according to its autoplay policy; errors
 are shown rather than claiming playback succeeded. Piper loads its model per
 request and returns the completed WAV, so there is a generation delay. The
@@ -334,12 +344,13 @@ longer emitted: each browser uses its audio element's ended/error events.
 
 ## Limits
 
-- The bundled models are English only. Other languages require a multilingual
-  whisper.cpp model or a remote `openai`/`router` backend.
+- The streaming Zipformer and Parakeet transcription models are English-only.
+  Multilingual transcription uses whisper.cpp or a remote backend; Piper reading
+  voices cover the languages listed in the catalog.
 - WAV is the only container decoded. Convert other formats first, for
   example `ffmpeg -i in.m4a -ac 1 -ar 16000 out.wav`.
-- Read-aloud on the `host` backend plays on the worker's machine. In a remote
-  deployment use the `openai` backend so the audio reaches the browser.
+- Every read-aloud backend returns audio to the requesting browser; nothing
+  plays on the worker machine. Local synthesis returns a complete WAV, not a stream.
 - Prebuilt binaries cover macOS (Intel and Apple silicon) and x86_64 glibc
   Linux. The speech engine publishes no static no-TTS archive for Linux on
   aarch64, musl or 32-bit ARM, and the build only accepts archives whose
@@ -347,7 +358,7 @@ longer emitted: each browser uses its audio element's ended/error events.
 
 ## Licenses
 
-The worker is Apache-2.0. [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) lists bundled components and the documented child-process and service integrations with their licenses and sources. If you configure a custom child-process command or model, review that artifact and its license separately. In short: sherpa-onnx and its Kaldi-derived libraries are Apache-2.0, ONNX Runtime is MIT, KISS FFT is BSD-3-Clause; the streaming Zipformer model is Apache-2.0 and Parakeet TDT 0.6B v2 is NVIDIA's under CC BY 4.0, with the attribution text in the notices file. The build links the no-TTS archives and drops espeak-ng and its `ucd` tables (GPL-3.0), so no GPL code is in the binary; on Linux, read-aloud runs `espeak-ng` as a separate program when it is installed. Models are downloaded on the user's machine from Hugging Face on first use, and `voice::models::list` reports each model's license, author and source.
+The worker is Apache-2.0. [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) lists bundled components and the documented child-process and service integrations with their licenses and sources. If you configure a custom child-process command or model, review that artifact and its license separately. In short: sherpa-onnx and its Kaldi-derived libraries are Apache-2.0, ONNX Runtime is MIT, KISS FFT is BSD-3-Clause; the streaming Zipformer model is Apache-2.0 and Parakeet TDT 0.6B v2 is NVIDIA's under CC BY 4.0, with the attribution text in the notices file. The build links the no-TTS archives and drops espeak-ng and its `ucd` tables (GPL-3.0), so no GPL code is in the binary; on Linux, read-aloud runs `espeak-ng` as a separate program when it is installed. Models are downloaded on the worker machine from Hugging Face (ONNX transcription models may download on first use; Whisper and Piper require an explicit download), and `voice::models::list` reports each model's license, author and source.
 
 ## Development
 

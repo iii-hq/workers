@@ -15,8 +15,9 @@ function rig() {
   const off = subscribeAutoReplies({ on, registerTrigger, browserId: 'client-a' } as unknown as ExtensionIii, 'chat-a', {
     initialReplyId: 'old', readReply, onReply, onStarted, onError,
   })
+  let timestamp = 100
   const emit = (patch = {}, kind = 'completed') => handlers.get(`iii::voice-ui::auto-${kind}::chat-a`)?.({
-    session_id: 'chat-a', turn_id: 'turn-1', status: 'completed', ...patch,
+    session_id: 'chat-a', turn_id: 'turn-1', timestamp: ++timestamp, status: 'completed', ...patch,
   })
   return { emit, off, readReply, onReply, onStarted, onError, registerTrigger, disposers }
 }
@@ -63,6 +64,57 @@ describe('opt-in voice chat', () => {
     await tick()
     expect(r.onStarted).toHaveBeenCalledOnce()
     expect(r.onReply).not.toHaveBeenCalled()
+  })
+  it('ignores an old completion delivered after the next turn starts', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 10 }, 'started')
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started')
+    r.emit({ turn_id: 'old', timestamp: 20 })
+    await tick()
+    expect(r.readReply).not.toHaveBeenCalled()
+    r.emit({ turn_id: 'new', timestamp: 40 })
+    await tick()
+    expect(r.readReply).toHaveBeenCalledExactlyOnceWith('new')
+  })
+  it('ignores duplicate and delayed starts without stopping current playback', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 10 }, 'started')
+    r.emit({ turn_id: 'old', timestamp: 10 }, 'started')
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started')
+    r.emit({ turn_id: 'new', timestamp: 40 })
+    await tick()
+    r.emit({ turn_id: 'old', timestamp: 10 }, 'started')
+    r.emit({ turn_id: 'unseen-old', timestamp: 15 }, 'started')
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started')
+    expect(r.onStarted).toHaveBeenCalledTimes(2)
+    expect(r.onReply).toHaveBeenCalledOnce()
+  })
+  it('accepts a newer completed turn before its own delayed start', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 10 }, 'started')
+    r.emit({ turn_id: 'new', timestamp: 40 })
+    await tick()
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started')
+    expect(r.readReply).toHaveBeenCalledExactlyOnceWith('new')
+    expect(r.onStarted).toHaveBeenCalledOnce()
+  })
+  it('supports enabling mid-turn but rejects late starts after completion', async () => {
+    const r = rig()
+    r.emit({ timestamp: 20 })
+    await tick()
+    r.emit({ timestamp: 10 }, 'started')
+    expect(r.onReply).toHaveBeenCalledOnce()
+    expect(r.onStarted).not.toHaveBeenCalled()
+  })
+  it('rejects malformed timestamps and ambiguous older turns with equal timestamps', async () => {
+    const r = rig()
+    r.emit({ timestamp: undefined })
+    r.emit({ timestamp: NaN }, 'started')
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started')
+    r.emit({ turn_id: 'old', timestamp: 30 })
+    await tick()
+    expect(r.readReply).not.toHaveBeenCalled()
+    expect(r.onStarted).toHaveBeenCalledOnce()
   })
   it('reports message lookup errors without reading an old reply', async () => {
     const r = rig()
