@@ -313,10 +313,14 @@ async fn main() -> Result<()> {
                 })
             })
             .description(
-                "Spawn a background job; returns { job_id, argv } immediately. Same payload as \
-                 shell::exec. Host jobs ignore timeout_ms and run until exit or shell::kill; \
-                 poll with shell::status, list with shell::list. Spawn-time failures are \
-                 plain-string messages; later failures surface in shell::status, not here.",
+                "Spawn a background job; returns { job_id, argv } immediately. Accepts the \
+                 shell::exec payload plus optional job_id. Register shell::job-finished with \
+                 a fresh job_id before calling exec_bg with that same ID, or omit job_id to \
+                 generate one. Duplicate retained IDs reject before execution. Host jobs \
+                 ignore timeout_ms and use the configured background hard cap; read output \
+                 with shell::status, list jobs with shell::list. Spawn-time failures are \
+                 plain-string messages; later failures emit shell::job-finished and appear \
+                 in shell::status.",
             ),
         );
     }
@@ -329,7 +333,7 @@ async fn main() -> Result<()> {
             })
         })
         .description(
-            "Terminate a running background job by job_id (the UUID from shell::exec_bg). \
+            "Terminate a running background job by job_id (returned by shell::exec_bg). \
              Errors return { code, message }; common: S211 no such job, S216 kill/signal delivery \
              failure.",
         ),

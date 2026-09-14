@@ -411,6 +411,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_watch_registered_before_exec_bg_receives_the_named_jobs_completion() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let _gauge_guard = crate::jobs::GAUGE_TEST_GUARD.lock().await;
+        let _sweep_guard = crate::jobs::HOST_SWEEP_TEST_GUARD.lock().await;
+        let job_id = format!("pre-registered-{}", uuid::Uuid::new_v4());
+        let mut cfg = config("t-before-exec-bg", Some(&job_id));
+        let probe = DeliveryProbe::new(&mut cfg);
+        JobFinishedTriggerHandler
+            .register_trigger(cfg.clone())
+            .await
+            .unwrap();
+        assert!(probe.take().is_empty(), "the job has not started");
+        let shell_cfg = crate::config::ShellConfig {
+            env: crate::config::EnvConfig::inherit_all(),
+            ..Default::default()
+        };
+        let response = crate::functions::exec_bg::handle(
+            std::sync::Arc::new(shell_cfg),
+            IIIClient::new("ws://stub-not-connected:0"),
+            serde_json::from_value(json!({"command": "echo", "args": ["ready"], "job_id": job_id}))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let handle = crate::jobs::get(&response.job_id).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !handle.lock().await.finalized {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let events = probe.take();
+        JobFinishedTriggerHandler
+            .unregister_trigger(cfg)
+            .await
+            .unwrap();
+        crate::jobs::JOBS.map.lock().await.remove(&response.job_id);
+        assert_eq!(response.job_id, job_id);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].job_id, job_id);
+        assert_eq!(events[0].status, JobStatus::Finished);
+        assert_eq!(events[0].exit_code, Some(0));
+    }
+
+    #[tokio::test]
     async fn a_filtered_binding_claims_completion_only_once() {
         let _test_guard = TEST_GUARD.lock().await;
         let mut finished = record(JobStatus::Finished, Some(3_000));
@@ -428,6 +474,76 @@ mod tests {
             remaining.is_empty(),
             "a second completion must not deliver again"
         );
+    }
+
+    #[tokio::test]
+    async fn a_pre_registered_sandbox_job_runs_once_and_notifies_its_subscriber() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let _test_guard = TEST_GUARD.lock().await;
+        let _gauge_guard = crate::jobs::GAUGE_TEST_GUARD.lock().await;
+        struct Engine(AtomicUsize);
+        #[async_trait]
+        impl crate::triggers::TriggerFwd for Engine {
+            async fn trigger(&self, _: &str, _: Value) -> Result<Value, Error> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(
+                    json!({"stdout": "sandbox output", "stderr": "", "exit_code": 0,
+                    "duration_ms": 1, "timed_out": false}),
+                )
+            }
+        }
+        let job_id = format!("sandbox-pre-registered-{}", uuid::Uuid::new_v4());
+        let mut cfg = config("t-sandbox-before-exec-bg", Some(&job_id));
+        let probe = DeliveryProbe::new(&mut cfg);
+        JobFinishedTriggerHandler
+            .register_trigger(cfg.clone())
+            .await
+            .unwrap();
+        let engine = Arc::new(Engine(AtomicUsize::new(0)));
+        let shell_cfg = Arc::new(crate::config::ShellConfig::default());
+        let sandbox_id = uuid::Uuid::new_v4();
+        let response = crate::functions::exec_bg::spawn_sandbox_job(
+            Some(job_id.clone()),
+            shell_cfg.clone(),
+            engine.clone(),
+            sandbox_id,
+            vec!["echo".into()],
+            1_000,
+        )
+        .await
+        .unwrap();
+        let duplicate = crate::functions::exec_bg::spawn_sandbox_job(
+            Some(job_id.clone()),
+            shell_cfg,
+            engine.clone(),
+            sandbox_id,
+            vec!["echo".into(), "duplicate".into()],
+            1_000,
+        )
+        .await;
+        let handle = crate::jobs::get(&response.job_id).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !handle.lock().await.finalized {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let events = probe.take();
+        let record = handle.lock().await.record.clone();
+        JobFinishedTriggerHandler
+            .unregister_trigger(cfg)
+            .await
+            .unwrap();
+        crate::jobs::JOBS.map.lock().await.remove(&response.job_id);
+        assert_eq!(response.job_id, job_id);
+        assert!(duplicate.unwrap_err().contains("already exists"));
+        assert_eq!(engine.0.load(Ordering::Relaxed), 1);
+        assert_eq!(record.stdout, "sandbox output");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].job_id, job_id);
+        assert_eq!(events[0].status, JobStatus::Finished);
     }
 
     #[tokio::test]
@@ -656,6 +772,7 @@ mod tests {
         }
         let _guard = crate::jobs::GAUGE_TEST_GUARD.lock().await;
         let response = crate::functions::exec_bg::spawn_sandbox_job(
+            None,
             std::sync::Arc::new(crate::config::ShellConfig::default()),
             std::sync::Arc::new(UnresponsiveEngine),
             uuid::Uuid::new_v4(),

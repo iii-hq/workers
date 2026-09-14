@@ -168,7 +168,7 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Atomically count running jobs and insert a new one if under `max`. Holds
+/// Atomically reserve a unique job ID and insert if under `max`. Holds
 /// the map mutex across both operations so two concurrent callers cannot
 /// each pass the count check and then both insert. A handle whose lock is
 /// currently held by another task is conservatively counted as running —
@@ -180,16 +180,46 @@ pub fn now_ms() -> u64 {
 /// and decremented when the guard drops. The caller MUST move the guard into the
 /// task that owns the job's lifetime so the running count tracks reality.
 ///
-/// On rejection, returns the running count and the original handle so the
+/// On rejection, returns the error and the original handle so the
 /// caller can reclaim the spawned child process and kill it. The gauge is not
 /// touched on rejection.
 pub async fn try_reserve_and_insert(
     handle: JobHandle,
     max: usize,
-) -> Result<(String, RunningJobGuard), (usize, JobHandle)> {
+) -> Result<(String, RunningJobGuard), (String, JobHandle)> {
     let mut guard = JOBS.map.lock().await;
+    if let Err(error) = check_available(&guard, &handle.record.id, max) {
+        return Err((error, handle));
+    }
+    Ok(insert_reserved(&mut guard, handle))
+}
+
+/// Check ID and capacity before starting a host process. The synchronous
+/// factory runs under the registry lock, so another caller cannot reserve
+/// the same ID between the check and insertion. A spawn error inserts
+/// nothing and leaves the running gauge unchanged.
+pub(crate) async fn try_create(
+    id: &str,
+    max: usize,
+    create: impl FnOnce() -> Result<JobHandle, String>,
+) -> Result<(String, RunningJobGuard), String> {
+    let mut guard = JOBS.map.lock().await;
+    check_available(&guard, id, max)?;
+    let handle = create()?;
+    debug_assert_eq!(handle.record.id, id);
+    Ok(insert_reserved(&mut guard, handle))
+}
+
+fn check_available(
+    registry: &HashMap<String, Arc<Mutex<JobHandle>>>,
+    id: &str,
+    max: usize,
+) -> Result<(), String> {
+    if registry.contains_key(id) {
+        return Err(format!("job_id '{id}' already exists"));
+    }
     let mut running = 0usize;
-    for h in guard.values() {
+    for h in registry.values() {
         match h.try_lock() {
             Ok(g) => {
                 if g.record.status == JobStatus::Running {
@@ -200,15 +230,24 @@ pub async fn try_reserve_and_insert(
         }
     }
     if running >= max {
-        return Err((running, handle));
+        return Err(format!(
+            "max concurrent jobs ({max}) reached, currently running: {running}"
+        ));
     }
+    Ok(())
+}
+
+fn insert_reserved(
+    registry: &mut HashMap<String, Arc<Mutex<JobHandle>>>,
+    handle: JobHandle,
+) -> (String, RunningJobGuard) {
     let id = handle.record.id.clone();
     let boxed = Arc::new(Mutex::new(handle));
-    guard.insert(id.clone(), boxed);
+    registry.insert(id.clone(), boxed);
     // Increment under the map lock so the gauge increment is ordered with the
     // insert; the matching decrement is the returned guard's Drop.
     RUNNING_JOBS.fetch_add(1, Ordering::Relaxed);
-    Ok((id, RunningJobGuard { _private: () }))
+    (id, RunningJobGuard { _private: () })
 }
 
 pub async fn get(id: &str) -> Option<Arc<Mutex<JobHandle>>> {
@@ -227,19 +266,31 @@ pub async fn remove_old(retention_secs: u64) {
     let now = now_ms();
     let threshold_ms = retention_secs.saturating_mul(1000);
     let handles = snapshot().await;
-    let mut to_remove: Vec<String> = Vec::new();
+    let mut to_remove = Vec::new();
     for (id, handle) in handles {
         let h = handle.lock().await;
+        // A kill request can precede the final output. Keep its ID reserved
+        // until the old finalize task can no longer update the record.
+        if !h.finalized {
+            continue;
+        }
         if let Some(fin) = h.record.finished_at_ms {
             if now.saturating_sub(fin) > threshold_ms {
-                to_remove.push(id);
+                to_remove.push((id, handle.clone()));
             }
         }
     }
     if !to_remove.is_empty() {
         let mut guard = JOBS.map.lock().await;
-        for id in to_remove {
-            guard.remove(&id);
+        for (id, old) in to_remove {
+            // A concurrent prune may already have removed this instance and
+            // a caller may have reused its ID. Evict only the snapshot's job.
+            if guard
+                .get(&id)
+                .is_some_and(|current| Arc::ptr_eq(current, &old))
+            {
+                guard.remove(&id);
+            }
         }
     }
 }
@@ -462,6 +513,57 @@ mod tests {
         assert!(
             get(&id).await.is_none(),
             "finished job older than retention must be evicted by the reaper prune path"
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_keeps_a_cancelled_jobs_id_until_finalization() {
+        let _gate = GAUGE_TEST_GUARD.lock().await;
+        let id = format!("cancelled-retention-{}", uuid::Uuid::new_v4());
+        let mut handle = make_handle(&id, JobStatus::Killed);
+        handle.finalized = false;
+        handle.record.finished_at_ms = Some(now_ms().saturating_sub(3_600_000));
+        try_reserve_and_insert(handle, usize::MAX)
+            .await
+            .ok()
+            .unwrap();
+        remove_old(1).await;
+        let retained = get(&id).await;
+        JOBS.map.lock().await.remove(&id);
+        assert!(
+            retained.is_some(),
+            "a cancelled job still collecting output owns its ID"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_old_retention_snapshot_cannot_remove_a_reused_job_id() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let _gate = GAUGE_TEST_GUARD.lock().await;
+        let id = format!("retention-reuse-{}", uuid::Uuid::new_v4());
+        let mut old = make_handle(&id, JobStatus::Finished);
+        old.record.finished_at_ms = Some(now_ms().saturating_sub(3_600_000));
+        try_reserve_and_insert(old, usize::MAX).await.ok().unwrap();
+        let old = get(&id).await.unwrap();
+        let held = old.lock().await;
+        let mut pruning = Box::pin(remove_old(1));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(pruning.as_mut().poll(&mut context), Poll::Pending));
+        // Another pruning pass removed the old record, then a caller started
+        // a new job under the now-available ID while this pass read its snapshot.
+        JOBS.map.lock().await.remove(&id);
+        try_reserve_and_insert(make_handle(&id, JobStatus::Running), usize::MAX)
+            .await
+            .ok()
+            .unwrap();
+        drop(held);
+        pruning.await;
+        let retained = get(&id).await;
+        JOBS.map.lock().await.remove(&id);
+        assert!(
+            retained.is_some(),
+            "a stale snapshot must not evict the replacement"
         );
     }
 

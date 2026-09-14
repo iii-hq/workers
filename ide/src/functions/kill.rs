@@ -230,6 +230,7 @@ mod host_kill_tests {
         // Drive the REAL spawn path so a real drain task is listening on the
         // kill-signal channel (a faked handle cannot be killed — by design).
         let resp = crate::functions::exec_bg::spawn_host_job(
+            None,
             Arc::new(cfg),
             vec!["sleep".to_string(), "30".to_string()],
             ExecOverrides::default(),
