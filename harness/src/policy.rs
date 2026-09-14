@@ -41,14 +41,18 @@ pub const CONTROL_PLANE_DENY: [&str; 4] = [
     "engine::registered-triggers::*",
 ];
 
-/// Whether a dispatch policy belongs to a leaf — a session that performs an
-/// assignment rather than running the control plane.
+/// Whether a session is a leaf — spawned to perform an assignment, rather than
+/// running the control plane.
 ///
-/// The spawn wall IS the marker: [`CONTROL_PLANE_DENY`] takes `harness::spawn`
-/// away from every non-orchestrator child and nothing gives it back, so no
-/// call site needs lineage plumbed into it to ask this question.
-pub fn is_leaf(policy: &CompiledPolicy) -> bool {
-    !policy.allows(crate::functions::SPAWN_ID)
+/// BOTH halves are load-bearing. Lineage alone would catch an
+/// `options.orchestrator: true` child, which keeps the control plane on
+/// purpose. The spawn wall alone was worse: an earlier version of this read
+/// only the policy, so ANY session whose allow-list simply never mentions
+/// `harness::spawn` — a root under a narrow policy, which is every harness
+/// integration scenario — was treated as a leaf and had its bindings refused.
+/// INT-016 caught it.
+pub fn is_leaf(policy: &CompiledPolicy, has_parent: bool) -> bool {
+    has_parent && !policy.allows(crate::functions::SPAWN_ID)
 }
 
 /// The contract-discovery pair every spawned child keeps callable. The
@@ -348,14 +352,22 @@ mod tests {
         }
     }
 
-    // `is_leaf` reads the spawn wall, so a session that can spawn is never
-    // one — including the `*` root that every scenario starts from.
+    // Leafness needs lineage AND the wall, and each half rules out a case the
+    // other misses.
     #[test]
-    fn a_session_that_can_spawn_is_not_a_leaf() {
-        assert!(!is_leaf(&CompiledPolicy::from(Some(&policy(&["*"], &[])))));
-        // Absent policy denies everything, spawn included: fail-closed means
-        // fail-closed as a leaf, the more restricted of the two.
-        assert!(is_leaf(&CompiledPolicy::from(None)));
+    fn leafness_needs_both_a_parent_and_the_spawn_wall() {
+        // A root under a NARROW policy that never mentions spawn: not a leaf.
+        // Reading the policy alone called this one a leaf and broke INT-016.
+        let narrow = CompiledPolicy::from(Some(&policy(&["state::*"], &[])));
+        assert!(!narrow.allows("harness::spawn"));
+        assert!(!is_leaf(&narrow, false));
+
+        // An orchestrator child: has a parent, keeps the control plane.
+        let orchestrator = CompiledPolicy::from(Some(&policy(&["*"], &[])));
+        assert!(!is_leaf(&orchestrator, true));
+
+        // The real thing: spawned, and walled off from spawning.
+        assert!(is_leaf(&narrow, true));
     }
 
     #[test]
@@ -386,7 +398,7 @@ mod tests {
         // arm a wake polls or sleeps instead (MOT-4766). The control-plane
         // half of it is refused by shape, in `functions::subscribe`.
         assert!(compiled.allows("engine::register_trigger"));
-        assert!(is_leaf(&compiled), "the spawn wall marks a leaf");
+        assert!(is_leaf(&compiled, true), "a spawned child under the wall");
         for id in ["state::set", "database::execute", "harness::status"] {
             assert!(compiled.allows(id), "{id} is data-plane and must survive");
         }

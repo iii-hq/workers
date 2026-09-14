@@ -608,8 +608,17 @@ async fn handle(
     let expires_at = resolved_expires_at(req.lifecycle.as_ref(), now_ms);
 
     reject_settled_compose_operation(deps, &req).await?;
+    let cfg = deps.cfg().await;
+    // Leafness is lineage, not a policy shape: a root under a narrow
+    // allow-list cannot spawn either, and must keep both binding shapes.
+    let has_parent = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
+        .await?
+        .is_some_and(|record| {
+            record.parent.is_some() || record.display_parent_session_id.is_some()
+        });
     reject_leaf_control_plane(
         policy,
+        has_parent,
         req.target
             .as_ref()
             .map(|t| t.function_id.as_str())
@@ -617,9 +626,10 @@ async fn handle(
     )?;
     let expires_at = leaf_wake_deadline(
         policy,
+        has_parent,
         expires_at,
         now_ms,
-        deps.cfg().await.default_pending_timeout_ms,
+        cfg.default_pending_timeout_ms,
     );
     let target = resolve_target(deps, &req, session_id, policy).await?;
     authorize_conditions(deps, &req.conditions, session_id, policy).await?;
@@ -845,9 +855,10 @@ fn is_settled_operation(status: &str) -> bool {
 /// set out to fix.
 fn reject_leaf_control_plane(
     policy: &CompiledPolicy,
+    has_parent: bool,
     explicit_target: Option<&str>,
 ) -> Result<(), HarnessError> {
-    if !crate::policy::is_leaf(policy) {
+    if !crate::policy::is_leaf(policy, has_parent) {
         return Ok(());
     }
     if let Some(target) = explicit_target {
@@ -876,11 +887,12 @@ fn reject_leaf_control_plane(
 /// for pending work, so its wake can never outlive that.
 fn leaf_wake_deadline(
     policy: &CompiledPolicy,
+    has_parent: bool,
     requested: Option<i64>,
     now_ms: i64,
     pending_timeout_ms: u64,
 ) -> Option<i64> {
-    if !crate::policy::is_leaf(policy) {
+    if !crate::policy::is_leaf(policy, has_parent) {
         return requested;
     }
     let cap = now_ms.saturating_add(pending_timeout_ms as i64);
@@ -2110,22 +2122,40 @@ mod tests {
     // The half a leaf keeps: park on your own work instead of polling for it.
     #[test]
     fn a_leaf_may_arm_a_wake_for_itself() {
-        assert!(reject_leaf_control_plane(&leaf_policy(), None).is_ok());
+        assert!(reject_leaf_control_plane(&leaf_policy(), true, None).is_ok());
+    }
+
+    // A root under a narrow allow-list cannot spawn either, and reading that
+    // as leafness refused its mechanical-call bindings — which is how this
+    // change first broke INT-016's standing wake.
+    #[test]
+    fn a_parentless_session_keeps_both_shapes_however_narrow_its_policy() {
+        let narrow = leaf_policy();
+        assert!(reject_leaf_control_plane(&narrow, false, Some("database::execute")).is_ok());
+        assert!(reject_leaf_control_plane(&narrow, false, None).is_ok());
+        // ...and its standing wake keeps the open end it asked for.
+        assert_eq!(
+            leaf_wake_deadline(&narrow, false, None, 1_000, 1_800_000),
+            None
+        );
     }
 
     // The half it does not: durable machinery pointed at someone else's
     // function, which it could not unregister afterwards.
     #[test]
     fn a_leaf_may_not_bind_a_mechanical_call() {
-        let err = reject_leaf_control_plane(&leaf_policy(), Some("database::execute"))
+        let err = reject_leaf_control_plane(&leaf_policy(), true, Some("database::execute"))
             .expect_err("a mechanical call is control plane");
         let text = format!("{err:?}");
         assert!(text.contains("database::execute"), "{text}");
         assert!(text.contains("Omit `function_id`"), "{text}");
         // A root (or an explicit orchestrator child) keeps both shapes.
-        assert!(
-            reject_leaf_control_plane(&policy_allowing(&["*"]), Some("database::execute")).is_ok()
-        );
+        assert!(reject_leaf_control_plane(
+            &policy_allowing(&["*"]),
+            true,
+            Some("database::execute")
+        )
+        .is_ok());
     }
 
     // Which statuses mean "nothing left to wait for". Getting this wrong in
@@ -2151,21 +2181,24 @@ mod tests {
         let now = 1_000_000;
         let cap = now + 1_800_000;
 
-        assert_eq!(leaf_wake_deadline(&leaf, None, now, 1_800_000), Some(cap));
+        assert_eq!(
+            leaf_wake_deadline(&leaf, true, None, now, 1_800_000),
+            Some(cap)
+        );
         // A shorter request is honoured; a longer one is capped.
         assert_eq!(
-            leaf_wake_deadline(&leaf, Some(now + 5_000), now, 1_800_000),
+            leaf_wake_deadline(&leaf, true, Some(now + 5_000), now, 1_800_000),
             Some(now + 5_000)
         );
         assert_eq!(
-            leaf_wake_deadline(&leaf, Some(now + 9_000_000), now, 1_800_000),
+            leaf_wake_deadline(&leaf, true, Some(now + 9_000_000), now, 1_800_000),
             Some(cap)
         );
         // A root is left exactly as it asked, open-ended included.
         let root = policy_allowing(&["*"]);
-        assert_eq!(leaf_wake_deadline(&root, None, now, 1_800_000), None);
+        assert_eq!(leaf_wake_deadline(&root, true, None, now, 1_800_000), None);
         assert_eq!(
-            leaf_wake_deadline(&root, Some(now + 9_000_000), now, 1_800_000),
+            leaf_wake_deadline(&root, true, Some(now + 9_000_000), now, 1_800_000),
             Some(now + 9_000_000)
         );
     }

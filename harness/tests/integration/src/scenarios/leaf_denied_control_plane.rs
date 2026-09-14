@@ -1,15 +1,23 @@
-//! INT-015 — a spawned child is a LEAF by capability, not by prompt: its
-//! attempts to register a trigger and to spawn are refused by the dispatch
-//! policy itself.
+//! INT-015 — a spawned child is a LEAF by capability, not by prompt. The wall
+//! is drawn by SHAPE, not by function id: the child may arm a wake for its own
+//! session, and may neither bind a mechanical call nor spawn.
 //!
 //! The parent's own policy ALLOWS `engine::register_trigger` and
 //! `harness::spawn` (it spawns the child with the first), and the child
-//! inherits that allow — the denial comes purely from the CONTROL_PLANE deny
-//! globs the spawn appends because `options.orchestrator` was not passed.
-//! Both attempted calls come back `is_error: true`, the child's visible
-//! toolset is just its granted recorder (`tools_exact` — the same globs
-//! filter the native tool list), and the child still finishes its actual
-//! assignment.
+//! inherits that allow. `harness::spawn` is taken back by the CONTROL_PLANE
+//! deny globs the spawn appends because `options.orchestrator` was not passed,
+//! and is missing from the child's native toolset for the same reason.
+//!
+//! Registration is NOT taken back. Walling it off left a leaf with no way to
+//! wait for anything — not its own background job, not its own compose
+//! operation — so it polled or ran `shell::exec sleep` instead (MOT-4766). The
+//! control-plane half of it is refused where it actually lives: a binding that
+//! mechanically calls another function installs durable machinery the leaf does
+//! not own and cannot unregister.
+//!
+//! So this scenario pins three outcomes in a row from one child: a self-wake
+//! SUCCEEDS, a mechanical-call binding is refused, a spawn is refused — and the
+//! child still finishes its actual assignment.
 //!
 //! The child session is untracked, so the recorder call is both the await
 //! signal and the whole-run evidence (the INT-008 pattern).
@@ -51,8 +59,8 @@ pub(super) fn scenario() -> ScenarioFixture {
     let mut fixture = Scenario::new(
         ID,
         "leaf-denied-control-plane",
-        "A spawned child without the orchestrator grant is policy-denied trigger registration \
-         and spawning, and sees neither in its toolset.",
+        "A spawned child without the orchestrator grant may arm its own wake, and is refused \
+         both a mechanical-call binding and a spawn.",
         ScenarioDriver::Direct,
         model.clone(),
     )
@@ -85,11 +93,11 @@ pub(super) fn scenario() -> ScenarioFixture {
                 4,
             )),
     )
-    // The child's opening step may race the parent's post-spawn step. Its ONLY
-    // visible tool is the recorder:
-    // the leaf deny globs filtered `harness::spawn` out of the native toolset
-    // even though the inherited allow covers it — this tools_exact IS
-    // acceptance criterion 4.
+    // The child's opening step may race the parent's post-spawn step. Its
+    // visible tools are the recorder plus the registration control: the leaf
+    // deny globs filtered `harness::spawn` out of the native toolset even
+    // though the inherited allow covers it, and left registration in — this
+    // tools_exact IS acceptance criterion 4.
     .generation(
         Generation::new(2)
             .expect(
@@ -97,7 +105,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .turn_request_step(0)
                     .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-reg",
@@ -125,10 +133,10 @@ pub(super) fn scenario() -> ScenarioFixture {
             )
             .respond(Response::text("probe child spawned", 10, 2)),
     )
-    // THE GATE, twice over: both control-plane attempts must come back as
-    // policy errors. If the wall is missing, register SUCCEEDS (is_error
-    // false — the intercept happily builds a binding), this matcher never
-    // matches, and the run times out.
+    // GATE 1 — the half a leaf KEEPS. `call-reg` named no `function_id`, so it
+    // is a wake for the child's own session and must come back clean. If the
+    // wall is drawn by function id again, this comes back `is_error: true`,
+    // the matcher never matches, and the run times out.
     .generation(
         Generation::new(4)
             .expect(
@@ -141,9 +149,39 @@ pub(super) fn scenario() -> ScenarioFixture {
                             { "type": "function_call", "id": "call-reg" }
                         ] }),
                         json!({ "role": "function_result", "function_call_id": "call-reg",
+                                "is_error": false }),
+                    ])
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
+            )
+            .respond(Response::function_call_raw(
+                "call-bind",
+                REGISTER,
+                json!({
+                    "trigger_type": "state",
+                    "config": { "scope": "{{run_id}}-y" },
+                    "function_id": "{{run_id}}::record"
+                }),
+                8,
+                4,
+            )),
+    )
+    // GATE 2 — the half it does not. Naming a `function_id` asks for durable
+    // machinery pointed at another function, which a leaf cannot unregister.
+    .generation(
+        Generation::new(5)
+            .expect(
+                Request::new()
+                    .turn_request_step(2)
+                    .system_prompt_regex("You are an iii agent")
+                    .messages_subset([
+                        json!({ "role": "user" }),
+                        json!({ "role": "assistant", "content": [
+                            { "type": "function_call", "id": "call-bind" }
+                        ] }),
+                        json!({ "role": "function_result", "function_call_id": "call-bind",
                                 "is_error": true }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call_raw(
                 "call-nested",
@@ -154,10 +192,10 @@ pub(super) fn scenario() -> ScenarioFixture {
             )),
     )
     .generation(
-        Generation::new(5)
+        Generation::new(6)
             .expect(
                 Request::new()
-                    .turn_request_step(2)
+                    .turn_request_step(3)
                     .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
@@ -169,34 +207,36 @@ pub(super) fn scenario() -> ScenarioFixture {
                         json!({ "role": "function_result", "function_call_id": "call-nested",
                                 "is_error": true }),
                     ])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::function_call(
                 "call-record",
                 &record,
-                json!({ "value": "denied-as-designed" }),
+                json!({ "value": "wake-armed-rest-denied" }),
                 8,
                 4,
             )),
     )
     .generation(
-        Generation::new(6)
+        Generation::new(7)
             .expect(
                 Request::new()
-                    .turn_request_step(3)
+                    .turn_request_step(4)
                     .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
-                    .tools_exact([record.tool()]),
+                    .tools_exact_after_controls([REGISTER], [record.tool()]),
             )
             .respond(Response::text("probe finished", 12, 3)),
     )
     .verify(|run| {
         run.expect_assistant_texts(["probe child spawned"])?;
         // Whole-run probe evidence: the recorder call is reachable only after
-        // BOTH denials matched (gen4/gen5 require is_error: true).
+        // all three gates matched — the wake succeeded (gen4 requires
+        // is_error: false) and both control-plane attempts were refused
+        // (gen5/gen6 require is_error: true).
         run.expect_target_calls(1)?;
         anyhow::ensure!(
-            run.target_calls[0] == json!({ "value": "denied-as-designed" }),
+            run.target_calls[0] == json!({ "value": "wake-armed-rest-denied" }),
             "recorder payload {:?} != denied-as-designed",
             run.target_calls[0]
         );
@@ -227,7 +267,9 @@ mod tests {
         assert_eq!(fixture.expected_terminal_turns, 1);
         assert_eq!(fixture.await_target_calls, Some(1));
         assert_eq!(fixture.expected_traces(), 1);
-        assert_eq!(fixture.script.generations.len(), 6);
+        // 7: two parent steps, and five from the child — open, wake (allowed),
+        // mechanical bind (refused), spawn (refused), record.
+        assert_eq!(fixture.script.generations.len(), 7);
         assert_eq!(fixture.script.dispatch, RouterDispatchV1::MatchAny);
     }
 }
