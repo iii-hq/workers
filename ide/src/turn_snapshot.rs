@@ -35,7 +35,8 @@ const EXCLUDES: &[&str] = &[
     // The engine's runtime state under a compose root, including sparse VM
     // disk images. These are rewritten between turns, so `add -A` re-reads
     // them every time: a 16 GiB `upper.ext4` cost ~50s of hashing per turn.
-    ".iii/",
+    // Only the runtime subtree — the rest of `.iii/` is project configuration.
+    ".iii/compose/",
     "node_modules/",
     "target/",
     "dist/",
@@ -386,13 +387,39 @@ mod tests {
         assert_eq!(rel_under("/w", "/elsewhere/b.txt"), None);
     }
 
-    #[test]
-    fn engine_state_is_never_snapshotted() {
-        // `.iii/` holds the engine's own runtime state, including sparse VM
-        // disk images: one observed root carried a 16 GiB `upper.ext4` that
-        // the VM rewrote between turns, so every `add -A` re-hashed 16 GiB
-        // (~50s) and stored another ~46MB blob of a disk image no turn will
-        // ever revert to.
-        assert!(EXCLUDES.contains(&".iii/"));
+    /// `.iii/compose/` holds the engine's own runtime state, including sparse
+    /// VM disk images: one observed root carried a 16 GiB `upper.ext4` that
+    /// the VM rewrote between turns, so every `add -A` re-hashed 16 GiB
+    /// (~50s) and stored another ~46MB blob of a disk image no turn will ever
+    /// revert to. The rest of `.iii/` is the project's own configuration and
+    /// stays in the picture.
+    #[tokio::test]
+    async fn compose_runtime_state_stays_out_of_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        let store = dir.path().join("store");
+        std::fs::create_dir_all(root.join(".iii/compose/default/vm")).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(root.join(".iii/compose/default/vm/upper.ext4"), "disk").unwrap();
+        std::fs::write(root.join(".iii/project.ini"), "name = w\n").unwrap();
+        std::fs::write(root.join("notes.md"), "kept\n").unwrap();
+
+        let Some(repo) = SnapshotRepo::open(&store.join("repos"), &root, &store).await else {
+            eprintln!("git is not available; skipping");
+            return;
+        };
+        let tree = repo.snapshot("s1").await.unwrap();
+        let listed = repo
+            .git(None, &["ls-tree", "-r", "--name-only", &tree])
+            .await
+            .unwrap();
+        let listed: Vec<&str> = std::str::from_utf8(&listed).unwrap().lines().collect();
+
+        assert!(
+            !listed.iter().any(|p| p.starts_with(".iii/compose/")),
+            "{listed:?}"
+        );
+        assert!(listed.contains(&".iii/project.ini"), "{listed:?}");
+        assert!(listed.contains(&"notes.md"), "{listed:?}");
     }
 }
