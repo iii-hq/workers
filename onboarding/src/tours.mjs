@@ -23,79 +23,81 @@
 /** @type {Tour[]} */
 export const TOURS = [
   {
-    id: 'console-basics',
-    title: 'Find your way around',
-    description: 'The surfaces of the console, and the engine underneath them.',
+    id: "console-basics",
+    title: "Find your way around",
+    description: "The surfaces of the console, and the engine underneath them.",
     steps: [
       {
-        id: 'composer',
-        title: 'Send a message',
-        body: 'Type here. The harness is a worker, the same as every other worker. It picks a model through llm-router, then it calls functions that other workers register. All workers speak one interface: Workers, Triggers, Functions. This is why any worker can use any other worker.',
-        anchors: ['.onboarding-composer', '.composer-shell'],
+        id: "message",
+        title: "Send a message",
+        body: "Say 'hello' to the agent. We've setup a trigger to run when you get the agent's response. The iii ade (agentic development environment) is an example of a iii Worker. Database and state are other examples of workers. Every Worker in the iii system can be composed, observed, and reacted to in the same way.",
+        anchors: [".onboarding-composer", ".composer-shell"],
         condition: {
-          type: 'harness::turn-completed',
+          type: "harness::turn-completed",
           config: {},
-          label: 'Waiting for a harness turn to finish',
-          hint: 'Send any message in a chat pane.',
+          label: "Waiting for a harness turn to finish",
+          hint: "Send any message in a chat pane.",
         },
       },
       {
-        id: 'welcome',
-        title: 'This is an engine, not a chat app',
-        body: 'Each panel on this page is a live client of one iii engine. The engine orchestrates; the workers extend what the system can do. A worker is a running service, not a plugin: it starts, it stays up, and it registers its functions and triggers with the engine. The console shows all of them as one system.',
-        anchors: ['.onboarding-menu-bar', 'header.h-14'],
+        id: "tabs",
+        title: "Workspaces, not windows",
+        body: "Each tab is a workspace of one or more panes, side by side. You can open as many or as you need.",
+        anchors: [
+          ".onboarding-tabs",
+          '[role="tablist"][aria-label="Workspace tabs"]',
+        ],
       },
       {
-        id: 'traces',
-        title: 'Watch the work happen',
-        body: 'Open Traces to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.',
-        anchors: ['.onboarding-traces', 'section[aria-label="traces"]'],
+        id: "coder",
+        title: "CODER",
+        body: "The goal of iii is to be Composable, Observable, Discoverable, Extensible, and Reactive. We demonstrated a few of the properties in the last step. Now let's take a look at them one by one.",
+        anchors: [".onboarding-menu-bar", "header.h-14"],
+      },
+      {
+        id: "composability",
+        title: "Composability",
+        body: "iii is composable like Node or Python, except when you add to iii you're adding a working service and not a library. Let's ask the agent to add a database worker.",
+        anchors: [],
+      },
+      {
+        id: "observability",
+        title: "Observe what the agent is doing",
+        body: "Open Traces to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
+        anchors: [".onboarding-traces", 'section[aria-label="traces"]'],
         // The step's button places this console screen beside the tour, so the
         // operator reads the trace instead of hunting for the palette row.
-        screen: 'traces',
+        screen: "traces",
       },
       {
-        id: 'triggers',
-        title: 'Triggers watch for you',
-        body: 'A trigger binds an event to a function, so the system reacts instead of polls. This step is bound to the `state` trigger type. It fires when anything writes to the `tour-scratch` scope, and the card below shows the event as the engine delivered it.',
-        anchors: ['.onboarding-composer', '.composer-shell'],
-        condition: {
-          type: 'state',
-          config: { scope: 'tour-scratch' },
-          label: 'Waiting for a write to the tour-scratch scope',
-          hint: 'iii trigger state::set scope=tour-scratch key=hello value=world',
-          prompt: 'Use the state worker to set key "hello" to "world" in the tour-scratch scope.',
-        },
+        id: "discoverability",
+        title: "Discover",
+        body: "See what the system can do. Let's ask the agent what the current capabilities are.",
+        anchors: [],
       },
       {
-        id: 'tabs',
-        title: 'Workspaces, not windows',
-        body: 'Each tab is a workspace of one or more panes, side by side. Split a tab to keep a chat beside a page that a worker injected — this onboarding page is one of those. Install more workers from the package repo, or write your own, and they add functions, commands and pages to this same console.',
-        anchors: ['.onboarding-tabs', '[role="tablist"][aria-label="Workspace tabs"]'],
+        id: "extensibility",
+        title: "Extensibility",
+        body: "Great! Now let's use that database worker. Ask the agent to create a simple CRUD app like a TODO list and to create console injectable UI for it as well and to open it for you when it's done.",
+        anchors: [],
       },
       {
-        id: 'palette',
-        title: 'One key reaches everything',
-        body: 'The command palette lists each page, command and worker-provided row. Workers add their rows while they run, so the palette grows when you install a worker. One list, one system.',
-        anchors: ['.onboarding-palette', 'button[aria-label^="Search and commands"]'],
+        id: "reactivity",
+        title: "Reactivity",
+        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers to listen for when they're done. Watch the Triggers react as you check the boxes.",
+        anchors: [],
       },
       {
-        id: 'conversations',
-        title: 'Conversations are sessions',
-        body: 'Each conversation is a harness session with its own history, working directory and model. The engine holds that state, not the browser: close the tab, come back, and the session is where you left it.',
-        anchors: ['.onboarding-conversations', 'aside[aria-label="Conversations"]'],
-      },
-      {
-        id: 'stay-in-touch',
-        title: 'Stay in touch',
-        body: 'iii moves quickly. Put your email in for the roadmap and the product updates — what is being built, and what shipped. The links below go to the same places, if you would rather read along there.',
+        id: "stay-in-touch",
+        title: "Stay in touch",
+        body: "iii moves quickly. Put your email in for the roadmap and the product updates — what is being built, and what shipped. The links below go to the same places, if you would rather read along there.",
         // No anchor: this step is about the page itself, and there is nothing
         // in the console to point at. The page renders the signup box and the
         // links for this step id.
       },
     ],
   },
-]
+];
 
 /** Tours in curriculum order, each with its step count instead of its steps. */
 export function listTours() {
@@ -104,15 +106,15 @@ export function listTours() {
     title: tour.title,
     description: tour.description,
     step_count: tour.steps.length,
-  }))
+  }));
 }
 
 /** @returns {Tour | undefined} */
 export function getTour(id) {
-  return TOURS.find((tour) => tour.id === id)
+  return TOURS.find((tour) => tour.id === id);
 }
 
 /** @returns {Step | undefined} */
 export function getStep(tourId, stepId) {
-  return getTour(tourId)?.steps.find((step) => step.id === stepId)
+  return getTour(tourId)?.steps.find((step) => step.id === stepId);
 }
