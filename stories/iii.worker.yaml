@@ -1,0 +1,33 @@
+iii: v1
+name: stories
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: stories
+tags: [stories, storybook, components, visual-regression, screenshots, react, console-ui]
+description: Component stories for any React project — builds CSF story files with the project's own Vite (monorepo-aware), indexes components and their states per git line, compares the working tree with a branch, a commit or a chat turn, renders deterministic screenshots and DOM/React trees through the browser worker, and injects an explorer and compare page into the console.
+
+runtime:
+  kind: rust
+
+scripts:
+  install: cargo build
+  start: cargo run --bin stories
+
+config:
+  data_path: data/stories
+  console_url: http://127.0.0.1:3113
+  watch: true
+  keep_lines: 12
+  viewport:
+    width: 1024
+    height: 768
+    dpr: 1
+  workspaces:
+    - name: workspace
+      path: .
+
+dependencies:
+  configuration: "0.x"
+  browser: "0.x"
