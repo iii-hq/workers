@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import build_skills_payload
 import deployment_compiler
 
 
@@ -67,7 +68,7 @@ def test_descriptor_schema_requires_explicit_interface_capture_policy():
     }
 
 
-def test_kanban_bundle_install_uses_its_pnpm_build_policy():
+def test_kanban_rust_binary_builds_its_ui_with_the_workspace_pnpm_policy():
     catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
 
     descriptor = deployment_compiler.compile_worker(
@@ -78,13 +79,53 @@ def test_kanban_bundle_install_uses_its_pnpm_build_policy():
         "b" * 64,
     )
 
-    assert descriptor["artifact"]["install_command"] == [
-        "pnpm",
-        "install",
-        "--frozen-lockfile",
-    ]
-    assert descriptor["runtime"]["start"] == "node ./dist/bundle/index.mjs"
-    policy = deployment_compiler.read_yaml(
-        ROOT / descriptor["artifact"]["workspace_root"] / "pnpm-workspace.yaml"
-    )["allowBuilds"]
-    assert policy == {"esbuild": True, "protobufjs": False}
+    artifact = descriptor["artifact"]
+    assert artifact["kind"] == "rust-binary"
+    assert artifact["binary"] == "kanban"
+    (frontend,) = artifact["frontends"]
+    assert frontend["source_path"] == "kanban/ui"
+    assert frontend["workspace_root"] == "."
+    assert frontend["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
+    assert frontend["build_command"] == ["pnpm", "run", "build"]
+    assert frontend["outputs"] == ["dist"]
+    workspace = deployment_compiler.read_yaml(ROOT / frontend["workspace_root"] / "pnpm-workspace.yaml")
+    assert "kanban/ui" in workspace["packages"]
+    assert workspace["allowBuilds"] == {"esbuild": True, "protobufjs": False}
+
+
+def test_registry_projection_carries_the_skills_payload():
+    catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
+
+    def projection(worker: str) -> dict:
+        return deployment_compiler.compile_worker(ROOT, worker, catalog[worker], "a" * 40, "b" * 64)[
+            "registry_projection"
+        ]
+
+    kanban = projection("kanban")["skills"]
+    assert kanban == build_skills_payload.collect_skills(ROOT / "kanban")
+    assert "SKILL.md" in kanban
+    assert "skills/tickets/index.md" in kanban
+    assert "agents/tech-lead.md" in kanban
+    assert all(key.endswith(".md") and body.strip() for key, body in kanban.items())
+
+    assert projection("acp")["skills"] == {}
+
+
+def test_descriptor_schema_validates_the_skills_projection():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(
+        (ROOT / ".github" / "contracts" / "deployment-descriptor.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "skills" in schema["properties"]["registry_projection"]["required"]
+    catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
+    validator = jsonschema.Draft202012Validator(schema)
+
+    for worker in ("kanban", "acp"):
+        validator.validate(deployment_compiler.compile_worker(ROOT, worker, catalog[worker], "a" * 40, "b" * 64))
+
+    broken = deployment_compiler.compile_worker(ROOT, "kanban", catalog["kanban"], "a" * 40, "b" * 64)
+    broken["registry_projection"]["skills"] = {"../escape.md": "x"}
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate(broken)

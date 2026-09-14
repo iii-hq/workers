@@ -5,6 +5,7 @@ import {
   applyFcallPatch,
   clearTransientFlags,
   entrySegments,
+  isCallSettled,
   prependTranscript,
   splitReactionTask,
   transcriptToMessages,
@@ -1478,6 +1479,28 @@ describe('transcriptToMessages — running inference on hydration', () => {
       'sess-1',
     )
     expect((idle[0] as { running?: boolean }).running).toBeUndefined()
+  })
+})
+
+describe('isCallSettled', () => {
+  const row = (
+    extra: Partial<FunctionTriggerMessage>,
+  ): FunctionTriggerMessage => ({
+    id: 'e_a:1',
+    role: 'function-trigger',
+    functionId: 'shell::exec',
+    input: {},
+    functionTriggerId: 'fc-1',
+    createdAt: 1,
+    ...extra,
+  })
+
+  it('is settled once an output or its result entry is known', () => {
+    expect(isCallSettled(row({ running: true }))).toBe(false)
+    expect(isCallSettled(row({ output: 'ok' }))).toBe(true)
+    expect(isCallSettled(row({ resultEntryId: 'e_r1', unloaded: true }))).toBe(
+      true,
+    )
   })
 })
 

@@ -11,6 +11,7 @@ pub mod proxy;
 pub mod server;
 pub mod ui;
 pub mod ui_assets;
+pub mod ui_files;
 
 pub fn worker_name() -> &'static str {
     "ade"

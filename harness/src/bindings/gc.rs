@@ -113,7 +113,7 @@ async fn replay_delivery_triggers(
     let now_ms = crate::subscriptions::fired::now_ms();
     let mut rearmed = 0usize;
     let mut caught_up = 0usize;
-    for binding in bindings {
+    for mut binding in bindings {
         if binding.is_exhausted(now_ms) {
             // The expiry sweep owns retirement and its owner notice.
             continue;
@@ -144,7 +144,10 @@ async fn replay_delivery_triggers(
             }
         };
         match store.rearm_trigger_id(&binding, &trigger_id).await {
-            Ok(crate::bindings::AttachOutcome::Attached(_)) => rearmed += 1,
+            Ok(crate::bindings::AttachOutcome::Attached(current)) => {
+                binding = *current;
+                rearmed += 1;
+            }
             Ok(crate::bindings::AttachOutcome::Gone) => {
                 crate::functions::subscribe::unregister_engine_trigger(deps, &trigger_id).await;
                 continue;
@@ -155,6 +158,7 @@ async fn replay_delivery_triggers(
                 // only the recorded id is stale. Keep going.
             }
         }
+        super::compose::schedule(deps, &binding);
         caught_up += usize::from(catch_up_state_wake(deps, &binding).await);
     }
     (rearmed, caught_up)

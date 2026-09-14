@@ -1,22 +1,23 @@
 # workers-dev
 
-Local dev orchestrator for all iii workers in this repo. Starts Rust binary workers via `cargo run`, shows a TUI dashboard with live engine connection status, and supports dependency-aware restarts.
+A dashboard and remote control for this repo's `iii compose` project. It brings
+the local stack up with one command, then lets you restart, stop and read one
+container at a time — the thing `iii compose --up` alone cannot do, since
+`Ctrl-C` there takes the whole stack and the managed engine with it.
 
-## Prerequisites
+`workers-dev` runs no workers of its own. The stack — inventory, dependency
+edges, environment, commands and the engine URL — comes from
+[`harness/worker-compose.yaml`](../harness/worker-compose.yaml); every action is
+a `compose::*` call. It also lists every other worker this repo ships, so
+starting one is a keypress instead of a file edit.
 
-1. **`iii` CLI** on `PATH`.
-2. **Running iii engine** (this tool does not start the engine):
+## Requirements
 
-```bash
-iii -c harness/engine.config.yaml
-```
-
-3. **Provider API keys** for the harness stack:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
-```
+- The `iii` CLI on `PATH` (0.23 or newer — it starts the engine for you).
+- `cargo`, for the `cargo run` commands the compose file declares.
+- `pnpm`, only if you use the injectable-UI watchers.
+- The provider API keys you need, exported in the shell you launch from — see
+  below.
 
 ## Install
 
@@ -24,154 +25,286 @@ export OPENAI_API_KEY=sk-...
 cargo install --path workers-dev
 ```
 
-## Worker groups
-
-Workers are **discovered automatically** from top-level `*/worker-compose.yaml` in this repo.
-
-| Group | Workers | Started by |
-|-------|---------|------------|
-| **current stack** (default: `harness`) | The stack's roots **plus everything they transitively depend on**, derived live from each worker's `worker-compose.yaml` dependencies. The built-in `harness` stack's roots are `session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness`; define more stacks (or override `harness`'s roots) in `workers-dev.yaml` or from the TUI (`Space` + `n`) — see Config below | `workers-dev up` / bare `workers-dev start` start the `default_stack` (missing deps are pulled in, connected ones left alone); `Ctrl+u` in the TUI starts it directly, or opens a stack picker when more than one stack is defined |
-| **other** | All remaining repo workers (e.g. `telegram-bot`, `console`, …) | `workers-dev start <name>`, `workers-dev start --all`, `Ctrl+a` in TUI |
-
-Press `d` on any worker in the TUI to see its direct dependencies and its transitive dependents (the `r` restart blast radius), each with live status.
-
-Only **Rust `deploy: binary`** workers can be started with `cargo run`. Non-Rust (Node/bundle) workers show **Process: external** — install them via the iii registry (`iii trigger compose::add worker=<name>`) instead.
-
-A worker connected to the engine but not started by this `workers-dev` shows **Process: elsewhere** beside **Engine: connected** (`workers-dev` only tracks processes it spawned itself). Non-Rust workers installed via `compose::add` show **Process: external**.
-
-## Usage
+## Commands
 
 ```bash
-workers-dev up                    # start default stack + TUI
-workers-dev                       # TUI only
-workers-dev start                 # default stack (CLI, waits for connect)
-workers-dev start --all           # every discovered Rust worker
-workers-dev start telegram-bot    # one worker (+ missing deps)
-workers-dev restart llm-router    # rebuild + restart dependents
-workers-dev logs harness -f
-workers-dev status
+workers-dev                       # start the project and open the dashboard
+workers-dev up                    # the same, spelled out
+workers-dev start                 # start the project, no dashboard
+workers-dev start state ade       # compose::up those containers (+ dependencies)
+workers-dev start database        # a repo worker nothing declares yet: start it on demand
+workers-dev stop                  # compose::stop — containers, daemon, managed engine
+workers-dev stop llm-router       # compose::down that container (+ its dependents)
+workers-dev restart harness       # compose::restart — that container only
+workers-dev status                # one compose::status table
 ```
 
-Stacks: define named stacks in `workers-dev.yaml`, or create one from the TUI
-with `Space` + `n` (see Config below). `up` and bare `start` start the
-`default_stack`; in the TUI, `Ctrl+u` opens a stack picker (Enter = switch the
-dashboard's current stack + start it) when more than one stack is defined, and
-starts the only stack directly otherwise.
+Flags: `--repo`, `--worker-dir`, `-n/--namespace`, `--color auto|always|never`,
+`--ui-watch`. Environment: `WORKERS_DEV_REPO` names the repo root,
+`WORKERS_DEV_WORKER_DIRS` adds worker directories (colon-separated, like `PATH`;
+the `a` key writes to `harness/.workers-dev/worker-dirs` instead),
+`III_ENGINE_PORT` moves the engine, `NO_COLOR` disables color.
 
-Starting a worker (CLI `start <name>` or `s` in the TUI) pulls in its dependencies, but a dependency **already connected to the engine is left running as-is** — no rebuild, no restart, no duplicate spawn. Explicitly requested workers always (re)start; use `restart` when a dependency itself needs a rebuild. The group commands count every member as explicitly requested: `up`, bare `start`, and `Ctrl+u` always restart the whole stack, `start --all` and `Ctrl+a` every managed Rust worker.
+For log history deeper than the pane keeps, the CLI that owns the logs is better
+at it:
 
-Global flags: `--repo`, `--url`, `--port`, `--release`, `--config workers-dev.yaml`, `--stop-on-exit`, `--color auto|always|never`, `--ui-watch`.
+```bash
+iii compose logs harness -F -n my-project -f harness/worker-compose.yaml
+```
 
-Environment: `WORKERS_DEV_REPO` overrides repo auto-detection. Set `NO_COLOR` to disable colors (also respected when `--color auto`).
+## API keys
 
-## Injectable-UI watcher mode
+compose builds each worker's environment from a fixed baseline (`PATH`, `HOME`,
+`TERM`, and seven more) plus what the compose file declares, and drops
+everything else in your shell. So a key you exported reaches nothing on its own,
+and the tracked compose file names only two.
 
-Workers that ship injectable console UI (a `ui/package.json` — see
-`docs/sops/injectable-console-ui.md`) can run in the SOP's dev loop straight
-from workers-dev. When watch is on for a worker, starting it:
+`workers-dev` forwards every variable matching `*_API_KEY` from the shell it was
+launched in, through the env file that all containers already read. Export the
+key, start the stack, done — including for a worker started on demand:
 
-1. spawns **`pnpm watch`** in `<worker>/ui/` (esbuild `--watch` → `dist/`),
-   stopped with the worker, output in the same log pane tagged `[ui]`;
-2. sets **`III_<WORKER>_UI_WATCH=1`** on the worker process, arming the
-   `iii-console-ui` crate's poller — every rebuild re-registers the changed
-   asset and open console tabs hot-swap it in place.
+```bash
+export DEEPSEEK_API_KEY=sk-...
+workers-dev
+```
 
-Enable it globally with `--ui-watch` (or `ui_watch: true` in
-`workers-dev.yaml`), or per worker with the **`w`** key in the TUI — a
-running worker restarts so the env var takes effect; a stopped one picks it
-up on next start. The dashboard's **UI** column shows `—` (no ui project),
-`ui` (ships UI, watch off), or `watch` (watcher mode on).
+Two things worth knowing:
 
-## Colors
+- The keys are written to `harness/.env.workers-dev` (gitignored, mode `0600`)
+  because an env file is the only channel compose re-reads per spawn. Every
+  container in the project sees them, not just the one that needs them.
+- **A provider's key belongs to `llm-router`, not to the provider worker.** The
+  provider only declares the variable's name; `llm-router` is the process that
+  calls `std::env::var` on it when it resolves a credential. Forwarding to every
+  container covers this without you having to know it.
 
-Semantic colors are applied at render time (logs stay plain text in the ring buffer):
+Values are forwarded as-is; a key containing a newline is skipped, because the
+env-file format has one record per line and no escaping.
 
-- **Worker table**: green/yellow/red/gray for status, process, and engine columns
-- **Log pane / `workers-dev logs -f`**: cargo progress (yellow), build done (cyan), errors (red), tracing levels (INFO/WARN/DEBUG)
+## What it does on launch
 
-Use `--color never` or `NO_COLOR=1` to force plain output. Default `--color auto` enables colors on a TTY and disables them when stdout is piped.
+If no engine is listening, `workers-dev` runs
 
-## TUI keys
+```
+iii compose --namespace my-project --up --file <repo>/harness/worker-compose.yaml
+```
 
-| Key | Action |
-|-----|--------|
-| `↑`/`↓` (or `k`/`j`) | Select worker (skips group headers) |
-| `g`/`G` (or `Home`/`End`) | Jump to the first / last worker |
-| `Space` | Mark the selected worker for a new stack |
-| `n` | Name and save a new stack from the marked workers |
-| `s` | Start selected worker |
-| `x` | Stop selected worker |
-| `r` | Restart selected worker + dependents (confirm lists the blast radius with live status) |
-| `w` | Toggle injectable-UI watcher mode for the selected worker (restarts it when running) |
-| `d` | Show selected worker's dependencies + dependents with live status |
-| `f` | Toggle live-follow of the selected worker's logs |
-| `PgUp`/`PgDn` | Scroll the log pane (pauses follow; resumes at the bottom) |
-| `+`/`-` | Resize the log pane (drags the divider in two columns, the height when stacked) |
-| `/` | Filter workers by name (Enter applies, Esc clears) |
-| `e` | Start the iii engine (`iii -c harness/engine.config.yaml`) |
-| `Ctrl+u` | Start stack (picker when several stacks are defined; Enter = switch + start) (in the picker: `x` delete a stack, `*` make it the default) |
-| `Ctrl+a` | Start all managed Rust workers |
-| `?` | Toggle the key-reference overlay |
-| `q` | Quit |
+and compose starts the engine declared under `engine:`. If an engine is already
+up, it attaches with `--engine <url>` instead, so stopping compose leaves that
+engine running — this is also the path that re-adopts survivors after an unclean
+shutdown. If a compose daemon is already serving the namespace, nothing is
+spawned at all and the dashboard simply attaches; the header says `managed` or
+`attached`.
 
-On a wide terminal the dashboard is a two-column **master/detail** layout: the worker list on the left (sized to fit its columns), the selected worker's logs filling the rest on the right, with `+`/`-` dragging the divider between them. Below ~100 columns the two panes stack vertically instead, and `+`/`-` trade height.
+The daemon's own stdout and stderr go to `harness/.workers-dev.log`
+(gitignored). `workers-dev` never signals that process: quitting the dashboard
+leaves the stack running unless you ask otherwise.
 
-The header shows the repo's current git branch (`⎇ feat/my-branch`, refreshed live; detached HEAD shows as `@<short-hash>`) so side-by-side instances on different worktrees or checkouts are easy to tell apart — the terminal/tmux pane title is set to `workers-dev ⎇ <branch>` too — plus an at-a-glance health summary (`●` connected, `◐` compiling, `✗` crashed, `○` stopped). When an engine status query fails the header flags `⚠ unreachable` and gains a line with the remedy (`press e to start the engine`) and the underlying error. The worker list's title shows the selection position (`Workers 3/48`). Each group's header row reads `── stack:<name> (N) ──` for the current stack and `── other (N) ──` for everything else, where N is the post-filter worker count. The log pane shows the **selected worker only**, scrollable through the full ring buffer, following the live tail by default. Crashed workers show their exit code inline. Lines are sanitized (no ANSI, no `\r` overwrite garbage).
+## Starting other workers from the repo
 
-## Config (`workers-dev.yaml`)
-
-Auto-loaded from the repo root when present; `--config <path>` overrides.
+The dashboard's second group, `repo`, is every worker with an `iii.worker.yaml`
+that the stack does not declare — 60 of them. Pressing `s` on one writes it a
+compose project of its own under **`harness/.workers-dev/`** and starts it:
 
 ```yaml
-repo: /path/to/workers
-engine_url: ws://127.0.0.1:49134
-release: false
-workers:          # optional override; default = all discovered
-  - session-manager
-  - llm-router
-  - harness
-  - console
-stacks:           # optional named stacks; values are stack ROOTS —
-  console:        # the group shown/started is roots + transitive deps.
-    - console
-    - session-manager
-  harness:        # overrides the built-in harness stack's roots
-    - session-manager
-    - llm-router
-    - harness
-default_stack: console   # started by `up` / bare `start`; default: harness
-color: auto   # auto | always | never (respects NO_COLOR)
-ui_watch: false   # start injectable-UI workers in watcher mode (pnpm watch + III_<WORKER>_UI_WATCH=1)
+# harness/.workers-dev/database.yaml
+containers:
+  database:
+    worker: path://../../database
+    scripts:
+      run: cargo run --bin database
 ```
 
-The built-in `harness` stack always exists. Deleting a `stacks.harness:`
-override (`x` on it in the picker) removes it from that session's picker
-until the next launch, when the built-in returns with its default roots. The
-old `harness_stack:` key was replaced by `stacks:` + `default_stack:` and now
-fails startup with a rename hint.
+That directory is gitignored and owned by this tool. The tracked compose file
+stays the stack everyone shares, so an experiment never reaches anyone's
+`git status`, and what you started persists across sessions.
 
-Stacks can also be created from the TUI: mark workers with `Space`, press `n`,
-name it, Enter. The stack is written into this file (comments and formatting
-are preserved) and becomes the current stack immediately — it is *not* started;
-press `Ctrl+u` when you want that. In the `Ctrl+u` picker, `x` deletes a stack
-and `*` makes it the default. Deleting the default stack is refused — set
-another default first.
+One file each rather than one shared file, and the reason is worth knowing: a
+daemon holds a project as its file was when it loaded it, so a container added
+to a loaded project stays invisible until a whole-project `compose::restart` —
+which stops everything else in that project. A new file is a new project, so
+starting the fifth on-demand worker leaves the other four running.
 
-Note: `workers-dev.yaml` is not gitignored, so the first save leaves an
-untracked file in the repo root. `workers-dev` writes the file by editing the
-lines it owns; if `stacks:` is written inline (`stacks: {a: [b]}`) it refuses
-to edit and says so.
+`x` stops one without deleting its file, so `s` starts it again. Delete the file
+(or the directory) to forget it.
+
+Workers that are not Rust binaries show `registry` instead of a state: they
+install from the registry rather than from this tree, with
+`iii trigger compose::add worker=<name>`.
+
+### Workers from another directory
+
+Press **`a`** in the dashboard. A browser opens beside the repo — where a
+sibling checkout like `harness-e2e` lives — and labels every directory by what
+it holds:
+
+```
+┌ ~/project/iii   2/33 ────────────────────────────────────────┐
+│  harness-e2e               1 worker                          │
+│  iii.main                                                    │
+│  workers                   added                             │
+│  workers.feat-needle       4 new of 63                       │
+│   _   Enter add or open · → look inside · ⌫ up · Esc         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+One rule: a directory that offers something new is added; anything else is
+opened. So `harness-e2e` is added, `iii.main` is opened, and a worktree of this
+repo reads `0 new of 60` and opens — the repo already provides those names, and
+the label says so before you press anything. `→` looks inside one anyway.
+Typing filters; Backspace clears the filter, then goes up a level.
+
+What you add joins the table as **its own group**, so where a worker came from
+stays visible:
+
+```
+── stack (13) ──
+── repo (60) ──
+── harness-e2e (1) ──
+```
+
+Select a group header and press `x` to drop that directory. Nothing stops —
+a container started from there keeps running, it just leaves the list. The
+directories are remembered in `harness/.workers-dev/worker-dirs`, so the next
+session opens with them.
+
+The same thing without the dashboard:
+
+```bash
+workers-dev --worker-dir ~/project/iii/harness-e2e
+# or, once, in your shell profile:
+export WORKERS_DEV_WORKER_DIRS=~/project/iii/harness-e2e
+```
+
+The directory *is* a worker when it carries an `iii.worker.yaml`; otherwise its
+children are scanned, so a path to another monorepo's root works too. The repo
+is read first, so a name it already uses is not replaced by a stranger, and a
+worker the stack declares never appears in the list at all.
+
+There is no auto-scan of sibling directories, deliberately: a checkout with ten
+worktrees beside it would offer seventy copies of every worker.
+
+A worker that ships its own `worker-compose.yaml` is taken at its word — its
+container declaration is used as written, with only `worker:` repointed at the
+real directory, `start_after` dropped (the containers it names are not in this
+project) and the env file appended. `harness-e2e` refuses to start without the
+`config_override` its own file carries, and this is how it gets it.
+
+## The dashboard
+
+The table has two groups: `stack`, what the tracked compose file declares, and
+`repo`, everything else this repo ships. Each row carries its compose state
+(`ready`, `failed`, `stopped`, or `—` for something never started), pid,
+UI-watch flag and last error. Row 0 is pinned:
+`compose (daemon)`, whose log is the daemon's own output — the startup tree, the
+adoption lines, the managed engine's pid and every `error[CODE]`.
+
+The footer always lists the keys the selected row accepts, and only those: the
+daemon row offers `^u` and nothing else, a repo worker that installs from the
+registry offers nothing at all, and `w` appears only on a worker that ships a
+watchable `ui/`. `Enter` opens the same list with a line of explanation each —
+the keys keep working while it is open, so it teaches the keyboard rather than
+replacing it.
+
+An action never takes the keyboard: it runs detached and reports in the footer,
+because a cold container can take minutes and the daemon owns its lifecycle
+either way. `Esc` cancels only the project start — the one operation compose
+registers; a restart this dashboard asks for passes an id compose never
+registers, so there is nothing to cancel and `Esc` says nothing rather than
+lying.
+
+While an operation is running, the state column comes from compose's
+`compose-operation` feed (`queued` → `starting` → `ready`/`failed`) with a
+counter in the header. This matters on a cold checkout: `compose::status` cannot
+see inside its own operation, so without the feed thirteen containers would read
+`stopped` for the several minutes cargo spends compiling them.
+
+| Key | Action |
+| --- | --- |
+| `↑`/`↓`, `k`/`j`, `g`/`G` | select |
+| `s` | start: `compose::up` a container, or add a repo worker on demand |
+| `x` | stop: `compose::down` — for a stack container, confirms with its dependents |
+| `r` | `compose::restart` — this container only, no graph |
+| `Ctrl+u` | `compose::up` the whole project |
+| `w` | toggle the injectable-UI watcher for this container |
+| `d` | `start_after` and dependents, with live state |
+| `f`, `PgUp`/`PgDn` | follow / scroll the log pane |
+| `+`/`-` | move the divider |
+| `/` | filter by name |
+| `a` | browse for another directory of workers (remembered) |
+| `x` on a group header | stop offering that directory |
+| `Esc` | cancel the running operation (`compose::cancel`) |
+| `Enter` | what this row can do — the keys that apply to it, and what they mean here |
+| `?` | keys |
+| `q` | quit: `l` leave running · `s` stop everything · `Esc` cancel |
+| mouse | click a row to select it; the wheel scrolls whichever pane is under the pointer |
+
+Only button and SGR reporting are enabled (`?1000h` + `?1006h`), not crossterm's
+`EnableMouseCapture` — that also turns on any-motion reporting, which wakes the
+event loop for every cell the pointer crosses and, under tmux, takes drag-select,
+double-click-copy and middle-click paste away from the pane. Selecting text to
+copy keeps working.
+
+`s` is per container on purpose: a project-wide `compose::up` rolls back
+everything it started if one container fails, so a bad thirteenth worker would
+undo twelve good ones. `Ctrl+u` is there when you want exactly that.
+
+## Injectable-UI watchers
+
+For a container whose `ui/` declares a `watch` script, `w` starts `pnpm run
+watch` there and sets `III_<WORKER>_UI_WATCH=1`, arming the `iii-console-ui`
+poller so open console tabs hot-swap the asset on every rebuild (see
+`docs/sops/injectable-console-ui.md`). `--ui-watch` turns on every available one.
+
+The flag reaches the container through the same env file as the API keys: the
+compose file declares
+`env_file: [${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}]`, `workers-dev`
+points that variable at the gitignored `harness/.env.workers-dev` and writes the
+flags there. compose re-reads an `env_file` at every container spawn, which is
+why a toggle is one `compose::restart` and not a whole-stack bounce.
+
+Two consequences worth knowing:
+
+- **Keep `harness/workers-dev.env.example`.** compose validates every declared
+  `env_file` when it first loads the project, so deleting it breaks every
+  compose call against this project, `compose::status` included.
+- `w` only works against a daemon `workers-dev` started. One you attached to
+  resolved `${WORKERS_DEV_ENV_FILE}` at its own launch, and that is out of
+  reach; the key says so rather than bouncing a container for nothing.
+
+Watchers are `workers-dev`'s own children and stop when it does, on `q` and on
+SIGTERM/SIGHUP alike.
+
+## Two worktrees at once
+
+A compose daemon is one per namespace per engine, and the managed engine's lock
+is per namespace machine-wide — so a second worktree needs both its own
+namespace and its own port:
+
+```bash
+III_ENGINE_PORT=49135 workers-dev --namespace wt2
+```
+
+The branch badge in the header (`⎇ feat/my-branch`) and the terminal title say
+which instance you are looking at.
+
+## Configuration
+
+There is none. `workers-dev.yaml` is gone — workers, dependencies, environment
+and the engine URL live in `harness/worker-compose.yaml`, and the two things
+that are genuinely per-checkout are the flag and the env var above. A leftover
+`workers-dev.yaml` is a startup error rather than a silently ignored file.
 
 ## Troubleshooting
 
-**Garbled log lines in the dashboard**
+**The table says `stopped` for everything and nothing moves.** Select the
+`compose (daemon)` row. On a first run each container is a cold `cargo build`;
+the daemon log shows which one is compiling.
 
-Usually caused by cargo `\r` progress lines or ANSI color codes. Current versions normalize both. Reinstall: `cargo install --path workers-dev`.
+**`no compose daemon in this namespace`.** The engine is up but nothing serves
+`compose::*` there. Quit and relaunch — that spawns one — or check that
+`--namespace` matches the compose file's `namespace:`.
 
-**Engine not reachable**
-
-Press `e` in the TUI, or start the engine manually: `iii -c harness/engine.config.yaml`
-
-**Non-Rust worker won't start**
-
-Expected — use `iii trigger compose::add worker=<name>` for JavaScript/bundle workers.
+**A managed start fails on the engine port.** An engine from a previous unclean
+shutdown still holds it. `pgrep -af 'iii:[ce]:'` finds it; note that
+`workers-dev` attaches to a reachable engine rather than fighting it.

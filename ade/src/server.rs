@@ -1,5 +1,6 @@
-//! HTTP server: routes `/`, `/assets/*`, `/ws` (WebSocket proxy), and —
-//! when injectable UI is enabled — `/ui`, `/ui/*`, and `/vendor/*`.
+//! HTTP server: routes `/`, the installable-PWA resources, `/assets/*`,
+//! `/ws` (WebSocket proxy), and — when injectable UI is enabled — `/ui`,
+//! `/ui/*`, and `/vendor/*`.
 //!
 //! Binds `<http_host>:<http_port>` — `0.0.0.0` by default. Set `http_host`
 //! in the seed config or `--http-host` to select an interface. Front it
@@ -23,7 +24,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use iii_sdk::IIIClient;
 
 use crate::ui_assets::UiRegistry;
-use crate::{assets, probe, proxy};
+use crate::{assets, probe, proxy, ui_files};
 
 /// Grace period before a superseded listener is hard-aborted. Graceful
 /// shutdown is the primary path; the abort only bounds how long a stuck
@@ -108,6 +109,9 @@ impl FromRef<AppState> for proxy::ProxyConfig {
 pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/", get(assets::index_handler))
+        .route("/manifest.webmanifest", get(assets::manifest_handler))
+        .route("/sw.js", get(assets::service_worker_handler))
+        .route("/icons/*path", get(assets::icon_handler))
         .route("/assets/*path", get(assets::asset_handler))
         .route("/runtime", get(runtime_handler))
         .route("/ws", get(proxy::ws_proxy));
@@ -117,7 +121,12 @@ pub fn router(state: AppState) -> Router {
     // Only mounted when an engine client is present; the target host is derived
     // server-side, never taken from the request, so it cannot be an SSRF lever.
     if state.iii.is_some() {
-        router = router.route("/probe", axum::routing::post(probe::probe_handler));
+        router = router
+            .route("/probe", axum::routing::post(probe::probe_handler))
+            // Documents and assets a worker serves for its own iframes (the
+            // stories worker's built story pages), pulled through
+            // `<worker>::ui-file { path }` and framed by the console only.
+            .route("/ui-files/:worker/*path", get(ui_files::ui_file_handler));
     }
 
     if state.ui.is_some() {
@@ -414,6 +423,57 @@ mod tests {
         assert_eq!(v["disabled"], serde_json::json!(false));
         assert_eq!(v["assets"][0]["path"], "state/page.js");
         assert_eq!(v["assets"][0]["kind"], "script");
+    }
+
+    #[tokio::test]
+    async fn pwa_assets_have_installable_types_and_safe_cache_headers() {
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
+
+        let manifest = get_response(router(state.clone()), "/manifest.webmanifest", &[]).await;
+        assert_eq!(manifest.status(), StatusCode::OK);
+        assert_eq!(
+            manifest.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/manifest+json"
+        );
+        assert_eq!(
+            manifest.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache, must-revalidate"
+        );
+
+        let service_worker = get_response(router(state.clone()), "/sw.js", &[]).await;
+        assert_eq!(service_worker.status(), StatusCode::OK);
+        assert!(service_worker
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript"));
+        assert_eq!(
+            service_worker.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache, must-revalidate"
+        );
+        assert_eq!(
+            service_worker
+                .headers()
+                .get("service-worker-allowed")
+                .unwrap(),
+            "./"
+        );
+
+        let icon = get_response(router(state), "/icons/iii-192.png", &[]).await;
+        assert_eq!(icon.status(), StatusCode::OK);
+        assert_eq!(
+            icon.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert!(icon
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("immutable"));
     }
 
     #[tokio::test]

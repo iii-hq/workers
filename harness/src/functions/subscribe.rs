@@ -604,11 +604,33 @@ async fn handle(
     // absolute deadline on every retry and defeat the dedup.
     let dedup = registration_dedup_key(&req, once);
     resolve_timer_request(&mut req)?;
-    let expires_at = resolved_expires_at(
-        req.lifecycle.as_ref(),
-        crate::types::message::AgentMessage::now_ms(),
-    );
+    let now_ms = crate::types::message::AgentMessage::now_ms();
+    let expires_at = resolved_expires_at(req.lifecycle.as_ref(), now_ms);
 
+    reject_settled_compose_operation(deps, &req).await?;
+    let cfg = deps.cfg().await;
+    // Leafness is lineage, not a policy shape: a root under a narrow
+    // allow-list cannot spawn either, and must keep both binding shapes.
+    let has_parent = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
+        .await?
+        .is_some_and(|record| {
+            record.parent.is_some() || record.display_parent_session_id.is_some()
+        });
+    reject_leaf_control_plane(
+        policy,
+        has_parent,
+        req.target
+            .as_ref()
+            .map(|t| t.function_id.as_str())
+            .or(req.function_id.as_deref()),
+    )?;
+    let expires_at = leaf_wake_deadline(
+        policy,
+        has_parent,
+        expires_at,
+        now_ms,
+        cfg.default_pending_timeout_ms,
+    );
     let target = resolve_target(deps, &req, session_id, policy).await?;
     authorize_conditions(deps, &req.conditions, session_id, policy).await?;
 
@@ -680,6 +702,10 @@ async fn handle(
             return Err(error);
         }
     }
+
+    // A preflight snapshot cannot close the provider's asynchronous activation
+    // window. Recover a missed terminal event now and through the durable sweep.
+    crate::bindings::compose::schedule(deps, &binding);
 
     let notes: Vec<String> = [
         provider_presence_note(deps, &req.trigger_type).await,
@@ -758,6 +784,104 @@ fn reject_forbidden_type(trigger_type: &str) -> Result<(), HarnessError> {
         )));
     }
     Ok(())
+}
+
+/// Refuse a wake when the operation is already settled at preflight: its result
+/// is available now, so direct the caller to read it instead of parking.
+/// Completion after this read is recovered from Compose's persisted terminal
+/// event after registration and by the binding sweep. An unknown status or an
+/// unavailable diagnostic still permits registration.
+async fn reject_settled_compose_operation(
+    deps: &Deps,
+    req: &SubscribeRequest,
+) -> Result<(), HarnessError> {
+    if req.trigger_type != COMPOSE_OPERATION_TRIGGER {
+        return Ok(());
+    }
+    let Some(operation_id) = req.config.get("operation_id").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Ok(snapshot) = deps
+        .engine()
+        .await
+        .dispatch(
+            "compose::operation",
+            json!({ "operation_id": operation_id }),
+        )
+        .await
+    else {
+        return Ok(());
+    };
+    let status = snapshot
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !is_settled_operation(status) {
+        return Ok(());
+    }
+    Err(HarnessError::InvalidRequest(format!(
+        "operation `{operation_id}` already reached `{status}`. Read the result with \
+         `compose::operation` now instead of arming a wake, and register the wake BEFORE \
+         starting the operation next time, in the same message."
+    )))
+}
+
+/// A compose operation reaches one of these exactly once, and never leaves it —
+/// so a wake armed afterwards has nothing left to wait for. Anything else
+/// (`running`, or a status this harness does not know) is still in flight and
+/// registers normally: an unknown status must not silently swallow a wake.
+fn is_settled_operation(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "cancelled")
+}
+
+/// A leaf may arm its own wake, but may not install a mechanical call it cannot
+/// unregister. The deadline half lives in [`leaf_wake_deadline`]: a leaf's wake is stamped
+/// rather than refused, because a leaf with no way to wait is the problem this
+/// set out to fix.
+fn reject_leaf_control_plane(
+    policy: &CompiledPolicy,
+    has_parent: bool,
+    explicit_target: Option<&str>,
+) -> Result<(), HarnessError> {
+    if !crate::policy::is_leaf(policy, has_parent) {
+        return Ok(());
+    }
+    if let Some(target) = explicit_target {
+        return Err(HarnessError::InvalidRequest(format!(
+            "a sub-agent cannot bind a mechanical call to `{target}`: that installs durable \
+             machinery it does not own and cannot unregister. Omit `function_id` to register a \
+             wake for your own session instead — the fire comes back to you as a message and you \
+             make the call yourself."
+        )));
+    }
+    Ok(())
+}
+
+/// Give a leaf's wake a deadline when it asked for none.
+///
+/// `once: true` is NOT one. It caps how many times a binding may fire, not how
+/// long it waits, so a `once` wake that never fires is exactly as eternal as an
+/// open-ended one — and a leaf cannot unregister it. A child that armed two
+/// `once` compose-operation wakes and ended its turn hung forever, and because
+/// an incomplete child keeps `tree_complete` false it hung the whole run with
+/// it: 15 idle minutes and a RESOURCE LIMIT on a run whose work was done
+/// (MOT-4766).
+///
+/// A root keeps whatever it asked for — it can unregister, and whoever drives
+/// it has its own timeout. The leaf's cap is the harness's existing patience
+/// for pending work, so its wake can never outlive that.
+fn leaf_wake_deadline(
+    policy: &CompiledPolicy,
+    has_parent: bool,
+    requested: Option<i64>,
+    now_ms: i64,
+    pending_timeout_ms: u64,
+) -> Option<i64> {
+    if !crate::policy::is_leaf(policy, has_parent) {
+        return requested;
+    }
+    let cap = now_ms.saturating_add(pending_timeout_ms as i64);
+    Some(requested.map_or(cap, |asked| asked.min(cap)))
 }
 
 /// Resolve and VALIDATE the target a registration asks for. Two shapes
@@ -1950,8 +2074,10 @@ mod tests {
         assert_eq!(names, ["engine::register_trigger"]);
 
         let mut walled = policy_allowing(&["*"]);
-        // The leaf wall's denies must hide both controls from the toolset.
         assert!(native_control_tools(&walled).len() == 2);
+        // Under the leaf wall the toolset keeps registration and loses
+        // unregistration: a leaf arms its own wake but cannot retract anyone's
+        // binding, which is why its wake must be self-limiting (MOT-4766).
         walled = CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
             allow: vec!["*".into()],
             deny: crate::policy::CONTROL_PLANE_DENY
@@ -1960,7 +2086,106 @@ mod tests {
                 .collect(),
             expose: Default::default(),
         }));
-        assert!(native_control_tools(&walled).is_empty());
+        let names: Vec<String> = native_control_tools(&walled)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["engine::register_trigger"]);
+    }
+
+    fn leaf_policy() -> CompiledPolicy {
+        CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+            allow: vec!["*".into()],
+            deny: crate::policy::CONTROL_PLANE_DENY
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            expose: Default::default(),
+        }))
+    }
+
+    // The half a leaf keeps: park on your own work instead of polling for it.
+    #[test]
+    fn a_leaf_may_arm_a_wake_for_itself() {
+        assert!(reject_leaf_control_plane(&leaf_policy(), true, None).is_ok());
+    }
+
+    // A root under a narrow allow-list cannot spawn either, and reading that
+    // as leafness refused its mechanical-call bindings — which is how this
+    // change first broke INT-016's standing wake.
+    #[test]
+    fn a_parentless_session_keeps_both_shapes_however_narrow_its_policy() {
+        let narrow = leaf_policy();
+        assert!(reject_leaf_control_plane(&narrow, false, Some("database::execute")).is_ok());
+        assert!(reject_leaf_control_plane(&narrow, false, None).is_ok());
+        // ...and its standing wake keeps the open end it asked for.
+        assert_eq!(
+            leaf_wake_deadline(&narrow, false, None, 1_000, 1_800_000),
+            None
+        );
+    }
+
+    // The half it does not: durable machinery pointed at someone else's
+    // function, which it could not unregister afterwards.
+    #[test]
+    fn a_leaf_may_not_bind_a_mechanical_call() {
+        let err = reject_leaf_control_plane(&leaf_policy(), true, Some("database::execute"))
+            .expect_err("a mechanical call is control plane");
+        let text = format!("{err:?}");
+        assert!(text.contains("database::execute"), "{text}");
+        assert!(text.contains("Omit `function_id`"), "{text}");
+        // A root (or an explicit orchestrator child) keeps both shapes.
+        assert!(reject_leaf_control_plane(
+            &policy_allowing(&["*"]),
+            true,
+            Some("database::execute")
+        )
+        .is_ok());
+    }
+
+    // Which statuses mean "nothing left to wait for". Getting this wrong in
+    // either direction is silent: too narrow and the wake still strands, too
+    // wide and a live operation's wake is refused. An unknown status must read
+    // as in-flight (MOT-4766).
+    #[test]
+    fn only_the_three_terminal_operation_statuses_are_settled() {
+        for status in ["succeeded", "failed", "cancelled"] {
+            assert!(is_settled_operation(status), "{status} is terminal");
+        }
+        for status in ["running", "", "queued", "Succeeded", "partial"] {
+            assert!(!is_settled_operation(status), "{status} is still in flight");
+        }
+    }
+
+    // `once: true` caps fires, not time: the run-30 hang was two `once`
+    // compose-operation wakes that never fired, on a child that cannot
+    // unregister. Every leaf wake gets a deadline whether it asked or not.
+    #[test]
+    fn a_leaf_wake_always_carries_a_deadline() {
+        let leaf = leaf_policy();
+        let now = 1_000_000;
+        let cap = now + 1_800_000;
+
+        assert_eq!(
+            leaf_wake_deadline(&leaf, true, None, now, 1_800_000),
+            Some(cap)
+        );
+        // A shorter request is honoured; a longer one is capped.
+        assert_eq!(
+            leaf_wake_deadline(&leaf, true, Some(now + 5_000), now, 1_800_000),
+            Some(now + 5_000)
+        );
+        assert_eq!(
+            leaf_wake_deadline(&leaf, true, Some(now + 9_000_000), now, 1_800_000),
+            Some(cap)
+        );
+        // A root is left exactly as it asked, open-ended included.
+        let root = policy_allowing(&["*"]);
+        assert_eq!(leaf_wake_deadline(&root, true, None, now, 1_800_000), None);
+        assert_eq!(
+            leaf_wake_deadline(&root, true, Some(now + 9_000_000), now, 1_800_000),
+            Some(now + 9_000_000)
+        );
     }
 
     #[test]

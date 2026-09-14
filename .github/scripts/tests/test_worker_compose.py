@@ -55,8 +55,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 43
-    assert len(frontends) == 46
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 44
+    assert len(frontends) == 47
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -94,7 +94,7 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
         else:
             assert artifact["runtime"] == {"name": "python", "version": "3.12.3"}
             assert artifact["package_manager"] == {"name": "uv", "version": "0.12.5"}
-    assert bundles == 14
+    assert bundles == 13
 
 
 def test_claude_code_release_installs_its_shared_ui_workspace():
@@ -124,6 +124,7 @@ def test_worker_bundle_start_commands_target_packaged_entrypoints():
         "opencode",
         "opengantry",
         "openwiki",
+        "pi",
         "vscode",
     ):
         worker = document["workers"][worker_id]

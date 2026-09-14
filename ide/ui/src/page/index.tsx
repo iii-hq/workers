@@ -524,6 +524,21 @@ export function ShellExplorerPage({
     turnCache.clear()
     setDiskEpoch((value) => value + 1)
   }, [harnessTurn.completedAtMs, turnCache])
+  // A running turn keeps gaining files. The record a diff tab cached before
+  // a file landed says the turn never touched it, and a disk burst alone
+  // re-reads that same stale record; the polled list is what knows better.
+  const turnsShape = useMemo(
+    () =>
+      sessionTurns
+        .map((turn) => `${turn.turn_id}:${turn.ended_at ?? ''}:${turn.files.map((file) => `${file.path}${file.kind}`).join(',')}`)
+        .join('\n'),
+    [sessionTurns],
+  )
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the list's shape is the trigger
+  useEffect(() => {
+    turnCache.clear()
+    setDiskEpoch((value) => value + 1)
+  }, [turnsShape, turnCache])
   const turnTitles = useMemo(
     () => new Map(sessionTurns.map((turn, index) => [turn.turn_id, turnTitle(turn, sessionTurns.length - index)] as const)),
     [sessionTurns],

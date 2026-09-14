@@ -15,6 +15,8 @@ The payload always carries the complete skills snapshot, including
 empty snapshot is idempotent and lets retries prove that the exact version has
 no attached skills before a mutable Registry channel is assigned.
 """
+from __future__ import annotations
+
 import argparse
 import json
 import pathlib

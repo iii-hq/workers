@@ -20,10 +20,24 @@ canonical `skills/SKILL.md` entrypoint.
 
 ### Publish
 
-On every successful release (when `registry_interface != false`):
+Skills travel inside the deployment descriptor. `deployment_compiler.py` calls
+`build_skills_payload.collect_skills` for every worker and writes the result to
+`registry_projection.skills`, keyed exactly as `POST /w/<worker>/skills`
+expects:
 
-1. `build_skills_payload.py` collects any non-empty markdown under `skills/`
-2. `POST /w/<worker>/skills` — skipped cleanly when no markdown found
+| Source file | Payload key |
+|---|---|
+| `<worker>/skills/SKILL.md` | `SKILL.md` |
+| `<worker>/skills/<rel>.md` (any depth; `prompts/` and `agents/` segments excluded) | `skills/<rel>.md` |
+| `<worker>/agents/<id>.md` | `agents/<id>.md` |
+
+A worker with no markdown projects `skills: {}`, which is the Registry's
+explicit "no skills on this version" snapshot. Release Control reads the
+projection from the build manifest and publishes it with
+`POST /w/<worker>/skills` right after `/publish`, for every version it
+publishes: the Registry attaches skills per immutable version, and neither a
+channel move nor `releases/finalize` copies them from a candidate to the
+stable version.
 
 ## iii-permissions.yaml
 

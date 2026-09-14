@@ -142,7 +142,12 @@ export function Overview({
                 disabled={busy !== null}
                 onChange={(next) => choose(['stt', 'backend'], next, `Speech to text uses ${next}.`)}
                 options={[
-                  { value: 'local', label: 'Local models on this machine', description: 'Nothing leaves the machine' },
+                  { value: 'local', label: 'Bundled local models', description: 'English, nothing leaves the machine' },
+                  {
+                    value: 'whisper_cpp',
+                    label: 'whisper.cpp on this machine',
+                    description: 'Multilingual with a compatible GGML model',
+                  },
                   {
                     value: 'router',
                     label: 'A speech provider through llm-router',
@@ -230,6 +235,24 @@ export function Overview({
                 {stt.final_model === ''
                   ? 'Only the live model runs: words appear instantly but without punctuation.'
                   : 'Each sentence is re-decoded by this model after you pause, so transcripts get punctuation, casing and its accuracy.'}
+              </span>
+            </Fact>
+            {liveWordsFact}
+            <Fact label="Runs on">
+              <span>this machine, nothing leaves it</span>
+            </Fact>
+          </Facts>
+        ) : null}
+        {stt.backend === 'whisper_cpp' ? (
+          <Facts>
+            <Fact label="Model">
+              <span className="voice-fact-line">
+                <Chip tone={stt.problem ? 'warning' : 'success'}>{stt.problem ? 'configuration needed' : 'ready'}</Chip>
+                <span className="voice-mono">{stt.model}</span>
+              </span>
+              <span className="voice-sub voice-block">
+                Final text is produced by a local whisper-cli process. Set its command, multilingual GGML model, and
+                language under All settings.
               </span>
             </Fact>
             {liveWordsFact}

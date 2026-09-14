@@ -21,7 +21,23 @@ describe('tail scroll state', () => {
   it('pauses on any meaningful upward movement, even next to the bottom', () => {
     const metrics = { scrollTop: 399, scrollHeight: 500, clientHeight: 100 }
 
-    expect(tailStateAfterScroll('following', 400, metrics)).toBe('paused')
+    expect(tailStateAfterScroll('following', 400, metrics, true)).toBe('paused')
+  })
+
+  /* iOS WebKit reports scroll positions from its scrolling thread that can
+     lag a programmatic write, and a collapsing card above the fold moves
+     the offset too: both arrive as "scrolled up" with nobody touching the
+     screen. Without a gesture behind it, an upward scroll event is never a
+     reason to stop following. */
+  it('ignores an upward scroll event that no gesture started', () => {
+    const metrics = { scrollTop: 300, scrollHeight: 500, clientHeight: 100 }
+
+    expect(tailStateAfterScroll('following', 400, metrics, false)).toBe(
+      'following',
+    )
+    expect(tailStateAfterScroll('initializing', 400, metrics, false)).toBe(
+      'initializing',
+    )
   })
 
   it('keeps following when shrinking content clamps the viewport to its new tail', () => {
@@ -31,13 +47,15 @@ describe('tail scroll state', () => {
       clientHeight: 100,
     }
 
-    expect(tailStateAfterScroll('following', 400, clampedToNewTail)).toBe(
+    expect(tailStateAfterScroll('following', 400, clampedToNewTail, true)).toBe(
       'following',
     )
-    expect(tailStateAfterScroll('initializing', 400, clampedToNewTail)).toBe(
-      'initializing',
+    expect(
+      tailStateAfterScroll('initializing', 400, clampedToNewTail, true),
+    ).toBe('initializing')
+    expect(tailStateAfterScroll('paused', 400, clampedToNewTail, true)).toBe(
+      'paused',
     )
-    expect(tailStateAfterScroll('paused', 400, clampedToNewTail)).toBe('paused')
   })
 
   it('does not resume until the viewport reaches the actual tail', () => {
@@ -45,15 +63,15 @@ describe('tail scroll state', () => {
     const atTail = { ...away, scrollTop: 398 }
 
     expect(isAtTail(away)).toBe(false)
-    expect(tailStateAfterScroll('paused', 396, away)).toBe('paused')
+    expect(tailStateAfterScroll('paused', 396, away, false)).toBe('paused')
     expect(isAtTail(atTail)).toBe(true)
-    expect(tailStateAfterScroll('paused', 397, atTail)).toBe('following')
+    expect(tailStateAfterScroll('paused', 397, atTail, false)).toBe('following')
   })
 
   it('does not finish initialization from its own instant scroll event', () => {
     const atTail = { scrollTop: 400, scrollHeight: 500, clientHeight: 100 }
 
-    expect(tailStateAfterScroll('initializing', 400, atTail)).toBe(
+    expect(tailStateAfterScroll('initializing', 400, atTail, false)).toBe(
       'initializing',
     )
   })
@@ -62,7 +80,9 @@ describe('tail scroll state', () => {
     const metrics = { scrollTop: 400, scrollHeight: 900, clientHeight: 100 }
 
     expect(tailDistanceFromBottom(metrics)).toBe(400)
-    expect(tailStateAfterScroll('following', 400, metrics)).toBe('following')
+    expect(tailStateAfterScroll('following', 400, metrics, false)).toBe(
+      'following',
+    )
   })
 })
 

@@ -148,7 +148,7 @@ The example runs on the host. The same payload retargets at a microVM with `targ
 | Function | Purpose |
 |---|---|
 | `shell::exec` | Run a command in the foreground; returns stdout, stderr, exit code, and timing. Blocks until exit or timeout. Accepts optional host-only `cwd` (confined to `fs.host_roots` when set, else absolute), `env` (deny-only, gated by a dangerous-key denylist), and `stdin` (string piped to the program's stdin, then EOF) — see [Per-call `cwd`, `env`, and `stdin`](#per-call-cwd-env-and-stdin-host-target). |
-| `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
+| `shell::exec_bg` | Spawn a command as a background job; returns `{ job_id, argv }` immediately. Accepts an optional caller-chosen `job_id` on host and sandbox targets so you can [subscribe before starting the job](#background-job-completion-shelljob-finished). Host-targeted jobs run until they exit or `shell::kill` terminates them — unbounded by default, and capped only when the operator sets a positive `max_bg_timeout_ms` (default `0` = unbounded), after which a runaway job is killed and its status becomes `killed`. Sandbox jobs honor `timeout_ms`. Same optional host-only `cwd`/`env`/`stdin` as `shell::exec`. |
 | `shell::status` | Fetch one job's full record: state, exit code, and captured stdout/stderr. A missing id — one that never existed or aged out past `job_retention_secs` — returns an `S211` ("no such job") error. |
 | `shell::list` | Enumerate current jobs as lightweight summaries; argv, stdout, and stderr are redacted. |
 | `shell::kill` | Terminate a running background job by `job_id`. Sandbox jobs cannot be hard-killed: the record flips to `killed` but the in-VM process runs until its `timeout_ms` (or `sandbox::stop`). |
@@ -317,7 +317,125 @@ Conventions (hold these when adding functions to either surface):
 - **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
   `coder::*` is host-only.
 
-## Live change feed (`shell::changed`)
+## Custom trigger types
+
+| Trigger type | Fires when | Payload to subscribers |
+|---|---|---|
+| `shell::job-finished` | A background job finishes, is killed, or fails. A binding filtered by `job_id` also receives a retained terminal result when registered after completion. | `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }` |
+| `shell::changed` | A file or directory under the watched root changes. | `{ path, kind, root, dir }` |
+
+### Background job completion (`shell::job-finished`)
+
+Choose a job ID, register a completion subscription, then start the job with
+`shell::exec_bg` using that same ID. The subscription tells you when the job
+ends without polling `shell::status`.
+
+`shell::exec_bg` accepts an optional `job_id` on both host and sandbox targets.
+It must be a string containing at least one non-whitespace character. Omitting
+it or passing `null` generates a `job-<UUID>` ID, preserving the existing
+behavior. A supplied ID is reserved atomically before the command starts or
+the sandbox execution request is sent. If that ID already belongs to a
+running job or a retained finished job, the request is rejected without
+executing the command or changing the original job.
+
+IDs belong to one worker process. Generate a fresh, globally unique ID for
+every execution, even after an older record has been pruned. This field is
+not an idempotency key: resubmitting an ID does not resume or return its
+original job.
+
+The trigger's binding configuration accepts one field:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `job_id` | Optional string | No filter | Receive the named job's completion. Omit it to receive future completions of all background jobs in this worker process. |
+
+A filtered subscription also receives the result if its job has already
+completed, including a job that finished before `shell::exec_bg` returned.
+Registration and live completion are deduplicated for that binding. An
+unfiltered subscription receives future completions only; it does not replay
+existing records.
+
+For a harness agent, generate a new ID, such as `job-` followed by a UUID.
+Call `engine::register_trigger` with that ID and wait for registration to
+succeed before starting the job. Save its returned `subscription_id` for
+cleanup if execution cannot start. Omitting `function_id` registers a wake
+for the calling session; sibling workers instead register the trigger with
+their own handler as its target:
+
+```json
+{
+  "trigger_type": "shell::job-finished",
+  "config": { "job_id": "<new-unique-job-id>" },
+  "once": true
+}
+```
+
+Then call `shell::exec_bg` with the same ID and await its response:
+
+```json
+{
+  "job_id": "<new-unique-job-id>",
+  "command": "pnpm",
+  "args": ["build"],
+  "cwd": "/path/to/project"
+}
+```
+
+If `shell::exec_bg` fails before starting a job, no completion event will be
+emitted for that attempted job. Remove the subscription by calling
+`engine::unregister_trigger` with the saved harness subscription ID:
+
+```json
+{ "id": "<returned-subscription-id>" }
+```
+
+A session whose policy forbids unregistration, including a leaf sub-agent,
+can bound the wake when registering it with
+`"lifecycle": { "expires_in_ms": 600000 }` (ten minutes in this example).
+An expiry notification reports that the wake ended; it is not a job completion
+event.
+
+The existing flow also works: call `shell::exec_bg` without `job_id`:
+
+```json
+{ "command": "pnpm", "args": ["build"], "cwd": "/path/to/project" }
+```
+
+Then call `engine::register_trigger` with the generated `job_id` from the
+response. A job that already completed is replayed while its record remains
+in memory:
+
+```json
+{
+  "trigger_type": "shell::job-finished",
+  "config": { "job_id": "<returned-job-id>" },
+  "once": true
+}
+```
+
+The completion event contains:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `job_id` | String | The ID returned by `shell::exec_bg`. |
+| `argv` | Array of strings | The command and arguments as spawned. |
+| `status` | String | `finished`, `killed`, or `failed`; never `running`. |
+| `exit_code` | Integer or `null` | The process exit code, when available. |
+| `started_at_ms` | Non-negative integer | Job start time in milliseconds since the Unix epoch. |
+| `finished_at_ms` | Non-negative integer | Completion time in milliseconds since the Unix epoch. |
+| `duration_ms` | Non-negative integer | Elapsed milliseconds, clamped to zero if the clock moved backwards. |
+
+The event excludes stdout and stderr. Read captured output with
+`shell::status` using `{ "job_id": "<returned-job-id>" }`.
+
+Replay and output retrieval depend on the job record remaining in this
+worker's memory. Finished records are pruned after `job_retention_secs`
+(default `3600`, one hour after completion), and a worker restart loses them.
+Subscribe and retrieve output within that window; a pruned record cannot be
+replayed and `shell::status` returns `S211`. Delivery is best effort, without
+retries or a durable event history.
+
+### Live change feed (`shell::changed`)
 
 The worker registers a custom **trigger type** backed by a system-level
 directory watch (FSEvents on macOS, inotify on Linux, via the `notify`

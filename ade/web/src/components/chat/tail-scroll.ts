@@ -40,15 +40,22 @@ export function didScrollUp(
 
 /**
  * Position alone cannot distinguish a programmatic downward follow from a
- * person's scroll. The caller records every programmatic write before its
- * scroll event arrives, so a real decrease is the one transition that pauses.
+ * person's scroll, and an upward move is no proof of a person either: a
+ * shrinking layout, a growing viewport and WebKit's asynchronous scroll
+ * position all emit scroll events that read as "up" with nobody touching
+ * anything. So a decrease pauses only while `gesture` says an input the
+ * caller saw start is driving the scroll (a held mouse button: scrollbar
+ * drag, selection auto-scroll); wheel, touch and keyboard pause straight
+ * from their own events. Re-arming needs no gesture: reaching the tail by
+ * any route resumes following.
  */
 export function tailStateAfterScroll(
   state: TailScrollState,
   previousScrollTop: number,
   metrics: TailScrollMetrics,
+  gesture: boolean,
 ): TailScrollState {
-  if (didScrollUp(previousScrollTop, metrics.scrollTop)) {
+  if (gesture && didScrollUp(previousScrollTop, metrics.scrollTop)) {
     // Shrinking content (or a taller viewport) clamps scrollTop downward and
     // emits a scroll event even though nobody scrolled. When a state that was
     // already following lands exactly on the new tail, preserve it. A real

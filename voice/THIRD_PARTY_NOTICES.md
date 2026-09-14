@@ -35,12 +35,13 @@ CC BY 4.0 covers the model weights. Text the model produces is not covered by th
 
 ## Started as separate processes
 
-Read-aloud with the `host` engine runs the machine's own speech command as a child process and pipes text to it. Nothing from these programs is linked or shipped.
+Read-aloud with the `host` engine and transcription with the `whisper_cpp` engine run commands already installed on the machine as child processes. Nothing from these programs or their models is linked, downloaded, or shipped by the worker.
 
 | Program | License | Note |
 | --- | --- | --- |
 | `say` (macOS) | Part of macOS | Used through its command line |
 | `espeak-ng` (Linux) | GPL-3.0-or-later | Only used when the user has installed it; invoked as a separate program, never linked, so its license does not extend to the worker |
+| Documented `whisper-cli` integration (whisper.cpp) | MIT | Optional speech-to-text process supplied by the user. Custom command replacements and GGML models require separate license review. |
 
 ## Optional network services
 

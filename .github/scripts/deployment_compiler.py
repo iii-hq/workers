@@ -17,6 +17,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+import build_skills_payload
+
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 WORKER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -127,6 +129,9 @@ def compiler_digest(script: Path, schema: Path) -> str:
     digest.update(script.read_bytes())
     digest.update(b"\0deployment-descriptor-schema\0")
     digest.update(schema.read_bytes())
+    # The skills collector shapes registry_projection.skills, so it is part of the compiler identity.
+    digest.update(b"\0skills-payload-builder\0")
+    digest.update(Path(build_skills_payload.__file__).read_bytes())
     return digest.hexdigest()
 
 
@@ -446,6 +451,10 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
                 fail(f"{public_path}: {field} is required for Registry publication")
     artifact = validate_artifact(root, worker, worker_dir, value["artifact"], manifest)
     package_manifest_version = read_version(package_manifest)
+    try:
+        skills = build_skills_payload.collect_skills(worker_dir)
+    except ValueError as error:
+        fail(f"{worker}: {error}")
     projection = {
         "worker_name": worker,
         "type": manifest["deploy"],
@@ -458,6 +467,9 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         "readme": (worker_dir / "README.md").read_text(encoding="utf-8")
         if (worker_dir / "README.md").is_file()
         else "",
+        # Markdown the Registry attaches to the published version via POST /w/<worker>/skills:
+        # `SKILL.md`, `skills/<rel>.md` and `agents/<id>.md`, keyed exactly as that endpoint expects.
+        "skills": skills,
     }
     descriptor: dict[str, Any] = {
         "contract": "deployment-descriptor",

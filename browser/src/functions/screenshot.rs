@@ -11,6 +11,10 @@ pub struct ScreenshotInput {
     /// Capture the full scrollable page instead of the viewport.
     #[serde(default)]
     pub full_page: Option<bool>,
+    /// `jpeg` (default, compressed with the configured quality) or `png`
+    /// (lossless; what pixel comparisons need).
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// One block of a viewable response: an image block plus a text line.

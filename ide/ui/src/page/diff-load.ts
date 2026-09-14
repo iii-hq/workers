@@ -281,8 +281,15 @@ export function createTurnCache(host: Host, sessionId: string | null | undefined
       if (!sessionId) return Promise.resolve(null)
       let pending = cache.get(turnId)
       if (!pending) {
-        pending = fetchSessionTurn(host, sessionId, turnId).catch(() => null)
-        cache.set(turnId, pending)
+        const read = fetchSessionTurn(host, sessionId, turnId).catch(() => null)
+        cache.set(turnId, read)
+        // A miss is not a fact to remember: the worker may be restarting,
+        // the read may have timed out, or the record may land with the
+        // next hook. Only a turn that was read is kept.
+        void read.then((turn) => {
+          if (turn === null && cache.get(turnId) === read) cache.delete(turnId)
+        })
+        pending = read
       }
       return pending
     },

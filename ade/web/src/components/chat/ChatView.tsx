@@ -64,6 +64,7 @@ import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { newMessageId } from '@/lib/session-id'
+import { isCallSettled } from '@/lib/sessions/entry-mapper'
 import {
   expandSlashInvocations,
   loadedSkillIds,
@@ -942,7 +943,7 @@ export function ChatView({
       if (event.kind === 'fcall-start') {
         const existing = event.functionTriggerId
           ? messagesRef.current.find(
-              (message) =>
+              (message): message is FunctionTriggerMessage =>
                 message.role === 'function-trigger' &&
                 message.functionTriggerId === event.functionTriggerId,
             )
@@ -962,6 +963,9 @@ export function ChatView({
           )
         }
         if (existing) {
+          // Delivered after the call already ran (unordered against the
+          // transcript's events): the prompt must not reopen.
+          if (isCallSettled(existing)) return
           onPatchMessage(conversation.id, existing.id, {
             pendingApproval: true,
             running: false,
@@ -988,7 +992,7 @@ export function ChatView({
       }
 
       const existing = messagesRef.current.find(
-        (message) =>
+        (message): message is FunctionTriggerMessage =>
           message.role === 'function-trigger' &&
           message.functionTriggerId === event.functionTriggerId,
       )
@@ -996,7 +1000,11 @@ export function ChatView({
       if (existing) {
         onPatchMessage(conversation.id, existing.id, {
           pendingApproval: false,
-          ...(event.running ? { running: true } : {}),
+          // A release delivered late, or twice, after the result landed
+          // would otherwise leave the card spinning until the turn ends.
+          ...(event.running && !isCallSettled(existing)
+            ? { running: true }
+            : {}),
         })
       }
     },
@@ -1809,11 +1817,18 @@ export function ChatView({
                     m.functionTriggerId === event.functionTriggerId,
                 )?.id
               if (clearedId) {
+                const cleared = messagesRef.current.find(
+                  (m): m is FunctionTriggerMessage =>
+                    m.id === clearedId && m.role === 'function-trigger',
+                )
                 onPatchMessage(conversationId, clearedId, {
                   pendingApproval: false,
                   // Allowed calls execute now; their result pairs in from
-                  // the transcript and flips running back off.
-                  ...(event.running ? { running: true } : {}),
+                  // the transcript and flips running back off. A release
+                  // that arrives after that result must not flip it on.
+                  ...(event.running && !(cleared && isCallSettled(cleared))
+                    ? { running: true }
+                    : {}),
                 })
               }
               break

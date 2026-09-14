@@ -960,6 +960,16 @@ export type FcallPatch = Partial<
 >
 
 /**
+ * A call whose result is on record. Approval triggers are delivered
+ * at-least-once with no order against the transcript's own events, so a
+ * pending or "released, now running" notice can land after the result
+ * did; a settled row must never be reopened or set spinning by one.
+ */
+export function isCallSettled(row: FunctionTriggerMessage): boolean {
+  return row.output !== undefined || row.resultEntryId !== undefined
+}
+
+/**
  * Patch the function-trigger row matching `functionTriggerId`. Returns the same
  * array when no row matched (caller may then append a fallback row).
  */

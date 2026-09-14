@@ -80,3 +80,112 @@ fn every_function_has_typed_request_and_response_schemas() {
         );
     }
 }
+
+#[test]
+fn metrics_request_schema_accepts_exactly_one_session_id_spelling() {
+    use harness::functions::metrics::SessionMetricsRequestV1;
+    use serde_json::json;
+
+    let spec = catalog()
+        .into_iter()
+        .find(|spec| spec.function_id == "harness::metrics")
+        .unwrap();
+    let schema = serde_json::to_value(spec.request_schema).unwrap();
+    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+    for (payload, valid) in [
+        (json!({"root_session_id": "s_root"}), true),
+        (json!({"session_id": "s_child"}), true),
+        (json!({"session_id": "s_child", "extra": true}), true),
+        (json!({}), false),
+        (
+            json!({"root_session_id": "s_root", "session_id": "s_root"}),
+            false,
+        ),
+        (
+            json!({"root_session_id": "s_root", "session_id": "s_child"}),
+            false,
+        ),
+        (json!({"root_session_id": null}), false),
+        (json!({"session_id": null}), false),
+        (json!({"root_session_id": 42}), false),
+        (json!({"session_id": 42}), false),
+    ] {
+        assert_eq!(
+            validator.is_valid(&payload),
+            valid,
+            "schema validation for {payload}"
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionMetricsRequestV1>(payload.clone()).is_ok(),
+            valid,
+            "deserialization for {payload}"
+        );
+    }
+}
+
+#[test]
+fn metrics_response_schema_requires_counters_but_accepts_null_and_measured_values() {
+    use harness::functions::metrics::SessionMetricsResponseV1;
+    use serde_json::json;
+
+    let spec = catalog()
+        .into_iter()
+        .find(|spec| spec.function_id == "harness::metrics")
+        .unwrap();
+    let schema = serde_json::to_value(spec.response_schema).unwrap();
+    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+    let counters = [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "cost_usd",
+    ];
+    for value in [json!(null), json!(0), json!(7)] {
+        let mut response = json!({
+            "root_session_id": "s_root",
+            "complete": true,
+            "totals": {
+                "sessions": 1,
+                "turns": 1,
+                "function_calls": 0,
+                "function_call_errors": 0
+            },
+            "by_session": [{
+                "session_id": "s_root",
+                "depth": 0,
+                "turns": 1,
+                "function_calls": 0,
+                "function_call_errors": 0
+            }]
+        });
+        for counter in counters {
+            response["totals"][counter] = value.clone();
+            response["by_session"][0][counter] = value.clone();
+        }
+        let response = serde_json::to_value(
+            serde_json::from_value::<SessionMetricsResponseV1>(response).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validator.is_valid(&response),
+            "response with {value} counters"
+        );
+        for object in ["/totals", "/by_session/0"] {
+            for counter in counters {
+                let mut missing = response.clone();
+                missing
+                    .pointer_mut(object)
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(counter);
+                assert!(
+                    !validator.is_valid(&missing),
+                    "{object}/{counter} must be present even when null"
+                );
+            }
+        }
+    }
+}
