@@ -46,6 +46,7 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
   let active = true
   let generation = 0
   let lastReplyId = options.initialReplyId
+  let tieLookup = Promise.resolve()
   const seen = new Set<string>()
   const started = new Set<string>()
   let latest: { id: string; timestamp: number } | null = null
@@ -53,12 +54,39 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
     set.add(id)
     if (set.size > 128) set.delete(set.values().next().value!)
   }
-  const outdated = (event: TurnEvent) => !Number.isFinite(event.timestamp) || (latest !== null
-    && (event.timestamp < latest.timestamp || (event.timestamp === latest.timestamp && event.turn_id !== latest.id)))
+  const outdated = (event: TurnEvent) => !Number.isFinite(event.timestamp)
+    || (latest !== null && event.timestamp < latest.timestamp)
   const offs: Array<() => void> = []
   const bind = (kind: 'started' | 'completed', handler: (event: TurnEvent) => void) => {
     const id = `iii::voice-ui::auto-${kind}::${sessionId}`
-    offs.push(iii.on<TurnEvent>(id, handler))
+    offs.push(iii.on<TurnEvent>(id, (event) => {
+      if (!active || event?.session_id !== sessionId || !event.turn_id || outdated(event)) return
+      if (!latest || event.timestamp !== latest.timestamp || event.turn_id === latest.id) {
+        handler(event)
+        return
+      }
+      // Millisecond timestamps can collide across turns, and delivery is
+      // unordered. Resolve only this ambiguity from the current turn record;
+      // arrival order and random turn IDs are not ordering keys. This is one
+      // event-driven read, not a poll or a new harness protocol requirement.
+      tieLookup = tieLookup.then(async () => {
+        if (!active || outdated(event)) return
+        if (latest?.id === event.turn_id) { handler(event); return }
+        const request = generation
+        try {
+          const current = await iii.trigger<{ session_id: string; turn_id: string | null; status: string } | null>(
+            'harness::status', { session_id: sessionId })
+          if (!active || generation !== request || current?.session_id !== sessionId
+            || current.turn_id !== event.turn_id) return
+          const matchesKind = kind === 'started'
+            ? current.status === 'running' || current.status === 'awaiting_functions'
+            : current.status === 'completed'
+          if (matchesKind) handler(event)
+        } catch (error) {
+          if (active && generation === request) options.onError(error)
+        }
+      })
+    }))
     offs.push(iii.registerTrigger({ type: `harness::turn-${kind}`,
       function_id: `${id}::${iii.browserId}`, config: { session_id: sessionId } }))
   }

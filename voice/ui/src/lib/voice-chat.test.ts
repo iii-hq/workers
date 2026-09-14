@@ -10,18 +10,19 @@ function rig() {
     const off = vi.fn(); disposers.push(off); return off
   })
   const registerTrigger = vi.fn(() => { const off = vi.fn(); disposers.push(off); return off })
+  const trigger = vi.fn(async (): Promise<{ session_id: string; turn_id: string; status: string } | null> => null)
   const readReply = vi.fn(async (_turnId: string): Promise<SpokenReply | null> => ({ id: 'new', text: 'Answer.' }))
   const onReply = vi.fn(), onStarted = vi.fn(), onError = vi.fn()
-  const off = subscribeAutoReplies({ on, registerTrigger, browserId: 'client-a' } as unknown as ExtensionIii, 'chat-a', {
+  const off = subscribeAutoReplies({ on, registerTrigger, trigger, browserId: 'client-a' } as unknown as ExtensionIii, 'chat-a', {
     initialReplyId: 'old', readReply, onReply, onStarted, onError,
   })
   let timestamp = 100
   const emit = (patch = {}, kind = 'completed') => handlers.get(`iii::voice-ui::auto-${kind}::chat-a`)?.({
     session_id: 'chat-a', turn_id: 'turn-1', timestamp: ++timestamp, status: 'completed', ...patch,
   })
-  return { emit, off, readReply, onReply, onStarted, onError, registerTrigger, disposers }
+  return { emit, off, trigger, readReply, onReply, onStarted, onError, registerTrigger, disposers }
 }
-const tick = async () => { await Promise.resolve(); await Promise.resolve() }
+const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve() }
 
 describe('opt-in voice chat', () => {
   it('binds only this chat and does not read history when enabled', () => {
@@ -106,7 +107,7 @@ describe('opt-in voice chat', () => {
     expect(r.onReply).toHaveBeenCalledOnce()
     expect(r.onStarted).not.toHaveBeenCalled()
   })
-  it('rejects malformed timestamps and ambiguous older turns with equal timestamps', async () => {
+  it('rejects malformed timestamps and does not guess the current turn on a tie', async () => {
     const r = rig()
     r.emit({ timestamp: undefined })
     r.emit({ timestamp: NaN }, 'started')
@@ -115,6 +116,85 @@ describe('opt-in voice chat', () => {
     await tick()
     expect(r.readReply).not.toHaveBeenCalled()
     expect(r.onStarted).toHaveBeenCalledOnce()
+  })
+  it('stops existing playback for a valid new start with the same timestamp', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 30 }); await tick()
+    expect(r.onReply).toHaveBeenCalledOnce()
+    r.trigger.mockResolvedValueOnce({ session_id: 'chat-a', turn_id: 'new', status: 'running' })
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started'); await tick()
+    expect(r.trigger).toHaveBeenCalledExactlyOnceWith('harness::status', { session_id: 'chat-a' })
+    expect(r.onStarted).toHaveBeenCalledOnce()
+  })
+  it('invalidates a pending reply when the next start shares its timestamp', async () => {
+    const r = rig()
+    let resolve!: (reply: SpokenReply) => void
+    r.readReply.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.emit({ turn_id: 'old', timestamp: 30 })
+    r.trigger.mockResolvedValueOnce({ session_id: 'chat-a', turn_id: 'new', status: 'running' })
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started'); await tick()
+    resolve({ id: 'late', text: 'Old answer.' }); await tick()
+    expect(r.onStarted).toHaveBeenCalledOnce()
+    expect(r.onReply).not.toHaveBeenCalled()
+  })
+  it('does not play an old tied completion delivered after the next start', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started')
+    r.trigger.mockResolvedValueOnce({ session_id: 'chat-a', turn_id: 'new', status: 'running' })
+    r.emit({ turn_id: 'old', timestamp: 30 }); await tick()
+    expect(r.readReply).not.toHaveBeenCalled()
+    expect(r.onStarted).toHaveBeenCalledOnce()
+  })
+  it('does not stop newer audio for an unseen old start tied with its completion', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'new', timestamp: 30 }); await tick()
+    r.trigger.mockResolvedValueOnce({ session_id: 'chat-a', turn_id: 'new', status: 'completed' })
+    r.emit({ turn_id: 'old', timestamp: 30 }, 'started'); await tick()
+    expect(r.onReply).toHaveBeenCalledOnce()
+    expect(r.onStarted).not.toHaveBeenCalled()
+  })
+  it('accepts the current tied completion before its delayed start', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 30 }, 'started')
+    r.trigger.mockResolvedValueOnce({ session_id: 'chat-a', turn_id: 'new', status: 'completed' })
+    r.emit({ turn_id: 'new', timestamp: 30 }); await tick()
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started'); await tick()
+    expect(r.readReply).toHaveBeenCalledExactlyOnceWith('new')
+    expect(r.onStarted).toHaveBeenCalledOnce()
+  })
+  it.each(['newer-event', 'unsubscribe'])('ignores a late tie lookup after %s', async (action) => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 30 }); await tick()
+    let resolve!: (current: { session_id: string; turn_id: string; status: string }) => void
+    r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.emit({ turn_id: 'tied', timestamp: 30 }, 'started'); await tick()
+    if (action === 'unsubscribe') r.off()
+    else r.emit({ turn_id: 'newest', timestamp: 40 }, 'started')
+    const calls = r.onStarted.mock.calls.length
+    resolve({ session_id: 'chat-a', turn_id: 'tied', status: 'running' }); await tick()
+    expect(r.onStarted).toHaveBeenCalledTimes(calls)
+  })
+  it('keeps a tied completion queued while its own start lookup is pending', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 30 }); await tick()
+    r.onReply.mockClear()
+    r.readReply.mockResolvedValueOnce({ id: 'next', text: 'New answer.' })
+    let resolve!: (current: { session_id: string; turn_id: string; status: string }) => void
+    r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started'); await tick()
+    r.emit({ turn_id: 'new', timestamp: 30 })
+    resolve({ session_id: 'chat-a', turn_id: 'new', status: 'running' }); await tick()
+    expect(r.onStarted).toHaveBeenCalledOnce()
+    expect(r.onReply).toHaveBeenCalledExactlyOnceWith({ id: 'next', text: 'New answer.' })
+    expect(r.trigger).toHaveBeenCalledOnce()
+  })
+  it('reports a failed tie lookup rather than guessing event order', async () => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 30 }); await tick()
+    r.trigger.mockRejectedValueOnce(new Error('status unavailable'))
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started'); await tick()
+    expect(r.onError).toHaveBeenCalledOnce()
+    expect(r.onStarted).not.toHaveBeenCalled()
   })
   it('reports message lookup errors without reading an old reply', async () => {
     const r = rig()
