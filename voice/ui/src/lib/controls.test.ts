@@ -6,11 +6,12 @@ import { startCapture, type CaptureHandle } from './capture'
 import { MicButton, useMicPointer } from './mic'
 import { createVoiceTurnSummary } from '../turn-summary'
 import { speak } from './client'
+import { subscribeAutoReplies } from './voice-chat'
 
 // Small deterministic hook host: real control code and controller, no DOM or
 // new browser-test dependencies. Browser capture/transport remain simulated.
 const hooks = vi.hoisted(() => ({ cursor: 0, values: [] as any[], effects: [] as Array<() => void>, cleanups: [] as Array<() => void> }))
-const playback = vi.hoisted(() => ({ state: { phase: 'idle' } as any, play: vi.fn(), stop: vi.fn() }))
+const playback = vi.hoisted(() => ({ state: { phase: 'idle' } as any, play: vi.fn(), enqueue: vi.fn(), stop: vi.fn() }))
 vi.mock('react', async (original) => {
   const react = await original<typeof import('react')>()
   return { ...react,
@@ -114,6 +115,25 @@ describe('microphone button gestures with unresolved permission', () => {
 })
 
 describe('chat read-aloud controls use current availability on every attempt', () => {
+  it('queues prepared streaming prose without replaying the final reply', async () => {
+    const trigger = vi.fn(async () => ({ text: 'Olá.', max_chunk_chars: 600 }))
+    const registration = createVoiceTurnSummary({ iii: { trigger } } as unknown as Host)
+    const component = registration.render as (props: SessionTurnSummaryProps) => ReactNode
+    const view = () => render(() => component({ sessionId: 'chat', isStreaming: true } as SessionTurnSummaryProps))
+    const toggle = all(view()).find((node) => isValidElement<any>(node) && (node.props as { 'aria-pressed'?: boolean })['aria-pressed'] === false) as ReactElement<any>
+    toggle.props.onClick(); view()
+    const options = vi.mocked(subscribeAutoReplies).mock.calls.at(-1)![2]
+    await options.streaming!.prepare('**Olá.**', false)
+    expect(trigger).toHaveBeenCalledWith('voice::speech::prepare', { text: '**Olá.**', complete: false })
+    options.streaming!.onChunk('Olá.')
+    expect(playback.enqueue).toHaveBeenCalledOnce()
+    await playback.enqueue.mock.calls[0][0]()
+    expect(speak).toHaveBeenCalledWith({ trigger }, { text: 'Olá.', text_format: 'plain' })
+    options.onReply({ id: 'reply', text: '**Olá.**' })
+    expect(playback.play).not.toHaveBeenCalled()
+    options.onStarted()
+    expect(playback.stop).toHaveBeenCalled()
+  })
   it('can retry after installing a voice without remounting the chat', async () => {
     const registration = createVoiceTurnSummary({ iii: {} } as Host)
     const component = registration.render as (props: SessionTurnSummaryProps) => ReactNode

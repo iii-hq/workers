@@ -17,6 +17,7 @@ fn the_catalog_lists_every_public_function_in_order() {
             "voice::dictation::list",
             "voice::transcribe",
             "voice::speak",
+            "voice::speech::prepare",
             "voice::speak::stop",
             "voice::models::list",
             "voice::models::download",

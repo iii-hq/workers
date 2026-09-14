@@ -272,13 +272,35 @@ The chat footer has three independent controls:
 - **Read selection** appears when you highlight a passage in this conversation's
   messages. It reads only that passage, not selections in other panes or forms.
   The Voice → Read aloud text area also supports selecting only a passage.
-- **Voice chat** explicitly enables automatic reading of future completed replies
-  in this browser/conversation. Enable it before sending a typed or dictated
-  message. It does not open the microphone or send a draft automatically.
-  Duplicate, failed, cancelled and intermediate turn events are ignored; enabling
-  the mode does not replay old history. A new turn stops the previous audio.
-  **Stop** also turns automatic reading off. Switching chats, closing the view,
-  or a playback error disables it; other clients are unaffected.
+- **Voice chat** explicitly enables incremental reading in this browser/conversation.
+  As assistant text arrives, complete sentences enter a local audio queue; long
+  sentences use phrases of at most 240 characters (or the configured speech cap,
+  whichever is smaller). It does not wait for the turn to finish. Visible progress
+  text is included; thinking blocks, tool arguments and tool results are not read.
+  It does not open the microphone or send a draft automatically. Enabling it does
+  not fetch or replay chat history; enabled mid-turn, the next live snapshot can
+  include text already generated in that current message.
+  Duplicate/out-of-order message revisions are ignored. Completion flushes only
+  the unread tail, not the full response again. A new turn or cancellation clears
+  the old queue. **Stop** also turns automatic reading off. Switching chats,
+  closing the view, or a playback error disables it; other clients are unaffected.
+
+Streaming speech still synthesizes on the worker, one short text request at a\ntime, with at most one next clip prepared ahead of the current audio. It is not
+sample-level TTS streaming: first-audio latency depends on receiving a complete
+sentence/phrase and the selected backend's synthesis speed. Snapshot preparation
+is coalesced over 120 ms; no history polling is used. The same CommonMark parser
+prepares the full growing message, preserving code-fence/link context; incomplete
+inline syntax (and ambiguous literal markers) may be held until more text or the
+final flush. A message rewrite that changes already-queued speech stops automatic
+reading with an error rather than repeating/replacing words already heard.
+
+`voice::speech::prepare` is stateless and returns plain text plus the configured
+chunk cap without generating audio. The browser then queues `voice::speak` with
+`text_format: plain`. Queue overflow (128 waiting clips), oversized messages
+(256 KiB), or more than 128 message entries in one turn stops with an actionable
+error. Stopping discards local pending work and late audio; it cannot cancel an
+already-dispatched server synthesis request. No model/config changes or automatic
+downloads are needed.
 
 Stop/Cancel finishes even if the microphone permission prompt remains unanswered.
 The browser cannot abort that prompt; if permission is granted later, the obsolete
@@ -354,6 +376,7 @@ the `openai` backend with an empty `api_key`.
 | `voice::transcribe` | A WAV file (path or base64) to text with segments. |
 | `voice::dictation::start` / `push` / `stop` / `list` | Live sessions. |
 | `voice::speak` | Generate audio for the requesting client to play. |
+| `voice::speech::prepare` | Prepare a growing Markdown snapshot without audio; returns plain text and the chunk character cap. |
 | `voice::speak::stop` | Legacy compatibility: returns `stopped: 0`; browser playback is stopped locally. |
 | `voice::models::list` / `voice::models::download` / `voice::models::remove` | Local model catalog, install, delete. |
 | `voice::doctor` | Backends, model state, open sessions. |

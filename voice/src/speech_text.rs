@@ -26,6 +26,39 @@ pub fn prepare(text: &str, format: TextFormat, max_chars: usize) -> Result<Strin
     }
 }
 
+/// Reparse the full snapshot so code fences, tables and reference links retain
+/// their context. Literal syntax the parser cannot yet resolve is held back:
+/// deleting markers blindly would speak partial destinations or change symbols.
+pub fn streaming_text(text: &str, complete: bool) -> String {
+    if complete {
+        return markdown_text(text);
+    }
+    let mut end = text.len();
+    for (event, range) in Parser::new_ext(text, markdown_options()).into_offset_iter() {
+        if let Event::Text(value) = event {
+            let raw = &text[range.clone()];
+            if raw == value.as_ref() {
+                if let Some(offset) = raw.find(['*', '_', '~', '`', '[', '<', '&', '|']) {
+                    end = range.start + offset;
+                    break;
+                }
+            }
+        }
+    }
+    let mut prose = markdown_text(&text[..end]);
+    if !prose.is_empty() && text[..end].ends_with(char::is_whitespace) {
+        prose.push(' ');
+    }
+    prose
+}
+
+fn markdown_options() -> Options {
+    Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES
+}
+
 fn boundary(text: &mut String) {
     if !text.is_empty() && !text.ends_with(char::is_whitespace) {
         text.push(' ');
@@ -35,10 +68,7 @@ fn boundary(text: &mut String) {
 /// Extract visible prose. Keep link labels, image alt text and inline-code
 /// content; omit destinations, block code, raw HTML blocks and footnote bodies.
 fn markdown_text(text: &str) -> String {
-    let options = Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_FOOTNOTES;
+    let options = markdown_options();
     let mut output = String::new();
     let mut suppressed = 0usize;
     for event in Parser::new_ext(text, options) {
@@ -86,8 +116,49 @@ fn markdown_text(text: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn streaming_waits_for_unfinished_syntax_and_keeps_code_context() {
+        assert_eq!(streaming_text("Olá. **Texto", false), "Olá. ");
+        assert_eq!(
+            streaming_text("Olá. **Texto pronto.** Depois", false),
+            "Olá. Texto pronto. Depois"
+        );
+        assert_eq!(streaming_text("Veja [o link](https://exam", false), "Veja ");
+        assert_eq!(
+            streaming_text("Veja [o link](https://example.test). Fim", false),
+            "Veja o link. Fim"
+        );
+        assert_eq!(
+            streaming_text("Antes.\n\n```rs\nsegredo.\n", false),
+            "Antes. "
+        );
+        assert_eq!(
+            streaming_text("2 * 3 e snake_case", true),
+            "2 * 3 e snake_case"
+        );
+    }
+
     fn spoken(text: &str) -> String {
         prepare(text, TextFormat::Markdown, 4000).unwrap()
+    }
+
+    #[test]
+    fn streaming_holds_ambiguous_tables_and_resolves_reference_links() {
+        assert_eq!(streaming_text("| Modelo | Voz |", false), "");
+        assert_eq!(
+            streaming_text(
+                "| Modelo | Voz |\n| --- | --- |\n| Local | Faber |\n",
+                false
+            ),
+            "Modelo Voz Local Faber "
+        );
+        assert_eq!(streaming_text("Leia [aqui][ref].\n", false), "Leia ");
+        assert_eq!(
+            streaming_text("Leia [aqui][ref].\n\n[ref]: https://example.test\n", false),
+            "Leia aqui. "
+        );
+        assert_eq!(streaming_text("A &amp", false), "A ");
+        assert_eq!(streaming_text("A &amp; B. ", false), "A & B. ");
     }
 
     #[test]

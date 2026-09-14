@@ -10,7 +10,7 @@ import { fetchSpokenReply, selectedChatText, subscribeAutoReplies, type SpokenRe
 
 export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistration {
   function VoiceTurnSummary({ sessionId, isStreaming }: SessionTurnSummaryProps) {
-    const { state: speakState, play, stop: onStop } = useBrowserPlayback()
+    const { state: speakState, play, enqueue, stop: onStop } = useBrowserPlayback()
     const [lastReply, setLastReply] = useState<SpokenReply | null>(null)
     const [selected, setSelected] = useState('')
     const [autoSession, setAutoSession] = useState<string | null>(null)
@@ -37,16 +37,17 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
           initialReplyId: replyRef.current?.id,
           readReply: (turnId) => fetchSpokenReply(host.iii, sessionId, turnId),
           onStarted: onStop,
-          onReply: (reply) => {
-            setLastReply(reply)
-            void play(() => speak(host.iii, { text: reply.text, text_format: 'markdown' }))
+          streaming: {
+            prepare: (text, complete) => host.iii.trigger('voice::speech::prepare', { text, complete }),
+            onChunk: (text) => enqueue(() => speak(host.iii, { text, text_format: 'plain' })),
           },
-          onError: (error) => setAutoError(errorMessage(error)),
+          onReply: setLastReply,
+          onError: (error) => { setAutoError(errorMessage(error)); setAutoSession(null); onStop() },
         })
       } catch (error) {
         setAutoError(errorMessage(error))
       }
-    }, [sessionId, autoRead, play, onStop])
+    }, [sessionId, autoRead, enqueue, onStop])
 
     useEffect(() => {
       if (isStreaming) return
@@ -83,7 +84,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
     return (
       <div className="voice-turn-summary">
         <button type="button" className="voice-turn-action" aria-pressed={autoRead}
-          title="Read new completed replies automatically in this browser. Does not send messages or keep the microphone open."
+          title="Read assistant text as it arrives, sentence by sentence, in this browser. Does not send messages or keep the microphone open."
           onClick={() => { setAutoError(null); setAutoSession(autoRead ? null : sessionId); if (autoRead) onStop() }}>
           <SpeakerIcon />
           {autoRead ? 'Voice chat on' : 'Voice chat'}
@@ -106,7 +107,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
           <span>{busy ? 'Stop' : 'Read aloud'}</span>
         </button>
         {autoError ? <span className="voice-turn-error" role="alert">{autoError}</span> : null}
-        {autoRead ? <span className="voice-sub">New replies will be read automatically here.</span> : null}
+        {autoRead ? <span className="voice-sub">Reading new text as it arrives, in short phrases.</span> : null}
         {speakState.phase === 'error' ? <span className="voice-turn-error">{speakState.message}</span> : null}
       </div>
     )
