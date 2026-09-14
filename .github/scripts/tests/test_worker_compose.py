@@ -124,6 +124,7 @@ def test_worker_bundle_start_commands_target_packaged_entrypoints():
         "opencode",
         "opengantry",
         "openwiki",
+        "pi",
         "vscode",
     ):
         worker = document["workers"][worker_id]
