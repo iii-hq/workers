@@ -24,3 +24,5 @@ dependencies:
   provider-openai: "^1.2.7"
   ide: "^0.11.9"
   ade: "^1.9.11"
+  browser: "^0.2.17"
+  kanban: "^0.1.10"
