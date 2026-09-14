@@ -174,7 +174,7 @@ describe('opt-in voice chat', () => {
     resolve({ session_id: 'chat-a', turn_id: 'tied', status: 'running' }); await tick()
     expect(r.onStarted).toHaveBeenCalledTimes(calls)
   })
-  it('keeps a tied completion queued while its own start lookup is pending', async () => {
+  it.each(['running', 'completed'])('keeps a tied completion queued when its start lookup returns %s', async (status) => {
     const r = rig()
     r.emit({ turn_id: 'old', timestamp: 30 }); await tick()
     r.onReply.mockClear()
@@ -183,10 +183,20 @@ describe('opt-in voice chat', () => {
     r.trigger.mockReturnValueOnce(new Promise((yes) => { resolve = yes }))
     r.emit({ turn_id: 'new', timestamp: 30 }, 'started'); await tick()
     r.emit({ turn_id: 'new', timestamp: 30 })
-    resolve({ session_id: 'chat-a', turn_id: 'new', status: 'running' }); await tick()
+    resolve({ session_id: 'chat-a', turn_id: 'new', status }); await tick()
     expect(r.onStarted).toHaveBeenCalledOnce()
     expect(r.onReply).toHaveBeenCalledExactlyOnceWith({ id: 'next', text: 'New answer.' })
+    expect(r.onStarted.mock.invocationCallOrder[0]).toBeLessThan(r.onReply.mock.invocationCallOrder[0])
     expect(r.trigger).toHaveBeenCalledOnce()
+  })
+  it.each(['completed', 'cancelled', 'failed'])('accepts a confirmed start whose turn is already %s', async (status) => {
+    const r = rig()
+    r.emit({ turn_id: 'old', timestamp: 30 }); await tick()
+    r.trigger.mockResolvedValueOnce({ session_id: 'chat-a', turn_id: 'new', status })
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started'); await tick()
+    expect(r.onStarted).toHaveBeenCalledOnce()
+    r.emit({ turn_id: 'new', timestamp: 30 }, 'started'); await tick()
+    expect(r.onStarted).toHaveBeenCalledOnce()
   })
   it('reports a failed tie lookup rather than guessing event order', async () => {
     const r = rig()

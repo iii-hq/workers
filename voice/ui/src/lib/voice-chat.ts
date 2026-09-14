@@ -78,10 +78,10 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
             'harness::status', { session_id: sessionId })
           if (!active || generation !== request || current?.session_id !== sessionId
             || current.turn_id !== event.turn_id) return
-          const matchesKind = kind === 'started'
-            ? current.status === 'running' || current.status === 'awaiting_functions'
-            : current.status === 'completed'
-          if (matchesKind) handler(event)
+          // The turn may finish while this read is in flight. Its identity
+          // still confirms the start; the handler's seen/generation guards
+          // prevent stopping audio if that completion was already handled.
+          if (kind === 'started' || current.status === 'completed') handler(event)
         } catch (error) {
           if (active && generation === request) options.onError(error)
         }
