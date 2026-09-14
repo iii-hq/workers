@@ -27,11 +27,15 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// Untracked paths a snapshot never takes, on top of the root's own
-/// ignore rules: dependency trees and build output. A file tracked despite
-/// a rule here is seeded into the index from the root's HEAD and refreshed
-/// like any other.
+/// ignore rules: dependency trees, build output, and the engine's own
+/// runtime state. A file tracked despite a rule here is seeded into the
+/// index from the root's HEAD and refreshed like any other.
 const EXCLUDES: &[&str] = &[
     ".git/",
+    // The engine's runtime state under a compose root, including sparse VM
+    // disk images. These are rewritten between turns, so `add -A` re-reads
+    // them every time: a 16 GiB `upper.ext4` cost ~50s of hashing per turn.
+    ".iii/",
     "node_modules/",
     "target/",
     "dist/",
@@ -380,5 +384,15 @@ mod tests {
         assert_eq!(rel_under("/w", "/w/a/b.txt").as_deref(), Some("a/b.txt"));
         assert_eq!(rel_under("/w", "/w"), None);
         assert_eq!(rel_under("/w", "/elsewhere/b.txt"), None);
+    }
+
+    #[test]
+    fn engine_state_is_never_snapshotted() {
+        // `.iii/` holds the engine's own runtime state, including sparse VM
+        // disk images: one observed root carried a 16 GiB `upper.ext4` that
+        // the VM rewrote between turns, so every `add -A` re-hashed 16 GiB
+        // (~50s) and stored another ~46MB blob of a disk image no turn will
+        // ever revert to.
+        assert!(EXCLUDES.contains(&".iii/"));
     }
 }
