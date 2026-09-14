@@ -265,14 +265,25 @@ fn child_agent_id<'a>(
 /// spend-and-latency control set on the root silently stopped at the first
 /// spawn, while the tree does most of the work. `SpawnOptions` carries no
 /// provider options of its own, so the parent's are the only ones a child can
-/// have. A profile's own effort is applied after this, and still wins.
+/// have. An explicit child effort removes inherited native reasoning overrides
+/// while keeping unrelated provider options. A profile's own effort is applied
+/// after this, and still wins.
 fn child_reasoning(
     requested: Option<ThinkingLevel>,
     parent_record: Option<&TurnRecord>,
 ) -> (Option<ThinkingLevel>, Option<BTreeMap<String, Value>>) {
+    let mut provider_options = parent_record.and_then(|p| p.options.provider_options.clone());
+    if let (Some(_), Some(options)) = (requested, provider_options.as_mut()) {
+        // Native provider knobs take precedence over thinking_level. Clear
+        // them in every namespace, including providers registered under custom ids.
+        for options in options.values_mut().filter_map(Value::as_object_mut) {
+            options.remove("thinking");
+            options.remove("reasoning_effort");
+        }
+    }
     (
         requested.or_else(|| parent_record.and_then(|p| p.options.thinking_level)),
-        parent_record.and_then(|p| p.options.provider_options.clone()),
+        provider_options,
     )
 }
 
@@ -928,6 +939,51 @@ mod tests {
             child_reasoning(None, None),
             (None, None),
             "a parentless spawn has nothing to inherit from"
+        );
+    }
+
+    #[test]
+    fn explicit_child_effort_removes_inherited_native_reasoning_overrides_only() {
+        let mut parent = parent_record(None);
+        parent.options.thinking_level = Some(ThinkingLevel::High);
+        let inherited = json!({
+            "deepseek": { "thinking": "disabled", "prompt_cache_key": "shared" },
+            "openai-codex": { "reasoning_effort": "ultra", "prompt_cache_key": "shared" },
+            "custom-provider": { "thinking": "enabled", "reasoning_effort": "high" },
+            "other-provider": { "temperature": 0.2, "metadata": { "thinking": "keep" } },
+            "opaque-provider": null
+        });
+        parent.options.provider_options = Some(serde_json::from_value(inherited.clone()).unwrap());
+
+        let (level, options) = child_reasoning(None, Some(&parent));
+        assert_eq!(level, Some(ThinkingLevel::High));
+        assert_eq!(serde_json::to_value(options).unwrap(), inherited);
+
+        for requested in [
+            ThinkingLevel::Minimal,
+            ThinkingLevel::Low,
+            ThinkingLevel::Medium,
+            ThinkingLevel::High,
+            ThinkingLevel::Xhigh,
+        ] {
+            let (level, options) = child_reasoning(Some(requested), Some(&parent));
+            assert_eq!(level, Some(requested));
+            assert_eq!(
+                serde_json::to_value(options).unwrap(),
+                json!({
+                    "deepseek": { "prompt_cache_key": "shared" },
+                    "openai-codex": { "prompt_cache_key": "shared" },
+                    "custom-provider": {},
+                    "other-provider": { "temperature": 0.2, "metadata": { "thinking": "keep" } },
+                    "opaque-provider": null
+                }),
+                "inherited native settings must not override {requested:?}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(&parent.options.provider_options).unwrap(),
+            inherited,
+            "a child's override must not change the parent's options"
         );
     }
 
