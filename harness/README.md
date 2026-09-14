@@ -63,6 +63,9 @@ Every turn, sub-agent spawn, and provider call is one correlated trace: the
 harness turn waterfall in the console. Failed descendants stamp the whole trace
 as failed and carry standard error attributes. The session transcript keeps the
 same recovery, partial-output, and blocked-reaction explanation after refresh.
+Automatic generation recovery requires partial output from the failed response.
+A startup failure with no output ends the turn with a durable failure notice;
+it does not consume the partial-response recovery budget.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/iii-hq/workers/main/harness/docs/images/console-traces.webp" alt="Harness turn waterfall in the iii console" width="100%">

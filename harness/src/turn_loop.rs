@@ -1138,13 +1138,17 @@ async fn finish_step(
             .unwrap_or(&generation_error.message)
             .to_string();
         preserve_assistant_partial(&mut record.result, &outcome.message);
-        if transient_resume_allowed(
-            failure.retryable.then_some(ErrorKind::Transient),
-            record.transient_resumes,
-            record.options.max_transient_resumes,
-            record.turn_count,
-            record.options.max_turns,
-        ) {
+        // Recovery continues a partial response. Retrying a failed startup is
+        // the router's responsibility; there is no response to resume here.
+        if assistant_partial_result(&outcome.message).is_some()
+            && transient_resume_allowed(
+                failure.retryable.then_some(ErrorKind::Transient),
+                record.transient_resumes,
+                record.options.max_transient_resumes,
+                record.turn_count,
+                record.options.max_turns,
+            )
+        {
             let attempt = record.transient_resumes + 1;
             record_recovery_telemetry(&record, &detail, attempt);
             let _ = session

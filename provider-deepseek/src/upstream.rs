@@ -159,13 +159,14 @@ async fn run_upstream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx
-                    .send(synthetic_error_event(
-                        &format!("stream read failed: {e}"),
-                        &args.model,
-                        ErrorKind::Transient,
-                    ))
-                    .await;
+                // Unlike a startup failure, a body read failure can interrupt
+                // real output. Keep it in the authoritative terminal so the
+                // Harness can preserve and resume the partial response.
+                let mut error = build_final(&state, &args.model);
+                error.stop_reason = llm_router::types::events::StopReason::Error;
+                error.error_message = Some(format!("stream read failed: {}", error_chain(&e)));
+                error.error_kind = Some(ErrorKind::Transient);
+                let _ = tx.send(AssistantMessageEvent::Error { error }).await;
                 return;
             }
         };
@@ -304,12 +305,52 @@ mod tests {
             let error = single_terminal_error(&events);
             assert_eq!(error.error_kind, Some(ErrorKind::Transient));
             assert_eq!(error.model, "deepseek-test");
+            assert!(error.content.is_empty(), "a startup timeout is not model output");
             assert!(error.error_message.as_deref().unwrap().contains("did not start generating"));
             tokio::time::timeout(Duration::from_secs(1), peer)
                 .await
                 .expect("timing out must close the upstream HTTP request")
                 .unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_timeout_preserves_generated_content_and_usage() {
+        let (url, peer) = waiting_upstream(
+            concat!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Thinking\"}}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Partial answer\"}}],\"usage\":{\"completion_tokens\":3}}\n\n",
+            ),
+            "",
+        ).await;
+        let mut input = args(url);
+        input.warnings = vec!["test warning".into()];
+        let client = reqwest::Client::builder()
+            .read_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let events =
+            tokio::time::timeout(Duration::from_secs(1), drain(spawn_upstream(client, input)))
+                .await
+                .expect("a silent body must hit the transport timeout");
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        assert!(error
+            .error_message
+            .as_deref()
+            .unwrap()
+            .contains("stream read failed"));
+        assert!(matches!(&error.content[..], [
+            llm_router::types::content::ContentBlock::Thinking { text: thinking, .. },
+            llm_router::types::content::ContentBlock::Text { text },
+        ] if thinking == "Thinking" && text == "Partial answer"));
+        assert_eq!(error.usage.as_ref().unwrap().output, Some(3));
+        assert_eq!(error.warnings, Some(vec!["test warning".into()]));
+        tokio::time::timeout(Duration::from_secs(1), peer)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

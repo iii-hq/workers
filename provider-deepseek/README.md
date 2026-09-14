@@ -70,6 +70,9 @@ models listing is always read from that endpoint's `/models` sibling.
   running out of capacity mid-generation — terminates the stream as a
   `transient` error so the router retries instead of returning a silently
   truncated answer. No transport retries here: the router owns retry policy.
+  Pre-generation diagnostics stay in `error_message`, with empty assistant
+  content. A read failure after generation starts retains the streamed content,
+  usage, and warnings so the Harness can preserve and resume the partial response.
 - **Structured output:** `json_object` mode only — DeepSeek documents no
   strict json_schema mode. A `response_format` schema is dropped with a
   report-and-continue warning; every catalog record declares
