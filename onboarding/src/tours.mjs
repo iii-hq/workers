@@ -30,6 +30,45 @@
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
 
+/**
+ * The state scope the tour keeps everything in — progress, and the keys the
+ * steps below wait on.
+ */
+const STATE_SCOPE = 'onboarding'
+
+/**
+ * A step the AGENT finishes, not the operator.
+ *
+ * Its prompt ends by telling the agent to write `step_<id>_completed` into
+ * the onboarding state scope, and the step waits on a `state` trigger bound
+ * to that one key. The page binds every reachable condition when the step is
+ * DISPLAYED, before any button is clicked, so the step the operator is
+ * looking at is the step the agent is still working on — a long build no
+ * longer reads as finished the moment the prompt is sent.
+ *
+ * The trigger matches the KEY, not the value: whatever shape the agent
+ * writes, the write itself is the report.
+ *
+ * `tours.test.mjs` holds the two halves together — the sentence and the
+ * binding both carry the key, and the test fails when one of them moves.
+ */
+const agentStep = (step) => {
+  const key = `step_${step.id}_completed`
+  return {
+    ...step,
+    ask: {
+      ...step.ask,
+      text: `${step.ask.text} When you are done, write ${key}: true to state, scope "${STATE_SCOPE}".`,
+    },
+    condition: {
+      type: 'state',
+      config: { scope: STATE_SCOPE, key },
+      label: 'Waiting for the agent to report this step done',
+      hint: `The agent writes ${key} into the "${STATE_SCOPE}" state scope when it has finished.`,
+    },
+  }
+}
+
 /** @type {Tour[]} */
 export const TOURS = [
   {
@@ -69,7 +108,7 @@ export const TOURS = [
         // No anchor: this step names the five properties, it does not point at
         // a console surface. The spotlight stays hidden.
       },
-      {
+      agentStep({
         id: "composability",
         ask: {
           text: "Add a database worker to this project, then tell me what it can do.",
@@ -77,7 +116,7 @@ export const TOURS = [
         },
         title: "Composability",
         body: "iii is composable like Node or Python, except when you add to iii you're adding a working service and not a library. Let's ask the agent to add a database worker.",
-      },
+      }),
       {
         id: "observability",
         title: "Observability",
@@ -87,16 +126,16 @@ export const TOURS = [
         // operator reads the trace instead of hunting for the palette row.
         screen: "traces",
       },
-      {
+      agentStep({
         id: "discoverability",
         ask: {
           text: "What can this system do right now? List the workers that are registered and the functions each one exposes.",
           label: "Ask the agent",
         },
-        title: "Discover",
+        title: "Discoverability",
         body: "See what the system can do. Let's ask the agent what the current capabilities are.",
-      },
-      {
+      }),
+      agentStep({
         id: "extensibility",
         ask: {
           text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Open the page for me when it is done.",
@@ -104,9 +143,9 @@ export const TOURS = [
         },
         title: "Extensibility",
         body: "Great! Now let's use that database worker. Ask the agent to create a simple CRUD app like a TODO list and to create console injectable UI for it as well and to open it for you when it's done. Since we're going to build and open our very own worker we can make room by closing the Traces panel (optional).",
-        // The close is an invitation, not a requirement: the step still
-        // completes on its `ask`. When the operator does take it, the page
-        // swaps in this note so dropping the panel is never a dead end.
+        // The close is an invitation, not a requirement: the step closes
+        // when the agent reports done. When the operator does take it, the
+        // page swaps in this note so dropping the panel is never a dead end.
         on_closed: {
           screen: "traces",
           body: "You can always open traces in a new tab.",
@@ -114,8 +153,8 @@ export const TOURS = [
           // button, so this rides the button's own stable aria-label.
           anchors: ['[aria-label="New workspace"]'],
         },
-      },
-      {
+      }),
+      agentStep({
         id: "reactivity",
         ask: {
           text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off.",
@@ -123,7 +162,7 @@ export const TOURS = [
         },
         title: "Reactivity",
         body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers to listen for when they're done. Watch the Triggers react as you check the boxes.",
-      },
+      }),
       {
         id: "stay-in-touch",
         title: "Stay in touch",

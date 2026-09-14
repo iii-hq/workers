@@ -117,3 +117,42 @@ test('every on_closed step carries a body and a label the console still uses', (
     }
   }
 })
+
+/**
+ * A step the agent finishes, rather than the operator, reports itself done by
+ * writing one key into the onboarding state scope. Two halves have to agree
+ * or the step never closes: the sentence the prompt ends with, and the
+ * `state` trigger the page binds. This is the check that fails when one of
+ * them moves.
+ */
+test('every agent-finished step names the state key its trigger waits on', () => {
+  for (const tour of TOURS) {
+    for (const step of tour.steps) {
+      if (step.condition?.type !== 'state') continue
+      const key = `step_${step.id}_completed`
+      assert.equal(step.condition.config.scope, 'onboarding', `${step.id}: wrong state scope`)
+      assert.equal(step.condition.config.key, key, `${step.id}: trigger waits on the wrong key`)
+      assert.ok(step.ask?.text.includes(key), `${step.id}: the prompt never asks for ${key}`)
+      assert.ok(
+        step.ask.text.includes('onboarding'),
+        `${step.id}: the prompt never names the state scope`,
+      )
+    }
+  }
+})
+
+/** The four steps the agent does the work for all wait on the agent. */
+test('every step that asks the agent to build waits for it to report done', () => {
+  const agentSteps = ['composability', 'discoverability', 'extensibility', 'reactivity']
+  for (const id of agentSteps) {
+    const step = getTour('console-basics').steps.find((entry) => entry.id === id)
+    assert.ok(step, `${id} is no longer a step`)
+    assert.equal(step.condition?.type, 'state', `${id}: does not wait on a state write`)
+  }
+})
+
+/** The tour names the five CODER properties; `Discover` is not one of them. */
+test('the discoverability step is titled Discoverability', () => {
+  const step = getTour('console-basics').steps.find((entry) => entry.id === 'discoverability')
+  assert.equal(step.title, 'Discoverability')
+})
