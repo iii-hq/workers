@@ -4,6 +4,17 @@
 //! `max_tokens` (from resolve) → the worker default.
 use llm_router::types::credential::Credential;
 use llm_router::types::router::ProviderResolveResponse;
+use std::time::Duration;
+
+/// Operator-controlled upstream wait budget; shared by transport reads and
+/// generation startup so slow gateways can raise both limits together.
+pub(crate) fn upstream_timeout() -> Duration {
+    std::env::var("PROVIDER_READ_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(120))
+}
 
 // DeepSeek's OpenAI-compatible surface is rooted at the bare host — the
 // documented base_url is `https://api.deepseek.com`, with no `/v1` segment

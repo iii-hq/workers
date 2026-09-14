@@ -70,6 +70,17 @@ impl PartialState {
         self.stop_reason
     }
 
+    /// Empty tool-call placeholders are kept for stream-integrity checks,
+    /// but do not prove that the model has started generating anything.
+    pub(crate) fn generation_started(&self) -> bool {
+        self.segments.iter().any(|segment| match segment {
+            Segment::Text(text) | Segment::Thinking(text) => !text.is_empty(),
+            Segment::Call(call) => {
+                !call.id.is_empty() || !call.function_id.is_empty() || !call.args_json.is_empty()
+            }
+        })
+    }
+
     /// True when the open block is a thinking (resp. text) block, so a delta
     /// of that kind extends it instead of starting a new one.
     fn open_is_thinking(&self) -> bool {

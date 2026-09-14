@@ -1,6 +1,6 @@
 //! Boot wiring: function surface, the router::ready rebind, and the
 //! declare-with-backoff loop (spec § Registration lifecycle).
-use crate::config::{DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
+use crate::config::{upstream_timeout, DEFAULT_API_URL, DEFAULT_MAX_TOKENS};
 use crate::discovery::{make_refresh_models, refresh_models};
 use crate::errors::invalid_request_from_serde;
 use crate::stream_fn::make_stream;
@@ -118,17 +118,6 @@ pub async fn declare_and_refresh(iii: IIIClient, http: reqwest::Client) {
     }
 }
 
-/// Upstream read-silence bound, overridable via `PROVIDER_READ_TIMEOUT_SECS`:
-/// a fixed 120s cap must not undercut router idle/stream budgets deliberately
-/// raised for slow endpoints (long prompt eval on self-hosted gateways).
-fn read_timeout() -> Duration {
-    std::env::var("PROVIDER_READ_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(120))
-}
-
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // Shared per-process cache for the registration token and the resolve
     // response (see llm_router::provider_scaffold::cache). Invalidated on
@@ -138,11 +127,11 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     // Streaming uses no total timeout (the router owns stream budgets), but
     // reads are silence-bounded: a stalled upstream otherwise pings the router
     // past its idle guard until the engine kills the call at stream_timeout.
-    // DeepSeek holds an overloaded request open with `: keep-alive` SSE
-    // comments, which count as reads and keep this bound from firing early.
+    // DeepSeek's keepalive comments count as reads, so upstream.rs also
+    // enforces this budget until generation actually starts.
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .read_timeout(read_timeout())
+        .read_timeout(upstream_timeout())
         .build()
         .expect("reqwest client");
 

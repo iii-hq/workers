@@ -1,7 +1,7 @@
 //! The `provider::deepseek::stream` iii function (spec § Provider stream
 //! contract): write AssistantMessageEvent frames as JSON text messages into
 //! the router-owned channel, terminal done/error last, then close.
-use crate::config::config_from_resolve;
+use crate::config::{config_from_resolve, upstream_timeout};
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, native_thinking, resolve, ReasoningParams};
 use crate::request::{build_body, build_headers, BodyArgs};
@@ -182,6 +182,7 @@ async fn run_stream_call(
             body,
             headers,
             warnings,
+            first_token_timeout: upstream_timeout(),
         },
     );
     let kind = match abort_reg {

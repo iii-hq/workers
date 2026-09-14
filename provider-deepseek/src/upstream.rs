@@ -8,10 +8,11 @@ use crate::PROVIDER_ID;
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
     append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
-    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
+    truncated_stream_error, CloseFraming, StreamEnd, StreamEndView, TailFlush,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub struct UpstreamArgs {
@@ -21,6 +22,8 @@ pub struct UpstreamArgs {
     pub headers: Vec<(&'static str, String)>,
     /// Report-and-continue notices for the final message (spec § stream contract).
     pub warnings: Vec<String>,
+    /// Budget for generation to start, independent of transport keepalives.
+    pub first_token_timeout: Duration,
 }
 
 pub fn spawn_upstream(
@@ -58,11 +61,22 @@ async fn run_upstream(
     args: UpstreamArgs,
     tx: mpsc::Sender<AssistantMessageEvent>,
 ) {
+    // Transport reads (including keepalives) are not proof that inference
+    // started. One deadline covers response headers and all pre-content SSE.
+    let first_token_deadline = tokio::time::sleep(args.first_token_timeout);
+    tokio::pin!(first_token_deadline);
     let mut req = client.post(&args.api_url);
     for (name, value) in &args.headers {
         req = req.header(*name, value);
     }
-    let resp = match req.json(&args.body).send().await {
+    let response = tokio::select! {
+        _ = &mut first_token_deadline => {
+            let _ = tx.send(generation_timeout(&args.model, args.first_token_timeout)).await;
+            return;
+        }
+        response = req.json(&args.body).send() => response,
+    };
+    let resp = match response {
         Ok(r) => r,
         Err(e) => {
             let _ = tx
@@ -131,7 +145,17 @@ async fn run_upstream(
             };
             handle_chunk(&parsed, state, model)
         };
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next = tokio::select! {
+            _ = &mut first_token_deadline, if !state.generation_started() && !state.saw_terminator() => {
+                let _ = tx.send(generation_timeout(&args.model, args.first_token_timeout)).await;
+                return; // drop the response and close the queued upstream request
+            }
+            next = stream.next() => next,
+        };
+        let Some(chunk) = next else {
+            break;
+        };
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
@@ -173,6 +197,18 @@ async fn run_upstream(
     let _ = tx.send(event).await;
 }
 
+fn generation_timeout(model: &str, timeout: Duration) -> AssistantMessageEvent {
+    synthetic_error_event(
+        &format!(
+            "DeepSeek model {model} did not start generating within {}ms. \
+             The request may be queued upstream. Try again or choose another model.",
+            timeout.as_millis()
+        ),
+        model,
+        ErrorKind::Transient,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +237,7 @@ mod tests {
             body: serde_json::json!({ "stream": true }),
             headers: vec![("authorization", "Bearer sk-test".into())],
             warnings: vec![],
+            first_token_timeout: Duration::from_secs(120),
         }
     }
 
@@ -210,6 +247,164 @@ mod tests {
             out.push(ev);
         }
         out
+    }
+
+    /// Keep a real HTTP connection alive without producing model content.
+    /// The task completes only when the provider closes its upstream socket.
+    async fn waiting_upstream(
+        headers: &'static str,
+        frame: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 65536];
+            assert!(sock.read(&mut buf).await.unwrap() > 0);
+            sock.write_all(headers.as_bytes()).await.unwrap();
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                tokio::select! {
+                    read = sock.read(&mut buf) => {
+                        if !matches!(read, Ok(n) if n > 0) {
+                            return;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if sock.write_all(frame.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        (format!("http://{addr}/chat/completions"), task)
+    }
+
+    const SSE_HEADERS: &str =
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn keepalives_and_empty_chunks_cannot_extend_the_generation_deadline() {
+        for frame in [
+            ": keep-alive\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":\"\"}}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10}}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"\",\"arguments\":\"\"}}]}}]}\n\n",
+        ] {
+            let (url, peer) = waiting_upstream(SSE_HEADERS, frame).await;
+            let mut input = args(url);
+            input.first_token_timeout = Duration::from_millis(100);
+            let events = tokio::time::timeout(
+                Duration::from_secs(1),
+                drain(spawn_upstream(reqwest::Client::new(), input)),
+            )
+            .await
+            .expect("keepalives must not keep a generation alive past its startup budget");
+            let error = single_terminal_error(&events);
+            assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+            assert_eq!(error.model, "deepseek-test");
+            assert!(error.error_message.as_deref().unwrap().contains("did not start generating"));
+            tokio::time::timeout(Duration::from_secs(1), peer)
+                .await
+                .expect("timing out must close the upstream HTTP request")
+                .unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn generation_deadline_also_bounds_waiting_for_response_headers() {
+        let (url, peer) = waiting_upstream("", "").await;
+        let mut input = args(url);
+        input.first_token_timeout = Duration::from_millis(100);
+        let events = tokio::time::timeout(
+            Duration::from_secs(1),
+            drain(spawn_upstream(reqwest::Client::new(), input)),
+        )
+        .await
+        .expect("waiting for HTTP headers must have the same startup bound");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            single_terminal_error(&events).error_kind,
+            Some(ErrorKind::Transient)
+        );
+        tokio::time::timeout(Duration::from_secs(1), peer)
+            .await
+            .expect("request must close on timeout")
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn generated_content_disarms_the_startup_deadline() {
+        for delta in [
+            serde_json::json!({ "content": "Hello" }),
+            serde_json::json!({ "reasoning_content": "Thinking" }),
+            serde_json::json!({ "tool_calls": [{ "index": 0, "id": "call_1", "type": "function", "function": { "name": "shell__ls", "arguments": "{}" } }] }),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (progress_tx, progress_rx) = tokio::sync::oneshot::channel();
+            let peer = tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 65536];
+                assert!(sock.read(&mut buf).await.unwrap() > 0);
+                let first = format!(
+                    "{SSE_HEADERS}data: {}\n\n",
+                    serde_json::json!({ "choices": [{ "index": 0, "delta": delta }] })
+                );
+                sock.write_all(first.as_bytes()).await.unwrap();
+                // Start the long pause only after the real decoder emitted content.
+                progress_rx.await.unwrap();
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                sock.write_all(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n").await.unwrap();
+            });
+            let mut input = args(format!("http://{addr}/chat/completions"));
+            input.first_token_timeout = Duration::from_millis(200);
+            let mut rx = spawn_upstream(reqwest::Client::new(), input);
+            let mut events = Vec::new();
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .unwrap()
+                    .expect("stream must emit content");
+                let progress = matches!(
+                    event,
+                    AssistantMessageEvent::TextDelta { .. }
+                        | AssistantMessageEvent::ThinkingDelta { .. }
+                        | AssistantMessageEvent::FunctioncallStart { .. }
+                );
+                events.push(event);
+                if progress {
+                    break;
+                }
+            }
+            progress_tx.send(()).unwrap();
+            events.extend(
+                tokio::time::timeout(Duration::from_secs(1), drain(rx))
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(events.iter().filter(|event| event.is_terminal()).count(), 1);
+            assert!(
+                matches!(events.last(), Some(AssistantMessageEvent::Done { message }) if !message.content.is_empty())
+            );
+            peer.await.unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropping_the_receiver_cancels_a_queued_generation() {
+        let (url, peer) = waiting_upstream(SSE_HEADERS, ": keep-alive\n\n").await;
+        let mut rx = spawn_upstream(reqwest::Client::new(), args(url));
+        assert!(matches!(
+            rx.recv().await,
+            Some(AssistantMessageEvent::Start { .. })
+        ));
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(1), peer)
+            .await
+            .expect("caller cancellation must not wait for the startup deadline")
+            .unwrap();
     }
 
     const HAPPY: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n: keep-alive\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"prompt_cache_hit_tokens\":4,\"prompt_cache_miss_tokens\":8}}\n\ndata: [DONE]\n\n";
