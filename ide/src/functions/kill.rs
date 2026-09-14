@@ -157,6 +157,7 @@ mod sandbox_kill_tests {
             id.clone(),
             Arc::new(Mutex::new(JobHandle {
                 record,
+                finalized: false,
                 child: None,
                 host_pid: None,
             })),
@@ -314,6 +315,7 @@ mod host_kill_tests {
             id.clone(),
             Arc::new(Mutex::new(JobHandle {
                 record,
+                finalized: false,
                 child: Some(child),
                 host_pid: Some(pid),
             })),

@@ -27,13 +27,21 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
 use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::jobs::{JobRecord, JobStatus};
 
 /// The trigger type a subscriber binds to be woken when a job ends.
 pub const JOB_FINISHED: &str = "shell::job-finished";
+
+/// Select one background job, or observe future completions without a filter.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct JobFinishedConfig {
+    /// Replay a terminal job while its record is retained in worker memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+}
 
 /// What ended. Lean by design, like [`crate::events::ChangedEvent`]: a
 /// subscriber that wants the job's output asks `shell::status`.
@@ -75,30 +83,44 @@ impl JobFinishedEvent {
 /// cares about.
 #[derive(Debug, Clone)]
 struct Subscriber {
+    /// Distinguish replacements using the same engine trigger-instance id.
+    registration_id: uuid::Uuid,
     function_id: String,
     metadata: Option<Value>,
     namespace: Option<String>,
     /// Bind with `config: { job_id }` to be woken by one job only. Absent
     /// means every job — useful for a dashboard, wasteful for a wake.
     job_id: Option<String>,
+    /// A filtered binding can be claimed by either registration replay or
+    /// live completion. Both paths update this under the subscriber lock.
+    delivered: bool,
 }
 
 impl Subscriber {
-    fn from_config(config: &TriggerConfig) -> Self {
-        Self {
+    fn from_config(config: &TriggerConfig) -> Result<Self, Error> {
+        let filter: JobFinishedConfig = serde_json::from_value(config.config.clone())
+            .map_err(|e| Error::Handler(format!("invalid shell::job-finished config: {e}")))?;
+        Ok(Self {
+            registration_id: uuid::Uuid::new_v4(),
             function_id: config.function_id.clone(),
             metadata: config.metadata.clone(),
             namespace: config.namespace.clone(),
-            job_id: config
-                .config
-                .get("job_id")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        }
+            job_id: filter.job_id,
+            delivered: false,
+        })
     }
 
     fn wants(&self, job_id: &str) -> bool {
         self.job_id.as_deref().is_none_or(|id| id == job_id)
+    }
+
+    fn claim(&mut self, job_id: &str) -> bool {
+        if !self.wants(job_id) || self.delivered {
+            return false;
+        }
+        // Catch-all bindings stay active for other jobs and never replay.
+        self.delivered = self.job_id.is_some();
+        true
     }
 
     /// The fire for one event: `Void` routing (fire-and-forget) with the
@@ -138,13 +160,12 @@ fn subscribers() -> &'static Mutex<HashMap<String, Subscriber>> {
     SUBSCRIBERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn matching(job_id: &str) -> Vec<Subscriber> {
+fn take_matching(job_id: &str) -> Vec<Subscriber> {
     subscribers()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .values()
-        .filter(|s| s.wants(job_id))
-        .cloned()
+        .values_mut()
+        .filter_map(|s| s.claim(job_id).then(|| s.clone()))
         .collect()
 }
 
@@ -158,14 +179,20 @@ pub async fn fire(record: &JobRecord) {
     let Some(event) = JobFinishedEvent::from_record(record) else {
         return;
     };
-    let targets = matching(&event.job_id);
+    let targets = take_matching(&event.job_id);
+    dispatch(&event, targets);
+}
+
+fn dispatch(event: &JobFinishedEvent, targets: Vec<Subscriber>) {
+    #[cfg(test)]
+    tests::observe_delivery(event, &targets);
     if targets.is_empty() {
         return;
     }
     let Some(iii) = CLIENT.get() else {
         return;
     };
-    let Ok(payload) = serde_json::to_value(&event) else {
+    let Ok(payload) = serde_json::to_value(event) else {
         return;
     };
     for subscriber in targets {
@@ -198,7 +225,9 @@ struct JobFinishedTriggerHandler;
 #[async_trait]
 impl TriggerHandler for JobFinishedTriggerHandler {
     async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        let subscriber = Subscriber::from_config(&config);
+        let subscriber = Subscriber::from_config(&config)?;
+        let registration_id = subscriber.registration_id;
+        let job_id = subscriber.job_id.clone();
         tracing::info!(
             trigger_type = JOB_FINISHED,
             id = %config.id,
@@ -208,7 +237,35 @@ impl TriggerHandler for JobFinishedTriggerHandler {
         subscribers()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(config.id, subscriber);
+            .insert(config.id.clone(), subscriber);
+        // Publish the binding BEFORE reading the retained job. If completion
+        // races with this read, fire() claims it or replay does, never both.
+        // Neither registry lock is held across a job lock or a delivery.
+        if let Some(job_id) = job_id {
+            if let Some(handle) = crate::jobs::get(&job_id).await {
+                let event = {
+                    let h = handle.lock().await;
+                    // shell::kill stamps a terminal status before the drain or
+                    // sandbox response has finished collecting the output.
+                    if h.finalized {
+                        JobFinishedEvent::from_record(&h.record)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(event) = event {
+                    let target = subscribers()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_mut(&config.id)
+                        .filter(|s| s.registration_id == registration_id)
+                        .and_then(|s| s.claim(&job_id).then(|| s.clone()));
+                    if let Some(target) = target {
+                        dispatch(&event, vec![target]);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -227,14 +284,19 @@ impl TriggerHandler for JobFinishedTriggerHandler {
 /// dead type surfaces as bindings that never fire.
 pub fn register_job_finished_trigger(iii: &IIIClient) {
     let _ = CLIENT.set(iii.clone());
-    let _handle = iii.register_trigger_type(RegisterTriggerType::new(
-        JOB_FINISHED,
-        "Fires once when a shell::exec_bg background job reaches a terminal status \
+    let _handle = iii.register_trigger_type(
+        RegisterTriggerType::new(
+            JOB_FINISHED,
+            "Fires once when a shell::exec_bg background job reaches a terminal status \
          (finished, killed, or failed). Bind with config: { job_id } to wake on one \
-         job, or omit it to receive every job. The event carries job_id, argv, status, \
+         job (replaying its result if already terminal and still retained), or omit \
+         it to receive future completions. The event carries job_id, argv, status, \
          exit_code and timings; call shell::status for the job's output.",
-        JobFinishedTriggerHandler,
-    ));
+            JobFinishedTriggerHandler,
+        )
+        .trigger_request_format::<JobFinishedConfig>()
+        .call_request_format::<JobFinishedEvent>(),
+    );
     tracing::info!(
         trigger_type = JOB_FINISHED,
         "sent the trigger type registration; delivery is confirmed by the first subscription"
@@ -246,10 +308,56 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    static TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static DELIVERIES: OnceLock<Mutex<HashMap<String, Vec<JobFinishedEvent>>>> = OnceLock::new();
+
+    // Observe the SDK delivery boundary without requiring a live engine.
+    // Each probe is isolated by target function and removes itself on drop.
+    pub(super) fn observe_delivery(event: &JobFinishedEvent, targets: &[Subscriber]) {
+        let mut deliveries = DELIVERIES.get_or_init(Mutex::default).lock().unwrap();
+        for target in targets {
+            if let Some(events) = deliveries.get_mut(&target.function_id) {
+                events.push(event.clone());
+            }
+        }
+    }
+
+    struct DeliveryProbe(String);
+
+    impl DeliveryProbe {
+        fn new(config: &mut TriggerConfig) -> Self {
+            config.function_id = format!("test::{}", uuid::Uuid::new_v4());
+            DELIVERIES
+                .get_or_init(Mutex::default)
+                .lock()
+                .unwrap()
+                .insert(config.function_id.clone(), Vec::new());
+            Self(config.function_id.clone())
+        }
+
+        fn take(&self) -> Vec<JobFinishedEvent> {
+            std::mem::take(
+                DELIVERIES
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .get_mut(&self.0)
+                    .unwrap(),
+            )
+        }
+    }
+
+    impl Drop for DeliveryProbe {
+        fn drop(&mut self) {
+            DELIVERIES.get().unwrap().lock().unwrap().remove(&self.0);
+        }
+    }
+
     fn record(status: JobStatus, finished_at_ms: Option<u64>) -> JobRecord {
         JobRecord {
             id: "job-1".into(),
-            argv: vec!["npm".into(), "install".into()],
+            argv: vec!["pnpm".into(), "install".into()],
             started_at_ms: 1_000,
             finished_at_ms,
             status,
@@ -269,6 +377,314 @@ mod tests {
             metadata: Some(json!({ "__binding": "b-1" })),
             namespace: Some("default".into()),
         }
+    }
+
+    #[tokio::test]
+    async fn subscribing_after_completion_claims_the_retained_event() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let mut finished = record(JobStatus::Finished, Some(crate::jobs::now_ms()));
+        finished.id = "job-late-registration".into();
+        crate::jobs::JOBS.map.lock().await.insert(
+            finished.id.clone(),
+            std::sync::Arc::new(tokio::sync::Mutex::new(crate::jobs::JobHandle {
+                record: finished.clone(),
+                finalized: true,
+                child: None,
+                host_pid: None,
+            })),
+        );
+        fire(&finished).await;
+        let mut cfg = config("t-late-registration", Some(&finished.id));
+        let probe = DeliveryProbe::new(&mut cfg);
+        let handler = JobFinishedTriggerHandler;
+        handler.register_trigger(cfg.clone()).await.unwrap();
+        let remaining = take_matching(&finished.id);
+        handler.unregister_trigger(cfg).await.unwrap();
+        crate::jobs::JOBS.map.lock().await.remove(&finished.id);
+        let delivered = probe.take();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].job_id, finished.id);
+        assert!(
+            remaining.is_empty(),
+            "registration must claim the completed event"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_filtered_binding_claims_completion_only_once() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let mut finished = record(JobStatus::Finished, Some(3_000));
+        finished.id = "job-delivered-once".into();
+        let mut cfg = config("t-delivered-once", Some(&finished.id));
+        let probe = DeliveryProbe::new(&mut cfg);
+        let handler = JobFinishedTriggerHandler;
+        handler.register_trigger(cfg.clone()).await.unwrap();
+        fire(&finished).await;
+        fire(&finished).await;
+        let remaining = take_matching(&finished.id);
+        handler.unregister_trigger(cfg).await.unwrap();
+        assert_eq!(probe.take().len(), 1);
+        assert!(
+            remaining.is_empty(),
+            "a second completion must not deliver again"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_completion_claims_a_binding_while_registration_reads_the_job() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let mut finished = record(JobStatus::Finished, Some(crate::jobs::now_ms()));
+        finished.id = "job-registration-race".into();
+        let handle = std::sync::Arc::new(tokio::sync::Mutex::new(crate::jobs::JobHandle {
+            record: finished.clone(),
+            finalized: true,
+            child: None,
+            host_pid: None,
+        }));
+        crate::jobs::JOBS
+            .map
+            .lock()
+            .await
+            .insert(finished.id.clone(), handle.clone());
+        let held = handle.lock().await;
+        let mut cfg = config("t-registration-race", Some(&finished.id));
+        let probe = DeliveryProbe::new(&mut cfg);
+        let registering = tokio::spawn({
+            let cfg = cfg.clone();
+            async move { JobFinishedTriggerHandler.register_trigger(cfg).await }
+        });
+        // Hold the snapshot read at the job lock until the binding is live.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if subscribers().lock().unwrap().contains_key(&cfg.id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        fire(&finished).await;
+        drop(held);
+        registering.await.unwrap().unwrap();
+        let duplicate_targets = take_matching(&finished.id);
+        JobFinishedTriggerHandler
+            .unregister_trigger(cfg)
+            .await
+            .unwrap();
+        crate::jobs::JOBS.map.lock().await.remove(&finished.id);
+        assert_eq!(
+            probe.take().len(),
+            1,
+            "live completion and replay must deliver once"
+        );
+        assert!(
+            duplicate_targets.is_empty(),
+            "replay must share the live claim"
+        );
+    }
+
+    #[test]
+    fn catch_all_bindings_keep_receiving_different_jobs() {
+        let mut subscriber = Subscriber::from_config(&config("t-all", None)).unwrap();
+        assert!(subscriber.claim("job-1"));
+        assert!(subscriber.claim("job-2"));
+    }
+
+    #[tokio::test]
+    async fn an_old_registration_does_not_replay_to_its_replacement() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let mut finished = record(JobStatus::Finished, Some(crate::jobs::now_ms()));
+        finished.id = "job-replaced-registration".into();
+        let handle = std::sync::Arc::new(tokio::sync::Mutex::new(crate::jobs::JobHandle {
+            record: finished.clone(),
+            finalized: true,
+            child: None,
+            host_pid: None,
+        }));
+        crate::jobs::JOBS
+            .map
+            .lock()
+            .await
+            .insert(finished.id.clone(), handle.clone());
+        let held = handle.lock().await;
+        let mut cfg = config("t-replacement", Some(&finished.id));
+        let old_probe = DeliveryProbe::new(&mut cfg);
+        let registering = tokio::spawn({
+            let cfg = cfg.clone();
+            async move { JobFinishedTriggerHandler.register_trigger(cfg).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !subscribers().lock().unwrap().contains_key(&cfg.id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut replacement = config(&cfg.id, None);
+        let new_probe = DeliveryProbe::new(&mut replacement);
+        JobFinishedTriggerHandler
+            .register_trigger(replacement.clone())
+            .await
+            .unwrap();
+        drop(held);
+        registering.await.unwrap().unwrap();
+        let old_events = old_probe.take();
+        let replayed = new_probe.take();
+        fire(&finished).await;
+        let live_events = new_probe.take();
+        JobFinishedTriggerHandler
+            .unregister_trigger(replacement)
+            .await
+            .unwrap();
+        crate::jobs::JOBS.map.lock().await.remove(&finished.id);
+        assert!(old_events.is_empty(), "the removed target must stay silent");
+        assert!(
+            replayed.is_empty(),
+            "a catch-all must not inherit an old replay"
+        );
+        assert_eq!(
+            live_events.len(),
+            1,
+            "the replacement must receive future events"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_job_waits_for_its_output_before_replay() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let mut killed = record(JobStatus::Killed, Some(crate::jobs::now_ms()));
+        killed.id = "job-cancelled-before-finalization".into();
+        killed.exit_code = None;
+        killed.stdout.clear();
+        let handle = std::sync::Arc::new(tokio::sync::Mutex::new(crate::jobs::JobHandle {
+            record: killed,
+            finalized: false,
+            child: None,
+            host_pid: None,
+        }));
+        let job_id = handle.lock().await.record.id.clone();
+        crate::jobs::JOBS
+            .map
+            .lock()
+            .await
+            .insert(job_id.clone(), handle.clone());
+        let mut cfg = config("t-cancelled", Some(&job_id));
+        let probe = DeliveryProbe::new(&mut cfg);
+        JobFinishedTriggerHandler
+            .register_trigger(cfg.clone())
+            .await
+            .unwrap();
+        let early_events = probe.take();
+        let finished = {
+            let mut h = handle.lock().await;
+            h.record.stdout = "final output".into();
+            h.record.exit_code = Some(137);
+            h.finalized = true;
+            h.record.clone()
+        };
+        fire(&finished).await;
+        let final_events = probe.take();
+        JobFinishedTriggerHandler
+            .unregister_trigger(cfg)
+            .await
+            .unwrap();
+        crate::jobs::JOBS.map.lock().await.remove(&job_id);
+        assert!(
+            early_events.is_empty(),
+            "a kill request is not a completed job"
+        );
+        assert_eq!(final_events.len(), 1);
+        assert_eq!(final_events[0].exit_code, Some(137));
+        assert_eq!(final_events[0].status, JobStatus::Killed);
+    }
+
+    #[test]
+    fn trigger_config_and_event_schemas_describe_the_wire_fields() {
+        let config = serde_json::to_value(schemars::schema_for!(JobFinishedConfig)).unwrap();
+        assert_eq!(config["type"], "object");
+        assert_eq!(
+            config["properties"]["job_id"]["type"],
+            json!(["string", "null"])
+        );
+        assert!(config.get("required").is_none(), "the filter is optional");
+        let event = serde_json::to_value(schemars::schema_for!(JobFinishedEvent)).unwrap();
+        assert_eq!(event["properties"]["argv"]["items"]["type"], "string");
+        for field in [
+            "job_id",
+            "argv",
+            "status",
+            "started_at_ms",
+            "finished_at_ms",
+            "duration_ms",
+        ] {
+            assert!(
+                event["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(field)),
+                "missing {field}"
+            );
+        }
+        assert!(event["properties"].get("stdout").is_none());
+        assert!(event["properties"].get("stderr").is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_job_id_is_rejected_instead_of_watching_all_jobs() {
+        let _test_guard = TEST_GUARD.lock().await;
+        let handler = JobFinishedTriggerHandler;
+        let mut cfg = config("t-invalid-filter", None);
+        cfg.config = json!({ "job_id": 123 });
+        let result = handler.register_trigger(cfg.clone()).await;
+        handler.unregister_trigger(cfg).await.unwrap();
+        assert!(
+            result.is_err(),
+            "a malformed filter must not become a catch-all"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sandbox_rpc_timeout_announces_failure() {
+        let _test_guard = TEST_GUARD.lock().await;
+        struct UnresponsiveEngine;
+        #[async_trait]
+        impl crate::triggers::TriggerFwd for UnresponsiveEngine {
+            async fn trigger(&self, _: &str, _: Value) -> Result<Value, Error> {
+                std::future::pending().await
+            }
+        }
+        let _guard = crate::jobs::GAUGE_TEST_GUARD.lock().await;
+        let response = crate::functions::exec_bg::spawn_sandbox_job(
+            std::sync::Arc::new(crate::config::ShellConfig::default()),
+            std::sync::Arc::new(UnresponsiveEngine),
+            uuid::Uuid::new_v4(),
+            vec!["echo".into(), "ok".into()],
+            1_000,
+        )
+        .await
+        .unwrap();
+        let handler = JobFinishedTriggerHandler;
+        let mut cfg = config("t-rpc-timeout", Some(&response.job_id));
+        let probe = DeliveryProbe::new(&mut cfg);
+        handler.register_trigger(cfg.clone()).await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(32)).await;
+        tokio::task::yield_now().await;
+        let handle = crate::jobs::get(&response.job_id).await.unwrap();
+        let finished = handle.lock().await.record.clone();
+        let remaining = take_matching(&response.job_id);
+        handler.unregister_trigger(cfg).await.unwrap();
+        crate::jobs::JOBS.map.lock().await.remove(&response.job_id);
+        assert_eq!(finished.status, JobStatus::Failed);
+        let delivered = probe.take();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].status, JobStatus::Failed);
+        assert!(finished.stderr.contains("RPC timed out"));
+        assert!(
+            remaining.is_empty(),
+            "the failed job must notify its subscriber"
+        );
     }
 
     // A running job has no completion to announce, and a terminal one with
@@ -300,8 +716,8 @@ mod tests {
     // not fire for another's.
     #[test]
     fn the_job_id_filter_selects_and_an_absent_one_takes_everything() {
-        let mine = Subscriber::from_config(&config("t-1", Some("job-1")));
-        let all = Subscriber::from_config(&config("t-2", None));
+        let mine = Subscriber::from_config(&config("t-1", Some("job-1"))).unwrap();
+        let all = Subscriber::from_config(&config("t-2", None)).unwrap();
         assert!(mine.wants("job-1"));
         assert!(!mine.wants("job-2"));
         assert!(all.wants("job-1"));
@@ -316,7 +732,7 @@ mod tests {
     // invisible for two releases.
     #[test]
     fn the_fire_carries_the_bindings_metadata_and_namespace() {
-        let subscriber = Subscriber::from_config(&config("t-1", Some("job-1")));
+        let subscriber = Subscriber::from_config(&config("t-1", Some("job-1"))).unwrap();
         let wire = format!("{:?}", subscriber.request(json!({ "job_id": "job-1" })));
         assert!(wire.contains("__binding"), "metadata dropped: {wire}");
         assert!(wire.contains("b-1"), "metadata dropped: {wire}");
@@ -324,10 +740,12 @@ mod tests {
 
         // A binding that carried neither must not invent them.
         let bare = Subscriber {
+            registration_id: uuid::Uuid::new_v4(),
             function_id: "agent::wake".into(),
             metadata: None,
             namespace: None,
             job_id: None,
+            delivered: false,
         };
         let wire = format!("{:?}", bare.request(json!({})));
         assert!(wire.contains("metadata: None"), "{wire}");
@@ -338,18 +756,20 @@ mod tests {
     // matching immediately.
     #[tokio::test]
     async fn registering_then_unregistering_leaves_no_subscriber() {
+        let _test_guard = TEST_GUARD.lock().await;
         let handler = JobFinishedTriggerHandler;
         let cfg = config("t-unreg", Some("job-unreg"));
         handler.register_trigger(cfg.clone()).await.unwrap();
-        assert_eq!(matching("job-unreg").len(), 1);
+        assert_eq!(take_matching("job-unreg").len(), 1);
         handler.unregister_trigger(cfg).await.unwrap();
-        assert!(matching("job-unreg").is_empty());
+        assert!(take_matching("job-unreg").is_empty());
     }
 
     // Without a client installed (unit tests, or before startup wiring
     // lands) the fan-out must be a no-op, not a panic.
     #[tokio::test]
     async fn fire_without_a_client_is_silent() {
+        let _test_guard = TEST_GUARD.lock().await;
         let handler = JobFinishedTriggerHandler;
         let cfg = config("t-noclient", Some("job-1"));
         handler.register_trigger(cfg.clone()).await.unwrap();

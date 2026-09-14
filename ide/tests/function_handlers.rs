@@ -210,6 +210,7 @@ fn exec_bg_request_rejects_non_string_arg() {
 async fn status_handler_returns_record_for_inserted_job() {
     let id = "fn-status-handler-test-1";
     seed(JobHandle {
+        finalized: false,
         record: JobRecord {
             id: id.into(),
             argv: vec!["echo".into()],
@@ -280,6 +281,7 @@ async fn kill_handler_rejects_unknown_job_id() {
 async fn kill_handler_returns_killed_false_when_job_already_terminal() {
     let id = "fn-kill-handler-finished";
     seed(JobHandle {
+        finalized: true,
         record: JobRecord {
             id: id.into(),
             argv: vec!["echo".into()],
@@ -310,6 +312,7 @@ async fn kill_handler_returns_killed_false_when_job_already_terminal() {
 async fn list_handler_returns_jobs_array_and_count() {
     let id = "fn-list-handler-marker";
     seed(JobHandle {
+        finalized: false,
         record: JobRecord {
             id: id.into(),
             argv: vec!["sleep".into(), "0.01".into()],

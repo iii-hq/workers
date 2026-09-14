@@ -125,6 +125,7 @@ pub(crate) async fn spawn_host_job(
     let running_guard = match jobs::try_reserve_and_insert(
         JobHandle {
             record,
+            finalized: false,
             child: Some(child),
             host_pid,
         },
@@ -292,6 +293,7 @@ pub(crate) async fn spawn_host_job(
         if h.record.finished_at_ms.is_none() {
             h.record.finished_at_ms = Some(jobs::now_ms());
         }
+        h.finalized = true;
         let finished = h.record.clone();
         drop(h);
         jobs::unregister_kill_signal(&id_clone);
@@ -330,6 +332,7 @@ pub(crate) async fn spawn_sandbox_job(
     let running_guard = match jobs::try_reserve_and_insert(
         JobHandle {
             record,
+            finalized: false,
             child: None,
             // Sandbox jobs own no local OS process — leave host_pid None so the
             // kill sweep and shell::kill correctly route them to the sandbox path.
@@ -375,7 +378,8 @@ pub(crate) async fn spawn_sandbox_job(
                 Ok(r) => r,
                 Err(_) => {
                     // RPC deadline blown: finalize the job (unless an external kill
-                    // already did) so its slot/gauge are released, then stop.
+                    // already did), then publish its completion just like a
+                    // normal response before releasing the slot/gauge.
                     if let Some(handle) = jobs::get(&id_clone).await {
                         let mut h = handle.lock().await;
                         if h.record.status == JobStatus::Running {
@@ -388,6 +392,10 @@ pub(crate) async fn spawn_sandbox_job(
                                 h.record.finished_at_ms = Some(jobs::now_ms());
                             }
                         }
+                        h.finalized = true;
+                        let finished = h.record.clone();
+                        drop(h);
+                        crate::job_events::fire(&finished).await;
                     }
                     return;
                 }
@@ -444,6 +452,7 @@ pub(crate) async fn spawn_sandbox_job(
         if !already_killed {
             h.record.finished_at_ms = Some(jobs::now_ms());
         }
+        h.finalized = true;
         let finished = h.record.clone();
         drop(h);
         crate::job_events::fire(&finished).await;
@@ -691,6 +700,7 @@ mod host_path_tests {
         let (_, mut handle) = jobs::try_reserve_and_insert(
             JobHandle {
                 record,
+                finalized: false,
                 child: Some(child),
                 host_pid: Some(pid),
             },

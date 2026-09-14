@@ -317,7 +317,69 @@ Conventions (hold these when adding functions to either surface):
 - **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
   `coder::*` is host-only.
 
-## Live change feed (`shell::changed`)
+## Custom trigger types
+
+| Trigger type | Fires when | Payload to subscribers |
+|---|---|---|
+| `shell::job-finished` | A background job finishes, is killed, or fails. A binding filtered by `job_id` also receives a retained terminal result when registered after completion. | `{ job_id, argv, status, exit_code, started_at_ms, finished_at_ms, duration_ms }` |
+| `shell::changed` | A file or directory under the watched root changes. | `{ path, kind, root, dir }` |
+
+### Background job completion (`shell::job-finished`)
+
+Subscribe after `shell::exec_bg` returns to learn when the job ends without
+polling `shell::status`. The binding configuration accepts one field:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `job_id` | Optional string | No filter | Receive the named job's completion. Omit it to receive future completions of all background jobs in this worker process. |
+
+A filtered subscription also receives the result if its job has already
+completed, including a job that finished before `shell::exec_bg` returned.
+Registration and live completion are deduplicated for that binding. An
+unfiltered subscription receives future completions only; it does not replay
+existing records.
+
+For a harness agent, start the job with `shell::exec_bg`:
+
+```json
+{ "command": "pnpm", "args": ["build"], "cwd": "/path/to/project" }
+```
+
+Then call `engine::register_trigger` with the returned `job_id`:
+
+```json
+{
+  "trigger_type": "shell::job-finished",
+  "config": { "job_id": "<returned-job-id>" },
+  "once": true
+}
+```
+
+Omitting `function_id` on this harness call registers a wake for the calling
+session. Sibling workers instead register the trigger with their own handler
+as its target. The completion event contains:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `job_id` | String | The ID returned by `shell::exec_bg`. |
+| `argv` | Array of strings | The command and arguments as spawned. |
+| `status` | String | `finished`, `killed`, or `failed`; never `running`. |
+| `exit_code` | Integer or `null` | The process exit code, when available. |
+| `started_at_ms` | Non-negative integer | Job start time in milliseconds since the Unix epoch. |
+| `finished_at_ms` | Non-negative integer | Completion time in milliseconds since the Unix epoch. |
+| `duration_ms` | Non-negative integer | Elapsed milliseconds, clamped to zero if the clock moved backwards. |
+
+The event excludes stdout and stderr. Read captured output with
+`shell::status` using `{ "job_id": "<returned-job-id>" }`.
+
+Replay and output retrieval depend on the job record remaining in this
+worker's memory. Finished records are pruned after `job_retention_secs`
+(default `3600`, one hour after completion), and a worker restart loses them.
+Subscribe and retrieve output within that window; a pruned record cannot be
+replayed and `shell::status` returns `S211`. Delivery is best effort, without
+retries or a durable event history.
+
+### Live change feed (`shell::changed`)
 
 The worker registers a custom **trigger type** backed by a system-level
 directory watch (FSEvents on macOS, inotify on Linux, via the `notify`

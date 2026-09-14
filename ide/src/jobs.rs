@@ -33,6 +33,10 @@ pub struct JobRecord {
 
 pub struct JobHandle {
     pub record: JobRecord,
+    /// Internal, non-serialized completion state. `shell::kill` can publish a
+    /// terminal status before the finalize task captures output; completion
+    /// replay must wait until that task marks the whole record finalized.
+    pub finalized: bool,
     pub child: Option<Child>,
     /// PID of the host child process, set ONLY for host-backed background jobs.
     /// The detached drain task takes `child` out of the handle (so the task can
@@ -385,6 +389,7 @@ mod tests {
 
     fn make_handle(id: &str, status: JobStatus) -> JobHandle {
         JobHandle {
+            finalized: status != JobStatus::Running,
             record: JobRecord {
                 id: id.into(),
                 argv: vec!["x".into()],
@@ -438,6 +443,7 @@ mod tests {
         // Finished one hour ago.
         let stale = now_ms().saturating_sub(60 * 60 * 1000);
         let handle = JobHandle {
+            finalized: true,
             record: JobRecord {
                 finished_at_ms: Some(stale),
                 ..make_handle(&id, JobStatus::Finished).record
