@@ -8,7 +8,7 @@ use crate::PROVIDER_ID;
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
     append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, flush_tail,
-    truncated_stream_error, CloseFraming, StreamEnd, StreamEndView, TailFlush,
+    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
@@ -147,7 +147,9 @@ async fn run_upstream(
         };
     loop {
         let next = tokio::select! {
-            _ = &mut first_token_deadline, if !state.generation_started() && !state.saw_terminator() => {
+            // A finish_reason can arrive without output or [DONE]. Keep the
+            // deadline armed until content arrives or the stream terminates.
+            _ = &mut first_token_deadline, if !state.generation_started() => {
                 let _ = tx.send(generation_timeout(&args.model, args.first_token_timeout)).await;
                 return; // drop the response and close the queued upstream request
             }
@@ -312,6 +314,38 @@ mod tests {
                 .expect("timing out must close the upstream HTTP request")
                 .unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_finish_frame_cannot_disarm_the_generation_deadline() {
+        let (url, peer) = waiting_upstream(
+            concat!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            ),
+            ": keep-alive\n\n",
+        )
+        .await;
+        let mut input = args(url);
+        input.first_token_timeout = Duration::from_millis(100);
+        let events = tokio::time::timeout(
+            Duration::from_secs(1),
+            drain(spawn_upstream(reqwest::Client::new(), input)),
+        )
+        .await
+        .expect("an empty finish frame must not allow keepalives to bypass the deadline");
+        let error = single_terminal_error(&events);
+        assert!(error.content.is_empty());
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        assert!(error
+            .error_message
+            .as_deref()
+            .unwrap()
+            .contains("did not start generating"));
+        tokio::time::timeout(Duration::from_secs(1), peer)
+            .await
+            .expect("the timed-out upstream must close")
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
