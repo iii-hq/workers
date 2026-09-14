@@ -6,9 +6,6 @@ license: Apache-2.0
 manifest: package.json
 tags: [onboarding, tour, console, ui, docs]
 description: Guided console tour — step content, per-operator progress in state, and an injected page that spotlights the console element each step talks about.
-# Marks the registry listing experimental. The tour drives the console's own
-# surfaces and moves with them, so it is not something to depend on yet.
-experimental: true
 
 runtime:
   kind: javascript
