@@ -8,6 +8,19 @@ import { TOURS, getTour, listTours } from '../src/tours.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
+/**
+ * The console's web source, when a sibling checkout has one. It ships as
+ * `ade` and is still aliased `console`, so both names are tried — finding
+ * neither is a packaged worker, and the anchor checks below skip.
+ */
+function consoleWebSrc() {
+  for (const name of ['ade', 'console']) {
+    const candidate = join(root, '..', name, 'web', 'src')
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
 test('every tour and step is addressable', () => {
   const ids = TOURS.map((tour) => tour.id)
   assert.equal(new Set(ids).size, ids.length, 'duplicate tour id')
@@ -28,13 +41,13 @@ test('every tour and step is addressable', () => {
  * alone. This is the check that fails when one is renamed or dropped.
  */
 test('every step anchors on a console class that still exists', () => {
-  const consoleSrc = join(root, '..', 'ade', 'web', 'src')
+  const consoleSrc = consoleWebSrc()
   for (const tour of TOURS) {
     for (const step of tour.steps) {
       if (!step.anchors) continue
       assert.ok(step.anchors.length > 0, `${step.id}: empty anchors`)
       assert.match(step.anchors[0], /^\.onboarding-[a-z-]+$/, `${step.id}: odd first anchor`)
-      if (!existsSync(consoleSrc)) continue // packaged worker: no sibling checkout
+      if (!consoleSrc) continue // packaged worker: no sibling checkout
       const hits = execFileSync('grep', ['-rl', step.anchors[0].slice(1), consoleSrc], {
         encoding: 'utf8',
       })
@@ -76,12 +89,31 @@ test('every ask carries a prompt and a button label', () => {
 })
 
 /** The page carries out actions by name, so an unknown one would do nothing. */
-test('every action is one the page implements', () => {
-  const known = new Set(['move-traces'])
+/**
+ * An `on_closed` anchor cannot use the `onboarding-*` rule above: it points at
+ * a console control the console publishes no tour class for, so it rides that
+ * control's own aria-label. That label is the fragile part — this is the check
+ * that fails when someone renames it.
+ */
+test('every on_closed step carries a body and a label the console still uses', () => {
+  const consoleSrc = consoleWebSrc()
   for (const tour of TOURS) {
     for (const step of tour.steps) {
-      if (!step.action) continue
-      assert.ok(known.has(step.action), `${step.id}: unknown action ${step.action}`)
+      if (!step.on_closed) continue
+      const { screen, body, anchors } = step.on_closed
+      assert.ok(screen, `${step.id}: on_closed has no screen to watch`)
+      assert.ok(body, `${step.id}: on_closed has no body to show`)
+      assert.ok(anchors?.length, `${step.id}: on_closed has no anchor`)
+      if (!consoleSrc) continue // packaged worker: no sibling checkout
+      for (const anchor of anchors) {
+        const label = /\[aria-label="([^"]+)"\]/.exec(anchor)?.[1]
+        if (!label) continue
+        const hits = execFileSync('grep', ['-rl', label, consoleSrc], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        })
+        assert.ok(hits.trim().length > 0, `aria-label "${label}" is in no console file`)
+      }
     }
   }
 })

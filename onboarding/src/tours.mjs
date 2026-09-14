@@ -11,8 +11,11 @@
  *   - `ask` (optional): a prompt the step's button puts in the chat composer
  *     and sends, so the operator talks to the agent instead of copying text
  *     out of the tour.
- *   - `action` (optional): a console move the step's button performs, named
- *     here and carried out by the page.
+ *   - `on_closed` (optional): a console screen the step suggests closing, and
+ *     the body and anchor to show once it is gone. The page watches the
+ *     console's own configuration entry — the workspace layout lives there,
+ *     so a closed pane IS a configuration write and the `configuration`
+ *     trigger reports it. Never required to finish the step.
  *   - `condition` (optional): a real engine trigger the step waits for. The
  *     page binds it, shows what it is waiting for, and when it fires shows
  *     the trigger and its payload. A step with no condition is closed by the
@@ -22,7 +25,8 @@
 /**
  * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
  * @typedef {{ text: string, label: string }} Ask
- * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string, ask?: Ask, action?: 'move-traces' }} Step
+ * @typedef {{ screen: string, body: string, anchors?: string[] }} OnClosed
+ * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string, ask?: Ask, on_closed?: OnClosed }} Step
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
 
@@ -51,7 +55,7 @@ export const TOURS = [
       },
       {
         id: "tabs",
-        title: "Workspaces, not windows",
+        title: "Workspaces",
         body: "Each tab is a workspace of one or more panes, side by side. You can open as many or as you need.",
         anchors: [
           ".onboarding-tabs",
@@ -62,7 +66,8 @@ export const TOURS = [
         id: "coder",
         title: "CODER",
         body: "The goal of iii is to be Composable, Observable, Discoverable, Extensible, and Reactive. We demonstrated a few of the properties in the last step. Now let's take a look at them one by one.",
-        anchors: [".onboarding-menu-bar", "header.h-14"],
+        // No anchor: this step names the five properties, it does not point at
+        // a console surface. The spotlight stays hidden.
       },
       {
         id: "composability",
@@ -75,7 +80,7 @@ export const TOURS = [
       },
       {
         id: "observability",
-        title: "Observe what the agent is doing",
+        title: "Observability",
         body: "Open Traces to see the message you just sent. Each function call and each trigger writes a span, so a trace shows which worker ran, in which order, and how long each part took. The iii-observability worker collects the spans and can export them to any OpenTelemetry backend.",
         anchors: [".onboarding-traces", 'section[aria-label="traces"]'],
         // The step's button places this console screen beside the tour, so the
@@ -84,7 +89,6 @@ export const TOURS = [
       },
       {
         id: "discoverability",
-        action: "move-traces",
         ask: {
           text: "What can this system do right now? List the workers that are registered and the functions each one exposes.",
           label: "Ask the agent",
@@ -95,11 +99,21 @@ export const TOURS = [
       {
         id: "extensibility",
         ask: {
-          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI, and open that page for me when it is done.",
+          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Open the page for me when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Great! Now let's use that database worker. Ask the agent to create a simple CRUD app like a TODO list and to create console injectable UI for it as well and to open it for you when it's done.",
+        body: "Great! Now let's use that database worker. Ask the agent to create a simple CRUD app like a TODO list and to create console injectable UI for it as well and to open it for you when it's done. Since we're going to build and open our very own worker we can make room by closing the Traces panel (optional).",
+        // The close is an invitation, not a requirement: the step still
+        // completes on its `ask`. When the operator does take it, the page
+        // swaps in this note so dropping the panel is never a dead end.
+        on_closed: {
+          screen: "traces",
+          body: "You can always open traces in a new tab.",
+          // The console publishes no `onboarding-*` class on its new-tab
+          // button, so this rides the button's own stable aria-label.
+          anchors: ['[aria-label="New workspace"]'],
+        },
       },
       {
         id: "reactivity",

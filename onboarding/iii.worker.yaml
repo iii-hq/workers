@@ -6,6 +6,9 @@ license: Apache-2.0
 manifest: package.json
 tags: [onboarding, tour, console, ui, docs]
 description: Guided console tour — step content, per-operator progress in state, and an injected page that spotlights the console element each step talks about.
+# Marks the registry listing experimental. The tour drives the console's own
+# surfaces and moves with them, so it is not something to depend on yet.
+experimental: true
 
 runtime:
   kind: javascript
@@ -15,11 +18,14 @@ runtime:
   base_image: docker.io/iiidev/node:latest
 
 scripts:
-  # Build only when there is nothing to run. A published artifact carries
-  # `dist/bundle` (CI builds it — see this worker's entry in
-  # `.deploy/workers.yaml`), so its guest goes straight to `start`. A source
-  # checkout has no `dist` to copy in — it is git-ignored — so its guest
-  # builds once, and keeps the output in its own writable layer.
+  # Build whenever there is source to build. A published artifact ships
+  # `dist/bundle` and nothing else (see this worker's `include` list in
+  # `.deploy/workers.yaml`), so it has no `src` and goes straight to `start`.
+  #
+  # The test is on the SOURCE, not on `dist`: `dist` is git-ignored, so the
+  # source sync never replaces it, and a guest that had already built one
+  # would keep serving it for the life of its writable layer — source edits
+  # would reach the worker never, rather than on the next prepare.
   #
   # `install` runs when the guest is PREPARED, not on every boot, so a source
   # edit reaches the worker on the next prepare (`iii compose --up`), not on a
@@ -29,7 +35,7 @@ scripts:
   # build must not need the repo's pnpm workspace: `pnpm --dir ui build` adds
   # `tsc --noEmit` against `@iii-dev/console-ui`, which lives in that
   # workspace and is types-only anyway (esbuild treats it as external).
-  install: test -f dist/bundle/index.mjs || (npm install && npm run build:bundle)
+  install: if [ -f src/index.mjs ]; then npm install && npm run build:bundle; fi
   start: node ./dist/bundle/index.mjs
 
 dependencies:

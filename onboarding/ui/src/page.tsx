@@ -28,9 +28,6 @@ import { disposeSpotlight, hideSpotlight, showSpotlight } from './spotlight'
 
 /** Console class recipes, with a literal fallback for an older build that
     does not publish them. */
-/** Long enough to read one line of narration before the next move. */
-const MOVE_STEP_MS = 700
-
 const ui = uiClasses ?? {
   card: 'iii-ui-card',
   listItem: 'iii-ui-list-item',
@@ -47,8 +44,8 @@ interface Step {
   screen?: string
   /** A prompt the step hands to the chat composer and sends. */
   ask?: { text: string; label: string }
-  /** A console move the step performs, named in the tour content. */
-  action?: 'move-traces'
+  /** A screen the step suggests closing, with what to show once it is gone. */
+  on_closed?: { screen: string; body: string; anchors?: string[] }
 }
 
 interface Tour {
@@ -73,7 +70,7 @@ interface ProgressResponse {
 
 type StepState = 'complete' | 'active' | 'pending'
 
-export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
+export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
   const [open, setOpen] = useState<string | null>(null)
@@ -199,41 +196,6 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
     [complete, host],
   )
 
-  /**
-   * Discoverability, performed rather than described: close the traces pane,
-   * then open traces again in a tab of its own while the operator stays where
-   * they are. Narrated step by step — the point is watching one surface move
-   * between workspaces, which is lost if both writes land in one frame.
-   */
-  const [moving, setMoving] = useState<string | null>(null)
-  const moveTraces = useCallback(
-    (step: Step) => {
-      const pause = () => new Promise((resolve) => setTimeout(resolve, MOVE_STEP_MS))
-      void (async () => {
-        try {
-          setMoving('Closing traces on this tab…')
-          await host.iii.trigger('console::workspace::close', { screen: 'traces' })
-          await pause()
-          setMoving('Opening traces in a tab of its own…')
-          await host.iii.trigger('console::workspace::open', {
-            screen: 'traces',
-            placement: 'new-tab',
-            activate: false,
-          })
-          await pause()
-          setMoving('Traces moved to its own tab. You stayed on this one.')
-          // A step that also asks something closes on the ask, not here:
-          // closing now would take the second button away with it.
-          if (!step.ask) complete(step.id)
-        } catch (cause) {
-          setMoving(null)
-          setError(cause instanceof Error ? cause.message : String(cause))
-        }
-      })()
-    },
-    [complete, host],
-  )
-
   // Every step that is still open for business gets its condition bound, so a
   // step can be satisfied before the operator reads down to it.
   useEffect(() => {
@@ -250,11 +212,74 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
 
   const openStep = useMemo(() => tour?.steps.find((step) => step.id === open) ?? null, [tour, open])
 
-  // The box frames whatever step is open, and leaves with the page.
+  /**
+   * A step's `on_closed` screen, once the operator has closed it.
+   *
+   * The console keeps its workspace layout in its own `console`
+   * configuration entry, so closing a pane or a tab IS a write to that
+   * entry — which the `configuration` trigger reports. That makes this
+   * reactive rather than polled: one read of the layout per layout change,
+   * and none while nothing moves.
+   *
+   * Checked once when the step opens too: the operator may have closed the
+   * screen before reading down this far.
+   */
+  const [closed, setClosed] = useState<string | null>(null)
+  const watching = openStep?.on_closed?.screen ?? null
   useEffect(() => {
-    showSpotlight(openStep?.anchors ?? null)
+    if (!watching) {
+      setClosed(null)
+      return
+    }
+    let live = true
+    const check = () =>
+      void host.iii
+        .trigger<{ tabs: { screens: string[] }[] }>('console::workspace::list')
+        .then((ws) => {
+          if (!live) return
+          setClosed(ws.tabs.some((tab) => tab.screens.includes(watching)) ? null : watching)
+        })
+        // A console too old for `workspace::list` just never shows the note;
+        // the step itself is unaffected, so this is not the operator's error.
+        .catch(() => {})
+    check()
+    const localId = `onboarding::layout::${watching}`
+    let offHandler: () => void = () => {}
+    try {
+      offHandler = host.iii.on(localId, check)
+      const offTrigger = host.iii.registerTrigger({
+        type: 'configuration',
+        function_id: `${localId}::${host.iii.browserId}`,
+        config: { configuration_id: 'console', event_types: ['configuration:updated'] },
+      })
+      return () => {
+        live = false
+        offTrigger()
+        offHandler()
+      }
+    } catch {
+      // The configuration worker may be down or restarting. The first check
+      // already ran, so the note is right until the layout next moves.
+      offHandler()
+      return () => {
+        live = false
+      }
+    }
+  }, [host, watching])
+
+  /**
+   * The box frames whatever step is open, and leaves with the page. A step
+   * whose `on_closed` screen is gone points at what brings it back instead
+   * of at the empty space where it used to be.
+   */
+  const framed =
+    openStep?.on_closed && closed === openStep.on_closed.screen
+      ? (openStep.on_closed.anchors ?? null)
+      : (openStep?.anchors ?? null)
+  useEffect(() => {
+    showSpotlight(framed)
     return hideSpotlight
-  }, [openStep])
+  }, [framed])
   useEffect(() => disposeSpotlight, [])
 
   const reset = useCallback(() => {
@@ -272,14 +297,14 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
 
   if (error) {
     return (
-      <Frame>
+      <Frame onClose={onRequestClose}>
         <p className="m-0 text-base text-alert">{error}</p>
       </Frame>
     )
   }
   if (!tour) {
     return (
-      <Frame>
+      <Frame onClose={onRequestClose}>
         <p className="m-0 text-base text-ink-faint">Loading onboarding…</p>
       </Frame>
     )
@@ -289,7 +314,7 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
   const done = tour.steps.filter((step) => records[step.id]?.status === 'complete').length
 
   return (
-    <Frame title={tour.title} description={tour.description}>
+    <Frame title={tour.title} description={tour.description} onClose={onRequestClose}>
       <div className="flex items-center gap-4">
         <div
           className="ob-bar"
@@ -338,17 +363,10 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
                   {step.id === 'stay-in-touch' ? <StayInTouch host={host} /> : null}
-                  {step.action === 'move-traces' && state !== 'complete' ? (
-                    <div className="flex flex-col gap-2">
-                      <Button className="self-start" onClick={() => moveTraces(step)} disabled={moving !== null}>
-                        Move traces to its own tab
-                      </Button>
-                      {moving ? (
-                        <p className="m-0 text-base text-ink-faint" role="status">
-                          {moving}
-                        </p>
-                      ) : null}
-                    </div>
+                  {step.on_closed && closed === step.on_closed.screen ? (
+                    <p className="m-0 text-base leading-relaxed text-ink-faint text-pretty" role="status">
+                      {step.on_closed.body}
+                    </p>
                   ) : null}
                   {step.ask && state !== 'complete' ? (
                     <div className="flex flex-col gap-2">
@@ -358,7 +376,7 @@ export function OnboardingPage({ host }: { host: Host } & PageRenderProps) {
                       <p className="ob-pre m-0">{step.ask.text}</p>
                     </div>
                   ) : null}
-                  {state !== 'complete' && !step.condition && !step.ask && !step.action ? (
+                  {state !== 'complete' && !step.condition && !step.ask ? (
                     <Button className="self-start" onClick={() => openScreen(step)}>
                       {step.screen ? `Open ${step.screen}` : 'Got it'}
                     </Button>
@@ -584,16 +602,20 @@ function Copyable({ label, text }: { label: string; text: string }) {
 function Frame({
   title = 'onboarding',
   description,
+  onClose,
   children,
 }: {
   title?: string
   description?: string
+  /** The console's own pane close, from `PageRenderProps.onRequestClose`.
+      Absent when the page is not rendered in a closable pane. */
+  onClose?: () => void
   children: React.ReactNode
 }) {
   return (
     <PageShell className="ob-page">
       <PageMain className="ob-page">
-        <PageHeader title={title} description={description} />
+        <PageHeader title={title} description={description} onClose={onClose} />
         <PageBody>
           {/* Centred column: the pane is often narrow beside a chat, but a
               page wide enough to be a whole tab should not leave the list
