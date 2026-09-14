@@ -67,7 +67,7 @@ def test_descriptor_schema_requires_explicit_interface_capture_policy():
     }
 
 
-def test_kanban_bundle_install_uses_its_pnpm_build_policy():
+def test_kanban_rust_binary_builds_its_ui_with_the_workspace_pnpm_policy():
     catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
 
     descriptor = deployment_compiler.compile_worker(
@@ -78,13 +78,15 @@ def test_kanban_bundle_install_uses_its_pnpm_build_policy():
         "b" * 64,
     )
 
-    assert descriptor["artifact"]["install_command"] == [
-        "pnpm",
-        "install",
-        "--frozen-lockfile",
-    ]
-    assert descriptor["runtime"]["start"] == "node ./dist/bundle/index.mjs"
-    policy = deployment_compiler.read_yaml(
-        ROOT / descriptor["artifact"]["workspace_root"] / "pnpm-workspace.yaml"
-    )["allowBuilds"]
-    assert policy == {"esbuild": True, "protobufjs": False}
+    artifact = descriptor["artifact"]
+    assert artifact["kind"] == "rust-binary"
+    assert artifact["binary"] == "kanban"
+    (frontend,) = artifact["frontends"]
+    assert frontend["source_path"] == "kanban/ui"
+    assert frontend["workspace_root"] == "."
+    assert frontend["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
+    assert frontend["build_command"] == ["pnpm", "run", "build"]
+    assert frontend["outputs"] == ["dist"]
+    workspace = deployment_compiler.read_yaml(ROOT / frontend["workspace_root"] / "pnpm-workspace.yaml")
+    assert "kanban/ui" in workspace["packages"]
+    assert workspace["allowBuilds"] == {"esbuild": True, "protobufjs": False}

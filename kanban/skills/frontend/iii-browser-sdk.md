@@ -11,8 +11,8 @@ of many HTTP round-trips, backend workers pushing into the UI with `trigger()`, 
 primitives used server-side (`registerFunction`, `trigger`, `registerTrigger`). No Node.js
 dependencies, no OpenTelemetry — it runs on native `WebSocket`.
 
-Docs <https://iii.dev/docs/how-to/use-iii-in-the-browser> ·
-API reference <https://iii.dev/docs/api-reference/sdk-browser> ·
+Docs <https://iii.dev/docs/tutorials/linkly/frontend> ·
+API reference <https://iii.dev/docs/reference/sdk-browser> ·
 npm <https://www.npmjs.com/package/iii-browser-sdk>
 
 **The installed types are the contract.** Before writing SDK code, read the project's
