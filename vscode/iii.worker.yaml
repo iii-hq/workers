@@ -14,4 +14,4 @@ scripts:
   start: node ./dist/bundle/index.mjs
 
 dependencies:
-  configuration: "0.x"
+  configuration: "latest"

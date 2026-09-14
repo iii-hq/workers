@@ -16,4 +16,4 @@ scripts:
   start: cargo run
 
 dependencies:
-  ade: "^1.9.11"
+  ade: "latest"

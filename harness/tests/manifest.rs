@@ -44,7 +44,7 @@ fn manifest_subcommand_emits_valid_json() {
 }
 
 #[test]
-fn worker_manifest_uses_the_standalone_queue_worker() {
+fn worker_manifest_uses_latest_runtime_dependencies() {
     let manifest_path = format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR"));
     let source = std::fs::read_to_string(manifest_path).expect("read iii.worker.yaml");
     let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
@@ -52,71 +52,31 @@ fn worker_manifest_uses_the_standalone_queue_worker() {
         .as_mapping()
         .expect("dependencies is a mapping");
 
-    assert_eq!(
-        dependencies.get(serde_yaml::Value::String("queue".into())),
-        Some(&serde_yaml::Value::String("^0.21.5".into()))
-    );
-    assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-queue".into())));
-}
-
-#[test]
-fn worker_manifest_uses_the_standalone_state_worker() {
-    let manifest_path = format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(manifest_path).expect("read iii.worker.yaml");
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
-    let dependencies = manifest["dependencies"]
-        .as_mapping()
-        .expect("dependencies is a mapping");
-
-    assert_eq!(
-        dependencies.get(serde_yaml::Value::String("state".into())),
-        Some(&serde_yaml::Value::String("^0.22.2".into()))
-    );
-    assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-state".into())));
-}
-
-#[test]
-fn worker_manifest_uses_the_standalone_cron_worker() {
-    let manifest_path = format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(manifest_path).expect("read iii.worker.yaml");
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
-    let dependencies = manifest["dependencies"]
-        .as_mapping()
-        .expect("dependencies is a mapping");
-
-    assert_eq!(
-        dependencies.get(serde_yaml::Value::String("cron".into())),
-        Some(&serde_yaml::Value::String("^0.21.9".into()))
-    );
-    assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-cron".into())));
-}
-
-#[test]
-fn worker_manifest_uses_the_tested_harness_stack() {
-    let manifest_path = format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(manifest_path).expect("read iii.worker.yaml");
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
-    let dependencies = manifest["dependencies"]
-        .as_mapping()
-        .expect("dependencies is a mapping");
-
-    for (worker, version) in [
-        ("session-manager", "^1.0.13"),
-        ("llm-router", "^1.4.12"),
-        ("provider-openai-codex", "^0.4.4"),
-        ("context-manager", "^1.1.3"),
-        ("iii-directory", "^1.2.3"),
-        ("provider-anthropic", "^1.2.8"),
-        ("provider-openai", "^1.2.7"),
-        ("ide", "^0.11.9"),
-        ("ade", "^1.9.11"),
+    for worker in [
+        "state",
+        "queue",
+        "cron",
+        "configuration",
+        "iii-observability",
+        "iii-stream",
+        "iii-directory",
+        "llm-router",
+        "session-manager",
+        "context-manager",
+        "provider-openai-codex",
+        "provider-anthropic",
+        "provider-openai",
+        "ide",
+        "ade",
     ] {
         assert_eq!(
             dependencies.get(serde_yaml::Value::String(worker.into())),
-            Some(&serde_yaml::Value::String(version.into())),
-            "unexpected {worker} dependency version"
+            Some(&serde_yaml::Value::String("latest".into())),
+            "unexpected {worker} dependency selector"
         );
     }
 
-    assert!(!dependencies.contains_key(serde_yaml::Value::String("scrapling".into())));
+    for retired in ["iii-state", "iii-queue", "iii-cron", "scrapling"] {
+        assert!(!dependencies.contains_key(serde_yaml::Value::String(retired.into())));
+    }
 }

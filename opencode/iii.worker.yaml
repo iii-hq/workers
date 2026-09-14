@@ -14,5 +14,5 @@ scripts:
   start: node ./dist/bundle/index.mjs
 
 dependencies:
-  state: "^0.22.2"
-  iii-stream: "0.x"
+  state: "latest"
+  iii-stream: "latest"

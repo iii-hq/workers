@@ -18,13 +18,13 @@ config:
     max_cost_usd: 2.0
 
 dependencies:
-  github: "^0.3.0"
-  harness: "^1.8.5"
-  cron: "^0.21.9"
-  state: "^0.22.2"
-  queue: "^0.21.5"
-  worktree: "^0.3.0"
-  storage: "^0.1.0"
-  configuration: "0.x"
-  iii-observability: "0.x"
-  iii-stream: "0.x"
+  github: "latest"
+  harness: "latest"
+  cron: "latest"
+  state: "latest"
+  queue: "latest"
+  worktree: "latest"
+  storage: "latest"
+  configuration: "latest"
+  iii-observability: "latest"
+  iii-stream: "latest"
