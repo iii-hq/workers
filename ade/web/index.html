@@ -10,16 +10,43 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
 
-    <title>iii ADE</title>
-    <link rel="icon" type="image/svg+xml" href="./src/icons/favicon.svg" />
+    <title>iii Console</title>
+    <meta name="theme-color" content="#f2f0ed" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="application-name" content="iii Console" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="iii Console" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/iii-apple-touch.png" />
+
+    <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
     <script>
-      try {
-        const t = localStorage.getItem('iii-theme');
-        document.documentElement.dataset.theme =
-          t === 'dark' || t === 'light' ? t : 'light';
-      } catch (_) {
-        document.documentElement.dataset.theme = 'light';
-      }
+      (() => {
+        const LIGHT = '#f2f0ed';
+        const DARK = '#0a0a0a';
+        const prefersDark = () =>
+          window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+        let theme;
+        try {
+          const stored = localStorage.getItem('iii-theme');
+          theme =
+            stored === 'dark' || stored === 'light'
+              ? stored
+              : prefersDark()
+                ? 'dark'
+                : 'light';
+        } catch (_) {
+          theme = prefersDark() ? 'dark' : 'light';
+        }
+        const color = theme === 'dark' ? DARK : LIGHT;
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.documentElement.style.backgroundColor = color;
+        document
+          .querySelector('meta[name="theme-color"]')
+          ?.setAttribute('content', color);
+      })();
     </script>
   </head>
   <body class="bg-bg text-ink font-sans">

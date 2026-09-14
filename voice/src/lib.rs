@@ -10,3 +10,4 @@ pub mod router;
 pub mod session;
 pub mod tts;
 pub mod ui;
+pub mod whisper_cpp;

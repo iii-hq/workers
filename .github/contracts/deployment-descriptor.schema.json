@@ -69,7 +69,7 @@
     "registry_projection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["worker_name", "type", "description", "license", "tags", "dependencies", "config", "experimental", "readme"],
+      "required": ["worker_name", "type", "description", "license", "tags", "dependencies", "config", "experimental", "readme", "skills"],
       "properties": {
         "worker_name": {"type": "string", "minLength": 1},
         "type": {"enum": ["binary", "bundle", "image"]},
@@ -87,7 +87,12 @@
         },
         "config": {"type": "object"},
         "experimental": {"type": "boolean"},
-        "readme": {"type": "string"}
+        "readme": {"type": "string"},
+        "skills": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.md$"},
+          "additionalProperties": {"type": "string", "minLength": 1}
+        }
       }
     }
   },

@@ -42,3 +42,35 @@ describe('main.tsx injectable UI readiness wiring', () => {
     expect(src).toContain("setUiAssetsStatus('unavailable')")
   })
 })
+
+describe('main.tsx official favicon wiring', () => {
+  const src = readFileSync(new URL('./main.tsx', import.meta.url), 'utf8')
+  const icon = readFileSync(
+    new URL('../public/icons/icon.svg', import.meta.url),
+    'utf8',
+  )
+  const manifest = JSON.parse(
+    readFileSync(
+      new URL('../public/manifest.webmanifest', import.meta.url),
+      'utf8',
+    ),
+  ) as { icons: Array<{ src: string }> }
+
+  it('uses the canonical iii.dev six-bar SVG geometry', () => {
+    expect(icon).toContain('viewBox="0 0 933.61 1050.31"')
+    expect(icon.match(/<rect class="bar"/g)).toHaveLength(6)
+    expect(icon).toContain('x="350.1"')
+    expect(icon).toContain('x="700.21"')
+    expect(src).toContain("new URL('./icons/icon.svg', document.baseURI)")
+    expect(src).not.toContain('./icons/favicon.svg?url')
+  })
+
+  it('references only the versioned official PWA icon fallbacks', () => {
+    expect(manifest.icons.map(({ src: iconSrc }) => iconSrc)).toEqual([
+      './icons/icon.svg',
+      './icons/iii-192.png',
+      './icons/iii-512.png',
+      './icons/iii-maskable-512.png',
+    ])
+  })
+})

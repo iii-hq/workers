@@ -5,7 +5,7 @@ description: Speech in and out for iii — transcribe audio files to timestamped
 
 # voice
 
-Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine by default: a small streaming recognizer produces live text and a large second-pass model re-decodes each finished utterance with punctuation and casing, both with models the worker downloads once. An OpenAI-compatible audio endpoint, or any speech provider registered with llm-router (`stt.backend` / `tts.backend` set to `router`), can replace either half through configuration.
+Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine by default: a small streaming recognizer produces live text, while bundled Parakeet or a configured host `whisper-cli` can produce accurate final text. An OpenAI-compatible endpoint or any speech provider registered with llm-router can replace either half through configuration.
 
 ## When to Use
 
@@ -16,7 +16,7 @@ Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine b
 ## Boundaries
 
 - Audio in is 16 kHz mono 16-bit PCM for dictation; WAV files of any rate for `voice::transcribe`. No other container is decoded.
-- The bundled model is English. Other languages need the `openai` backend.
+- The bundled models are English. Portuguese and other languages need `stt.backend: whisper_cpp` with a multilingual GGML model, or a remote backend.
 - `voice::speak` on the host backend plays on the machine running the worker, not in the caller's browser; the `openai` backend returns audio for the caller to play.
 - Dictation sessions idle past `session_idle_secs` are closed by the worker.
 

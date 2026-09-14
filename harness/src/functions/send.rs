@@ -658,8 +658,8 @@ fn latest_seed_record<'a>(
     recheck.unwrap_or(initial)
 }
 
-/// The lineage a seeded turn carries: empty for a top-level send or a
-/// notification wake, populated for a spawned child.
+/// The lineage supplied by a delivery: a spawn specifies it; a send or
+/// notification inherits the session's existing lineage when seeding a turn.
 // It exists so ONE seeding path can serve every entry point — before this,
 // the child path hand-rolled its own `TurnRecord` and `put_turn`, which
 // skipped the CAS/merge check and clobbered a running turn whenever a spawn
@@ -674,6 +674,22 @@ pub(crate) struct TurnLineage {
 }
 
 impl TurnLineage {
+    /// A notification or ordinary send continues the same session. Losing its
+    /// parent would let a woken leaf register mechanical calls and unbounded
+    /// wakes, and resetting depth would also reset its spawn budget.
+    fn for_seed(&self, prior: Option<&TurnRecord>) -> Self {
+        if self.depth == 0
+            && self.parent.is_none()
+            && self.display_parent_session_id.is_none()
+            && self.dispatch_only_functions.is_empty()
+        {
+            if let Some(prior) = prior {
+                return Self::continuing(prior);
+            }
+        }
+        self.clone()
+    }
+
     /// The lineage a turn that CONTINUES `record`'s session inherits (the
     /// finalize-drain reseed). Every lineage field is copied, deliberately as
     /// one unit: `record.options` keeps the injected child grants in its allow
@@ -1246,6 +1262,7 @@ pub(crate) async fn seed_new(
     if let Some(prior) = prior {
         inherit_prior_filesystem_root(&mut options, &prior.options);
     }
+    let lineage = lineage.for_seed(prior);
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
     let functions_generation = prior.and_then(|record| record.functions_generation);
@@ -1847,6 +1864,70 @@ mod tests {
         assert_eq!(
             lineage.dispatch_only_functions, record.dispatch_only_functions,
             "a reseeded child must not expose its injected grants as native tools"
+        );
+    }
+
+    #[test]
+    fn a_woken_child_keeps_its_leaf_boundary_and_depth() {
+        let policy = policy::CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["engine::register_trigger".into(), "state::*".into()],
+            deny: vec![],
+            expose: Default::default(),
+        }));
+        for display_only in [false, true] {
+            let mut prior = terminal_record_with_skill_state(1, true);
+            prior.depth = 2;
+            prior.dispatch_only_functions = vec!["directory::skills::get".into()];
+            if display_only {
+                prior.display_parent_session_id = Some("s_parent".into());
+            } else {
+                prior.parent = Some(ParentLink {
+                    session_id: "s_parent".into(),
+                    turn_id: "t_parent".into(),
+                    function_call_id: "fc_spawn".into(),
+                });
+            }
+
+            // A notification carries no new lineage. Seeding its next turn
+            // must not promote the child to a root or expose injected tools.
+            let lineage = TurnLineage::default().for_seed(Some(&prior));
+            assert!(policy::is_leaf(
+                &policy,
+                lineage.parent.is_some() || lineage.display_parent_session_id.is_some(),
+            ));
+            assert_eq!(lineage.depth, 2);
+            assert_eq!(lineage.dispatch_only_functions, ["directory::skills::get"]);
+            assert_eq!(lineage.parent, prior.parent);
+            assert_eq!(
+                lineage.display_parent_session_id,
+                prior.display_parent_session_id
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_wake_stays_a_root_and_explicit_spawn_lineage_wins() {
+        let root = terminal_record_with_skill_state(1, true);
+        for prior in [None, Some(&root)] {
+            let lineage = TurnLineage::default().for_seed(prior);
+            assert!(lineage.parent.is_none());
+            assert!(lineage.display_parent_session_id.is_none());
+            assert_eq!(lineage.depth, 0);
+        }
+
+        let mut previous_child = root;
+        previous_child.depth = 2;
+        previous_child.display_parent_session_id = Some("s_previous_parent".into());
+        let spawned = TurnLineage {
+            depth: 1,
+            display_parent_session_id: Some("s_new_parent".into()),
+            ..Default::default()
+        }
+        .for_seed(Some(&previous_child));
+        assert_eq!(spawned.depth, 1);
+        assert_eq!(
+            spawned.display_parent_session_id.as_deref(),
+            Some("s_new_parent")
         );
     }
 

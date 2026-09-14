@@ -1,0 +1,44 @@
+[workspace]
+
+[package]
+name = "iii-kanban"
+version = "0.1.0"
+edition = "2024"
+description = "Kanban worker for iii — file-backed tickets, comments and agent assignment, the kanban:change / kanban:comment trigger types, and an injectable console board"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "iii_kanban"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kanban"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.23.0"
+# Configuration-worker client (seeding, NOT_FOUND-aware reads, serialized
+# reload) and the injectable console UI helper — both path-linked, never
+# published.
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui" }
+iii-worker-paths = { path = "../crates/worker-paths" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+schemars = "0.8"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uuid = { version = "1", features = ["v4"] }
+# Board file keeps ticket insertion order across rewrites.
+indexmap = { version = "2", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

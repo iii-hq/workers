@@ -122,8 +122,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Ctrl+C or SIGTERM — workers-dev stops workers with SIGTERM (then SIGKILL
-/// after ~1s), so SIGTERM must reach the shutdown flush too.
+/// Ctrl+C or SIGTERM — compose stops containers with SIGTERM (then SIGKILL
+/// after `stop_timeout`), so SIGTERM must reach the shutdown flush too.
 async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     #[cfg(unix)]
     {

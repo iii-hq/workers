@@ -48,15 +48,27 @@ pub fn now_ms() -> i64 {
 /// the transcript.
 pub enum Refiner {
     Local(Arc<FinalLoaded>),
+    WhisperCpp(Arc<WorkerConfig>),
     Remote {
         iii: Arc<IIIClient>,
         cfg: Arc<WorkerConfig>,
     },
 }
 
-/// A remote second pass that has not answered by then keeps the streaming
-/// text; dictation must not stall on a slow provider.
-const REMOTE_REFINE_TIMEOUT_MS: u64 = 30_000;
+/// A second pass that has not answered by then keeps the streaming text;
+/// dictation stop, idle cleanup, and worker shutdown must not stall on a slow
+/// provider or child process. Direct file transcription keeps its configured
+/// backend timeout.
+const REFINE_TIMEOUT_MS: u64 = 30_000;
+
+async fn refine_within<T>(
+    future: impl std::future::Future<Output = Result<T, String>>,
+    timeout_ms: u64,
+) -> Result<T, String> {
+    tokio::time::timeout(Duration::from_millis(timeout_ms), future)
+        .await
+        .map_err(|_| "second pass timed out".to_string())?
+}
 
 impl Refiner {
     async fn refine(&self, audio: Vec<f32>) -> Result<String, String> {
@@ -67,24 +79,25 @@ impl Refiner {
                     .await
                     .map_err(|e| format!("second pass task failed: {e}"))
             }
+            Refiner::WhisperCpp(cfg) => refine_within(
+                crate::whisper_cpp::transcribe(cfg, &audio, None),
+                REFINE_TIMEOUT_MS,
+            )
+            .await
+            .map(|transcript| transcript.text),
             Refiner::Remote { iii, cfg } => match cfg.stt.backend {
-                SttBackend::Router => crate::router::transcribe_within(
-                    iii,
-                    cfg,
-                    &audio,
-                    None,
-                    REMOTE_REFINE_TIMEOUT_MS,
-                )
-                .await
-                .map(|(transcript, _)| transcript.text),
-                SttBackend::Openai => tokio::time::timeout(
-                    Duration::from_millis(REMOTE_REFINE_TIMEOUT_MS),
+                SttBackend::Router => {
+                    crate::router::transcribe_within(iii, cfg, &audio, None, REFINE_TIMEOUT_MS)
+                        .await
+                        .map(|(transcript, _)| transcript.text)
+                }
+                SttBackend::Openai => refine_within(
                     engine::remote_transcribe(cfg, &audio, None),
+                    REFINE_TIMEOUT_MS,
                 )
                 .await
-                .map_err(|_| "second pass timed out".to_string())?
                 .map(|transcript| transcript.text),
-                SttBackend::Local => Ok(String::new()),
+                SttBackend::Local | SttBackend::WhisperCpp => Ok(String::new()),
             },
         }
     }
@@ -92,11 +105,12 @@ impl Refiner {
     fn label(&self) -> String {
         match self {
             Refiner::Local(loaded) => loaded.key.model.clone(),
+            Refiner::WhisperCpp(cfg) => cfg.stt.whisper_cpp.model.clone(),
             Refiner::Remote { cfg, .. } => match cfg.stt.backend {
                 SttBackend::Router if cfg.stt.router.model.trim().is_empty() => "router".into(),
                 SttBackend::Router => cfg.stt.router.model.trim().to_string(),
                 SttBackend::Openai => cfg.stt.openai.model.clone(),
-                SttBackend::Local => String::new(),
+                SttBackend::Local | SttBackend::WhisperCpp => String::new(),
             },
         }
     }
@@ -331,6 +345,7 @@ impl Sessions {
                     None
                 }
             },
+            SttBackend::WhisperCpp => Some(Refiner::WhisperCpp(cfg.clone())),
             SttBackend::Router | SttBackend::Openai => Some(Refiner::Remote {
                 iii: self.iii.clone(),
                 cfg: cfg.clone(),
@@ -627,5 +642,13 @@ mod tests {
         assert!(validate_output_function_id("").is_err());
         assert!(validate_output_function_id("has space").is_err());
         assert!(validate_output_function_id("voice::dictation::push").is_err());
+    }
+
+    #[tokio::test]
+    async fn refinement_timeout_bounds_a_pending_second_pass() {
+        let error = refine_within(std::future::pending::<Result<(), String>>(), 1)
+            .await
+            .expect_err("pending refinement must time out");
+        assert_eq!(error, "second pass timed out");
     }
 }

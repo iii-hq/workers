@@ -6,6 +6,8 @@
 //! `harness::turn-completed` event its finalize emits. The `ParentLink` is
 //! kept for event filters and console nesting, not for result delivery.
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value};
 
 use crate::config::WorkerConfig;
@@ -18,6 +20,7 @@ use crate::policy;
 use crate::prompt;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
+use crate::types::model::ThinkingLevel;
 use crate::types::turn::{fs_scope_metadata, FunctionPolicy, ParentLink, TurnOptions, TurnRecord};
 
 /// The ids of a freshly-seeded child turn.
@@ -233,6 +236,57 @@ struct ChildFunctions {
     dispatch_only: Vec<String>,
 }
 
+/// Which agent profile a child runs as: the one the spawn named, else the
+/// parent turn's. A spawn that names no profile continues the parent's
+/// identity — an agent running under a profile fans work out to itself, not
+/// to a stranger wearing the built-in identity. Like the inherited model this
+/// reaches only an IN-TURN spawn; a parentless one (console, workflow, CLI)
+/// has nothing to inherit from. A spawn that brings its own `system_prompt`
+/// inherits nothing: that prompt is the child's identity, and shedding the
+/// profile is what keeps the two from colliding.
+fn child_agent_id<'a>(
+    requested: Option<&'a str>,
+    parent_record: Option<&'a TurnRecord>,
+    names_own_prompt: bool,
+) -> Option<&'a str> {
+    requested.or_else(|| {
+        (!names_own_prompt)
+            .then(|| parent_record.and_then(|p| p.options.agent.as_ref()))
+            .flatten()
+            .map(|identity| identity.id.as_str())
+    })
+}
+
+/// The reasoning settings a child starts from: its own if the spawn named one,
+/// else the parent turn's.
+///
+/// A child already inherits the parent's model; inheriting the effort that goes
+/// with it is the same rule. The alternative is what the code did before: a
+/// spend-and-latency control set on the root silently stopped at the first
+/// spawn, while the tree does most of the work. `SpawnOptions` carries no
+/// provider options of its own, so the parent's are the only ones a child can
+/// have. An explicit child effort removes inherited native reasoning overrides
+/// while keeping unrelated provider options. A profile's own effort is applied
+/// after this, and still wins.
+fn child_reasoning(
+    requested: Option<ThinkingLevel>,
+    parent_record: Option<&TurnRecord>,
+) -> (Option<ThinkingLevel>, Option<BTreeMap<String, Value>>) {
+    let mut provider_options = parent_record.and_then(|p| p.options.provider_options.clone());
+    if let (Some(_), Some(options)) = (requested, provider_options.as_mut()) {
+        // Native provider knobs take precedence over thinking_level. Clear
+        // them in every namespace, including providers registered under custom ids.
+        for options in options.values_mut().filter_map(Value::as_object_mut) {
+            options.remove("thinking");
+            options.remove("reasoning_effort");
+        }
+    }
+    (
+        requested.or_else(|| parent_record.and_then(|p| p.options.thinking_level)),
+        provider_options,
+    )
+}
+
 /// Seed a child session + turn and enqueue its first step. When
 /// `parent_record` is set the policy is subset against it, `max_turns` is
 /// capped at the parent's remaining budget, and linkage metadata is recorded.
@@ -246,25 +300,41 @@ async fn seed_child(
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
 
-    // Resolve the agent profile (if named) before anything else fallible —
-    // an unknown id must not leave a session behind.
-    let agent = match req.agent.as_deref() {
-        Some(id) => {
-            if req
-                .options
-                .as_ref()
-                .is_some_and(|o| o.system_prompt.is_some())
-            {
-                return Err(HarnessError::InvalidRequest(
-                    "spawn `agent` supplies the child's system prompt; drop \
-                     `options.system_prompt` or drop `agent` (with `agent` set, \
-                     `system_prompt_strategy` is ignored: the profile's resolved \
-                     prompt is the child's whole identity)"
-                        .into(),
-                ));
-            }
-            Some(crate::agents::resolve(deps, cfg, id).await?)
-        }
+    let names_own_prompt = req
+        .options
+        .as_ref()
+        .is_some_and(|o| o.system_prompt.is_some());
+    if req.agent.is_some() && names_own_prompt {
+        return Err(HarnessError::InvalidRequest(
+            "spawn `agent` supplies the child's system prompt; drop \
+             `options.system_prompt` or drop `agent` (with `agent` set, \
+             `system_prompt_strategy` is ignored: the profile's resolved \
+             prompt is the child's whole identity)"
+                .into(),
+        ));
+    }
+    let agent_id = child_agent_id(req.agent.as_deref(), parent_record, names_own_prompt);
+    let inherited = agent_id.is_some() && req.agent.is_none();
+    // Resolve the agent profile (if any) before anything else fallible — an
+    // unknown id must not leave a session behind.
+    let agent = match agent_id {
+        Some(id) => Some(
+            crate::agents::resolve(deps, cfg, id)
+                .await
+                .map_err(|error| {
+                    if inherited {
+                        // The caller never named this profile; say where it came from
+                        // so the error is traceable to the parent's identity.
+                        HarnessError::InvalidRequest(format!(
+                            "sub-agent inherits the parent turn's agent profile `{id}`, which no \
+                     longer resolves: {error}. Name `agent` explicitly, or give the child \
+                     its own `options.system_prompt`."
+                        ))
+                    } else {
+                        error
+                    }
+                })?,
+        ),
         None => None,
     };
     let display = normalize_display(merged_display(req.display.as_ref(), agent.as_ref()).as_ref())?;
@@ -339,8 +409,10 @@ async fn seed_child(
     // session that a later call can reuse around the fan-out budget.
     let task = normalize_message(req.task.clone())?;
     let (entry_id, origin) = (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })));
-    let mut thinking_level = req.options.as_ref().and_then(|o| o.thinking_level);
-    let mut provider_options = None;
+    let (mut thinking_level, mut provider_options) = child_reasoning(
+        req.options.as_ref().and_then(|o| o.thinking_level),
+        parent_record,
+    );
     if let Some(agent) = agent.as_ref() {
         agent.apply_reasoning(
             provider.as_deref(),
@@ -390,7 +462,8 @@ async fn seed_child(
                 .and_then(|o| o.filesystem_root.as_deref()),
             parent_record,
         )?,
-        // The child's OWN identity, never the parent's.
+        // The child's own resolved identity: the profile the spawn named, or
+        // the parent's when it named none.
         agent: agent.as_ref().map(|a| a.identity.clone()),
         max_validation_retries: req
             .options
@@ -786,6 +859,134 @@ mod tests {
         }
     }
 
+    fn under_profile(id: &str) -> TurnRecord {
+        let mut record = parent_record(None);
+        record.options.agent = Some(crate::types::turn::AgentIdentity {
+            id: id.into(),
+            name: Some("Linkly".into()),
+            icon: None,
+            color: None,
+        });
+        record
+    }
+
+    #[test]
+    fn a_child_runs_as_the_named_profile_else_the_parents() {
+        let parent = under_profile("linkly");
+        assert_eq!(
+            child_agent_id(None, Some(&parent), false),
+            Some("linkly"),
+            "an in-turn spawn naming no profile continues the parent's"
+        );
+        assert_eq!(
+            child_agent_id(Some("reviewer"), Some(&parent), false),
+            Some("reviewer"),
+            "an explicit profile wins over the parent's"
+        );
+        assert_eq!(
+            child_agent_id(None, Some(&parent), true),
+            None,
+            "a child with its own system prompt sheds the inherited profile"
+        );
+        assert_eq!(
+            child_agent_id(None, Some(&parent_record(None)), false),
+            None,
+            "a parent running the built-in identity passes nothing down"
+        );
+        assert_eq!(
+            child_agent_id(None, None, false),
+            None,
+            "a parentless spawn has nothing to inherit from"
+        );
+        assert_eq!(
+            child_agent_id(Some("reviewer"), None, false),
+            Some("reviewer"),
+            "a parentless spawn still honours an explicit profile"
+        );
+    }
+
+    #[test]
+    fn a_child_starts_from_its_parents_reasoning_unless_the_spawn_names_its_own() {
+        let mut parent = parent_record(None);
+        parent.options.thinking_level = Some(ThinkingLevel::Low);
+        parent.options.provider_options = Some(BTreeMap::from([(
+            "deepseek".to_string(),
+            json!({ "thinking": "disabled" }),
+        )]));
+
+        let (level, options) = child_reasoning(None, Some(&parent));
+        assert_eq!(
+            level,
+            Some(ThinkingLevel::Low),
+            "an in-turn spawn naming no effort continues the parent's"
+        );
+        assert_eq!(
+            options, parent.options.provider_options,
+            "and carries the parent's provider-native options with it"
+        );
+
+        assert_eq!(
+            child_reasoning(Some(ThinkingLevel::Xhigh), Some(&parent)).0,
+            Some(ThinkingLevel::Xhigh),
+            "an explicit spawn effort wins over the parent's"
+        );
+        assert_eq!(
+            child_reasoning(None, Some(&parent_record(None))),
+            (None, None),
+            "a parent that set nothing passes nothing down"
+        );
+        assert_eq!(
+            child_reasoning(None, None),
+            (None, None),
+            "a parentless spawn has nothing to inherit from"
+        );
+    }
+
+    #[test]
+    fn explicit_child_effort_removes_inherited_native_reasoning_overrides_only() {
+        let mut parent = parent_record(None);
+        parent.options.thinking_level = Some(ThinkingLevel::High);
+        let inherited = json!({
+            "deepseek": { "thinking": "disabled", "prompt_cache_key": "shared" },
+            "openai-codex": { "reasoning_effort": "ultra", "prompt_cache_key": "shared" },
+            "custom-provider": { "thinking": "enabled", "reasoning_effort": "high" },
+            "other-provider": { "temperature": 0.2, "metadata": { "thinking": "keep" } },
+            "opaque-provider": null
+        });
+        parent.options.provider_options = Some(serde_json::from_value(inherited.clone()).unwrap());
+
+        let (level, options) = child_reasoning(None, Some(&parent));
+        assert_eq!(level, Some(ThinkingLevel::High));
+        assert_eq!(serde_json::to_value(options).unwrap(), inherited);
+
+        for requested in [
+            ThinkingLevel::Minimal,
+            ThinkingLevel::Low,
+            ThinkingLevel::Medium,
+            ThinkingLevel::High,
+            ThinkingLevel::Xhigh,
+        ] {
+            let (level, options) = child_reasoning(Some(requested), Some(&parent));
+            assert_eq!(level, Some(requested));
+            assert_eq!(
+                serde_json::to_value(options).unwrap(),
+                json!({
+                    "deepseek": { "prompt_cache_key": "shared" },
+                    "openai-codex": { "prompt_cache_key": "shared" },
+                    "custom-provider": {},
+                    "other-provider": { "temperature": 0.2, "metadata": { "thinking": "keep" } },
+                    "opaque-provider": null
+                }),
+                "inherited native settings must not override {requested:?}"
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(&parent.options.provider_options).unwrap(),
+            inherited,
+            "a child's override must not change the parent's options"
+        );
+    }
+
     #[test]
     fn only_an_in_turn_self_session_spawn_inherits_the_callers_lock() {
         let parent = parent_record(None);
@@ -1045,12 +1246,18 @@ mod tests {
         for id in [
             "harness::spawn",
             "harness::send",
-            "engine::register_trigger",
             "engine::unregister_trigger",
             "engine::registered-triggers::list",
         ] {
             assert!(!compiled.allows(id), "{id} must be denied to a leaf child");
         }
+        // A leaf keeps registration so it can park on its own work instead of
+        // polling for it; `functions::subscribe` refuses the control-plane
+        // shapes of it. See MOT-4766.
+        assert!(
+            compiled.allows("engine::register_trigger"),
+            "a leaf must be able to arm its own wake"
+        );
     }
 
     #[test]

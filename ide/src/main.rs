@@ -15,6 +15,7 @@ mod exec_dispatch;
 mod filesystem_access;
 mod fs;
 mod functions;
+mod job_events;
 mod jobs;
 mod path;
 mod pty;
@@ -23,6 +24,7 @@ mod target;
 mod telemetry;
 mod triggers;
 mod turn_observe;
+mod turn_snapshot;
 mod turns;
 mod ui;
 mod ui_state;
@@ -312,10 +314,14 @@ async fn main() -> Result<()> {
                 })
             })
             .description(
-                "Spawn a background job; returns { job_id, argv } immediately. Same payload as \
-                 shell::exec. Host jobs ignore timeout_ms and run until exit or shell::kill; \
-                 poll with shell::status, list with shell::list. Spawn-time failures are \
-                 plain-string messages; later failures surface in shell::status, not here.",
+                "Spawn a background job; returns { job_id, argv } immediately. Accepts the \
+                 shell::exec payload plus optional job_id. Register shell::job-finished with \
+                 a fresh job_id before calling exec_bg with that same ID, or omit job_id to \
+                 generate one. Duplicate retained IDs reject before execution. Host jobs \
+                 ignore timeout_ms and use the configured background hard cap; read output \
+                 with shell::status, list jobs with shell::list. Spawn-time failures are \
+                 plain-string messages; later failures emit shell::job-finished and appear \
+                 in shell::status.",
             ),
         );
     }
@@ -328,7 +334,7 @@ async fn main() -> Result<()> {
             })
         })
         .description(
-            "Terminate a running background job by job_id (the UUID from shell::exec_bg). \
+            "Terminate a running background job by job_id (returned by shell::exec_bg). \
              Errors return { code, message }; common: S211 no such job, S216 kill/signal delivery \
              failure.",
         ),
@@ -422,6 +428,10 @@ async fn main() -> Result<()> {
     // shell::changed trigger type — subscribers name the directory in their
     // binding config.
     events::register_changed_trigger(&iii, watch_resolver.clone());
+
+    // The background-job completion feed: subscribers name a job_id in their
+    // binding config and are woken once, instead of polling shell::status.
+    job_events::register_job_finished_trigger(&iii);
 
     // Durable per-session change history: harness hooks on shell/coder
     // writes, read back by shell::turns::list / shell::turns::get.

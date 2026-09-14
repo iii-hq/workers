@@ -4,6 +4,7 @@ import {
   skillSelectionForSend,
   toSelection,
 } from '@/components/chat/system-prompt-selection'
+import { shouldRingCompletionBell } from '@/lib/completion-bell'
 import { transcriptToMessages } from '@/lib/sessions/entry-mapper'
 import type {
   MetaUpdatedEvent,
@@ -22,6 +23,7 @@ import {
   cancelHydrationRunsForSessions,
   completeFailedHydration,
   completePreSendMetaUpdate,
+  conversationBeforeQueuedCompletion,
   draftSaveIsRedundant,
   type HydrationRun,
   type HydrationUpsert,
@@ -36,10 +38,13 @@ import {
   metadataFor,
   metadataForWrite,
   missingGenerationForDirectoryRefresh,
+  pendingCompletionBellAfterStatus,
   preSendMetaUpdate,
   rehydrateTranscript,
   resolveActiveConversationId,
   shouldAcceptReconnectDirectoryRow,
+  shouldQueueCompletionBell,
+  shouldReplayQueuedCompletion,
 } from './use-conversations'
 
 function conversation(overrides: Partial<Conversation>): Conversation {
@@ -288,6 +293,7 @@ describe('mergeConversationMeta', () => {
     expect(next.updatedAt).toBe(4_000)
     expect(next.parentId).toBe('console-parent')
     expect(next.messages).toBe(existing.messages)
+    expect(next.hierarchyResolved).toBe(true)
     expect(next.hydrated).toBe(true)
   })
 
@@ -402,6 +408,7 @@ describe('mergeConversationMeta', () => {
 
     expect(next.parentId).toBe('console-parent')
     expect(next.parentFunctionCallId).toBe('call-spawn-1')
+    expect(next.hierarchyResolved).toBe(true)
   })
 
   it('retains raw harness metadata for subsequent whole-object writes', () => {
@@ -1949,4 +1956,147 @@ describe('isUntouchedDraft', () => {
       false,
     )
   })
+})
+
+describe('queued completion bell', () => {
+  it('replays a root completion after session metadata resolves hierarchy', () => {
+    const event: StatusChangedEvent = {
+      session_id: 'console-1',
+      status: 'done',
+      previous_status: 'working',
+      timestamp: 3_000,
+    }
+    const stub = conversation({
+      status: 'working',
+      hierarchyResolved: false,
+      serverStatusUpdatedAt: 2_000,
+    })
+
+    expect(shouldQueueCompletionBell(event, stub)).toBe(true)
+    const terminal = applyConversationStatusEvent(stub, event)
+    const resolved = mergeConversationMeta(
+      terminal,
+      sessionMeta({ status: 'done', updated_at: 3_000, metadata: {} }),
+    )
+    const beforeTerminal = conversationBeforeQueuedCompletion(resolved, {
+      event,
+      previousConversation: stub,
+    })
+
+    expect(beforeTerminal.status).toBe('working')
+    expect(beforeTerminal.serverStatusUpdatedAt).toBe(2_000)
+    expect(shouldRingCompletionBell(event, beforeTerminal)).toBe(true)
+  })
+
+  it('drops a queued completion when metadata resolves a child session', () => {
+    const event: StatusChangedEvent = {
+      session_id: 'console-1',
+      status: 'error',
+      previous_status: 'working',
+      timestamp: 3_000,
+    }
+    const stub = conversation({
+      status: 'working',
+      hierarchyResolved: false,
+      serverStatusUpdatedAt: 2_000,
+    })
+    const terminal = applyConversationStatusEvent(stub, event)
+    const resolved = mergeConversationMeta(
+      terminal,
+      sessionMeta({
+        status: 'error',
+        updated_at: 3_000,
+        metadata: { parent_session_id: 'root', depth: 1 },
+      }),
+    )
+
+    expect(
+      shouldRingCompletionBell(
+        event,
+        conversationBeforeQueuedCompletion(resolved, {
+          event,
+          previousConversation: stub,
+        }),
+      ),
+    ).toBe(false)
+  })
+})
+
+it('cancels a queued completion when a newer status restarts the session', () => {
+  const completed: StatusChangedEvent = {
+    session_id: 'console-1',
+    status: 'done',
+    previous_status: 'working',
+    timestamp: 3_000,
+  }
+  const pending = pendingCompletionBellAfterStatus(
+    undefined,
+    completed,
+    conversation({ status: 'working', hierarchyResolved: false }),
+  )
+  const restarted: StatusChangedEvent = {
+    session_id: 'console-1',
+    status: 'working',
+    previous_status: 'done',
+    timestamp: 4_000,
+  }
+
+  expect(
+    pendingCompletionBellAfterStatus(
+      pending,
+      restarted,
+      conversation({ status: 'done', hierarchyResolved: false }),
+    ),
+  ).toBeUndefined()
+})
+
+it('does not replace a queued completion with an older delivery', () => {
+  const latest: StatusChangedEvent = {
+    session_id: 'console-1',
+    status: 'error',
+    previous_status: 'working',
+    timestamp: 4_000,
+  }
+  const pending = pendingCompletionBellAfterStatus(
+    undefined,
+    latest,
+    conversation({ status: 'working', hierarchyResolved: false }),
+  )
+  const stale: StatusChangedEvent = {
+    session_id: 'console-1',
+    status: 'working',
+    previous_status: 'idle',
+    timestamp: 3_000,
+  }
+
+  expect(
+    pendingCompletionBellAfterStatus(
+      pending,
+      stale,
+      conversation({ status: 'error', hierarchyResolved: false }),
+    ),
+  ).toBe(pending)
+})
+
+it('drops a queued completion when authoritative metadata has restarted', () => {
+  const event: StatusChangedEvent = {
+    session_id: 'console-1',
+    status: 'done',
+    previous_status: 'working',
+    timestamp: 3_000,
+  }
+  const pending = pendingCompletionBellAfterStatus(
+    undefined,
+    event,
+    conversation({ status: 'working', hierarchyResolved: false }),
+  )
+
+  expect(pending).toBeDefined()
+  if (!pending) throw new Error('expected a queued completion')
+  expect(
+    shouldReplayQueuedCompletion(
+      pending,
+      sessionMeta({ status: 'working', updated_at: 4_000 }),
+    ),
+  ).toBe(false)
 })

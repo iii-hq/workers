@@ -22,13 +22,38 @@ pub const SUBMIT_RESULT_NAME: &str = "submit_result";
 /// [`subset_policy`], so a leaf's own children stay leaves
 /// whatever they request. Enforcement is the ordinary dispatch gates — the
 /// same fail-closed globs every call already passes through.
-pub const CONTROL_PLANE_DENY: [&str; 5] = [
+///
+/// `engine::register_trigger` is deliberately NOT here. Walling it off left a
+/// leaf with no way to wait at all: it could not park on its own background
+/// job or its own compose operation, so an obedient child polled, and a
+/// resourceful one ran `shell::exec sleep` (MOT-4766 — 9 denied registrations
+/// and 176s of sleeping in one measured run). Arming a wake for your own
+/// session is the leaf's own work, not the control plane. The control-plane
+/// half of that function — a binding that mechanically calls some OTHER
+/// function — stays refused for leaves, by shape, in
+/// `functions::subscribe::reject_leaf_control_plane`. Unregistration stays
+/// walled off because it can reach another session's bindings; a leaf's wake
+/// is required to be self-limiting instead.
+pub const CONTROL_PLANE_DENY: [&str; 4] = [
     "harness::spawn",
     "harness::send",
-    "engine::register_trigger",
     "engine::unregister_trigger",
     "engine::registered-triggers::*",
 ];
+
+/// Whether a session is a leaf — spawned to perform an assignment, rather than
+/// running the control plane.
+///
+/// BOTH halves are load-bearing. Lineage alone would catch an
+/// `options.orchestrator: true` child, which keeps the control plane on
+/// purpose. The spawn wall alone was worse: an earlier version of this read
+/// only the policy, so ANY session whose allow-list simply never mentions
+/// `harness::spawn` — a root under a narrow policy, which is every harness
+/// integration scenario — was treated as a leaf and had its bindings refused.
+/// INT-016 caught it.
+pub fn is_leaf(policy: &CompiledPolicy, has_parent: bool) -> bool {
+    has_parent && !policy.allows(crate::functions::SPAWN_ID)
+}
 
 /// The contract-discovery pair every spawned child keeps callable. The
 /// sub-agent contract mandates a `functions::list`/`::info` round before the
@@ -327,6 +352,24 @@ mod tests {
         }
     }
 
+    // Leafness needs lineage AND the wall, and each half rules out a case the
+    // other misses.
+    #[test]
+    fn leafness_needs_both_a_parent_and_the_spawn_wall() {
+        // A root under a NARROW policy that never mentions spawn: not a leaf.
+        // Reading the policy alone called this one a leaf and broke INT-016.
+        let narrow = CompiledPolicy::from(Some(&policy(&["state::*"], &[])));
+        assert!(!narrow.allows("harness::spawn"));
+        assert!(!is_leaf(&narrow, false));
+
+        // An orchestrator child: has a parent, keeps the control plane.
+        let orchestrator = CompiledPolicy::from(Some(&policy(&["*"], &[])));
+        assert!(!is_leaf(&orchestrator, true));
+
+        // The real thing: spawned, and walled off from spawning.
+        assert!(is_leaf(&narrow, true));
+    }
+
     #[test]
     fn absent_policy_denies_everything() {
         let p = CompiledPolicy::from(None);
@@ -345,13 +388,17 @@ mod tests {
         for id in [
             "harness::spawn",
             "harness::send",
-            "engine::register_trigger",
             "engine::unregister_trigger",
             "engine::registered-triggers::list",
             "engine::registered-triggers::info",
         ] {
             assert!(!compiled.allows(id), "{id} must be walled off");
         }
+        // Registration is NOT walled off at dispatch: a leaf with no way to
+        // arm a wake polls or sleeps instead (MOT-4766). The control-plane
+        // half of it is refused by shape, in `functions::subscribe`.
+        assert!(compiled.allows("engine::register_trigger"));
+        assert!(is_leaf(&compiled, true), "a spawned child under the wall");
         for id in ["state::set", "database::execute", "harness::status"] {
             assert!(compiled.allows(id), "{id} is data-plane and must survive");
         }

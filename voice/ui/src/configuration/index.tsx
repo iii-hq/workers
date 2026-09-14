@@ -93,19 +93,20 @@ export function createVoiceConfigForm(host: Host) {
       <>
         <SettingsSection
           title="Speech to text"
-          description="Where spoken words become text. Local runs entirely on this machine with models the worker downloads once; an OpenAI-compatible endpoint sends audio to that server."
+          description="Where spoken words become text. Bundled models and whisper.cpp run on this machine; remote engines send audio to their configured provider."
         >
           <SettingsList>
             <SettingsField
               label="Engine"
-              description="Local models, a speech provider registered with llm-router (ElevenLabs, OpenAI, ...), or any server that speaks the OpenAI audio API (a local whisper server counts)."
+              description="Bundled local models, a local whisper.cpp command, a speech provider registered with llm-router, or any server that speaks the OpenAI audio API."
               renderControl={(c) => (
                 <Select
                   id={c.id}
                   value={sttBackend}
                   onChange={(next) => set(['stt', 'backend'], next)}
                   options={[
-                    { value: 'local', label: 'Local models on this machine' },
+                    { value: 'local', label: 'Bundled local models' },
+                    { value: 'whisper_cpp', label: 'whisper.cpp on this machine' },
                     { value: 'router', label: 'A speech provider through llm-router' },
                     { value: 'openai', label: 'OpenAI-compatible endpoint' },
                   ]}
@@ -223,6 +224,79 @@ export function createVoiceConfigForm(host: Host) {
                 <SettingsField
                   label="Decoder threads"
                   description="CPU threads for the local models."
+                  controlSize="compact"
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      type="number"
+                      step="1"
+                      min="1"
+                      {...numberField(['stt', 'num_threads'], DEFAULTS.numThreads, true, 1)}
+                    />
+                  )}
+                />
+              </>
+            ) : null}
+            {sttBackend === 'whisper_cpp' ? (
+              <>
+                <SettingsField
+                  label="Command"
+                  description="whisper-cli on PATH, or its absolute executable path. The worker invokes it directly without a shell."
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      value={stringAt(value, ['stt', 'whisper_cpp', 'command'], DEFAULTS.whisperCppCommand)}
+                      onChange={(raw) => set(['stt', 'whisper_cpp', 'command'], raw)}
+                      preserveCase
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="GGML model path"
+                  description="Use a multilingual model such as ggml-large-v3-turbo.bin for Portuguese. Relative paths start at the Compose project directory."
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      value={stringAt(value, ['stt', 'whisper_cpp', 'model'], DEFAULTS.whisperCppModel)}
+                      onChange={(raw) => set(['stt', 'whisper_cpp', 'model'], raw)}
+                      preserveCase
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="Language"
+                  description="ISO 639-1 code such as pt, or auto to detect the language. A request can override this value."
+                  controlSize="compact"
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      value={stringAt(value, ['stt', 'whisper_cpp', 'language'], DEFAULTS.whisperCppLanguage)}
+                      onChange={(raw) => set(['stt', 'whisper_cpp', 'language'], raw)}
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="Process timeout"
+                  description="Maximum seconds allowed for one whisper-cli transcription."
+                  controlSize="compact"
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      type="number"
+                      step="1"
+                      min="1"
+                      {...numberField(
+                        ['stt', 'whisper_cpp', 'timeout_secs'],
+                        DEFAULTS.whisperCppTimeoutSecs,
+                        true,
+                        1,
+                      )}
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="Decoder threads"
+                  description="CPU threads passed to whisper-cli."
                   controlSize="compact"
                   renderControl={(c) => (
                     <Input
