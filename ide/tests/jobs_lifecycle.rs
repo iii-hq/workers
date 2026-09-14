@@ -46,6 +46,7 @@ async fn insert_then_get_round_trips_the_record() {
     let id = "lifecycle-insert-get";
     seed(JobHandle {
         record: rec(id, JobStatus::Running, None),
+        finalized: false,
         child: None,
         host_pid: None,
     })
@@ -70,12 +71,14 @@ async fn list_all_includes_inserted_jobs() {
     let id2 = "lifecycle-list-all-2";
     seed(JobHandle {
         record: rec(id1, JobStatus::Running, None),
+        finalized: false,
         child: None,
         host_pid: None,
     })
     .await;
     seed(JobHandle {
         record: rec(id2, JobStatus::Finished, Some(now_ms())),
+        finalized: true,
         child: None,
         host_pid: None,
     })
@@ -95,24 +98,28 @@ async fn running_count_excludes_terminal_states() {
     let failed_id = "lifecycle-rc-failed";
     seed(JobHandle {
         record: rec(running_id, JobStatus::Running, None),
+        finalized: false,
         child: None,
         host_pid: None,
     })
     .await;
     seed(JobHandle {
         record: rec(finished_id, JobStatus::Finished, Some(now_ms())),
+        finalized: true,
         child: None,
         host_pid: None,
     })
     .await;
     seed(JobHandle {
         record: rec(killed_id, JobStatus::Killed, Some(now_ms())),
+        finalized: true,
         child: None,
         host_pid: None,
     })
     .await;
     seed(JobHandle {
         record: rec(failed_id, JobStatus::Failed, Some(now_ms())),
+        finalized: true,
         child: None,
         host_pid: None,
     })
@@ -141,6 +148,7 @@ async fn remove_old_retention_matrix() {
     let stale_finished = now_ms().saturating_sub(60 * 60 * 1000);
     seed(JobHandle {
         record: rec(stale_id, JobStatus::Finished, Some(stale_finished)),
+        finalized: true,
         child: None,
         host_pid: None,
     })
@@ -154,6 +162,7 @@ async fn remove_old_retention_matrix() {
 
     seed(JobHandle {
         record: rec(running_id, JobStatus::Running, None),
+        finalized: false,
         child: None,
         host_pid: None,
     })
@@ -167,6 +176,7 @@ async fn remove_old_retention_matrix() {
     let recent = now_ms().saturating_sub(10);
     seed(JobHandle {
         record: rec(fresh_id, JobStatus::Finished, Some(recent)),
+        finalized: true,
         child: None,
         host_pid: None,
     })
@@ -187,6 +197,7 @@ async fn concurrent_inserts_and_lookups_dont_deadlock() {
             let id = format!("lifecycle-concurrent-{i}");
             seed(JobHandle {
                 record: rec(&id, JobStatus::Running, None),
+                finalized: false,
                 child: None,
                 host_pid: None,
             })

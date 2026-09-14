@@ -60,6 +60,181 @@ fn parse_err<T: serde::de::DeserializeOwned>(v: Value) -> String {
     }
 }
 
+async fn finished_job(id: &str) -> JobRecord {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let handle = jobs::get(id).await.expect("created job exists");
+            let h = handle.lock().await;
+            if h.finalized {
+                return h.record.clone();
+            }
+            drop(h);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("job finalizes")
+}
+
+#[tokio::test]
+async fn exec_bg_preserves_a_caller_supplied_job_id() {
+    let id = format!("caller-{}", uuid::Uuid::new_v4());
+    let response = functions::exec_bg::handle(
+        cfg_with_deny(&[]),
+        fresh_iii(),
+        typed(json!({"command": "echo", "args": ["ok"], "job_id": id})),
+    )
+    .await
+    .unwrap();
+    let record = finished_job(&response.job_id).await;
+    jobs::JOBS.map.lock().await.remove(&response.job_id);
+    assert_eq!(response.job_id, id);
+    assert_eq!(record.stdout, "ok\n");
+}
+
+#[tokio::test]
+async fn exec_bg_rejects_duplicate_id_before_starting_a_command() {
+    let id = format!("duplicate-{}", uuid::Uuid::new_v4());
+    seed(JobHandle {
+        record: JobRecord {
+            id: id.clone(),
+            argv: vec!["original".into()],
+            started_at_ms: now_ms(),
+            finished_at_ms: Some(now_ms()),
+            status: JobStatus::Finished,
+            exit_code: Some(0),
+            stdout: "original output".into(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        },
+        finalized: true,
+        child: None,
+        host_pid: None,
+    })
+    .await;
+    let result = functions::exec_bg::handle(
+        cfg_with_deny(&[]),
+        fresh_iii(),
+        typed(json!({"command": "/no-such-executable-for-duplicate-job", "job_id": id})),
+    )
+    .await;
+    let original = finished_job(&id).await;
+    jobs::JOBS.map.lock().await.remove(&id);
+    assert!(result.unwrap_err().contains("already exists"));
+    assert_eq!(original.stdout, "original output");
+    assert_eq!(original.argv, ["original"]);
+}
+
+#[tokio::test]
+async fn concurrent_exec_bg_calls_with_one_id_execute_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("executions");
+    let id = format!("concurrent-{}", uuid::Uuid::new_v4());
+    let cfg = cfg_with_deny(&[]);
+    let iii = fresh_iii();
+    let request = json!({
+        "command": "sh", "args": ["-c", "printf x >> \"$1\"", "sh", marker],
+        "job_id": id,
+    });
+    let (first, second) = tokio::join!(
+        functions::exec_bg::handle(cfg.clone(), iii.clone(), typed(request.clone())),
+        functions::exec_bg::handle(cfg, iii, typed(request)),
+    );
+    let mut successes = 0;
+    let mut errors = Vec::new();
+    for result in [first, second] {
+        match result {
+            Ok(response) => {
+                successes += 1;
+                finished_job(&response.job_id).await;
+                jobs::JOBS.map.lock().await.remove(&response.job_id);
+            }
+            Err(error) => errors.push(error),
+        }
+    }
+    assert_eq!(successes, 1, "only one caller can reserve an ID");
+    assert!(errors[0].contains("already exists"));
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "x");
+}
+
+#[tokio::test]
+async fn exec_bg_rejects_blank_job_ids_before_spawning() {
+    for id in ["", " \t\n"] {
+        let error = functions::exec_bg::handle(
+            cfg_with_deny(&[]),
+            fresh_iii(),
+            typed(json!({"command": "/no-such-executable-for-blank-id", "job_id": id})),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("job_id"), "{error}");
+    }
+}
+
+#[test]
+fn exec_bg_request_rejects_non_string_job_id() {
+    assert!(
+        parse_err::<ExecBgRequest>(json!({"command": "echo", "job_id": 123})).contains("string")
+    );
+}
+
+#[test]
+fn exec_bg_schema_exposes_an_optional_job_id() {
+    let schema = serde_json::to_value(schemars::schema_for!(ExecBgRequest)).unwrap();
+    assert_eq!(
+        schema["properties"]["job_id"]["type"],
+        json!(["string", "null"])
+    );
+    assert!(!schema["required"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("job_id")));
+}
+
+#[tokio::test]
+async fn exec_bg_spawn_failure_leaves_the_supplied_id_available() {
+    let id = format!("spawn-failure-{}", uuid::Uuid::new_v4());
+    let error = functions::exec_bg::handle(
+        cfg_with_deny(&[]),
+        fresh_iii(),
+        typed(json!({"command": "/no-such-executable-for-spawn-failure", "job_id": id})),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("spawn:"));
+    assert!(jobs::get(&id).await.is_none());
+    let response = functions::exec_bg::handle(
+        cfg_with_deny(&[]),
+        fresh_iii(),
+        typed(json!({"command": "echo", "args": ["retry"], "job_id": id})),
+    )
+    .await
+    .unwrap();
+    let record = finished_job(&response.job_id).await;
+    jobs::JOBS.map.lock().await.remove(&response.job_id);
+    assert_eq!(response.job_id, id);
+    assert_eq!(record.stdout, "retry\n");
+}
+
+#[tokio::test]
+async fn exec_bg_null_job_id_still_generates_an_id() {
+    let response = functions::exec_bg::handle(
+        cfg_with_deny(&[]),
+        fresh_iii(),
+        typed(json!({"command": "true", "job_id": null})),
+    )
+    .await
+    .unwrap();
+    finished_job(&response.job_id).await;
+    jobs::JOBS.map.lock().await.remove(&response.job_id);
+    let uuid = response
+        .job_id
+        .strip_prefix("job-")
+        .expect("generated ID prefix");
+    assert!(uuid::Uuid::parse_str(uuid).is_ok());
+}
+
 #[tokio::test]
 async fn exec_handler_runs_command() {
     let cfg = cfg_with_deny(&[]);
@@ -210,6 +385,7 @@ fn exec_bg_request_rejects_non_string_arg() {
 async fn status_handler_returns_record_for_inserted_job() {
     let id = "fn-status-handler-test-1";
     seed(JobHandle {
+        finalized: false,
         record: JobRecord {
             id: id.into(),
             argv: vec!["echo".into()],
@@ -280,6 +456,7 @@ async fn kill_handler_rejects_unknown_job_id() {
 async fn kill_handler_returns_killed_false_when_job_already_terminal() {
     let id = "fn-kill-handler-finished";
     seed(JobHandle {
+        finalized: true,
         record: JobRecord {
             id: id.into(),
             argv: vec!["echo".into()],
@@ -310,6 +487,7 @@ async fn kill_handler_returns_killed_false_when_job_already_terminal() {
 async fn list_handler_returns_jobs_array_and_count() {
     let id = "fn-list-handler-marker";
     seed(JobHandle {
+        finalized: false,
         record: JobRecord {
             id: id.into(),
             argv: vec!["sleep".into(), "0.01".into()],

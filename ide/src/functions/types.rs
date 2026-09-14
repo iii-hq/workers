@@ -129,10 +129,15 @@ pub struct ExecRequest {
 }
 
 /// Wire request for `shell::exec_bg`.
-// Same shape as `ExecRequest`; documented separately so the engine publishes a
-// distinct schema per function.
+// Extends `ExecRequest` with a caller-supplied background job ID.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecBgRequest {
+    /// Optional non-blank ID for registering shell::job-finished before
+    /// execution. Must be unique among retained jobs in this worker. Omit
+    /// or pass null to generate a job-UUID automatically.
+    #[serde(default)]
+    #[schemars(length(min = 1))]
+    pub job_id: Option<String>,
     /// Program name (PATH-resolved) or path to an executable, as a string; put
     /// arguments in `args`.
     #[serde(deserialize_with = "deserialize_command")]

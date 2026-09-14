@@ -149,14 +149,13 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
-  # kanban: Console asset delivery and lifecycle sinks are engine plumbing.
-  # Run/task mutations stay at the needs_approval default; read-only board,
-  # model, and executor discovery are allowlisted below.
+  # kanban: console asset delivery and the configuration reload sink are
+  # engine plumbing. Deleting/restoring a ticket is the human's call from the
+  # ticket screen; the ticket working loop is allowlisted below.
   - '!kanban::ui-content'
-  - '!kanban::on-agent-task'
-  - '!kanban::on-harness-completed'
-  - '!kanban::on-session-changed'
-  - '!kanban::on-worktree-changed'
+  - '!kanban::on-config-change'
+  - '!kanban::ticket::delete'
+  - '!kanban::ticket::restore'
   # eval: durable orchestration internals are trigger/queue targets only.
   # Starting, cancelling, and deleting evaluations remain approval-gated by
   # the default. Status/result are read-only and the exact evaluator is pure.
@@ -331,8 +330,19 @@ rules:
   - worktree::get
   - worktree::status
   - worktree::validate
-  - kanban::executors::list
-  - kanban::models::list
+  # kanban: reads plus the ticket working loop (claim, report, move) that the
+  # bundled agent profiles run — see kanban/skills/kanban-tickets.md.
+  - kanban::config::info
+  - kanban::board::get
+  - kanban::ticket::list
+  - kanban::ticket::get
+  - kanban::ticket::create
+  - kanban::ticket::update
+  - kanban::ticket::move
+  - kanban::comment::create
+  - kanban::comment::list
+  - kanban::activity::list
+  - kanban::agent::list
   # editor: the reading half. editor::diff is pure (two strings in, a patch
   # out — no I/O at all); the rest read through the shell worker, so they reach
   # nothing shell::fs::read and shell::exec could not already reach.

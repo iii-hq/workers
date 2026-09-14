@@ -66,7 +66,9 @@ The repository-owned
 [`deployment_compiler.py`](../../.github/scripts/deployment_compiler.py) joins the
 private release entry, public manifest, package manifest, and source SHA once.
 It emits a `deployment-descriptor.json` containing input digests, independent
-build units, runtime, and a projection onto the current Registry API.
+build units, runtime, and a projection onto the current Registry API,
+including the skill and agent-profile markdown the Registry attaches to the
+published version.
 
 Prepare and every later phase consume only that immutable descriptor and the
 prepared artifacts. Release Control consumes only the descriptor index and

@@ -1,336 +1,463 @@
+//! Everything `workers-dev` knows comes from one file: the Compose project at
+//! `harness/worker-compose.yaml`. Inventory, dependency edges, the engine URL
+//! and the namespace are read from there; nothing is discovered, nothing is
+//! written back.
+
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::color::ColorMode;
-use crate::discover::{discover_repo_workers, harness_stack_names, order_worker_names, WorkerSpec};
 
 pub const DEFAULT_ENGINE_URL: &str = "ws://127.0.0.1:49134";
-pub const DEFAULT_POLL_INTERVAL_MS: u64 = 2000;
-pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 120_000;
-/// Per-query timeout for `engine::workers::list`. Kept short so a slow or
-/// hung engine can't stall the status poll (and, with off-thread polling,
-/// can't freeze the TUI).
-pub const ENGINE_QUERY_TIMEOUT_MS: u64 = 3_000;
-pub const LOG_RING_CAPACITY: usize = 500;
-pub const DEFAULT_LOG_TAIL: usize = 100;
+/// The Compose project, relative to the repo root. Also what identifies the
+/// repo root during the ancestor walk.
+pub const COMPOSE_FILE_REL: &str = "harness/worker-compose.yaml";
+/// Where the on-demand workers are declared: one compose project per worker,
+/// gitignored and owned by this tool. One file each, not one shared file —
+/// the daemon holds a project as its file was when it loaded it, so adding a
+/// container to a loaded project would need a whole-project restart, and every
+/// worker already running in it would bounce. A new file is a new project.
+pub const LOCAL_DIR_REL: &str = "harness/.workers-dev";
+/// Every worker in this repo, and every worker outside it worth offering,
+/// carries one.
+const MANIFEST_FILE: &str = "iii.worker.yaml";
+/// A worker outside this repo often ships the compose container it wants.
+const SELF_COMPOSE_FILE: &str = "worker-compose.yaml";
+/// Where the spawned `iii compose` daemon's stdout and stderr land. A file,
+/// never a pipe: compose prints its banner with bare `println!`, and Rust
+/// ignores SIGPIPE, so a closed read end panics the daemon.
+pub const DAEMON_LOG_REL: &str = "harness/.workers-dev.log";
+/// The env file the compose containers read at every spawn. Gitignored; the
+/// tracked `harness/workers-dev.env.example` is the fallback for a plain
+/// `iii compose --up`.
+pub const UI_WATCH_ENV_REL: &str = "harness/.env.workers-dev";
+
+pub const POLL_INTERVAL_MS: u64 = 1000;
+pub const DAEMON_READY_TIMEOUT_MS: u64 = 60_000;
+pub const LIFECYCLE_TIMEOUT_MS: u64 = 600_000;
+pub const STATUS_TIMEOUT_MS: u64 = 10_000;
+pub const STOP_TIMEOUT_MS: u64 = 30_000;
+/// How much of a container log to keep on screen. The active segment compose
+/// writes grows to 10 MiB, so the pane seeks instead of reading the file.
+pub const LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+/// One `containers:` entry, reduced to what the dashboard needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerSpec {
+    pub name: String,
+    /// `start_after` — the compose DAG, not a guess.
+    pub deps: Vec<String>,
+    /// `<worker>/ui` when that directory ships a `watch` script. `None`
+    /// otherwise, which is what excludes a worker that has a `ui/` but only
+    /// builds it.
+    pub ui_dir: Option<PathBuf>,
+}
+
+/// A worker that lives in this repo but is not declared by the tracked compose
+/// file. Discovered from its `iii.worker.yaml`, which every worker here has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoWorker {
+    pub name: String,
+    /// Where it lives. Absolute, because it is not always under the repo root.
+    pub dir: PathBuf,
+    /// The configured directory it was discovered under — the repo root, or one
+    /// `--worker-dir` entry. What the dashboard groups and labels rows by, and
+    /// the thing `x` on a group header drops.
+    pub root: PathBuf,
+    /// The container this worker declares for itself, when it ships a
+    /// `worker-compose.yaml`. It knows things a synthesized declaration cannot
+    /// guess — `harness-e2e` refuses to start without the `config_override`
+    /// its own file carries.
+    pub declared: Option<serde_yaml::Value>,
+    /// The binary to `cargo run --bin`. `None` for the workers that are not
+    /// Rust binaries — they install from the registry, not from this tree.
+    pub bin: Option<String>,
+    pub ui_dir: Option<PathBuf>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub repo_root: PathBuf,
-    /// The config file this run reads and writes: `--config` when given, else
-    /// `<repo_root>/workers-dev.yaml`. Set even when the file does not exist,
-    /// so the TUI's first save knows where to create it.
-    pub config_path: PathBuf,
+    /// Absolute and canonical: every compose call carries it as the project id.
+    pub compose_path: PathBuf,
+    pub local_dir: PathBuf,
+    pub daemon_log_path: PathBuf,
+    pub ui_watch_env_path: PathBuf,
+    pub namespace: String,
     pub engine_url: String,
-    pub release: bool,
-    pub poll_interval_ms: u64,
-    pub connect_timeout_ms: u64,
-    pub workers: Vec<String>,
-    /// Ordered named stacks: `(name, roots)`. Index 0 is always the built-in
-    /// `harness` stack (roots overridable via `stacks.harness:`), then file
-    /// stacks in YAML order. Roots are filtered to managed workers.
-    pub stacks: Vec<(String, Vec<String>)>,
-    /// Name of the stack `up` / bare `start` / Ctrl+u start; always present
-    /// in `stacks`, but its roots can be empty (e.g. a `workers:` allowlist
-    /// that excludes every root) — `load` only warns about that, so a
-    /// read-only command can still open. Anything that actually starts it
-    /// goes through `Orchestrator::start_roots`, which refuses on empty roots.
-    pub default_stack: String,
-    pub worker_specs: Vec<WorkerSpec>,
-    pub stop_on_exit: bool,
+    pub engine_host: String,
+    pub engine_port: u16,
+    pub workers: Vec<WorkerSpec>,
+    /// Directories to offer workers from, besides the repo root. Seeded from
+    /// `--worker-dir`, `WORKERS_DEV_WORKER_DIRS` and the dashboard's own list;
+    /// the dashboard can add to it while it runs.
+    pub worker_dirs: Vec<PathBuf>,
     pub color_mode: ColorMode,
-    /// Start injectable-UI workers in the SOP's watcher mode by default:
-    /// spawn `pnpm watch` in `<worker>/ui` and set `III_<WORKER>_UI_WATCH=1`
-    /// so console tabs hot-reload the worker's UI on rebuild. Per-worker
-    /// override at runtime via the TUI's `w` key.
+    /// Turn every watchable container's UI watcher on at launch.
     pub ui_watch: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct FileConfig {
-    repo: Option<PathBuf>,
-    engine_url: Option<String>,
-    release: Option<bool>,
-    poll_interval_ms: Option<u64>,
-    connect_timeout_ms: Option<u64>,
-    workers: Option<Vec<String>>,
-    /// Removed key. Kept in the struct only so its presence can be rejected
-    /// with a rename hint — serde would otherwise silently ignore it.
-    harness_stack: Option<serde_yaml::Value>,
-    stacks: Option<serde_yaml::Mapping>,
-    default_stack: Option<String>,
-    stop_on_exit: Option<bool>,
-    color: Option<String>,
-    ui_watch: Option<bool>,
+#[derive(Debug, Deserialize)]
+struct ComposeFile {
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    engine: Option<ComposeEngine>,
+    /// A `Mapping` rather than a map type so declaration order survives — the
+    /// dashboard lists containers in the order the file does.
+    #[serde(default)]
+    containers: serde_yaml::Mapping,
+}
+
+#[derive(Debug, Deserialize)]
+struct ComposeEngine {
+    #[serde(default)]
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ComposeContainer {
+    worker: String,
+    #[serde(default)]
+    start_after: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkerManifest {
+    #[serde(default)]
+    name: Option<String>,
+    /// `binary` is what `cargo run` can start; anything else comes from the
+    /// registry and is not ours to launch from source.
+    #[serde(default)]
+    deploy: Option<String>,
+    #[serde(default)]
+    bin: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UiPackage {
+    #[serde(default)]
+    scripts: HashMap<String, String>,
 }
 
 impl Config {
-    #[allow(clippy::too_many_arguments)]
     pub fn load(
         repo: Option<PathBuf>,
-        engine_url: Option<String>,
-        port: Option<u16>,
-        release: bool,
-        config_path: Option<PathBuf>,
-        stop_on_exit: bool,
+        explicit_dirs: Vec<PathBuf>,
+        namespace: Option<String>,
         color: Option<String>,
         ui_watch: bool,
     ) -> Result<Self> {
-        // `loaded_path` is the file `file_cfg` actually came from, captured at
-        // the point of loading rather than reconstructed afterwards — a
-        // loaded file's `repo:` key can redirect the final `repo_root`
-        // elsewhere (honored as-is, see below), so rebuilding the path from
-        // that final root could name a file in a different repo than the one
-        // that was read.
-        let (file_cfg, loaded_path) = match &config_path {
-            // `--config` may be relative (resolved against the process cwd);
-            // the auto-probed path below is always absolute. Nothing in this
-            // crate changes cwd, so a relative `config_path` is stable, but
-            // don't assume the field is always absolute.
-            Some(path) => (load_file_config(path)?, Some(path.clone())),
-            None => {
-                // No --config: auto-load <repo_root>/workers-dev.yaml when present.
-                // The probe resolves the root without a config file (--repo / env /
-                // cwd ancestors); if that fails, fall through to defaults and let
-                // the final resolve_repo_root below report the real error. An
-                // auto-loaded file's `repo:` key is honored as-is — no re-search
-                // for another config in the new root.
-                match resolve_repo_root(repo.clone()) {
-                    Ok(root) => {
-                        let path = root.join("workers-dev.yaml");
-                        if path.is_file() {
-                            (load_file_config(&path)?, Some(path))
-                        } else {
-                            (FileConfig::default(), None)
-                        }
-                    }
-                    Err(_) => (FileConfig::default(), None),
-                }
-            }
+        let repo_root = resolve_repo_root(repo)?;
+        refuse_legacy_config(&repo_root)?;
+        let worker_dirs = worker_dirs(explicit_dirs, &repo_root.join(LOCAL_DIR_REL))?;
+
+        let compose_path = repo_root
+            .join(COMPOSE_FILE_REL)
+            .canonicalize()
+            .with_context(|| format!("{COMPOSE_FILE_REL} under {}", repo_root.display()))?;
+        let compose_dir = compose_path.parent().unwrap_or(&repo_root).to_path_buf();
+
+        let text = std::fs::read_to_string(&compose_path)
+            .with_context(|| format!("read {}", compose_path.display()))?;
+        let file: ComposeFile = serde_yaml::from_str(&text)
+            .with_context(|| format!("parse {}", compose_path.display()))?;
+
+        let file_namespace = match file.namespace.as_deref() {
+            Some(raw) => Some(expand_env(raw).context("compose namespace")?),
+            None => None,
         };
+        let namespace = namespace
+            .or(file_namespace)
+            .unwrap_or_else(|| "default".to_string());
 
-        let repo_root = resolve_repo_root(repo.or(file_cfg.repo))?;
-        // `loaded_path` is `None` only when no file was read at all (explicit
-        // `--config` and a found auto-load both set it above) — a default
-        // `FileConfig` carries no `repo:` to redirect with, so
-        // `repo.or(file_cfg.repo)` here is just `repo`, the same input the
-        // probe above already resolved. `repo_root` is therefore necessarily
-        // the probed root, so reconstructing the path from it is safe.
-        let config_path = loaded_path.unwrap_or_else(|| repo_root.join("workers-dev.yaml"));
-        let worker_specs = discover_repo_workers(&repo_root)?;
-        if worker_specs.is_empty() {
-            bail!("no workers discovered under {}", repo_root.display());
-        }
-
-        // Resolve stacks before deriving worker order: the default stack's
-        // roots drive grouping. Root names are validated against the managed
-        // `workers` list further down.
-        if file_cfg.harness_stack.is_some() {
-            bail!(
-                "config key `harness_stack:` was replaced by `stacks:` + `default_stack:` — \
-                 rename to stacks: {{harness: [...]}}"
-            );
-        }
-        let mut stacks: Vec<(String, Vec<String>)> =
-            vec![("harness".to_string(), harness_stack_names(&worker_specs))];
-        if let Some(mapping) = file_cfg.stacks {
-            for (name, roots) in parse_stacks(mapping)? {
-                match stacks.iter_mut().find(|(n, _)| *n == name) {
-                    // `stacks.harness:` overrides the builtin roots in place,
-                    // keeping harness at index 0.
-                    Some(entry) => entry.1 = roots,
-                    None => stacks.push((name, roots)),
-                }
-            }
-        }
-        let default_stack = file_cfg
-            .default_stack
-            .unwrap_or_else(|| "harness".to_string());
-        ensure_no_control_chars(&default_stack)?;
-        if !stacks.iter().any(|(n, _)| *n == default_stack) {
-            bail!(
-                "default_stack {default_stack:?} is not a defined stack (have: {})",
-                stacks
-                    .iter()
-                    .map(|(n, _)| n.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-
-        let raw_engine_url = engine_url
-            .or(file_cfg.engine_url)
-            .unwrap_or_else(|| DEFAULT_ENGINE_URL.to_string());
-        let (engine_host, engine_port) = parse_engine_url(&raw_engine_url, port)?;
-        // Canonicalize so a `--port` override is reflected in the URL the SDK
-        // actually connects to. The engine WS endpoint is always `/`, so any
-        // path in the original URL is intentionally dropped. Preserve a `wss://`
-        // scheme so a TLS engine endpoint isn't silently downgraded to plaintext.
-        let scheme = if raw_engine_url.starts_with("wss://") {
-            "wss"
-        } else {
-            "ws"
+        let engine_url = match file
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.url.as_deref())
+        {
+            Some(raw) => expand_env(raw).context("compose engine.url")?,
+            None => DEFAULT_ENGINE_URL.to_string(),
         };
-        let engine_url = format!("{scheme}://{engine_host}:{engine_port}");
+        let (engine_host, engine_port) = parse_engine_url(&engine_url)?;
 
-        let discovered_names = order_worker_names(&worker_specs);
-        // An explicit `workers:` list may name folders that auto-discovery
-        // skipped (missing or invalid root-catalog entry). Drop those
-        // with a warning instead of letting WorkerGraph::load abort startup —
-        // mirroring discover_repo_workers' skip-and-continue behavior.
-        let workers = match file_cfg.workers {
-            Some(requested) => {
-                let valid: std::collections::HashSet<&str> =
-                    discovered_names.iter().map(String::as_str).collect();
-                requested
-                    .into_iter()
-                    .filter(|w| {
-                        let ok = valid.contains(w.as_str());
-                        if !ok {
-                            eprintln!(
-                                "warning: skipping configured worker {w}: not a discovered root-catalog worker"
-                            );
-                        }
-                        ok
-                    })
-                    .collect()
-            }
-            None => discovered_names,
-        };
-
-        // Keep only stack roots that survived into the managed `workers` set:
-        // the WorkerGraph is built over `workers`, so a root outside it makes
-        // stack starts bail with "unknown worker". Drop with a warning,
-        // mirroring the `workers:` handling.
-        let managed: std::collections::HashSet<&str> = workers.iter().map(String::as_str).collect();
-        for (stack_name, roots) in &mut stacks {
-            roots.retain(|w| {
-                let ok = managed.contains(w.as_str());
-                if !ok {
-                    eprintln!(
-                        "warning: skipping stack {stack_name} worker {w}: not in the managed workers list"
-                    );
-                }
-                ok
-            });
-        }
-        let default_is_empty = stacks
-            .iter()
-            .find(|(n, _)| *n == default_stack)
-            .is_none_or(|(_, roots)| roots.is_empty());
-        if default_is_empty {
-            // Not a bail: `status`, `logs`, and the TUI are all read-only and
-            // must still be able to open so the user can see why (and fix
-            // it). `Orchestrator::start_roots` carries the same emptiness
-            // check and is what actually refuses to start this stack.
-            eprintln!(
-                "warning: default stack {default_stack:?} has no startable workers after validation"
-            );
-        }
-
-        let color_mode = color
-            .or(file_cfg.color)
-            .as_deref()
-            .and_then(|s| {
-                ColorMode::parse(s).or_else(|| {
-                    eprintln!(
-                        "warning: invalid color mode {s:?} (valid: auto, always, never); using auto"
-                    );
-                    None
-                })
-            })
-            .unwrap_or_default();
-
+        let workers = parse_containers(&file.containers, &compose_dir)?;
         Ok(Self {
+            local_dir: repo_root.join(LOCAL_DIR_REL),
+            daemon_log_path: repo_root.join(DAEMON_LOG_REL),
+            ui_watch_env_path: repo_root.join(UI_WATCH_ENV_REL),
             repo_root,
-            config_path,
+            compose_path,
+            namespace,
             engine_url,
-            release: release || file_cfg.release.unwrap_or(false),
-            poll_interval_ms: file_cfg
-                .poll_interval_ms
-                .unwrap_or(DEFAULT_POLL_INTERVAL_MS),
-            connect_timeout_ms: file_cfg
-                .connect_timeout_ms
-                .unwrap_or(DEFAULT_CONNECT_TIMEOUT_MS),
+            engine_host,
+            engine_port,
             workers,
-            stacks,
-            default_stack,
-            worker_specs,
-            stop_on_exit: stop_on_exit || file_cfg.stop_on_exit.unwrap_or(false),
-            color_mode,
-            ui_watch: ui_watch || file_cfg.ui_watch.unwrap_or(false),
+            worker_dirs,
+            color_mode: color
+                .as_deref()
+                .and_then(ColorMode::parse)
+                .unwrap_or_default(),
+            ui_watch,
         })
     }
 
-    pub fn worker_spec(&self, name: &str) -> Option<&WorkerSpec> {
-        self.worker_specs.iter().find(|s| s.name == name)
+    pub fn worker(&self, name: &str) -> Option<&WorkerSpec> {
+        self.workers.iter().find(|worker| worker.name == name)
+    }
+
+    #[cfg(test)]
+    pub fn names(&self) -> Vec<&str> {
+        self.workers
+            .iter()
+            .map(|worker| worker.name.as_str())
+            .collect()
+    }
+
+    /// Everything that would go down with `name`, transitively — the blast
+    /// radius `compose::down` applies, shown before it is applied.
+    /// The compose project for one on-demand worker.
+    pub fn local_file(&self, worker: &str) -> PathBuf {
+        self.local_dir.join(format!("{worker}.yaml"))
+    }
+
+    pub fn dependents(&self, name: &str) -> Vec<String> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut queue: VecDeque<&str> = VecDeque::from([name]);
+        let mut out = Vec::new();
+        while let Some(current) = queue.pop_front() {
+            for worker in &self.workers {
+                if worker.deps.iter().any(|dep| dep == current) && seen.insert(&worker.name) {
+                    out.push(worker.name.clone());
+                    queue.push_back(&worker.name);
+                }
+            }
+        }
+        out
     }
 }
 
-fn load_file_config(path: &Path) -> Result<FileConfig> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("read config file {}", path.display()))?;
-    serde_yaml::from_str(&raw).with_context(|| format!("parse config file {}", path.display()))
+/// Every worker the compose file does not already declare: the repo's own, and
+/// whatever `--worker-dir` adds.
+///
+/// A root that carries an `iii.worker.yaml` *is* one worker (`harness-e2e`);
+/// otherwise its children are scanned (a monorepo like this one). Read loosely:
+/// an unparsable manifest is a worker we cannot offer, not a reason to refuse
+/// to start. The repo comes first, so a name it already uses wins.
+pub fn discover_workers(
+    repo_root: &Path,
+    extra: &[PathBuf],
+    declared: &[WorkerSpec],
+) -> Vec<RepoWorker> {
+    let mut workers: Vec<RepoWorker> = Vec::new();
+    let mut seen: HashSet<String> = declared.iter().map(|worker| worker.name.clone()).collect();
+
+    for root in std::iter::once(repo_root.to_path_buf()).chain(extra.iter().cloned()) {
+        // Sorted per root rather than globally: the dashboard draws one group
+        // per directory, and a global sort would interleave them.
+        let start = workers.len();
+        let dirs: Vec<PathBuf> = if root.join(MANIFEST_FILE).is_file() {
+            vec![root.clone()]
+        } else {
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect()
+        };
+        for dir in dirs {
+            let Some(worker) = read_worker(&dir, &root) else {
+                continue;
+            };
+            if seen.insert(worker.name.clone()) {
+                workers.push(worker);
+            }
+        }
+        workers[start..].sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    workers
 }
 
-/// Parse `text` far enough to catch the mistakes a write must refuse before
-/// they reach disk — NOT a full replica of `load`: there is no repo here to
-/// discover workers against, so the managed-`workers:`/stack-roots
-/// filtering and warn-and-drop steps `load` runs afterward never happen in
-/// this function. Two things still must be checked here, because both would
-/// otherwise validate fine and only fail on the *next* launch:
-/// - Deserializing into `FileConfig` alone isn't enough: `stacks:` lands
-///   there as an untyped mapping, so a bare-scalar key (`123`, `true`,
-///   `null`, ...) validates fine even though `parse_stacks` — what `load`
-///   actually runs — rejects it for not being a string.
-/// - A `default_stack:` naming a stack that doesn't exist passes
-///   `FileConfig`'s own deserialization (it's just a `String`) and then
-///   bricks the very next `load`.
-pub fn validate_config_text(text: &str) -> Result<()> {
-    let cfg = serde_yaml::from_str::<FileConfig>(text).context("parse edited config")?;
-    let stacks = match cfg.stacks {
-        Some(stacks) => parse_stacks(stacks)?,
-        None => Vec::new(),
-    };
-    if let Some(default) = &cfg.default_stack {
-        if default != "harness" && !stacks.iter().any(|(n, _)| n == default) {
-            bail!("default_stack {default:?} is not a defined stack");
+fn read_worker(dir: &Path, root: &Path) -> Option<RepoWorker> {
+    let text = std::fs::read_to_string(dir.join(MANIFEST_FILE)).ok()?;
+    let manifest: WorkerManifest = serde_yaml::from_str(&text).ok()?;
+    let name = manifest
+        .name
+        .or_else(|| dir.file_name()?.to_str().map(str::to_string))?;
+    let declared = declared_container(dir, &name);
+    // A worker that declares its own container can be started whatever its
+    // deploy kind says: the declaration carries the command.
+    let bin = (declared.is_some() || manifest.deploy.as_deref() == Some("binary"))
+        .then(|| manifest.bin.clone().unwrap_or_else(|| name.clone()));
+    Some(RepoWorker {
+        ui_dir: watchable_ui_dir(dir),
+        dir: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
+        root: root.to_path_buf(),
+        declared,
+        name,
+        bin,
+    })
+}
+
+/// The container a worker declares for itself. Its own key when there is one,
+/// otherwise the sole container — a single-worker project names it whatever
+/// it likes.
+fn declared_container(dir: &Path, name: &str) -> Option<serde_yaml::Value> {
+    let text = std::fs::read_to_string(dir.join(SELF_COMPOSE_FILE)).ok()?;
+    let file: serde_yaml::Value = serde_yaml::from_str(&text).ok()?;
+    let containers = file.get("containers")?.as_mapping()?;
+    containers
+        .get(serde_yaml::Value::from(name))
+        .cloned()
+        .or_else(|| {
+            (containers.len() == 1)
+                .then(|| containers.values().next().cloned())
+                .flatten()
+        })
+}
+
+/// Three sources, in order: the flag, `WORKERS_DEV_WORKER_DIRS` (colon-separated
+/// like `PATH`, for a shell profile), and the list the dashboard's `a` key
+/// writes. A directory that no longer exists is dropped rather than fatal — the
+/// saved list outlives the checkout it named.
+fn worker_dirs(explicit: Vec<PathBuf>, local_dir: &Path) -> Result<Vec<PathBuf>> {
+    let from_env = std::env::var("WORKERS_DEV_WORKER_DIRS")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|entry| !entry.trim().is_empty())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+
+    let mut dirs = Vec::new();
+    for dir in explicit
+        .into_iter()
+        .chain(from_env)
+        .chain(read_saved_dirs(local_dir))
+    {
+        match dir.canonicalize() {
+            Ok(dir) if !dirs.contains(&dir) => dirs.push(dir),
+            _ => {}
         }
     }
-    Ok(())
+    Ok(dirs)
 }
 
-/// Parse the `stacks:` mapping preserving YAML order (serde_yaml::Mapping is
-/// insertion-ordered). Every value must be a list of worker-name strings.
-fn parse_stacks(mapping: serde_yaml::Mapping) -> Result<Vec<(String, Vec<String>)>> {
-    let mut stacks = Vec::new();
-    for (key, value) in mapping {
+/// One directory per line, written by the dashboard. Gitignored with the rest
+/// of that directory, and a missing file is the normal case.
+pub fn saved_dirs_path(local_dir: &Path) -> PathBuf {
+    local_dir.join("worker-dirs")
+}
+
+fn read_saved_dirs(local_dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_to_string(saved_dirs_path(local_dir))
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// `~` is what a person types into a prompt; nothing else expands it.
+pub fn expand_home(input: &str) -> PathBuf {
+    let trimmed = input.trim();
+    match trimmed.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => match std::env::var_os("HOME") {
+            Some(home) => PathBuf::from(home).join(rest.trim_start_matches('/')),
+            None => PathBuf::from(trimmed),
+        },
+        _ => PathBuf::from(trimmed),
+    }
+}
+
+fn parse_containers(
+    containers: &serde_yaml::Mapping,
+    compose_dir: &Path,
+) -> Result<Vec<WorkerSpec>> {
+    let mut workers = Vec::new();
+    for (key, value) in containers {
         let name = key
             .as_str()
-            .with_context(|| format!("stacks: key {key:?} is not a string"))?
+            .with_context(|| format!("containers: key {key:?} is not a string"))?
             .to_string();
-        ensure_no_control_chars(&name)?;
-        let roots: Vec<String> = serde_yaml::from_value(value)
-            .with_context(|| format!("stacks.{name}: expected a list of worker names"))?;
-        stacks.push((name, roots));
+        let container: ComposeContainer =
+            serde_yaml::from_value(value.clone()).with_context(|| format!("containers.{name}"))?;
+        let ui_dir = container
+            .worker
+            .strip_prefix("path://")
+            .map(|relative| compose_dir.join(relative))
+            .and_then(|dir| watchable_ui_dir(&dir));
+        workers.push(WorkerSpec {
+            name,
+            deps: container.start_after,
+            ui_dir,
+        });
     }
-    Ok(stacks)
+    if workers.is_empty() {
+        bail!("the compose file declares no containers");
+    }
+    Ok(workers)
 }
 
-/// Refuse a stack name carrying control characters (`\e`/`\x1b` and friends).
-/// `workers-dev.yaml` auto-loads from the repo root, so a hostile or careless
-/// config's stack name reaches every consumer that prints it — `status`'s
-/// group headers, the TUI — as raw bytes (see status::group_label). Checked
-/// once here, at load, rather than escaped at each render site, so nothing
-/// downstream needs its own opinion on what's safe to print. A stack name
-/// legitimately needs only letters, digits, `-` and `_` (`valid_stack_name`
-/// in config_write.rs governs what this tool ever *writes*); a control
-/// character is never one a person typed on purpose.
-fn ensure_no_control_chars(name: &str) -> Result<()> {
-    if name.chars().any(char::is_control) {
-        bail!("stack name {name:?} contains control characters — not a valid stack name");
+/// A worker is watchable only when its UI project declares a `watch` script.
+/// That one rule is what keeps a build-only `ui/` out of the watcher column
+/// without naming any worker.
+fn watchable_ui_dir(worker_dir: &Path) -> Option<PathBuf> {
+    let ui_dir = worker_dir.join("ui");
+    let package = std::fs::read_to_string(ui_dir.join("package.json")).ok()?;
+    let parsed: UiPackage = serde_json::from_str(&package).ok()?;
+    parsed
+        .scripts
+        .contains_key("watch")
+        .then(|| ui_dir.canonicalize().unwrap_or(ui_dir))
+}
+
+/// The compose file's own `${NAME}` / `${NAME:-default}` syntax, applied to
+/// the two strings this tool reads out of it. Compose expands the whole
+/// document itself; we only need the same answer for `namespace` and
+/// `engine.url`, so this is a string pass, not a document walker.
+pub fn expand_env(raw: &str) -> Result<String> {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start + 2..];
+        let end = tail
+            .find('}')
+            .with_context(|| format!("unterminated ${{ in {raw:?}"))?;
+        let expression = &tail[..end];
+        let (name, default) = match expression.split_once(":-") {
+            Some((name, default)) => (name, Some(default)),
+            None => (expression, None),
+        };
+        match (std::env::var(name).ok(), default) {
+            (Some(value), _) => out.push_str(&value),
+            (None, Some(default)) => out.push_str(default),
+            (None, None) => bail!("{raw:?} needs ${{{name}}}, which is not set"),
+        }
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// `workers-dev.yaml` is gitignored, so every checkout on this machine still
+/// has one. Silently ignoring it would drop someone's `engine_url` without a
+/// word, so it is a hard error that says where the settings went.
+fn refuse_legacy_config(repo_root: &Path) -> Result<()> {
+    let path = repo_root.join("workers-dev.yaml");
+    if path.is_file() {
+        bail!(
+            "{} is no longer read — workers, dependencies, env and the engine URL now come \
+             from {COMPOSE_FILE_REL}. Delete it; for a second worktree use \
+             `III_ENGINE_PORT=<port> workers-dev --namespace <ns>`.",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -360,351 +487,354 @@ pub fn resolve_repo_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
     candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
 
     for start in candidates {
-        if let Some(root) = find_repo_root(&start) {
-            return Ok(root);
+        for ancestor in start.ancestors() {
+            if validate_repo_root(ancestor).is_ok() {
+                if let Ok(root) = ancestor.canonicalize() {
+                    return Ok(root);
+                }
+            }
         }
     }
 
     bail!(
-        "could not find workers repo root (expected worker-compose.yaml); \
+        "could not find the workers repo root (expected {COMPOSE_FILE_REL}); \
          pass --repo or set WORKERS_DEV_REPO"
     )
 }
 
-fn find_repo_root(start: &Path) -> Option<PathBuf> {
-    for ancestor in start.ancestors() {
-        if validate_repo_root(ancestor).is_ok() {
-            return ancestor.canonicalize().ok();
-        }
-    }
-    None
-}
-
 fn validate_repo_root(path: &Path) -> Result<()> {
-    if path.join("worker-compose.yaml").is_file() {
+    if path.join(COMPOSE_FILE_REL).is_file() {
         Ok(())
     } else {
-        bail!("no worker-compose.yaml under {}", path.display())
+        bail!("no {COMPOSE_FILE_REL} under {}", path.display())
     }
 }
 
-pub fn parse_engine_url(url: &str, port_override: Option<u16>) -> Result<(String, u16)> {
+/// Host and port out of a `ws://host:port` engine URL. compose's managed
+/// engine is probed over plain TCP before any WebSocket is attempted.
+pub fn parse_engine_url(url: &str) -> Result<(String, u16)> {
     let stripped = url
         .strip_prefix("ws://")
         .or_else(|| url.strip_prefix("wss://"))
         .unwrap_or(url);
-
     let authority = stripped.split('/').next().unwrap_or(stripped);
 
-    let (host, port) = if let Some((host, port_str)) = authority.rsplit_once(':') {
-        let port: u16 = port_str.parse().with_context(|| {
-            format!("invalid port in engine url {url} (port must be a number, e.g. 49134)")
-        })?;
-        (host.to_string(), port)
-    } else {
-        (authority.to_string(), 49134)
-    };
-
-    Ok((host, port_override.unwrap_or(port)))
+    Ok(match authority.rsplit_once(':') {
+        Some((host, port)) => (
+            host.to_string(),
+            port.parse().with_context(|| {
+                format!("invalid port in engine url {url} (port must be a number, e.g. 49134)")
+            })?,
+        ),
+        None => (authority.to_string(), 49134),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_default_url() {
-        let (host, port) = parse_engine_url(DEFAULT_ENGINE_URL, None).unwrap();
-        assert_eq!(host, "127.0.0.1");
-        assert_eq!(port, 49134);
+    fn repo_fixture() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        let harness = repo.path().join("harness");
+        std::fs::create_dir_all(&harness).unwrap();
+        std::fs::write(
+            harness.join("worker-compose.yaml"),
+            "namespace: fixture-ns\n\
+             engine:\n  url: ws://127.0.0.1:${III_TEST_PORT:-49134}\n\
+             containers:\n\
+             \x20 state:\n    worker: path://../state\n\
+             \x20 llm-router:\n    worker: path://../llm-router\n    start_after: [state]\n\
+             \x20 harness:\n    worker: path://.\n    start_after: [llm-router]\n",
+        )
+        .unwrap();
+        for (worker, script) in [("state", Some("watch")), ("llm-router", Some("build"))] {
+            let ui = repo.path().join(worker).join("ui");
+            std::fs::create_dir_all(&ui).unwrap();
+            std::fs::write(
+                ui.join("package.json"),
+                format!("{{\"scripts\": {{\"{}\": \"x\"}}}}", script.unwrap()),
+            )
+            .unwrap();
+        }
+        repo
     }
 
-    #[test]
-    fn parse_url_with_trailing_slash() {
-        let (host, port) = parse_engine_url("ws://127.0.0.1:49134/", None).unwrap();
-        assert_eq!(host, "127.0.0.1");
-        assert_eq!(port, 49134);
-    }
-
-    #[test]
-    fn parse_url_with_path() {
-        let (host, port) = parse_engine_url("ws://127.0.0.1:49134/ws", None).unwrap();
-        assert_eq!(host, "127.0.0.1");
-        assert_eq!(port, 49134);
-    }
-
-    use std::path::PathBuf;
-    use tempfile::TempDir;
-
-    /// Minimal discoverable repo: one rust/binary worker.
-    fn write_repo(tmp: &TempDir) {
-        let dir = tmp.path().join("harness");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(tmp.path().join("worker-compose.yaml"), "workers:\n  harness:\n    source: {path: harness}\n    artifact: {kind: rust-binary}\n    registry: {dependencies: {}}\n").unwrap();
-        std::fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
-    }
-
-    fn load(tmp: &TempDir, config_path: Option<PathBuf>) -> Result<Config> {
+    fn load_with(repo: &tempfile::TempDir, extra: Vec<PathBuf>) -> Config {
         Config::load(
-            Some(tmp.path().to_path_buf()),
+            Some(repo.path().to_path_buf()),
+            extra,
+            None,
+            Some("never".into()),
+            false,
+        )
+        .unwrap()
+    }
+
+    /// What the dashboard would offer: the repo's workers plus `extra`'s, minus
+    /// whatever the compose file already declares.
+    fn offered(repo: &tempfile::TempDir, extra: Vec<PathBuf>) -> Vec<RepoWorker> {
+        let config = load_with(repo, extra);
+        discover_workers(&config.repo_root, &config.worker_dirs, &config.workers)
+    }
+
+    fn load(repo: &tempfile::TempDir) -> Config {
+        load_with(repo, Vec::new())
+    }
+
+    // Pins `start_after` (not `depends_on`, whose `#[serde(default)]` would
+    // silently yield an empty graph) and the watch-script rule in one go.
+    #[test]
+    fn compose_file_is_the_worker_inventory() {
+        let repo = repo_fixture();
+        let config = load(&repo);
+        assert_eq!(config.names(), ["state", "llm-router", "harness"]);
+        assert_eq!(config.worker("llm-router").unwrap().deps, ["state"]);
+        assert!(config.worker("state").unwrap().ui_dir.is_some());
+        // ships a ui/ but only builds it
+        assert!(config.worker("llm-router").unwrap().ui_dir.is_none());
+        assert_eq!(config.namespace, "fixture-ns");
+    }
+
+    #[test]
+    fn dependents_are_transitive() {
+        let repo = repo_fixture();
+        let config = load(&repo);
+        assert_eq!(config.dependents("state"), ["llm-router", "harness"]);
+        assert!(config.dependents("harness").is_empty());
+    }
+
+    // `expand_env` is the one hand-written parser here and the whole
+    // multi-worktree story rests on it.
+    #[test]
+    fn engine_url_expands_the_port_default() {
+        let repo = repo_fixture();
+        assert_eq!(load(&repo).engine_port, 49134);
+        assert_eq!(expand_env("p=${III_TEST_UNSET:-7}").unwrap(), "p=7");
+        assert!(expand_env("${III_TEST_UNSET}").is_err());
+        assert!(expand_env("${III_TEST_UNTERMINATED").is_err());
+    }
+
+    #[test]
+    fn a_workers_dev_yaml_is_refused_with_a_pointer() {
+        let repo = repo_fixture();
+        std::fs::write(repo.path().join("workers-dev.yaml"), "release: true\n").unwrap();
+        let error = Config::load(
+            Some(repo.path().to_path_buf()),
+            Vec::new(),
             None,
             None,
             false,
-            config_path,
-            false,
-            None,
-            false,
         )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("workers-dev.yaml"), "{error}");
+        assert!(error.contains("worker-compose.yaml"), "{error}");
     }
 
+    // The list the dashboard offers for an on-demand start, and the rule that
+    // decides which of them this tool can actually launch from source.
     #[test]
-    fn auto_loads_workers_dev_yaml_from_repo_root() {
-        let tmp = TempDir::new().unwrap();
-        write_repo(&tmp);
-        std::fs::write(
-            tmp.path().join("workers-dev.yaml"),
-            "engine_url: ws://127.0.0.1:55555\n",
-        )
-        .unwrap();
-        let cfg = load(&tmp, None).unwrap();
-        assert_eq!(cfg.engine_url, "ws://127.0.0.1:55555");
-    }
-
-    #[test]
-    fn absent_config_file_means_defaults() {
-        let tmp = TempDir::new().unwrap();
-        write_repo(&tmp);
-        let cfg = load(&tmp, None).unwrap();
-        assert_eq!(cfg.engine_url, DEFAULT_ENGINE_URL);
-    }
-
-    #[test]
-    fn explicit_config_beats_auto_load() {
-        let tmp = TempDir::new().unwrap();
-        write_repo(&tmp);
-        std::fs::write(
-            tmp.path().join("workers-dev.yaml"),
-            "engine_url: ws://127.0.0.1:55555\n",
-        )
-        .unwrap();
-        let other = tmp.path().join("elsewhere.yaml");
-        std::fs::write(&other, "engine_url: ws://127.0.0.1:44444\n").unwrap();
-        let cfg = load(&tmp, Some(other)).unwrap();
-        assert_eq!(cfg.engine_url, "ws://127.0.0.1:44444");
-    }
-
-    #[test]
-    fn config_path_points_at_the_auto_loaded_file_even_when_absent() {
-        let tmp = TempDir::new().unwrap();
-        write_repo(&tmp);
-        let cfg = load(&tmp, None).unwrap();
-        assert_eq!(cfg.config_path, tmp.path().join("workers-dev.yaml"));
-    }
-
-    /// An auto-loaded file's `repo:` key redirects `repo_root` elsewhere, but
-    /// `config_path` must still name the file that was actually read, not a
-    /// path rebuilt from the (now different) final `repo_root`.
-    ///
-    /// No `--repo` here — `repo: None` is required to let `file_cfg.repo`
-    /// reach the final `resolve_repo_root` call at all (an explicit `--repo`
-    /// would win via `.or()` regardless of what the file says). That means
-    /// the auto-load probe itself needs `WORKERS_DEV_REPO` to find `tmp`
-    /// instead of falling through to cwd / CARGO_MANIFEST_DIR, which would
-    /// hit this crate's own real repo. No other test reads that env var, so
-    /// this is safe under `cargo test`'s default parallelism today — but it
-    /// would race a future test that also resolves with `repo: None`.
-    #[test]
-    fn config_path_points_at_the_loaded_file_even_when_repo_key_redirects() {
-        let tmp = TempDir::new().unwrap();
-        write_repo(&tmp);
-        let other_repo = TempDir::new().unwrap();
-        write_repo(&other_repo);
-        std::fs::write(
-            tmp.path().join("workers-dev.yaml"),
-            format!("repo: {}\n", other_repo.path().display()),
-        )
-        .unwrap();
-
-        unsafe {
-            std::env::set_var("WORKERS_DEV_REPO", tmp.path());
+    fn repo_workers_are_everything_the_compose_file_does_not_declare() {
+        let repo = repo_fixture();
+        for (worker, deploy) in [("browser", "binary"), ("scrapling", "bundle")] {
+            std::fs::create_dir_all(repo.path().join(worker)).unwrap();
+            std::fs::write(
+                repo.path().join(worker).join("iii.worker.yaml"),
+                format!("iii: v1\nname: {worker}\ndeploy: {deploy}\nbin: {worker}\n"),
+            )
+            .unwrap();
         }
-        let result = Config::load(None, None, None, false, None, false, None, false);
-        unsafe {
-            std::env::remove_var("WORKERS_DEV_REPO");
-        }
-        let cfg = result.unwrap();
+        // Declared by the compose file, so it belongs to the stack, not the list.
+        std::fs::write(
+            repo.path().join("state").join("iii.worker.yaml"),
+            "iii: v1\nname: state\ndeploy: binary\n",
+        )
+        .unwrap();
 
-        // The redirect really did take effect...
-        assert_eq!(cfg.repo_root, other_repo.path());
-        // ...but config_path must still be the file read from `tmp`, not a
-        // `workers-dev.yaml` reconstructed under `other_repo`.
-        assert_eq!(cfg.config_path, tmp.path().join("workers-dev.yaml"));
+        let offered = offered(&repo, Vec::new());
+        let names: Vec<&str> = offered.iter().map(|worker| worker.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["browser", "scrapling"],
+            "name order, stack excluded"
+        );
+        assert_eq!(offered[0].bin.as_deref(), Some("browser"));
+        // Not a Rust binary: offered, but never started with `cargo run`.
+        assert_eq!(offered[1].bin, None);
     }
 
+    /// Every worker remembers the configured directory it came from, and the
+    /// directories stay contiguous: the dashboard draws one group per root, and
+    /// a global sort by name would interleave them.
     #[test]
-    fn config_path_follows_an_explicit_config_flag() {
-        let tmp = TempDir::new().unwrap();
-        write_repo(&tmp);
-        let other = tmp.path().join("elsewhere.yaml");
-        std::fs::write(&other, "release: false\n").unwrap();
-        let cfg = load(&tmp, Some(other.clone())).unwrap();
-        assert_eq!(cfg.config_path, other);
-    }
-
-    #[test]
-    fn validate_config_text_accepts_and_rejects() {
-        assert!(validate_config_text("stacks:\n  a:\n    - b\n").is_ok());
-        assert!(validate_config_text("stacks:\n  a:\n  - b\n  bad\n").is_err());
-    }
-
-    /// Important fix: a `default_stack:` naming a stack that doesn't exist
-    /// used to pass verification (it's just a `String` to `FileConfig`) and
-    /// only fail on the *next* `Config::load` — after `write_verified` had
-    /// already replaced the user's file.
-    #[test]
-    fn validate_config_text_rejects_a_dangling_default_stack() {
-        let err =
-            validate_config_text("stacks:\n  a:\n    - b\ndefault_stack: nope\n").unwrap_err();
-        assert!(err.to_string().contains("not a defined stack"), "{err:#}");
-
-        // The built-in `harness` stack always exists, even with no `stacks:`
-        // key in the file at all.
-        assert!(validate_config_text("default_stack: harness\n").is_ok());
-        assert!(validate_config_text("stacks:\n  a:\n    - b\ndefault_stack: a\n").is_ok());
-    }
-
-    /// Repo with enough workers to define non-trivial stacks.
-    fn write_repo_multi(tmp: &TempDir) {
-        let mut catalog = String::from("workers:\n");
-        for name in ["harness", "session-manager", "console"] {
-            let dir = tmp.path().join(name);
+    fn workers_are_grouped_by_the_directory_they_came_from() {
+        let repo = repo_fixture();
+        let outside = tempfile::tempdir().unwrap();
+        // Named so a global sort would interleave them with the repo's own.
+        for name in ["aaa", "zzz"] {
+            let dir = outside.path().join(name);
             std::fs::create_dir_all(&dir).unwrap();
-            catalog.push_str(&format!("  {name}:\n    source: {{path: {name}}}\n    artifact: {{kind: rust-binary}}\n    registry: {{dependencies: {{}}}}\n"));
-            std::fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                format!("iii: v1\nname: {name}\ndeploy: binary\n"),
+            )
+            .unwrap();
         }
-        std::fs::write(tmp.path().join("worker-compose.yaml"), catalog).unwrap();
-    }
-
-    fn load_with_yaml(tmp: &TempDir, yaml: &str) -> Result<Config> {
-        std::fs::write(tmp.path().join("workers-dev.yaml"), yaml).unwrap();
-        load(tmp, None)
-    }
-
-    #[test]
-    fn stacks_parse_with_builtin_harness_first() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let cfg = load_with_yaml(
-            &tmp,
-            "stacks:\n  console: [console, session-manager]\ndefault_stack: console\n",
+        std::fs::create_dir_all(repo.path().join("mmm")).unwrap();
+        std::fs::write(
+            repo.path().join("mmm/iii.worker.yaml"),
+            "iii: v1\nname: mmm\ndeploy: binary\n",
         )
         .unwrap();
-        assert_eq!(cfg.default_stack, "console");
-        let names: Vec<&str> = cfg.stacks.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["harness", "console"]);
-        // Built-in harness roots = HARNESS_STACK const filtered to discovered.
-        assert_eq!(cfg.stacks[0].1, vec!["session-manager", "harness"]);
-        assert_eq!(cfg.stacks[1].1, vec!["console", "session-manager"]);
-    }
 
-    #[test]
-    fn stacks_keep_yaml_definition_order() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let cfg = load_with_yaml(
-            &tmp,
-            "stacks:\n  zebra: [console]\n  alpha: [session-manager]\n",
-        )
-        .unwrap();
-        let names: Vec<&str> = cfg.stacks.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["harness", "zebra", "alpha"]);
-        assert_eq!(cfg.default_stack, "harness");
-    }
-
-    #[test]
-    fn stacks_harness_entry_overrides_builtin_roots() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let cfg = load_with_yaml(&tmp, "stacks:\n  harness: [console]\n").unwrap();
-        assert_eq!(cfg.stacks.len(), 1);
-        assert_eq!(cfg.stacks[0].0, "harness");
-        assert_eq!(cfg.stacks[0].1, vec!["console"]);
-    }
-
-    #[test]
-    fn unknown_default_stack_fails() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let err = load_with_yaml(&tmp, "default_stack: nope\n").unwrap_err();
-        assert!(err.to_string().contains("not a defined stack"), "{err:#}");
-    }
-
-    #[test]
-    fn removed_harness_stack_key_fails_with_rename_hint() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let err = load_with_yaml(&tmp, "harness_stack:\n  - harness\n").unwrap_err();
-        assert!(err.to_string().contains("replaced by `stacks:`"), "{err:#}");
-    }
-
-    #[test]
-    fn unknown_stack_roots_warn_and_drop() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let cfg = load_with_yaml(&tmp, "stacks:\n  console: [console, bogus]\n").unwrap();
-        let console = cfg.stacks.iter().find(|(n, _)| n == "console").unwrap();
-        assert_eq!(console.1, vec!["console"]);
-    }
-
-    /// A default stack left with no startable workers (e.g. a `workers:`
-    /// allowlist that excludes every root) must still let `load` succeed —
-    /// only warn — so read-only commands (`status`, `logs`, the TUI) can
-    /// open. `Orchestrator::start_roots` is what refuses to actually start
-    /// it (see orchestrator.rs's `start_roots_refuses_an_empty_root_list`).
-    #[test]
-    fn empty_default_stack_after_filtering_warns_but_still_loads() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let cfg = load_with_yaml(&tmp, "stacks:\n  ghost: [bogus]\ndefault_stack: ghost\n")
-            .expect("a load-time warning must not block a read-only command");
-        assert_eq!(cfg.default_stack, "ghost");
-        let ghost = cfg.stacks.iter().find(|(n, _)| n == "ghost").unwrap();
-        assert!(ghost.1.is_empty(), "{:?}", ghost.1);
-    }
-
-    #[test]
-    fn non_list_stack_value_fails() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let err = load_with_yaml(&tmp, "stacks:\n  console: 5\n").unwrap_err();
-        assert!(
-            err.to_string().contains("expected a list of worker names"),
-            "{err:#}"
+        let offered = offered(&repo, vec![outside.path().to_path_buf()]);
+        let roots: Vec<&std::path::Path> =
+            offered.iter().map(|worker| worker.root.as_path()).collect();
+        let repo_root = repo.path().canonicalize().unwrap();
+        let outside_root = outside.path().canonicalize().unwrap();
+        assert_eq!(
+            roots,
+            [
+                repo_root.as_path(),
+                outside_root.as_path(),
+                outside_root.as_path()
+            ],
+            "the repo first, then the added directory, contiguous"
+        );
+        assert_eq!(
+            offered.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            ["mmm", "aaa", "zzz"],
+            "sorted within each root, not across them"
         );
     }
 
-    /// `workers-dev.yaml` auto-loads from the repo root, so a stack key
-    /// carrying an ANSI escape (or any other control character) must never
-    /// reach `status`/the TUI, which print stack names unescaped. A
-    /// double-quoted YAML scalar can smuggle one in via `\x1b`; `parse_stacks`
-    /// must refuse it at load instead of letting it through to render time.
+    /// A sibling project that is itself one worker — the `harness-e2e` shape.
     #[test]
-    fn parse_stacks_rejects_a_control_character_key() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let err =
-            load_with_yaml(&tmp, "stacks:\n  \"a\\x1b[31mconsole\": [console]\n").unwrap_err();
-        assert!(err.to_string().contains("control characters"), "{err:#}");
+    fn a_worker_dir_outside_the_repo_joins_the_list() {
+        let repo = repo_fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let worker = outside.path().join("harness-e2e");
+        std::fs::create_dir_all(&worker).unwrap();
+        std::fs::write(
+            worker.join("iii.worker.yaml"),
+            "iii: v1\nname: harness-e2e\ndeploy: binary\nbin: harness-e2e\n",
+        )
+        .unwrap();
+
+        // Pointed at the worker itself, not at a directory of workers.
+        let found = offered(&repo, vec![worker.clone()]);
+        let found = found
+            .iter()
+            .find(|candidate| candidate.name == "harness-e2e")
+            .expect("the outside worker is offered");
+        assert_eq!(found.bin.as_deref(), Some("harness-e2e"));
+        assert_eq!(found.dir, worker.canonicalize().unwrap());
+
+        // Pointed at its parent, which is a directory of workers instead.
+        assert!(offered(&repo, vec![outside.path().to_path_buf()])
+            .iter()
+            .any(|candidate| candidate.name == "harness-e2e"));
     }
 
-    /// Same rule, on `default_stack:` — it never goes through `parse_stacks`
-    /// (it's a bare `String` field on `FileConfig`), so it needs its own call
-    /// to the same check.
+    /// The repo is scanned first, so a name it already uses is not replaced by
+    /// a stranger — and a worker the stack declares never appears at all.
     #[test]
-    fn default_stack_rejects_a_control_character_name() {
-        let tmp = TempDir::new().unwrap();
-        write_repo_multi(&tmp);
-        let err = load_with_yaml(&tmp, "default_stack: \"a\\x1b[31m\"\n").unwrap_err();
-        assert!(err.to_string().contains("control characters"), "{err:#}");
+    fn the_repo_wins_a_name_collision() {
+        let repo = repo_fixture();
+        std::fs::create_dir_all(repo.path().join("browser")).unwrap();
+        std::fs::write(
+            repo.path().join("browser/iii.worker.yaml"),
+            "iii: v1\nname: browser\ndeploy: binary\n",
+        )
+        .unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        for name in ["browser", "state"] {
+            let dir = outside.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("iii.worker.yaml"),
+                format!("iii: v1\nname: {name}\ndeploy: binary\n"),
+            )
+            .unwrap();
+        }
+
+        let offered = offered(&repo, vec![outside.path().to_path_buf()]);
+        let browser: Vec<&RepoWorker> = offered
+            .iter()
+            .filter(|worker| worker.name == "browser")
+            .collect();
+        assert_eq!(browser.len(), 1, "one entry per name");
+        assert_eq!(
+            browser[0].dir,
+            repo.path().join("browser").canonicalize().unwrap()
+        );
+        // `state` is a container in the compose file; it is the stack's, not a
+        // candidate to start on demand.
+        assert!(!offered.iter().any(|worker| worker.name == "state"));
+    }
+
+    // The only check that fails when the tracked compose file drifts — the
+    // next ade/ide-style rename lands here first.
+    #[test]
+    fn harness_compose_declares_the_real_inventory() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let config =
+            Config::load(Some(repo), Vec::new(), None, Some("never".into()), false).unwrap();
+        assert_eq!(
+            config.names(),
+            [
+                "queue",
+                "state",
+                "session-manager",
+                "llm-router",
+                "provider-openai-codex",
+                "provider-openai",
+                "provider-anthropic",
+                "context-manager",
+                "iii-directory",
+                "cron",
+                "ade",
+                "ide",
+                "harness",
+            ]
+        );
+        let watchable: Vec<&str> = config
+            .workers
+            .iter()
+            .filter(|worker| worker.ui_dir.is_some())
+            .map(|worker| worker.name.as_str())
+            .collect();
+        assert_eq!(
+            watchable,
+            [
+                "state",
+                "llm-router",
+                "context-manager",
+                "iii-directory",
+                "cron",
+                "ade",
+                "ide",
+                "harness"
+            ]
+        );
+        assert_eq!(config.worker("harness").unwrap().deps.len(), 12);
+        // The rest of the repo is what the dashboard can start on demand.
+        let offered = discover_workers(&config.repo_root, &config.worker_dirs, &config.workers);
+        assert!(offered.len() > 40, "{}", offered.len());
+        assert!(offered
+            .iter()
+            .all(|worker| config.worker(&worker.name).is_none()));
+        assert!(offered.iter().any(|worker| worker.name == "database"));
+    }
+
+    #[test]
+    fn parse_default_url() {
+        assert_eq!(
+            parse_engine_url(DEFAULT_ENGINE_URL).unwrap(),
+            ("127.0.0.1".to_string(), 49134)
+        );
+        assert!(parse_engine_url("ws://127.0.0.1:nope").is_err());
     }
 }

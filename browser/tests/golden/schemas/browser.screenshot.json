@@ -1,6 +1,6 @@
 {
   "function_id": "browser::screenshot",
-  "description": "Screenshot the session's current page as a JPEG. Use browser::snapshot for machine-readable structure; screenshot when layout or rendering matters.",
+  "description": "Screenshot the session's current page as a JPEG (or a lossless PNG with format=png). Use browser::snapshot for machine-readable structure; screenshot when layout or rendering matters.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ScreenshotInput",
@@ -9,6 +9,14 @@
       "session_id"
     ],
     "properties": {
+      "format": {
+        "description": "`jpeg` (default, compressed with the configured quality) or `png` (lossless; what pixel comparisons need).",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "full_page": {
         "description": "Capture the full scrollable page instead of the viewport.",
         "default": null,

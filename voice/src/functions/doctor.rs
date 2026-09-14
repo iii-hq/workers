@@ -19,10 +19,10 @@ pub struct Request {}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SttReport {
-    /// `local`, `router` or `openai`.
+    /// `local`, `whisper_cpp`, `router` or `openai`.
     pub backend: String,
-    /// The model that writes final text: the local accurate model, the
-    /// router model, or the endpoint model.
+    /// The model that writes final text: bundled local, whisper.cpp GGML,
+    /// router, or OpenAI-compatible endpoint model.
     pub model: String,
     pub installed: bool,
     pub loaded: bool,
@@ -34,7 +34,8 @@ pub struct SttReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_ms: Option<u64>,
     pub models_dir: String,
-    /// Set when the configured model id is not in the catalog.
+    /// Set when the local model id is unknown or the selected host/remote
+    /// backend is unavailable or incomplete.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
     /// The second-pass model that gives final text its punctuation and
@@ -94,6 +95,24 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
                 .await
                 .map(|l| l.load_ms as u64),
         },
+        SttBackend::WhisperCpp => {
+            let problem = crate::whisper_cpp::problem(&cfg);
+            SttReport {
+                backend: "whisper_cpp".into(),
+                model: cfg.stt.whisper_cpp.model.clone(),
+                installed: problem.is_none(),
+                loaded: false,
+                live_model: live_model.clone(),
+                live_installed,
+                live_loaded,
+                load_ms: None,
+                models_dir: dir.to_string_lossy().into_owned(),
+                problem,
+                final_model: String::new(),
+                final_state: FinalState::Off,
+                final_load_ms: None,
+            }
+        }
         SttBackend::Router => SttReport {
             backend: "router".into(),
             model: if cfg.stt.router.model.trim().is_empty() {

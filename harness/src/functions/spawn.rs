@@ -124,7 +124,9 @@ pub struct SpawnRequest {
     pub task: MessageInput,
     /// Directory agent profile id (`directory::agents::*`) supplying the
     /// child's prompt, skills, model, and display; refused with
-    /// `options.system_prompt`.
+    /// `options.system_prompt`. Omitted, an in-turn spawn continues the
+    /// parent turn's profile (name `options.system_prompt` for a child that
+    /// needs a different identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     /// Display-only name/icon/color for the child session; never affects ids,

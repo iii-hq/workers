@@ -24,6 +24,14 @@ const DRAIN_GRACE_MS: u64 = 10_000;
 /// transport + queueing before we declare it unresponsive and finalize the job.
 const SANDBOX_RPC_SLACK_MS: u64 = 30_000;
 
+fn resolve_job_id(job_id: Option<String>) -> Result<String, String> {
+    match job_id {
+        Some(id) if id.trim().is_empty() => Err("'job_id' must not be empty or whitespace".into()),
+        Some(id) => Ok(id),
+        None => Ok(format!("job-{}", Uuid::new_v4())),
+    }
+}
+
 pub async fn handle(
     cfg: Arc<ShellConfig>,
     iii: iii_sdk::IIIClient,
@@ -62,7 +70,7 @@ pub async fn handle(
     overrides.stdin = req.stdin;
 
     match req.target {
-        Target::Host => spawn_host_job(cfg, argv, overrides).await,
+        Target::Host => spawn_host_job(req.job_id, cfg, argv, overrides).await,
         Target::Sandbox { sandbox_id } => {
             // cwd/env/stdin are host-only — the sandbox::exec payload does not
             // forward them. Reject loudly (S210 in the message) rather than
@@ -78,35 +86,23 @@ pub async fn handle(
                 );
             }
             // Resolve+clamp timeout for the sandbox path. The host path ignores
-            // the per-call timeout_ms but is no longer unbounded: spawn_host_job
-            // bounds the detached wait by cfg.max_timeout_ms (the hard cap), so a
-            // runaway host bg job is killed and finalized rather than leaking.
+            // the per-call timeout_ms and uses cfg.max_bg_timeout_ms instead
+            // (zero leaves background host jobs unbounded).
             let resolved = cfg.resolve_timeout(req.timeout_ms);
             let fwd: Arc<dyn TriggerFwd> = Arc::new(IiiTriggerFwd::new(iii));
-            spawn_sandbox_job(cfg, fwd, sandbox_id, argv, resolved).await
+            spawn_sandbox_job(req.job_id, cfg, fwd, sandbox_id, argv, resolved).await
         }
     }
 }
 
 pub(crate) async fn spawn_host_job(
+    job_id: Option<String>,
     cfg: Arc<ShellConfig>,
     argv: Vec<String>,
     overrides: ExecOverrides,
 ) -> Result<ExecBgResponse, String> {
+    let id = resolve_job_id(job_id)?;
     let mut cmd = build_command(&argv, &cfg, &overrides)?;
-    let mut child = cmd.spawn().map_err(|e| format!("spawn: {}", e))?;
-    crate::exec::host::pump_stdin(&mut child, &overrides.stdin);
-
-    // Capture the OS pid NOW, before the detached drain task takes the `Child`
-    // out of the handle. Once the task owns the Child, `JobHandle.child` is None
-    // even while the process is alive, so this pid is the only way shell::kill and
-    // the shutdown sweep can still signal the live host process.
-    let host_pid = child.id();
-
-    let stdout_pipe = child.stdout.take();
-    let stderr_pipe = child.stderr.take();
-
-    let id = format!("job-{}", Uuid::new_v4());
     let record = JobRecord {
         id: id.clone(),
         argv: argv.clone(),
@@ -119,39 +115,20 @@ pub(crate) async fn spawn_host_job(
         stdout_truncated: false,
         stderr_truncated: false,
     };
-    // Atomic check-and-insert: prevents a TOCTOU where two concurrent
-    // exec_bg calls both pass a separate running_count() check before
-    // either insert lands. On rejection, kill the orphaned child.
-    let running_guard = match jobs::try_reserve_and_insert(
-        JobHandle {
+    // Reserve before spawning: a rejected duplicate must never execute the
+    // command, even briefly. The registry lock covers check, spawn and insert.
+    let (_, running_guard) = jobs::try_create(&id, cfg.max_concurrent_jobs, || {
+        let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+        crate::exec::host::pump_stdin(&mut child, &overrides.stdin);
+        let host_pid = child.id();
+        Ok(JobHandle {
             record,
+            finalized: false,
             child: Some(child),
             host_pid,
-        },
-        cfg.max_concurrent_jobs,
-    )
-    .await
-    {
-        Ok((_, guard)) => guard,
-        Err((running, mut handle)) => {
-            if let Some(mut ch) = handle.child.take() {
-                // The child was spawned with its own process group
-                // (process_group(0)), and a long-running command may have
-                // already forked descendants before we lost the slot race.
-                // start_kill() only signals the direct leader, leaking the
-                // group — so SIGKILL the whole group. Safe to signal by pid
-                // here: we still own the un-reaped Child, so the pid cannot
-                // have been recycled. THEN reap with wait() to release it.
-                crate::exec::host::kill_process_group(ch.id());
-                let _ = ch.start_kill();
-                let _ = ch.wait().await;
-            }
-            return Err(format!(
-                "max concurrent jobs ({}) reached, currently running: {}",
-                cfg.max_concurrent_jobs, running
-            ));
-        }
-    };
+        })
+    })
+    .await?;
 
     let id_clone = id.clone();
     let limit = cfg.max_output_bytes;
@@ -182,6 +159,12 @@ pub(crate) async fn spawn_host_job(
             }
         };
 
+        // Take the child and pipes together before starting the drains. The
+        // finalize task owns the process without holding its handle lock.
+        let mut child = handle.lock().await.child.take();
+        let stdout_pipe = child.as_mut().and_then(|child| child.stdout.take());
+        let stderr_pipe = child.as_mut().and_then(|child| child.stderr.take());
+
         // Drain stdout/stderr concurrently — sequential reads deadlock
         // once the child fills one pipe's ~64 KiB buffer before closing
         // the other.
@@ -201,13 +184,6 @@ pub(crate) async fn spawn_host_job(
                 (buf, trunc)
             })
         });
-
-        // Take ownership of the Child so we can wait()/kill it without holding
-        // the handle lock across an await.
-        let child = {
-            let mut h = handle.lock().await;
-            h.child.take()
-        };
 
         // Race the child's exit against (a) the hard cap and (b) an external kill
         // request (shell::kill / shutdown sweep, delivered via `kill_notify`). On
@@ -292,21 +268,27 @@ pub(crate) async fn spawn_host_job(
         if h.record.finished_at_ms.is_none() {
             h.record.finished_at_ms = Some(jobs::now_ms());
         }
+        h.finalized = true;
+        let finished = h.record.clone();
         drop(h);
         jobs::unregister_kill_signal(&id_clone);
+        // Announce AFTER the lock is released: a slow subscriber must never
+        // hold up the job that woke it, or the next job's finalize.
+        crate::job_events::fire(&finished).await;
     });
 
     Ok(ExecBgResponse { job_id: id, argv })
 }
 
 pub(crate) async fn spawn_sandbox_job(
+    job_id: Option<String>,
     cfg: Arc<ShellConfig>,
     fwd: Arc<dyn TriggerFwd>,
     sandbox_id: Uuid,
     argv: Vec<String>,
     timeout_ms: u64,
 ) -> Result<ExecBgResponse, String> {
-    let id = format!("job-{}", Uuid::new_v4());
+    let id = resolve_job_id(job_id)?;
     let record = JobRecord {
         id: id.clone(),
         argv: argv.clone(),
@@ -323,27 +305,17 @@ pub(crate) async fn spawn_sandbox_job(
     // The concurrency cap (max_concurrent_jobs) covers both backends
     // uniformly via the running-status count in try_reserve_and_insert.
     // On rejection, there is no orphan process to kill.
-    let running_guard = match jobs::try_reserve_and_insert(
+    let (_, running_guard) = jobs::try_reserve_and_insert(
         JobHandle {
             record,
+            finalized: false,
             child: None,
-            // Sandbox jobs own no local OS process — leave host_pid None so the
-            // kill sweep and shell::kill correctly route them to the sandbox path.
             host_pid: None,
         },
         cfg.max_concurrent_jobs,
     )
     .await
-    {
-        Ok((_, guard)) => guard,
-        Err((running, _)) => {
-            // No orphan child to kill — sandbox jobs don't own a local process.
-            return Err(format!(
-                "max concurrent jobs ({}) reached, currently running: {}",
-                cfg.max_concurrent_jobs, running
-            ));
-        }
-    };
+    .map_err(|(error, _)| error)?;
 
     let id_clone = id.clone();
     let argv_for_payload = argv.clone();
@@ -371,7 +343,8 @@ pub(crate) async fn spawn_sandbox_job(
                 Ok(r) => r,
                 Err(_) => {
                     // RPC deadline blown: finalize the job (unless an external kill
-                    // already did) so its slot/gauge are released, then stop.
+                    // already did), then publish its completion just like a
+                    // normal response before releasing the slot/gauge.
                     if let Some(handle) = jobs::get(&id_clone).await {
                         let mut h = handle.lock().await;
                         if h.record.status == JobStatus::Running {
@@ -384,6 +357,10 @@ pub(crate) async fn spawn_sandbox_job(
                                 h.record.finished_at_ms = Some(jobs::now_ms());
                             }
                         }
+                        h.finalized = true;
+                        let finished = h.record.clone();
+                        drop(h);
+                        crate::job_events::fire(&finished).await;
                     }
                     return;
                 }
@@ -440,6 +417,10 @@ pub(crate) async fn spawn_sandbox_job(
         if !already_killed {
             h.record.finished_at_ms = Some(jobs::now_ms());
         }
+        h.finalized = true;
+        let finished = h.record.clone();
+        drop(h);
+        crate::job_events::fire(&finished).await;
     });
 
     Ok(ExecBgResponse { job_id: id, argv })
@@ -563,6 +544,7 @@ mod host_path_tests {
         // sandbox path uses for timed_out).
         let cfg = cfg(200, 16);
         let resp = spawn_host_job(
+            None,
             cfg,
             vec!["sleep".into(), "5".into()],
             ExecOverrides::default(),
@@ -600,7 +582,7 @@ mod host_path_tests {
         let _gauge_gate = jobs::GAUGE_TEST_GUARD.lock().await;
         // Control: a fast command finishes normally well within the cap.
         let cfg = cfg(5_000, 16);
-        let resp = spawn_host_job(cfg, vec!["true".into()], ExecOverrides::default())
+        let resp = spawn_host_job(None, cfg, vec!["true".into()], ExecOverrides::default())
             .await
             .expect("spawn_host_job");
         let status = await_terminal(&resp.job_id, 2000).await;
@@ -612,104 +594,25 @@ mod host_path_tests {
 
     #[tokio::test]
     async fn host_bg_rejected_at_cap_returns_rejection_error() {
-        // Drive the full public `spawn_host_job` reject path with cap=0 (always
-        // over the budget — deterministic regardless of the global JOBS map
-        // shared across the concurrent test binary, which a cap=1+count test
-        // would race). The spawn must be REJECTED with the cap message; the
-        // "rejected job never enters JOBS, and its child is killed" guarantees
-        // are proved structurally in jobs.rs (`try_reserve_with_zero_cap_*`,
-        // which asserts the handle is returned and never inserted) and at the
-        // OS pid level in `rejected_child_pid_is_dead` below.
+        // The cap check must win before trying to spawn even an invalid
+        // executable. Rejection cannot leave a child or side effects behind.
         let cfg = cfg(30_000, 0);
         let err = spawn_host_job(
-            cfg.clone(),
-            vec!["sleep".into(), "30".into()],
+            None,
+            cfg,
+            vec!["/no-such-executable-for-cap-rejection".into()],
             ExecOverrides::default(),
         )
         .await
-        .expect_err("cap=0 must reject the spawn");
+        .expect_err("cap=0 must reject before spawning");
         assert!(
             err.contains("max concurrent jobs"),
             "rejection message: {err}"
         );
     }
 
-    /// Direct, PID-level proof that the reject arm's child is actually dead
-    /// (not leaked). Mirrors exactly what `spawn_host_job` does on rejection:
-    /// build + spawn a child, capture its PID, then `try_reserve_and_insert`
-    /// with cap=0 (forced rejection) and `start_kill` the returned handle —
-    /// the same two lines as the production reject arm. We then reap the child
-    /// and assert via `kill -0 <pid>` that the OS no longer knows the process.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn rejected_child_pid_is_dead() {
-        use crate::exec::host::build_command;
-        use crate::exec::policy::ExecOverrides;
-        use crate::jobs::{JobHandle, JobRecord};
-
-        let cfg = cfg(30_000, 16);
-        let argv = vec!["sleep".to_string(), "30".to_string()];
-        let mut command =
-            build_command(&argv, &cfg, &ExecOverrides::default()).expect("build_command");
-        let mut child = command.spawn().expect("spawn");
-        let pid = child.id().expect("child has a pid");
-
-        // Sanity: the process is alive right now (kill -0 succeeds).
-        assert!(
-            pid_is_alive(pid),
-            "freshly spawned child should be alive (pid {pid})"
-        );
-
-        let record = JobRecord {
-            id: format!("job-{}", uuid::Uuid::new_v4()),
-            argv: argv.clone(),
-            started_at_ms: jobs::now_ms(),
-            finished_at_ms: None,
-            status: JobStatus::Running,
-            exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
-        };
-        // child.stdout/stderr are still owned by `child`; that's fine — we move
-        // the whole child into the handle and never read its pipes here.
-        // Drain the pipes off the handle the way spawn_host_job does, so the
-        // handle's child is the sole owner of the process.
-        let _ = child.stdout.take();
-        let _ = child.stderr.take();
-
-        // cap=0 forces rejection, returning the handle with its child intact —
-        // exactly the path spawn_host_job hits when over the cap.
-        let (_, mut handle) = jobs::try_reserve_and_insert(
-            JobHandle {
-                record,
-                child: Some(child),
-                host_pid: Some(pid),
-            },
-            0,
-        )
-        .await
-        .expect_err("cap=0 must reject and return the handle");
-
-        // The production reject arm does precisely this:
-        let mut killed_child = handle.child.take().expect("rejected handle owns child");
-        killed_child
-            .start_kill()
-            .expect("start_kill on rejected child");
-        // Reap so the kernel releases the zombie before we probe kill -0.
-        let _ = killed_child.wait().await;
-
-        // The OS must no longer have this pid as a live (non-zombie) process.
-        assert!(
-            !pid_is_alive(pid),
-            "rejected child (pid {pid}) must be dead, not leaked"
-        );
-    }
-
-    /// `kill(pid, 0)` probes for the existence of a *live* process without
-    /// sending a signal. After we wait() the child above, the zombie is reaped,
-    /// so this returns false for a dead process.
+    /// `kill(pid, 0)` probes for a live process without sending a signal.
+    /// Once the finalize task reaps the child, this returns false.
     #[cfg(unix)]
     fn pid_is_alive(pid: u32) -> bool {
         // SAFETY: signal 0 performs error checking only; it never delivers a
@@ -731,6 +634,7 @@ mod host_path_tests {
         let _guard = jobs::HOST_SWEEP_TEST_GUARD.lock().await;
 
         let resp = spawn_host_job(
+            None,
             cfg(60_000, 16),
             vec!["sleep".into(), "30".into()],
             ExecOverrides::default(),
@@ -993,6 +897,6 @@ mod sandbox_path_tests {
         argv: Vec<String>,
         timeout_ms: u64,
     ) -> Result<crate::functions::types::ExecBgResponse, String> {
-        super::spawn_sandbox_job(cfg, fwd, sandbox_id, argv, timeout_ms).await
+        super::spawn_sandbox_job(None, cfg, fwd, sandbox_id, argv, timeout_ms).await
     }
 }
