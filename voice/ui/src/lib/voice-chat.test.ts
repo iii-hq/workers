@@ -139,6 +139,11 @@ describe('final text lookup', () => {
     ] } }))).toBeNull()
     expect(finalReply(entry({ message: { role: 'user', content: [{ type: 'text', text: 'User' }] } }))).toBeNull()
   })
+  it('preserves source Markdown so the worker parses it once before synthesis', () => {
+    const text = '**Olá** com *ênfase*.\n\n```js\nconst raw = "**code**"\n```'
+    expect(finalReply(entry({ message: { role: 'assistant', content: [{ type: 'text', text }] } })))
+      .toEqual({ id: 'reply', text })
+  })
   it('starts from the newest page and uses the final response from the completed turn', async () => {
     const trigger = vi.fn().mockResolvedValue({ messages: [entry({ origin: { turn_id: 'old-turn' } }), entry()], has_more: true })
     expect(await fetchSpokenReply({ trigger } as unknown as ExtensionIii, 'chat', 'new-turn'))

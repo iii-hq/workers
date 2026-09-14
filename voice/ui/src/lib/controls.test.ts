@@ -139,5 +139,6 @@ describe('chat read-aloud controls use current availability on every attempt', (
     await Promise.resolve(); await Promise.resolve()
     expect(playback.state.phase).toBe('speaking')
     expect(speak).toHaveBeenCalledTimes(2)
+    expect(speak).toHaveBeenLastCalledWith({}, { text: 'Hello.', text_format: 'markdown' })
   })
 })

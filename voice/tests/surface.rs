@@ -57,6 +57,26 @@ fn request_schemas_name_their_required_fields() {
 }
 
 #[test]
+fn speech_text_format_defaults_to_markdown_but_supports_literal_text() {
+    use voice::speech_text::{prepare, TextFormat};
+    let req: functions::speak::Request =
+        serde_json::from_value(serde_json::json!({"text": "**Olá**"})).unwrap();
+    assert_eq!(prepare(&req.text, req.text_format, 100).unwrap(), "Olá");
+    let req: functions::speak::Request =
+        serde_json::from_value(serde_json::json!({"text": "**literal**", "text_format": "plain"}))
+            .unwrap();
+    assert!(matches!(req.text_format, TextFormat::Plain));
+    assert_eq!(
+        prepare(&req.text, req.text_format, 100).unwrap(),
+        "**literal**"
+    );
+    assert!(serde_json::from_value::<functions::speak::Request>(
+        serde_json::json!({"text": "Hello", "text_format": "html"})
+    )
+    .is_err());
+}
+
+#[test]
 fn the_manifest_default_config_round_trips() {
     let manifest = manifest::build_manifest();
     let parsed = WorkerConfig::from_json(&manifest.default_config).expect("default config parses");

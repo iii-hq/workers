@@ -44,6 +44,8 @@ sha2 = "0.10"
 hound = "3"
 tempfile = "3"
 which = "8"
+# CommonMark parsing for speech text; same parser used by telegram-bot.
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [patch.crates-io]
 sherpa-onnx-sys = { path = "vendor/sherpa-onnx-sys" }

@@ -12,7 +12,8 @@ use crate::tts::Spoken;
 pub const ID: &str = "voice::speak";
 pub const DESC: &str = "Synthesize text and return audio_base64 plus mime to the requesting caller. \
                         Every backend (host, piper, openai, router) returns audio for client-side playback; \
-                        nothing plays on the worker machine. host uses say/espeak; piper uses a local neural voice.";
+                        nothing plays on the worker machine. Markdown formatting is omitted by default; \
+                        set text_format=plain for literal text. host uses say/espeak; piper uses a local neural voice.";
 
 pub const STOP_ID: &str = "voice::speak::stop";
 pub const STOP_DESC: &str =
@@ -21,8 +22,11 @@ pub const STOP_DESC: &str =
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {
-    /// What to say. Capped by tts.max_speak_chars.
+    /// What to say. Markdown is converted to prose before tts.max_speak_chars is applied.
     pub text: String,
+    /// `markdown` (default) removes presentation syntax; `plain` keeps literal symbols.
+    #[serde(default)]
+    pub text_format: crate::speech_text::TextFormat,
     /// Voice name for the backend; empty uses the configured default.
     #[serde(default)]
     pub voice: Option<String>,
@@ -35,8 +39,8 @@ pub type Response = Spoken;
 
 pub async fn handle(state: &AppState, req: Request) -> Result<Response, String> {
     let cfg = state.cfg.read().await.clone();
+    let text = crate::speech_text::prepare(&req.text, req.text_format, cfg.tts.max_speak_chars)?;
     if cfg.tts.backend == TtsBackend::Router {
-        let text = crate::tts::clip_text(&req.text, cfg.tts.max_speak_chars)?;
         let (audio, mime, _model) =
             crate::router::speak(&state.iii, &cfg, &text, req.voice.as_deref()).await?;
         return Ok(Spoken {
@@ -49,7 +53,7 @@ pub async fn handle(state: &AppState, req: Request) -> Result<Response, String> 
     }
     state
         .speaker
-        .speak(&cfg, &req.text, req.voice.as_deref(), req.rate_wpm)
+        .speak(&cfg, &text, req.voice.as_deref(), req.rate_wpm)
         .await
 }
 

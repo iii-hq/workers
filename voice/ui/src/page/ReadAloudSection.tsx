@@ -24,7 +24,7 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
   const busy = state.phase === 'speaking' || state.phase === 'loading'
   const onSpeak = () => {
     const body = selectedText || text.trim()
-    if (body) void play(() => speak(host.iii, { text: body }))
+    if (body) void play(() => speak(host.iii, { text: body, text_format: 'markdown' }))
   }
 
   return (
@@ -46,7 +46,8 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
           aria-label="text to read aloud"
           placeholder="Type something to hear it…"
         />
-        <p className="voice-note">Select a passage above to read only that text, or leave it unselected to read everything.</p>
+        <p className="voice-note">Select a passage above to read only that text, or leave it unselected to read everything.
+          {' '}Markdown formatting (bold, italics, headings and links) is not spoken; fenced code blocks are skipped.</p>
         <div className="voice-inline-actions">
           {busy ? (
             <Button variant="primary" onClick={stop}>

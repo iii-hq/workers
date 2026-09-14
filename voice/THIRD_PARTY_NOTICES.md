@@ -69,6 +69,13 @@ The importer pins SHA-256 for every file, using LFS metadata for weights and
 Git-blob-verified downloads for small metadata. Review the individual card and
 dataset terms before redistribution or use.
 
+## Markdown speech preparation
+
+The worker uses `pulldown-cmark` 0.13 (MIT) to extract spoken prose from
+CommonMark/GFM input. This is a parser only: no Markdown HTML is rendered, no
+scripts are executed and no linked resources are fetched.
+Source: https://github.com/pulldown-cmark/pulldown-cmark.
+
 ## Optional network services
 
 With `stt.backend: openai` or `tts.backend: openai` the worker sends audio or text to the endpoint the user configures (OpenAI or any compatible server) under that service's own terms. Nothing is sent unless the user selects that engine.

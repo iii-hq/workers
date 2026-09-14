@@ -136,6 +136,27 @@ iii trigger voice::doctor
 
 ## Natural local voice and voice chat
 
+### Read words, not Markdown markers
+
+Read aloud and Voice chat convert Markdown to prose on the worker, before any
+TTS backend runs. `**bold**`, `*italic*`, headings, list bullets, checkboxes and
+table separators are not pronounced. Links keep their visible label, not the
+hidden URL; image descriptions and inline-code text are kept. Fenced/indented
+code blocks, raw HTML blocks and footnote bodies are omitted. No HTML is
+rendered and no link is fetched during conversion.
+
+For example, `Use **Piper** para *ler*` becomes `Use Piper para ler`. Literal
+punctuation and symbols are preserved rather than deleting all asterisks or
+underscores: `2 * 3`, `snake_case` and escaped markers remain literal.
+
+The `voice::speak` request accepts `text_format: "markdown"` (default) or
+`text_format: "plain"` to preserve text literally. The chat's selected-passage
+button uses `plain` because it receives already-rendered text; full replies,
+automatic reading and the Voice text area use `markdown`. Conversion affects
+only the speech input, never the saved message. `tts.max_speak_chars` is checked
+against the converted text; if no readable prose remains, the request reports
+an empty-text error instead of generating audio for formatting symbols.
+
 ### Listening and reading model configuration
 
 The Models page separates model selection and downloads into two independent

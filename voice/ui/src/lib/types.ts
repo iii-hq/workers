@@ -84,16 +84,14 @@ export interface TranscribeResponse {
 
 export type SpeakRequest = {
   text: string
+  /** Markdown prose by default; plain preserves already-rendered selections. */
+  text_format?: 'markdown' | 'plain'
   voice?: string
   rate_wpm?: number
 }
 
-/**
- * `speech_id` identifies this utterance for a later, specific
- * `voice::speak::stop`. On the `host` backend the call returns as soon as
- * playback STARTS, not when it ends — `played: true` does not mean the
- * speech has finished.
- */
+/** Every backend returns audio to the caller; speech_id identifies the synthesis result.
+ * Playback and Stop are local to the requesting browser. */
 export interface SpeakResponse {
   backend: 'host' | 'piper' | 'openai' | 'router'
   speech_id: string

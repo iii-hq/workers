@@ -1,5 +1,4 @@
 import type { ExtensionIii, SessionMessageEntry } from './types'
-import { stripCodeFences } from './format'
 
 export interface SpokenReply { id: string; text: string }
 interface TurnEvent {
@@ -15,7 +14,7 @@ export function finalReply(entry: SessionMessageEntry, turnId?: string): SpokenR
   if (entry.message?.role !== 'assistant' || entry.elided || (turnId && entry.origin?.turn_id !== turnId)) return null
   const content = entry.message.content ?? []
   if (content.some((block) => block.type === 'function_call')) return null
-  const text = stripCodeFences(content.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('\n')).trim()
+  const text = content.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('\n').trim()
   return text ? { id: entry.entry_id, text } : null
 }
 

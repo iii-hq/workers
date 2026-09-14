@@ -9,6 +9,7 @@ pub mod models;
 mod piper_catalog;
 pub mod router;
 pub mod session;
+pub mod speech_text;
 pub mod tts;
 pub mod ui;
 pub mod whisper_cpp;

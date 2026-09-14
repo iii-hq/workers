@@ -39,7 +39,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
           onStarted: onStop,
           onReply: (reply) => {
             setLastReply(reply)
-            void play(() => speak(host.iii, { text: reply.text }))
+            void play(() => speak(host.iii, { text: reply.text, text_format: 'markdown' }))
           },
           onError: (error) => setAutoError(errorMessage(error)),
         })
@@ -74,7 +74,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
     useEffect(() => { if (speakState.phase === 'error') setAutoSession(null) }, [speakState.phase])
 
     const onReadAloud = () => {
-      if (lastReply) void play(() => speak(host.iii, { text: lastReply.text }))
+      if (lastReply) void play(() => speak(host.iii, { text: lastReply.text, text_format: 'markdown' }))
     }
 
 
@@ -90,7 +90,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
         </button>
         {selected && !busy ? <button type="button" className="voice-turn-action"
           onPointerDown={(event) => event.preventDefault()}
-          onClick={() => { const text = selected; void play(() => speak(host.iii, { text })) }}
+          onClick={() => { const text = selected; void play(() => speak(host.iii, { text, text_format: 'plain' })) }}
           title={`Read only the selected passage (${selected.length} characters)`}>
           <SpeakerIcon />Read selection
         </button> : null}
