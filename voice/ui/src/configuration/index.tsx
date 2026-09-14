@@ -17,9 +17,15 @@ import {
   SettingsField,
   SettingsList,
   SettingsSection,
+  StatusPanel,
 } from '@iii-dev/console-ui'
-import { useEffect, useState } from 'react'
-import { modelsList } from '../lib/client'
+import { useCallback, useEffect, useState } from 'react'
+import { modelsDownload, modelsList } from '../lib/client'
+import { ModelDownload } from '../lib/ModelDownload'
+import { PiperVoicePicker } from '../lib/PiperVoicePicker'
+import { errorMessage } from '../lib/format'
+import { modelOptions } from '../lib/models'
+import { useModelProgress } from '../lib/progress'
 import { DEFAULTS, NONE, numberAt, setPath, stringAt } from '../lib/config'
 import { routerModelOptions, useRouterSpeechModels } from '../lib/router'
 import type { ModelInfo } from '../lib/types'
@@ -36,6 +42,28 @@ export function createVoiceConfigForm(host: Host) {
   return function VoiceConfigForm(props: ConfigFormProps) {
     const { value, onChange } = props
     const [models, setModels] = useState<ModelInfo[] | null>(null)
+    const [downloading, setDownloading] = useState<string | null>(null)
+    const [downloadError, setDownloadError] = useState<string | null>(null)
+    const refreshModels = useCallback(() => {
+      void modelsList(host.iii).then((res) => setModels(res.models))
+        .catch((err) => setDownloadError(errorMessage(err)))
+    }, [])
+    const progress = useModelProgress(host, refreshModels)
+    const downloadModel = (id: string) => {
+      setDownloading(id)
+      setDownloadError(null)
+      void modelsDownload(host.iii, { id })
+        .then(() => modelsList(host.iii))
+        .then((res) => setModels(res.models))
+        .catch((err) => setDownloadError(errorMessage(err)))
+        .finally(() => setDownloading(null))
+    }
+    const downloadControl = (id: string) => {
+      const model = models?.find((m) => m.id === id)
+      if (!model) return null
+      return <ModelDownload model={model} progress={progress[id]} busy={downloading === id}
+        disabled={downloading !== null} onDownload={() => downloadModel(id)} />
+    }
 
     useEffect(() => {
       let cancelled = false
@@ -43,8 +71,11 @@ export function createVoiceConfigForm(host: Host) {
         .then((res) => {
           if (!cancelled) setModels(res.models)
         })
-        .catch(() => {
-          if (!cancelled) setModels([])
+        .catch((err) => {
+          if (!cancelled) {
+            setModels([])
+            setDownloadError(errorMessage(err))
+          }
         })
       return () => {
         cancelled = true
@@ -86,11 +117,15 @@ export function createVoiceConfigForm(host: Host) {
     const liveModel = stringAt(value, ['stt', 'model'], DEFAULTS.model)
     const offline = (models ?? []).filter((m) => m.kind === 'offline_nemo_transducer')
     const streaming = (models ?? []).filter((m) => m.kind === 'streaming_transducer')
+    const whisper = (models ?? []).filter((m) => m.kind === 'whisper_ggml')
+    const whisperModel = stringAt(value, ['stt', 'whisper_cpp', 'model'], DEFAULTS.whisperCppModel)
+    const customWhisper = !whisper.some((m) => m.id === whisperModel)
     const routerStt = useRouterSpeechModels(host.iii, 'stt', sttBackend === 'router')
     const routerTts = useRouterSpeechModels(host.iii, 'tts', ttsBackend === 'router')
 
     return (
       <>
+        {downloadError ? <StatusPanel variant="alert" headline="Model download or catalog failed" detail={downloadError} /> : null}
         <SettingsSection
           title="Speech to text"
           description="Where spoken words become text. Bundled models and whisper.cpp run on this machine; remote engines send audio to their configured provider."
@@ -146,8 +181,9 @@ export function createVoiceConfigForm(host: Host) {
               <>
                 <SettingsField
                   label="Accurate model"
-                  description="Re-decodes each sentence after you pause, adding punctuation and casing. This is the text you keep. None keeps only the live words."
+                  description="Re-decodes each sentence after you pause, adding punctuation and casing. This is the text you keep. None keeps only the live words. Downloads use the saved models directory; save directory changes first."
                   renderControl={(c) => (
+                    <span className="voice-choice">
                     <Select
                       id={c.id}
                       value={finalModel === '' ? NONE : finalModel}
@@ -161,12 +197,15 @@ export function createVoiceConfigForm(host: Host) {
                         { value: NONE, label: 'None: live words only', description: 'Fast, no punctuation' },
                       ]}
                     />
+                    {downloadControl(finalModel)}
+                    </span>
                   )}
                 />
                 <SettingsField
                   label="Live model"
                   description="Small streaming model that shows words as you speak and decides where a sentence ends."
                   renderControl={(c) => (
+                    <span className="voice-choice">
                     <Select
                       id={c.id}
                       value={liveModel}
@@ -177,6 +216,8 @@ export function createVoiceConfigForm(host: Host) {
                         ...(streaming.some((m) => m.id === liveModel) ? [] : [{ value: liveModel, label: liveModel }]),
                       ]}
                     />
+                    {downloadControl(liveModel)}
+                    </span>
                   )}
                 />
                 <SettingsField
@@ -252,17 +293,29 @@ export function createVoiceConfigForm(host: Host) {
                   )}
                 />
                 <SettingsField
-                  label="GGML model path"
-                  description="Use a multilingual model such as ggml-large-v3-turbo.bin for Portuguese. Relative paths start at the Compose project directory."
+                  label="Whisper model"
+                  description="Multilingual GGML weights. Larger models need more memory and processing time. Download uses the saved models directory; save directory changes first. whisper-cli is installed separately."
                   renderControl={(c) => (
-                    <Input
-                      id={c.id}
-                      value={stringAt(value, ['stt', 'whisper_cpp', 'model'], DEFAULTS.whisperCppModel)}
-                      onChange={(raw) => set(['stt', 'whisper_cpp', 'model'], raw)}
-                      preserveCase
-                    />
+                    <span className="voice-choice">
+                      <Select id={c.id} value={customWhisper ? '__custom__' : whisperModel}
+                        disabled={models === null || downloading !== null}
+                        onChange={(next) => set(['stt', 'whisper_cpp', 'model'], next === '__custom__' ? '' : next)}
+                        options={[
+                          ...modelOptions(whisper, ''),
+                          { value: '__custom__', label: 'Custom GGML file path' },
+                        ]} />
+                      {downloadControl(whisperModel)}
+                    </span>
                   )}
                 />
+                {customWhisper ? <SettingsField
+                  label="GGML model path"
+                  description="An existing model file. Relative paths start at the Compose project directory. Custom paths are not downloaded or deleted by the worker."
+                  renderControl={(c) => (
+                    <Input id={c.id} value={whisperModel}
+                      onChange={(raw) => set(['stt', 'whisper_cpp', 'model'], raw)} preserveCase />
+                  )}
+                /> : null}
                 <SettingsField
                   label="Language"
                   description="ISO 639-1 code such as pt, or auto to detect the language. A request can override this value."
@@ -369,14 +422,15 @@ export function createVoiceConfigForm(host: Host) {
           <SettingsList>
             <SettingsField
               label="Engine"
-              description="The host command plays on the machine running the worker (say on macOS, espeak-ng on Linux). A router speech provider or an OpenAI-compatible endpoint returns audio to the browser."
+              description="All engines return audio to the requesting browser. Local synthesis uses say (macOS) or espeak-ng (Linux) on the worker without playing on the server."
               renderControl={(c) => (
                 <Select
                   id={c.id}
                   value={ttsBackend}
                   onChange={(next) => set(['tts', 'backend'], next)}
                   options={[
-                    { value: 'host', label: "This machine's speech command" },
+                    { value: 'piper', label: 'Piper · natural local voice' },
+                    { value: 'host', label: 'System voice · basic / robotic' },
                     { value: 'router', label: 'A speech provider through llm-router' },
                     { value: 'openai', label: 'OpenAI-compatible endpoint' },
                     { value: 'off', label: 'Off' },
@@ -384,6 +438,26 @@ export function createVoiceConfigForm(host: Host) {
                 />
               )}
             />
+            {ttsBackend === 'piper' ? (
+              <>
+                <SettingsField label="Neural voice" description="Enter your language, choose a matching voice, then download it. Piper generates audio on the worker for your browser. Downloads use the saved models directory; save directory changes first."
+                  renderControl={(c) => <PiperVoicePicker controlId={c.id} models={models}
+                    selected={stringAt(value, ['tts', 'piper', 'model'], DEFAULTS.piperModel)}
+                    disabled={downloading !== null} busyId={downloading} progress={progress}
+                    onSelect={(next) => set(['tts', 'piper', 'model'], next)} onDownload={downloadModel} />} />
+                <SettingsField label="Processing device" description="Auto requests NVIDIA CUDA first and falls back to CPU. GPU needs a compatible driver, CUDA/cuDNN and onnxruntime-gpu in Piper's environment; nothing is installed automatically. This does not change the voice or your listening models."
+                  renderControl={(c) => <Select id={c.id}
+                    value={stringAt(value, ['tts', 'piper', 'device'], DEFAULTS.piperDevice)}
+                    onChange={(next) => set(['tts', 'piper', 'device'], next)}
+                    options={[
+                      { value: 'auto', label: 'Automatic · prefer GPU, fall back to CPU' },
+                      { value: 'cpu', label: 'CPU only' },
+                    ]} />} />
+                <SettingsField label="Piper executable" description="Install piper-tts on the worker. Use an absolute executable path if it is not on the worker's PATH."
+                  renderControl={(c) => <Input id={c.id} value={stringAt(value, ['tts', 'piper', 'command'], DEFAULTS.piperCommand)}
+                    onChange={(raw) => set(['tts', 'piper', 'command'], raw)} preserveCase />} />
+              </>
+            ) : null}
             {ttsBackend === 'router' ? (
               <>
                 <SettingsField

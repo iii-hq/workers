@@ -1,76 +1,58 @@
-/**
- * The `voice-read-aloud` turn-summary registration: a compact row above the
- * composer with a "Read aloud" action. It walks `session::messages` for the
- * last assistant text, strips markdown code fences, and calls
- * `voice::speak`. The `openai` backend returns `audio_base64`, played
- * through an `<audio>` element with a real `onended`. The `host` backend
- * returns as soon as playback STARTS (`played: true`, no audio) — "Stop" is
- * hidden by whichever comes first: an estimated duration (~150 wpm, capped
- * the worker's `voice::speech-ended` trigger for host playback.
- * faster than every 2s. "Stop" calls `voice::speak::stop` with the
- * utterance's `speech_id`. Hidden while the turn is streaming; disabled
- * with a tooltip when the doctor reports the tts backend `off`.
- */
+/** Read the last assistant reply in this browser, never on the worker's host. */
 
 import type { Host, SessionTurnSummaryProps, SessionTurnSummaryRegistration } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { doctor, speak, speakStop } from '../lib/client'
-import { errorMessage, stripCodeFences } from '../lib/format'
+import { useEffect, useRef, useState } from 'react'
+import { doctor, speak } from '../lib/client'
+import { errorMessage } from '../lib/format'
 import { SpeakerIcon } from '../lib/icons'
-import { useSpeechEnded } from '../lib/playback'
-import type { SessionContentBlock, SessionMessageEntry, SessionMessagesResponse } from '../lib/types'
-
-const MAX_PAGES = 20
-
-function extractAssistantText(entry: SessionMessageEntry): string | null {
-  const blocks = entry.message?.content
-  if (!blocks) return null
-  const text = blocks
-    .filter((block): block is SessionContentBlock & { text: string } => block.type === 'text' && !!block.text)
-    .map((block) => block.text)
-    .join('\n')
-    .trim()
-  return text ? stripCodeFences(text) : null
-}
-
-async function fetchLastAssistantText(host: Host, sessionId: string): Promise<string | null> {
-  let cursor: string | undefined
-  let lastText: string | null = null
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const res = await host.iii.trigger<SessionMessagesResponse>('session::messages', {
-      session_id: sessionId,
-      roles: ['assistant'],
-      limit: 100,
-      cursor,
-    })
-    for (const entry of res.messages) {
-      const text = extractAssistantText(entry)
-      if (text) lastText = text
-    }
-    if (!res.next_cursor) break
-    cursor = res.next_cursor
-  }
-  return lastText
-}
-
-type SpeakState =
-  | { phase: 'idle' }
-  | { phase: 'loading' }
-  | { phase: 'speaking'; speechId?: string }
-  | { phase: 'error'; message: string }
+import { useBrowserPlayback } from '../lib/playback'
+import { fetchSpokenReply, selectedChatText, subscribeAutoReplies, type SpokenReply } from '../lib/voice-chat'
 
 export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistration {
   function VoiceTurnSummary({ sessionId, isStreaming }: SessionTurnSummaryProps) {
     const [ttsOff, setTtsOff] = useState(false)
-    const [speakState, setSpeakState] = useState<SpeakState>({ phase: 'idle' })
-    const audioRef = useRef<HTMLAudioElement | null>(null)
-    const [lastReply, setLastReply] = useState<string | null>(null)
+    const { state: speakState, play, stop: onStop } = useBrowserPlayback()
+    const [lastReply, setLastReply] = useState<SpokenReply | null>(null)
+    const [selected, setSelected] = useState('')
+    const [autoSession, setAutoSession] = useState<string | null>(null)
+    const [autoError, setAutoError] = useState<string | null>(null)
+    const autoRead = autoSession === sessionId
+    const replyRef = useRef(lastReply)
+    replyRef.current = lastReply
     const hasReply = lastReply !== null
+
+    useEffect(() => {
+      setSelected('')
+      setAutoSession(null)
+      setAutoError(null)
+      setLastReply(null)
+      const update = () => setSelected(selectedChatText(window.getSelection(), sessionId))
+      document.addEventListener('selectionchange', update)
+      return () => document.removeEventListener('selectionchange', update)
+    }, [sessionId])
+
+    useEffect(() => {
+      if (!autoRead || ttsOff) return
+      try {
+        return subscribeAutoReplies(host.iii, sessionId, {
+          initialReplyId: replyRef.current?.id,
+          readReply: (turnId) => fetchSpokenReply(host.iii, sessionId, turnId),
+          onStarted: onStop,
+          onReply: (reply) => {
+            setLastReply(reply)
+            void play(() => speak(host.iii, { text: reply.text }))
+          },
+          onError: (error) => setAutoError(errorMessage(error)),
+        })
+      } catch (error) {
+        setAutoError(errorMessage(error))
+      }
+    }, [sessionId, autoRead, ttsOff, play, onStop])
 
     useEffect(() => {
       if (isStreaming) return
       let cancelled = false
-      fetchLastAssistantText(host, sessionId)
+      fetchSpokenReply(host.iii, sessionId)
         .then((text) => {
           if (!cancelled) setLastReply(text)
         })
@@ -86,7 +68,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
       let cancelled = false
       doctor(host.iii)
         .then((res) => {
-          if (!cancelled) setTtsOff(res.tts.backend === 'off')
+          if (!cancelled) setTtsOff(res.tts.backend === 'off' || !res.tts.available)
         })
         .catch(() => {
           if (!cancelled) setTtsOff(false)
@@ -96,83 +78,46 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
       }
     }, [])
 
-    useSpeechEnded(host, (event) => {
-      setSpeakState((current) =>
-        current.phase === 'speaking' && (!current.speechId || current.speechId === event.speech_id)
-          ? { phase: 'idle' }
-          : current,
-      )
-    })
+    // A different chat must not inherit playback or a pending response.
+    useEffect(() => () => onStop(), [sessionId, onStop])
 
-    const speakOpRef = useRef(0)
+    // Surface autoplay policy failures and stop automatic retries until the user opts in again.
+    useEffect(() => { if (speakState.phase === 'error') setAutoSession(null) }, [speakState.phase])
 
-    useEffect(
-      () => () => {
-        speakOpRef.current += 1
-        audioRef.current?.pause()
-      },
-      [],
-    )
+    const onReadAloud = () => {
+      if (lastReply) void play(() => speak(host.iii, { text: lastReply.text }))
+    }
 
-    const onReadAloud = useCallback(async () => {
-      const op = ++speakOpRef.current
-      setSpeakState({ phase: 'loading' })
-      try {
-        const text = lastReply ?? (await fetchLastAssistantText(host, sessionId))
-        if (op !== speakOpRef.current) return
-        if (!text) {
-          setSpeakState({ phase: 'idle' })
-          return
-        }
-        const res = await speak(host.iii, { text })
-        if (op !== speakOpRef.current) {
-          if (res.speech_id) speakStop(host.iii, { speech_id: res.speech_id }).catch(() => {})
-          return
-        }
-        if (res.audio_base64) {
-          const mime = res.mime ?? 'audio/mpeg'
-          const audio = new Audio(`data:${mime};base64,${res.audio_base64}`)
-          audioRef.current = audio
-          audio.onended = () => setSpeakState({ phase: 'idle' })
-          audio.onerror = () => setSpeakState({ phase: 'error', message: 'playback failed' })
-          await audio.play()
-          setSpeakState({ phase: 'speaking', speechId: res.speech_id })
-        } else if (res.played) {
-          setSpeakState({ phase: 'speaking', speechId: res.speech_id })
-        } else {
-          setSpeakState({ phase: 'idle' })
-        }
-      } catch (err) {
-        if (op === speakOpRef.current) setSpeakState({ phase: 'error', message: errorMessage(err) })
-      }
-    }, [sessionId, lastReply])
-
-    const onStop = useCallback(() => {
-      speakOpRef.current += 1
-      audioRef.current?.pause()
-      audioRef.current = null
-      const speechId = speakState.phase === 'speaking' ? speakState.speechId : undefined
-      speakStop(host.iii, speechId ? { speech_id: speechId } : {}).catch(() => {})
-      setSpeakState({ phase: 'idle' })
-    }, [speakState])
-
-    if (isStreaming || !hasReply) return null
 
     const busy = speakState.phase === 'speaking' || speakState.phase === 'loading'
 
     return (
       <div className="voice-turn-summary">
+        <button type="button" className="voice-turn-action" aria-pressed={autoRead}
+          disabled={ttsOff} title="Read new completed replies automatically in this browser. Does not send messages or keep the microphone open."
+          onClick={() => { setAutoError(null); setAutoSession(autoRead ? null : sessionId); if (autoRead) onStop() }}>
+          <SpeakerIcon />
+          {autoRead ? 'Voice chat on' : 'Voice chat'}
+        </button>
+        {selected && !busy ? <button type="button" className="voice-turn-action" disabled={ttsOff}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => { const text = selected; void play(() => speak(host.iii, { text })) }}
+          title={`Read only the selected passage (${selected.length} characters)`}>
+          <SpeakerIcon />Read selection
+        </button> : null}
         <button
           type="button"
           className="voice-turn-action"
-          disabled={ttsOff}
+          disabled={ttsOff || (!busy && (!hasReply || isStreaming))}
           title={ttsOff ? 'text-to-speech is off' : busy ? 'Stop reading' : 'Read the last reply aloud'}
           aria-label={busy ? 'Stop reading aloud' : 'Read aloud'}
-          onClick={busy ? onStop : onReadAloud}
+          onClick={busy ? () => { setAutoSession(null); onStop() } : onReadAloud}
         >
           <SpeakerIcon />
           <span>{busy ? 'Stop' : 'Read aloud'}</span>
         </button>
+        {autoError ? <span className="voice-turn-error" role="alert">{autoError}</span> : null}
+        {autoRead ? <span className="voice-sub">New replies will be read automatically here.</span> : null}
         {speakState.phase === 'error' ? <span className="voice-turn-error">{speakState.message}</span> : null}
       </div>
     )

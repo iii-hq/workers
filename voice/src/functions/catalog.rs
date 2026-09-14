@@ -27,8 +27,8 @@ pub struct ListRequest {}
 pub struct ModelEntry {
     pub id: String,
     pub name: String,
-    /// `streaming_transducer` (live partials) or `offline_nemo_transducer`
-    /// (second pass).
+    /// `streaming_transducer` (live partials), `offline_nemo_transducer`
+    /// (second pass), `whisper_ggml` (whisper-cli weights), or `piper_onnx` (neural TTS).
     pub kind: crate::models::ModelKind,
     pub languages: Vec<String>,
     /// SPDX id of the model weights' license.

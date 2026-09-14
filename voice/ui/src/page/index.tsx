@@ -44,7 +44,7 @@ const SECTIONS: { id: SectionId; label: string; description: string; icon: typeo
   { id: 'overview', label: 'Overview', description: 'Engines and sessions', icon: ActivityIcon },
   { id: 'dictate', label: 'Dictate', description: 'Speak, then send', icon: MicIcon },
   { id: 'transcribe', label: 'Transcribe', description: 'A recording to text', icon: FileAudioIcon },
-  { id: 'models', label: 'Models', description: 'What is on disk', icon: LayersIcon },
+  { id: 'models', label: 'Models', description: 'Listening and reading voices', icon: LayersIcon },
   { id: 'speak', label: 'Read aloud', description: 'Text to speech', icon: SpeakerIcon },
 ]
 
@@ -76,11 +76,8 @@ export function VoicePage({
       setReport(nextReport)
       setSessions(nextSessions.sessions)
       setReportError(null)
-      if (nextReport.stt.backend === 'local') {
-        setModels(await modelsList(host.iii))
-      } else {
-        setModels(null)
-      }
+      // Dictation always uses a local live model, even with a remote final pass.
+      setModels(await modelsList(host.iii))
     } catch (err) {
       setReportError(errorMessage(err))
     } finally {

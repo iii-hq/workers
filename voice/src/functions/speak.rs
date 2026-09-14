@@ -10,15 +10,14 @@ use crate::config::TtsBackend;
 use crate::tts::Spoken;
 
 pub const ID: &str = "voice::speak";
-pub const DESC: &str = "Read text aloud. On the host backend playback starts on the machine running \
-                        the worker and the call returns at once with a speech_id and voice::speech-ended \
-                        fires when it is over; on the openai and router backends the audio comes back \
-                        base64 for the caller to play.";
+pub const DESC: &str = "Synthesize text and return audio_base64 plus mime to the requesting caller. \
+                        Every backend (host, piper, openai, router) returns audio for client-side playback; \
+                        nothing plays on the worker machine. host uses say/espeak; piper uses a local neural voice.";
 
 pub const STOP_ID: &str = "voice::speak::stop";
 pub const STOP_DESC: &str =
-    "Stop host playback: one speech_id, or every playback this worker started \
-                             when none is given.";
+    "Legacy server-playback stop (returns stopped=0). Audio is now returned \
+                            to the caller; stop its local audio element to stop browser playback.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {
@@ -56,14 +55,14 @@ pub async fn handle(state: &AppState, req: Request) -> Result<Response, String> 
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct StopRequest {
-    /// A specific playback; omit to stop them all.
+    /// Legacy playback id; no effect on client-side audio.
     #[serde(default)]
     pub speech_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct StopResponse {
-    /// How many playbacks were still running and got stopped.
+    /// Always zero: playback is now owned by each client.
     pub stopped: usize,
 }
 

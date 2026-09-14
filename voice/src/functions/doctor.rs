@@ -53,8 +53,13 @@ pub struct TtsReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     pub available: bool,
-    /// Host playbacks currently running.
+    /// Legacy field; browser playback is not tracked on the worker.
     pub playing: usize,
+    pub model: String,
+    pub problem: Option<String>,
+    /// Requested Piper policy only, not an assertion that GPU is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<crate::config::PiperDevice>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -100,7 +105,7 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
             SttReport {
                 backend: "whisper_cpp".into(),
                 model: cfg.stt.whisper_cpp.model.clone(),
-                installed: problem.is_none(),
+                installed: crate::whisper_cpp::model_installed(&cfg),
                 loaded: false,
                 live_model: live_model.clone(),
                 live_installed,
@@ -161,7 +166,22 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
                 backend: "host".into(),
                 command: command.as_ref().map(|c| c.program.to_string()),
                 available: command.is_some(),
-                playing: state.speaker.playing().await,
+                playing: 0,
+                model: String::new(),
+                problem: None,
+                device: None,
+            }
+        }
+        TtsBackend::Piper => {
+            let problem = tts::piper_paths(&cfg).err();
+            TtsReport {
+                backend: "piper".into(),
+                command: Some(cfg.tts.piper.command.clone()),
+                available: problem.is_none(),
+                playing: 0,
+                model: cfg.tts.piper.model.clone(),
+                problem,
+                device: Some(cfg.tts.piper.device),
             }
         }
         TtsBackend::Openai => TtsReport {
@@ -169,18 +189,27 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
             command: None,
             available: !cfg.tts.openai.base_url.trim().is_empty(),
             playing: 0,
+            model: String::new(),
+            problem: None,
+            device: None,
         },
         TtsBackend::Router => TtsReport {
             backend: "router".into(),
             command: crate::router::problem(&state.iii, "tts").await,
             available: crate::router::problem(&state.iii, "tts").await.is_none(),
             playing: 0,
+            model: String::new(),
+            problem: None,
+            device: None,
         },
         TtsBackend::Off => TtsReport {
             backend: "off".into(),
             command: None,
             available: false,
             playing: 0,
+            model: String::new(),
+            problem: None,
+            device: None,
         },
     };
     Ok(Response {

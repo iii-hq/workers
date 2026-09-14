@@ -53,7 +53,7 @@ export function transcribe(iii: ExtensionIii, req: TranscribeRequest): Promise<T
 }
 
 export function speak(iii: ExtensionIii, req: SpeakRequest): Promise<SpeakResponse> {
-  return iii.trigger<SpeakResponse>('voice::speak', req)
+  return iii.trigger<SpeakResponse>('voice::speak', req, { timeoutMs: 90_000 })
 }
 
 export function speakStop(iii: ExtensionIii, req: SpeakStopRequest = {}): Promise<SpeakStopResponse> {

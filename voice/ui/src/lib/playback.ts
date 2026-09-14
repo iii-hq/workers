@@ -1,32 +1,83 @@
-/**
- * Host read-aloud ends on the worker's side, so the worker says so: this
- * hook binds a browser function to the `voice::speech-ended` trigger for
- * as long as the component lives, the same way the shell page listens for
- * workspace changes. No timers, no doctor polling.
- */
+/** Audio belongs to the requesting browser, never a global worker playback. */
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
+import { errorMessage } from './format'
+import type { SpeakResponse } from './types'
 
-import type { Host } from '@iii-dev/console-ui'
-import { useEffect, useRef } from 'react'
-import type { SpeechEndedEvent } from './types'
+export type PlaybackState =
+  | { phase: 'idle' }
+  | { phase: 'loading' }
+  | { phase: 'speaking' }
+  | { phase: 'error'; message: string }
 
-const EVENTS_FN = 'iii::voice-ui::speech-ended'
+/** One instance per read-aloud control; stopping it cannot stop another client. */
+export class BrowserPlayback {
+  private state: PlaybackState = { phase: 'idle' }
+  private audio: HTMLAudioElement | null = null
+  private operation = 0
+  private readonly listeners = new Set<() => void>()
 
-export function useSpeechEnded(host: Host, onEnded: (event: SpeechEndedEvent) => void): void {
-  const handlerRef = useRef(onEnded)
-  handlerRef.current = onEnded
-  useEffect(() => {
-    const offHandler = host.iii.on<SpeechEndedEvent>(EVENTS_FN, (event) => {
-      if (typeof event?.speech_id !== 'string') return
-      handlerRef.current(event)
-    })
-    const offTrigger = host.iii.registerTrigger({
-      type: 'voice::speech-ended',
-      function_id: `${EVENTS_FN}::${host.iii.browserId}`,
-      config: {},
-    })
-    return () => {
-      offTrigger()
-      offHandler()
+  getState = () => this.state
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  private set(state: PlaybackState) {
+    this.state = state
+    for (const listener of this.listeners) listener()
+  }
+
+  private releaseAudio() {
+    const audio = this.audio
+    this.audio = null
+    if (!audio) return
+    audio.onended = null
+    audio.onerror = null
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+  }
+
+  stop = () => {
+    this.operation += 1
+    this.releaseAudio()
+    this.set({ phase: 'idle' })
+  }
+
+  play = async (synthesize: () => Promise<SpeakResponse>): Promise<void> => {
+    this.stop()
+    const operation = this.operation
+    this.set({ phase: 'loading' })
+    try {
+      const response = await synthesize()
+      if (operation !== this.operation) return
+      if (!response.audio_base64) throw new Error('The voice worker returned no audio. Update it to enable browser playback.')
+      const mime = response.mime ?? 'audio/mpeg'
+      if (!/^audio\/[a-z0-9.+-]+$/i.test(mime)) throw new Error('The voice worker returned an unsupported audio type.')
+      const audio = new Audio(`data:${mime};base64,${response.audio_base64}`)
+      this.audio = audio
+      audio.onended = () => {
+        if (operation === this.operation) this.stop()
+      }
+      audio.onerror = () => {
+        if (operation !== this.operation) return
+        this.stop()
+        this.set({ phase: 'error', message: 'Audio playback failed in this browser.' })
+      }
+      await audio.play()
+      // Stop, unmount or onended may have happened while play() was pending.
+      if (operation === this.operation) this.set({ phase: 'speaking' })
+    } catch (err) {
+      if (operation !== this.operation) return
+      this.stop()
+      this.set({ phase: 'error', message: errorMessage(err) })
     }
-  }, [host])
+  }
+}
+
+export function useBrowserPlayback() {
+  const playback = useMemo(() => new BrowserPlayback(), [])
+  const state = useSyncExternalStore(playback.subscribe, playback.getState, playback.getState)
+  useEffect(() => () => playback.stop(), [playback])
+  return { state, play: playback.play, stop: playback.stop }
 }
