@@ -18,6 +18,29 @@ import {
 } from '@/lib/conversation-import'
 import { errText } from '@/lib/errors'
 
+/** What one "Import selected" run ended up doing, announced when it ends. */
+interface ImportSummary {
+  imported: number
+  messages: number
+  failed: number
+  lastSessionId: string | null
+}
+
+export function summaryText(value: ImportSummary): string {
+  const failures =
+    value.failed === 0
+      ? ''
+      : value.failed === 1
+        ? ' · 1 failed'
+        : ` · ${value.failed} failed`
+  if (value.imported === 0) return `Nothing imported${failures}`
+  const conversations =
+    value.imported === 1 ? '1 conversation' : `${value.imported} conversations`
+  const messages =
+    value.messages === 1 ? '1 message' : `${value.messages} messages`
+  return `Imported ${conversations} · ${messages}${failures}`
+}
+
 export function ImportConversationsDialog({
   open,
   onOpenChange,
@@ -41,6 +64,7 @@ export function ImportConversationsDialog({
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
   const [results, setResults] = useState<Record<string, string>>({})
+  const [summary, setSummary] = useState<ImportSummary | null>(null)
   // biome-ignore lint/correctness/useExhaustiveDependencies: retry explicitly reruns the same discovery request.
   useEffect(() => {
     generation.current += 1
@@ -51,6 +75,7 @@ export function ImportConversationsDialog({
     setSelected(new Set())
     setPreviewId(null)
     setResults({})
+    setSummary(null)
     setError('')
     void discoverConversations({ source, query: search })
       .then((value) => {
@@ -106,19 +131,31 @@ export function ImportConversationsDialog({
   }
   async function importSelected() {
     setImporting(true)
+    setSummary(null)
+    let imported = 0
+    let messages = 0
+    let failed = 0
+    let lastSessionId: string | null = null
     for (const id of selected) {
       setResults((value) => ({ ...value, [id]: 'Importing…' }))
       try {
         const result = await importConversation(source, id)
+        imported += 1
+        messages += result.total_messages
+        lastSessionId = result.session_id
         setResults((value) => ({
           ...value,
           [id]: `Imported · ${result.total_messages} messages`,
         }))
-        onImported(result.session_id)
       } catch (e) {
+        failed += 1
         setResults((value) => ({ ...value, [id]: `Failed: ${errText(e)}` }))
       }
     }
+    // The batch is over: say so once, for the whole selection. The per-row
+    // lines can be scrolled out of view, and nothing else in the console
+    // announces a conversation that was created behind this dialog.
+    setSummary({ imported, messages, failed, lastSessionId })
     setImporting(false)
   }
   return (
@@ -303,12 +340,37 @@ export function ImportConversationsDialog({
             ))}
           </section>
         </div>
-        <div className="flex flex-wrap justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {summary && (
+            <p
+              role={summary.imported > 0 ? 'status' : 'alert'}
+              className={`mr-auto break-words text-sm ${
+                summary.imported > 0 ? 'text-ink-faint' : 'text-alert'
+              }`}
+            >
+              {summaryText(summary)}
+            </p>
+          )}
           <Button disabled={importing} onClick={() => onOpenChange(false)}>
             Close
           </Button>
+          {summary?.lastSessionId && (
+            <Button
+              variant="primary"
+              disabled={importing}
+              onClick={() => {
+                const id = summary.lastSessionId
+                if (id) onImported(id)
+                onOpenChange(false)
+              }}
+            >
+              {summary.imported > 1
+                ? 'Open last imported'
+                : 'Open conversation'}
+            </Button>
+          )}
           <Button
-            variant="primary"
+            variant={summary ? 'ghost' : 'primary'}
             disabled={selected.size === 0 || importing || loading}
             onClick={() => void importSelected()}
           >
