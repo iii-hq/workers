@@ -293,9 +293,10 @@ Worth knowing:
   guarantee; a crash between commit and dispatch can lose an event. Subscriber
   failures are logged and never fail the write. A harness wake notification
   renders the event as JSON within ~8,000 characters; an over-long `returning`
-  keeps its leading rows and ends with one `"…N more entries omitted"` string
-  (N is what the wake dropped, on top of any `truncated` cap above), so the
-  text still parses and `affected_rows` stays exact. Only an event whose
+  keeps its leading rows and ends with one marker string, `"…N more entries
+  omitted (array shortened for this notification; JSON is complete)"` (N is
+  what the wake dropped, on top of any `truncated` cap above), so the text
+  still parses and `affected_rows` stays exact. Only an event whose
   non-array fields alone exceed the budget is cut as plain text with an
   `…(truncated)` tail. Re-read the table on wake when a binding can see wide
   or many-row writes.

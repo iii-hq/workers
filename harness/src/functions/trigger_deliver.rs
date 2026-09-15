@@ -530,9 +530,11 @@ fn notification_text(binding: &Binding, event: &Value) -> String {
 /// the fallback path). An object that does not fit sheds trailing elements from
 /// its top-level arrays — longest first, by a share proportional to the
 /// overshoot — until it does; each shrunk array ends in ONE marker string
-/// `"…N more entries omitted"` (N is what the wake dropped, separate from any
-/// cap the producer applied), so the text stays valid JSON with every scalar
-/// field intact. Elements are atomic: nested arrays are never descended.
+/// `"…N more entries omitted (array shortened for this notification; JSON is
+/// complete)"` — N is what the wake dropped, separate from any cap the producer
+/// applied, and the tail says out loud that nothing was cut mid-structure (a
+/// weaker model read a bare ellipsis as a broken array). The text stays valid
+/// JSON with every scalar field intact. Elements are atomic: nested arrays are never descended.
 /// Non-objects, and an object whose non-array fields alone exceed the budget,
 /// fall back to a plain char cut.
 fn render_bounded(event: &Value, budget: usize) -> String {
@@ -572,7 +574,7 @@ fn render_bounded(event: &Value, budget: usize) -> String {
         if let Some(arr) = v[*k].as_array_mut() {
             arr.truncate(*n);
             arr.push(Value::String(format!(
-                "…{} more entries omitted",
+                "…{} more entries omitted (array shortened for this notification; JSON is complete)",
                 *total - *n
             )));
         }
@@ -961,10 +963,11 @@ mod tests {
         serde_json::from_str(json).unwrap_or_else(|e| panic!("{e}: {json}"))
     }
 
-    /// N out of a `"…N more entries omitted"` marker.
+    /// N out of a `"…N more entries omitted (…)"` marker.
     fn omitted(marker: &Value) -> usize {
         let marker = marker.as_str().expect("marker string");
-        assert!(marker.ends_with("more entries omitted"), "{marker}");
+        assert!(marker.contains("more entries omitted ("), "{marker}");
+        assert!(marker.ends_with("JSON is complete)"), "{marker}");
         marker
             .trim_start_matches('…')
             .split(' ')
@@ -1006,23 +1009,25 @@ mod tests {
 
     #[test]
     fn render_bounded_drops_an_element_larger_than_the_budget() {
-        let out = render_bounded(&json!({ "a": ["x".repeat(300)], "b": 1 }), 100);
+        let out = render_bounded(&json!({ "a": ["x".repeat(300)], "b": 1 }), 120);
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v, json!({ "a": ["…1 more entries omitted"], "b": 1 }));
+        assert_eq!(v["b"], 1);
+        assert_eq!(v["a"].as_array().unwrap().len(), 1);
+        assert_eq!(omitted(&v["a"][0]), 1);
     }
 
     #[test]
     fn render_bounded_shrinks_the_longest_array_first() {
         let long: Vec<u32> = (0..60).collect();
         let short: Vec<u32> = (0..10).collect();
-        let out = render_bounded(&json!({ "long": long, "short": short }), 120);
+        let out = render_bounded(&json!({ "long": long, "short": short }), 200);
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["short"].as_array().unwrap().len(), 10, "{out}");
         assert!(
             v["long"].as_array().unwrap().last().unwrap().is_string(),
             "{out}"
         );
-        assert!(out.chars().count() <= 120, "{out}");
+        assert!(out.chars().count() <= 200, "{out}");
     }
 
     /// Prevents: a scalar event escaping the bound. A string event rides raw
@@ -1057,15 +1062,15 @@ mod tests {
             out.ends_with("…(truncated)") && !out.contains("omitted"),
             "{out}"
         );
-        // 500 elements against a 40-char budget: the marker alone is most of it.
+        // 500 elements against a 120-char budget: the marker alone is most of it.
         let many: Vec<u32> = (0..500).collect();
-        let out = render_bounded(&json!({ "a": many }), 40);
+        let out = render_bounded(&json!({ "a": many }), 120);
         let v: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
         assert!(
             v["a"].as_array().unwrap().last().unwrap().is_string(),
             "{out}"
         );
-        assert!(out.chars().count() <= 40, "{out}");
+        assert!(out.chars().count() <= 120, "{out}");
     }
 
     /// Prevents: a bogus `"…0 more entries omitted"` on an empty array, and a
@@ -1093,7 +1098,7 @@ mod tests {
             100,
         );
         assert!(out.ends_with(" …(truncated)"), "{out}");
-        assert!(out.contains("…1 more entries omitted"), "{out}");
+        assert!(out.contains("…1 more entries omitted ("), "{out}");
     }
 
     /// Prevents: a `<=` → `<` regression shedding a row or appending the tail
