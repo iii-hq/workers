@@ -1,0 +1,41 @@
+name: Harness
+description: Start developing with a iii-powered harness
+version: "0.23.0"
+# min_iii_version: "0.22.0"
+
+treat_required_as_included: true
+requires:
+  - typescript # no language is needed, workaround for old logic TODO: fix
+optional: []
+
+# Explicit list of files to copy (shared_files from root are added automatically)
+files:
+  - .env
+  - README.md
+  - worker-compose.yaml
+  - agents/ade-worker-builder.md
+  - agents/agent-profile-creator.md
+  - agents/backend-engineer.md
+  - agents/frontend-engineer.md
+  - agents/tech-lead.md
+  - skills/harness/ade-worker-design/console-design.md
+  - skills/harness/ade-worker-design/console-injectable-ui.md
+  - skills/harness/ade-worker-design/index.md
+  - skills/harness/ade-worker-design/patterns.md
+  - skills/harness/frontend/frontend-testing.md
+  - skills/harness/frontend/iii-browser-sdk.md
+  - skills/harness/frontend/index.md
+  - skills/harness/frontend/react.md
+  - skills/harness/frontend/tanstack-query.md
+  - skills/harness/frontend/tanstack-router.md
+  - skills/harness/frontend/vite.md
+  - skills/harness/frontend/web-accessibility.md
+  - skills/harness/frontend/web-performance.md
+  - skills/harness/iii-node/configuration.md
+  - skills/harness/iii-node/index.md
+  - skills/harness/orchestration/index.md
+  - skills/harness/orchestration/report.md
+
+next_steps:
+  - 'Open README.md for simple step by step instructions to configure and start the harness'
+  - 'Pick an agent profile (ADE Worker Builder, Tech Lead, engineers, Agent Profile Creator) in the console; the hierarchy is documented in README.md'

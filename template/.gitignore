@@ -1,8 +1,8 @@
-# The repository ignores config/ globally; keep only this template's seeds.
+# Generated upstream configuration seeds are reviewed and committed.
 !/config/
-/config/*
-!/config/iii-directory.yaml
-!/config/console.yaml
+!/config/**
+/.sync.lock/
+/.sync-stage-*/
 
 # Project-owned runtime files and downloaded worker instructions.
 /data/
@@ -11,4 +11,3 @@
 *.log
 .env
 .env.*
-!.env.example

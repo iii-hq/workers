@@ -26,5 +26,7 @@ jobs:
           python-version: '3.11'
       - name: Install test dependencies
         run: python -m pip install --quiet PyYAML==6.0.3
-      - name: Validate local Compose stack, configuration, agents and skills
-        run: python template/tests/test_template.py
+      - name: Check Bash syntax
+        run: bash -n template/sync.sh
+      - name: Validate template and exercise upstream synchronization offline
+        run: python -m unittest discover -s template/tests -v

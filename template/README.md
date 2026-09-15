@@ -61,13 +61,14 @@ from `~/.codex/auth.json`; it does not require an API key.
 
 ```text
 template/
+├── sync.sh                    fetch and synchronize upstream template data
 ├── worker-compose.yaml        local workers, including path://../harness
-├── workers-dev.env.example               credential-free startup defaults
-├── config/
-│   ├── console.yaml           loopback-only console, port 3113
-│   └── iii-directory.yaml     project agents, local skills, download cache
-├── agents/                    five Harness Medium profiles
-├── skills/harness/            17 skill documents from the reference PR
+├── workers-dev.env.example    credential-free startup defaults
+├── config-overrides/          maintained local configuration overrides
+├── config/                    generated upstream seeds + local overrides
+├── agents/                    synchronized Harness Medium profiles
+├── skills/harness/            synchronized skill documents
+├── upstream/                  source metadata, Compose reference and checksums
 └── data/                      runtime state and downloaded skills (ignored)
 ```
 
@@ -131,19 +132,84 @@ or restarting the project from a Harness session it hosts.
 The structural tests do not start an engine, call a model or require credentials:
 
 ```bash
-uv run tests/test_template.py
+uv run --with PyYAML==6.0.3 python -m unittest discover -s tests -v
 ```
 
 They check the local worker paths and binaries, dependency ordering, default env
 file, configuration seeds, agent frontmatter, skill references and Git ignore
-rules. Runtime acceptance is separate: start Compose, open the console, confirm
+rules. The synchronization tests run the real Bash script against disposable
+local Git repositories: updates, removals, idempotence, pinned revisions,
+dry runs, failed fetches, invalid configuration, edit protection and symlink
+rejection are exercised without network access. The same suite runs in
+`.github/workflows/harness-template.yml` on pull requests and pushes to main.
+Runtime acceptance is separate: start Compose, open the console, confirm
 the five profiles appear and send a message with an authenticated model.
 
-## Upstream reference
+## Synchronize with upstream
 
-`agents/` and `skills/` are copied verbatim from
-[iii-hq/templates PR #84](https://github.com/iii-hq/templates/pull/84),
-`iii/harness/` at commit `fab5e83895b599d4522e64fb8e05d76b7568010c`.
-They are vendored files, not symlinks or boot-time downloads. Keep the provenance
-up to date when importing a newer version. The Compose file, configuration,
-environment example and this guide are adapted for local-source development.
+`sync.sh` replaces manual copying with a repeatable fetch-and-sync workflow. It
+requires Bash, Git and either **uv**, or Python 3.11+ with PyYAML 6.0.3 installed.
+The checked-in generated snapshot still supports starting the stack offline;
+you choose when to refresh it. Run the script from any working directory:
+
+```bash
+# From template/: fetch the latest merged template from main.
+./sync.sh
+
+# Preview changes without replacing generated files.
+./sync.sh --dry-run
+
+# Preview the still-open Harness Medium PR before it is merged.
+./sync.sh --ref refs/pull/84/head
+
+# Reproduce a specific version (branch names and tags also work).
+./sync.sh --ref fab5e83895b599d4522e64fb8e05d76b7568010c
+
+# Use another checkout instead of GitHub, for local template development.
+./sync.sh --repo /absolute/path/to/templates --ref main
+```
+
+The source is [`iii-hq/templates`](https://github.com/iii-hq/templates),
+`iii/harness/`. The default ref is **main**, not the moving head of
+[PR #84](https://github.com/iii-hq/templates/pull/84). While that PR is open, use
+`--ref refs/pull/84/head` explicitly to try its changes. Every invocation fetches
+the requested ref; it never relies on an old local checkout. No upstream code
+or installer is executed.
+
+The script manages these generated directories:
+
+- `agents/` and `skills/`: upstream Markdown instructions, copied verbatim.
+- `config/`: upstream YAML/JSON seeds, if present, recursively merged with
+  `config-overrides/*.yaml`. The local overrides win on conflicting values;
+  unrelated upstream settings are retained. These files are first-registration
+  seeds, not live updates to saved configuration. Additional worker configs are
+  copied but require wiring in the local Compose before that worker uses them.
+- `upstream/`: the upstream README, package-based Compose and template manifest
+  for review, plus `sync.json` recording repository, ref, exact commit and
+  SHA-256 checksums of every generated file. The reference Compose is **never**
+  used to start the stack. Do not run Compose from this reference directory.
+
+The current upstream has no `config/` directory, so its absence is supported:
+our local overrides still produce the Console and Directory seeds. If upstream
+adds that directory later, the same script picks it up automatically.
+
+Updates remove obsolete files **only inside those four generated directories**.
+The runnable `worker-compose.yaml`, this README, `config-overrides/`, `.env`,
+other environment files and runtime data are preserved. Secret files, arbitrary
+scripts and other unrecognized upstream paths are not imported. Only request
+refs/repositories you trust, and review new configuration before committing it.
+
+The script refuses to overwrite edited or newly added generated files. Keep
+custom configuration in `config-overrides/`. Save custom agents/skills before a
+refresh; if you intentionally want to discard their local edits, use
+`./sync.sh --force`. That flag still cannot replace the local Compose or runtime
+data. Fetch and validation failures leave the current snapshot unchanged;
+concurrent runs are blocked by `.sync.lock/` (remove a stale lock only after
+confirming no synchronization is running).
+
+After syncing, run the validation suite above and review `git diff -- template/`
+from the repository root before committing. The checked-in baseline was imported
+from PR #84 at `fab5e83895b599d4522e64fb8e05d76b7568010c`; **`upstream/sync.json` is
+the authoritative current provenance** after subsequent synchronizations. The
+local-source Compose is maintained separately so updates never switch the
+Harness to a published package.
