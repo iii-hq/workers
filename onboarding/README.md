@@ -100,14 +100,6 @@ beside the tour; the button then becomes a green, briefly pulsing `Continue`,
 which is what closes the step. Opening a panel and having read it are
 different things, and one click could only say the first.
 
-Between the two the button reads `Opening…`, and it waits for the panel to be
-on screen rather than for the call to return. `console::workspace::open`
-answers in a few milliseconds — it only stores the layout — while the console
-re-reads that entry on a five-second poll, so a panel opened through the
-engine mounts up to five seconds later. The page watches for the step's own
-anchor and gives up after eight seconds, so an older console that never mounts
-the screen still lets the operator past.
-
 ## Build
 
 ```sh
