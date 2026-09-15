@@ -121,6 +121,25 @@ export function ChatPanel({
         },
       },
       {
+        id: 'rename-chat',
+        title: 'Rename this chat',
+        detail: 'Edit the open conversation title in the sidebar',
+        keywords: ['title', 'name', 'conversation', 'session'],
+        enabled: () => Boolean(activeId),
+        run: () => {
+          // The editor is the sidebar row itself, so narrow panes have to
+          // show the list page before its rename action can be reached.
+          setNarrowView('list')
+          window.requestAnimationFrame(() => {
+            surfaceRef.current
+              ?.querySelector<HTMLElement>(
+                '[aria-current="page"] [data-conversation-rename]',
+              )
+              ?.click()
+          })
+        },
+      },
+      {
         id: 'search-chats',
         title: 'Search conversations',
         detail: 'Put the caret in the sidebar search',
@@ -135,7 +154,7 @@ export function ChatPanel({
         },
       },
     ])
-  }, [commands, createNew, pinned])
+  }, [commands, createNew, pinned, activeId])
 
   const handleCreate = useCallback(() => {
     createNew()

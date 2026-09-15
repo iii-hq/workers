@@ -238,6 +238,7 @@ export function ConversationRow({
           <button
             type="button"
             className={rowActionClassName}
+            data-conversation-rename=""
             aria-label={`rename ${conversation.title}`}
             title="Rename conversation"
             onClick={(e) => {

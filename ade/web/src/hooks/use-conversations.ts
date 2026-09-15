@@ -1086,7 +1086,12 @@ export interface ConversationsApi {
   select: (id: string) => void
   /** Keep one session hydrated and subscribed while a chat panel is mounted. */
   watchConversation: (id: string) => () => void
-  rename: (id: string, title: string) => void
+  /**
+   * Rename a session. The optimistic title is reverted when the write to
+   * `session::set-meta` fails; resolves the failure reason, or null once the
+   * title is stored (a draft and the mock backend store it locally).
+   */
+  rename: (id: string, title: string) => Promise<string | null>
   remove: (id: string) => void
   setModel: (id: string, model: ModelId) => void
   /** Persist this session's reasoning effort and remember it for new chats. */
@@ -2362,30 +2367,43 @@ export function useConversations(
     ],
   )
 
+  /* Optimistic, but never a lie: the row shows the new name at once and is
+     put back if the session store refuses the write, so the sidebar can't
+     keep a title the session does not have. Resolves the failure reason. */
   const rename = useCallback(
-    (id: string, title: string) => {
+    async (id: string, title: string): Promise<string | null> => {
       const trimmed = title.trim()
+      const previous = conversations.find((c) => c.id === id)
       patchConversation(id, (c) =>
         applyConversationMetadataPatch(c, {
           title: trimmed || c.title,
           titleManual: true,
         }),
       )
-      if (!serverEnabled || !trimmed) return
-      const conv = conversations.find((c) => c.id === id)
-      if (!conv || conv.draft) return
-      const updated = applyConversationMetadataPatch(conv, {
+      if (!serverEnabled || !trimmed) return null
+      if (!previous || previous.draft) return null
+      const updated = applyConversationMetadataPatch(previous, {
         title: trimmed,
         titleManual: true,
       })
-      void setSessionMeta({
-        session_id: id,
-        title: trimmed,
-        metadata: metadataForWrite(updated),
-      }).catch((err) => {
+      try {
+        await setSessionMeta({
+          session_id: id,
+          title: trimmed,
+          metadata: metadataForWrite(updated),
+        })
+        return null
+      } catch (err) {
+        patchConversation(id, (c) =>
+          applyConversationMetadataPatch(c, {
+            title: previous.title,
+            titleManual: previous.titleManual === true,
+          }),
+        )
         if (import.meta.env.DEV)
           console.warn('[conversations] rename failed', err)
-      })
+        return errText(err)
+      }
     },
     [patchConversation, serverEnabled, conversations],
   )
