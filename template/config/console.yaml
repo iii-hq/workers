@@ -1,0 +1,3 @@
+# First-registration seed. The console configuration entry owns subsequent edits.
+http_host: 127.0.0.1
+http_port: 3113

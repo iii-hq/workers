@@ -1,0 +1,14 @@
+# The repository ignores config/ globally; keep only this template's seeds.
+!/config/
+/config/*
+!/config/iii-directory.yaml
+!/config/console.yaml
+
+# Project-owned runtime files and downloaded worker instructions.
+/data/
+/.iii/
+/.workers-dev/
+*.log
+.env
+.env.*
+!.env.example
