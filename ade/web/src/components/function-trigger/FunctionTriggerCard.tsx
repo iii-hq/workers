@@ -55,6 +55,8 @@ import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/typ
 interface FunctionTriggerCardProps {
   message: FunctionTriggerMessageType
   defaultOpen?: boolean
+  /** Hydrate historical arguments/results when an unloaded card opens. */
+  onLoadDetails?: () => void
   /**
    * Approve handler. May be sync or async; the component shows a
    * `submitting…` state while the promise resolves and a red error row
@@ -540,6 +542,7 @@ function argsPreview(input: unknown): string | null {
 export function FunctionTriggerCard({
   message,
   defaultOpen,
+  onLoadDetails,
   onApprove,
   onDeny,
   onAlwaysAllow,
@@ -552,7 +555,7 @@ export function FunctionTriggerCard({
   // A placeholder from a paged transcript read: the header knows the function
   // and the description, the arguments and result are still on the server.
   // No renderer is consulted — there is nothing to render yet — and the body
-  // is a skeleton until the group fetches the whole entry.
+  // is a skeleton until the caller fetches the whole entry.
   const unloaded = !!message.unloaded && !pending && !running
   // Registry-dispatched custom panes: injected renderers first, then the
   // first-party families, then the JSON fallback below. First non-null
@@ -584,6 +587,18 @@ export function FunctionTriggerCard({
       : undefined
   const filesystemAccess = pending ? message.filesystemAccess : undefined
   const [open, setOpen] = useState(!!defaultOpen || pending)
+  const requestedDetailsRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!open || !unloaded) {
+      requestedDetailsRef.current = null
+      return
+    }
+    if (!onLoadDetails || requestedDetailsRef.current === message.id) return
+    // Once per open, not per parent render. Closing permits an explicit retry;
+    // the same path also hydrates default-open cards without a click.
+    requestedDetailsRef.current = message.id
+    onLoadDetails()
+  }, [open, unloaded, message.id, onLoadDetails])
   // Closed calls read as a lightweight activity list. Opening one restores
   // the full raised function-call surface with the existing panes and
   // controls. Pending approvals remain surfaces because they require action.

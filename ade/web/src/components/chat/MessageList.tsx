@@ -1652,8 +1652,8 @@ function FunctionTriggerGroup({
   const canCollapse = hiddenCount > 0
   // Placeholders the collapsed view shows anyway (a display renderer claims
   // them) are fetched as soon as they appear — a handful per session. The
-  // rest wait for "show all". Ids asked for once are not asked again by this
-  // group; the store dedupes across groups and in flight.
+  // rest wait for their card to open or "show all". Automatic requests run
+  // once per id in this group; the store dedupes across groups and in flight.
   const unloadedCalls = row.items.flatMap((item) =>
     item.kind === 'function-trigger' && item.message.unloaded
       ? [item.message]
@@ -1805,6 +1805,11 @@ function FunctionTriggerGroup({
                               : undefined)
                           }
                           defaultOpenCalls={defaultOpenCalls}
+                          onLoadDetails={
+                            message.role === 'function-trigger'
+                              ? () => requestEntries([message], true)
+                              : undefined
+                          }
                           onResolveApproval={onResolveApproval}
                           onAlwaysAllow={onAlwaysAllow}
                           onResolveFilesystemAccess={onResolveFilesystemAccess}
