@@ -3,7 +3,8 @@ name: iii-node
 description: >-
   Build and maintain portable TypeScript/Node.js iii workers using a
   single-package backend plus injectable Console UI structure, configuration
-  integration, coordinated development watchers, and worker-compose wiring.
+  integration, coordinated development watchers, and declaration through
+  `compose::add`.
 ---
 
 # iii-node
@@ -660,44 +661,48 @@ dependencies:
 
 Replace all placeholders. Declare only dependencies the worker actually uses. If there is no configuration integration, remove `configuration`. If there is no injectable UI, remove `console` and the UI-specific structure from the project.
 
-## Add the worker to `worker-compose.yaml`
+## Declare the worker with `compose::add`
 
-Manually edit the destination project's `worker-compose.yaml` and add the worker under its top-level `containers:` map (no Compose function writes this block completely):
+Never write the worker's entry into `worker-compose.yaml` by hand. A running daemon does not re-read the file on edit, and a hand-written entry makes it treat the worker as already declared: `compose::add` then answers `changed: false` and starts nothing. `compose::add` writes the entry itself, resolves it, and starts the container. The harness pins the call to its own daemon and compose file; do not pass `namespace` or `file`.
 
-```yaml
-containers:
-  # ...existing containers remain unchanged...
+`compose::add` is asynchronous. Fetch its contract and `compose::operation`'s once (`engine::functions::info { "function_ids": ["compose::add", "compose::operation"] }`), then use this exact order:
 
-  <worker-name>:
-    worker: path://<worker-directory>
-    start_after:
-      - console
-    scripts:
-      run: pnpm dev
-```
+1. Arm the wake, with an operation id you choose (`add-<worker-name>-<suffix>`):
 
-Path rules:
+   ```json
+   engine::register_trigger {
+     "trigger_type": "compose-operation",
+     "config": { "operation_id": "add-issue-board-7f3a", "terminal_only": true },
+     "once": true,
+     "lifecycle": { "expires_in_ms": 600000 }
+   }
+   ```
 
-- Resolve `<worker-directory>` relative to the directory containing `worker-compose.yaml`.
-- If the worker directory is directly beside that file, use `path://./<actual-directory-name>`.
-- If it lives elsewhere, use the correct relative path; do not assume `./workers/` or any particular project layout.
-- Preserve all existing Compose entries and indentation.
-- Use a unique container key.
-- Keep `start_after: [console]` semantics for injectable UI so the Console provider exists before asset registration.
-- Use `pnpm dev`, not the production `start` script, for this local development block.
+2. Declare the worker with the same id, as a container object, so the dev loop and the start order land in the file with it:
 
-If the destination Compose file already has a declaration for the worker, update that declaration instead of adding a duplicate.
+   ```json
+   compose::add {
+     "operation_id": "add-issue-board-7f3a",
+     "workers": [
+       {
+         "worker": "./<worker-directory>",
+         "start_after": ["<console container>"],
+         "scripts": { "run": "pnpm dev" }
+       }
+     ]
+   }
+   ```
 
-### Making the running daemon adopt the block
+   - `worker` is the local path relative to the directory containing `worker-compose.yaml`, starting with `.` or `/`. `path://` and `package://` are compose-file syntax and are misread here. The container key is derived from the directory name; `compose::status` shows it.
+   - `start_after` names the container that runs the console in this compose file (`ade` in the harness template; `compose::status` lists the real keys), so the console's UI provider exists before the worker registers its assets.
+   - `scripts.run: pnpm dev` runs the coordinated loop from `scripts/dev.mjs` instead of the production `start` script; it is what gives the worker hot reload under compose.
+   - The response `{ operation_id, requested, status }` is an acceptance, not readiness.
 
-A running Compose daemon does not re-read `worker-compose.yaml` on edit, and `compose::up { container }` answers `UNKNOWN_CONTAINER` for a container it has not loaded. To start the worker without restarting the whole project:
+3. Read `compose::operation { "operation_id": "add-issue-board-7f3a" }` once. If `last_event.terminal` is true, unregister the wake and read the result; otherwise end the turn and let the terminal event wake you. Do not poll.
 
-1. Write the block above.
-2. Call `compose::add { workers: ['./<actual-directory-name>'] }`. It recognises the existing declaration, pins nothing for a `path://` worker, and starts it — but it may rewrite the block and drop `start_after`.
-3. Diff the file and restore `start_after: [console]` and any other keys it removed.
-4. Confirm with `compose::status`, the worker log under the daemon's `logs/<container>.log`, and `engine::workers::info { name: '<worker-name>' }`.
+4. On the terminal event, confirm: `compose::status` shows the container `ready`, and `engine::workers::info { "name": "<worker-name>" }` lists its functions and trigger types. On `failed`, `compose::logs { "container": "<container key>", "tail": 100 }` has the real error. The container runs the worker's own install and start scripts, so the first run installs dependencies and restarts once or twice while the watchers write `dist/`; that is expected.
 
-The first `pnpm dev` run restarts the worker once or twice while the watchers write `dist/`; that is expected.
+A container that is already declared is left as it is by `compose::add`; if it is stopped, `compose::up { "container": "<container key>" }` starts it. A dependency added later is `pnpm install` in the worker directory, as during scaffolding; the running loop picks it up on the next rebuild. Never restart the whole project: the harness is a container of it and goes down mid-turn.
 
 ## Implementation order
 
@@ -712,7 +717,7 @@ The first `pnpm dev` run restarts the worker once or twice while the watchers wr
 9. Add worker-side asset delivery and Message-path registrations.
 10. Add the coordinated `scripts/dev.mjs` loop.
 11. Add or update `iii.worker.yaml`.
-12. Manually add or update the `worker-compose.yaml` block.
+12. Declare the worker through `compose::add` under a `compose-operation` wake, then confirm with `compose::status` and `engine::workers::info`.
 13. Validate static builds, runtime registration, asset delivery, hot reload, and real rendering. Drive the real Console through the `browser` worker (`browser::sessions::start` on the console URL, then `browser::snapshot`, `browser::act`, `browser::evaluate`, `browser::screenshot`) so both light and dark themes, narrow and wide panes, and the chat renderer are checked with screenshots, not assumptions.
 
 ## Validation checklist
@@ -737,4 +742,4 @@ Before declaring the worker complete:
 - A record opens as its own pane in the same workspace tab through `host.panels.open`, and the collection page adapts when the tab splits (narrow mode).
 - The real Console renders the page in narrow and wide panes, light and dark themes, with keyboard navigation, visible focus, stable async states, and no browser-console errors.
 - Reconnects and repeated UI edits do not accumulate duplicate functions, triggers, pages, renderers, or forms.
-- `worker-compose.yaml` contains exactly one local worker block and Compose launches it with `pnpm dev` after `console`.
+- The worker was declared through `compose::add`, never by editing `worker-compose.yaml`; `compose::status` shows it `ready`, and its entry runs `pnpm dev` after the console container.

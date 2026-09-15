@@ -1,11 +1,11 @@
 {
-  "commit": "fab5e83895b599d4522e64fb8e05d76b7568010c",
+  "commit": "d9ac5f2d183a6fbf79b3bac445a97a9c3e761118",
   "files": {
     "agents/ade-worker-builder.md": "2593f0baa1f6f0d4fcc6347d26ad1aa87116218bd0295bf39cf0f0108ab0fac2",
-    "agents/agent-profile-creator.md": "fa8c1ac0a65a463bd6715411479faa6391e24e3f321fb2b0484b12355b3a8368",
-    "agents/backend-engineer.md": "9b0aa2fc532227205590b1e1fd54b8fc472dc0dd8b41e1329a02de781b090159",
+    "agents/agent-profile-creator.md": "791a46056b0d996c61b6642ff7ce0a07360aaf928cc1a476fa605a4bb3a476c0",
+    "agents/backend-engineer.md": "3f5b7ad5ec4c9e6b983c36668b91e6d5037354ed832cdb701eae9285637e0b7e",
     "agents/frontend-engineer.md": "2126df7b8e79b76aadd8a6a2f0791bd192b71588cae96eb2802a7c7255ee9ddd",
-    "agents/tech-lead.md": "7fd6f181e46d6bce1d8fbba1e3b1e8657baf03ff5cca25fd9dce74c7748c1c3d",
+    "agents/tech-lead.md": "0e4b1e9d1f6cc4a89fa76846dbd1e160addaea4245e8f0c94b84be38ae5a6ebd",
     "config/console.yaml": "7380ac933164896495677ea178997bc07ebabf1775b6b4d090773d026b1f0e37",
     "config/iii-directory.yaml": "a58261903a4b1b99cca116faf34b172caf8d6dda9e49a614336aa97391090949",
     "skills/harness/ade-worker-design/console-design.md": "0cf6f051241b26539c80d6dcbdb9c3b48974b163ab5d4f2486b6e8f8abea16f4",
@@ -22,14 +22,14 @@
     "skills/harness/frontend/web-accessibility.md": "3d2f8dbbe09069bd317fcd785e18117051371831fe72f2e079ee1ba441c61df3",
     "skills/harness/frontend/web-performance.md": "90f2fef8197ae22a4800b0bef24bd12790cbdc7c8801397cbd449e8dfb8c46be",
     "skills/harness/iii-node/configuration.md": "f760e42a6d6aea916bdd6c99822f872921e90b39434c1b97a014ea8374203557",
-    "skills/harness/iii-node/index.md": "fb9f4afe064766238634a36c15231e66b931fa3631aa05abb9036e9e4fbf0d60",
-    "skills/harness/orchestration/index.md": "1c4be64a6d58fecbd01cac0321268ee2617489298aab43772b7a2bbc178f05f7",
+    "skills/harness/iii-node/index.md": "0b2400cdcdd6f7ffcafe41786fdb30db9f66b4f7c67d039097b70b56bc1020c6",
+    "skills/harness/orchestration/index.md": "ff0758523f4d66b72a11b244dfc87bffd71b525114ab3348da9efa6c70ddf7fa",
     "skills/harness/orchestration/report.md": "3814911aa2b2711903ad4afadd9cd01a949b4f928178689f57e8016a4a1e6a4b",
-    "upstream/README.md": "e90ef1bfe202cfc78f1d9a966fb6a81b5267a0fad65438c35851e03c5471bb49",
+    "upstream/README.md": "c3712090b57d90617cefac4a63b3ca0e95a68918ad4ff439b0b6f6285b43537a",
     "upstream/template.yaml": "fc7a2c99d777116f7ec42c86f5d97c4d79b8d0c67a225025852189893bf69690",
     "upstream/worker-compose.yaml": "3d4dfbea6e6780c54459ff4c976928d720c952b2c884e257aa904b27bc7ec7ac"
   },
-  "ref": "fab5e83895b599d4522e64fb8e05d76b7568010c",
+  "ref": "d9ac5f2d183a6fbf79b3bac445a97a9c3e761118",
   "repository": "https://github.com/iii-hq/templates.git",
   "source": "iii/harness/"
 }

@@ -101,7 +101,7 @@ iii-minimal
 | --- | --- |
 | `ade-worker-builder` | Interviews you until an ADE worker's spec is unambiguous (`specs/<worker>.md`), hands it to a Tech Lead, and accepts only after exercising every criterion in the running console. |
 | `tech-lead` | Turns the spec into an architecture (granular functions, reactive trigger types, one home per fact, the console surface), runs the Backend Engineer then the Frontend Engineer, and verifies the seam in a browser session. |
-| `backend-engineer` | Owns the package boilerplate (`package.json`, `scripts/dev.mjs`, `ui/build.mjs`, asset delivery, compose block) that gives both halves hot reload under `pnpm dev`, builds the Node worker per the `iii-node` skill, and verifies every function with a real call. |
+| `backend-engineer` | Owns the package boilerplate (`package.json`, `scripts/dev.mjs`, `ui/build.mjs`, asset delivery, the `compose::add` declaration) that gives both halves hot reload under `pnpm dev`, builds the Node worker per the `iii-node` skill, and verifies every function with a real call. |
 | `frontend-engineer` | Builds the injected console UI against `@iii-dev/console-ui` and verifies it in the running console at every width and theme. |
 | `agent-profile-creator` | Plans a new profile with you, using the existing ones as the reference, and writes `agents/<id>.md`. |
 

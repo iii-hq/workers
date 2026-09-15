@@ -53,13 +53,14 @@ document. It is the contract both halves build to, and it names:
   operator values. Never two homes for one fact.
 - **Console surface.** Page(s), renderers and the configuration form; the
   archetype; which functions each calls; which events it subscribes to.
-- **Delivery.** The single-package layout from `iii-node`, the compose
-  block, the dev loop. The boilerplate (`package.json`,
+- **Delivery.** The single-package layout from `iii-node`, the dev loop,
+  and the compose declaration through `compose::add` (never a hand edit of
+  `worker-compose.yaml`). The boilerplate (`package.json`,
   `pnpm-workspace.yaml`, both `tsconfig.json`, `scripts/dev.mjs`,
   `ui/build.mjs`, the asset content function and triggers,
-  `iii.worker.yaml`, the compose block) is the Backend Engineer's, written
-  exactly as `iii-node` prescribes; it is what gives both halves hot
-  reload under `pnpm dev`.
+  `iii.worker.yaml`, the compose declaration) is the Backend Engineer's,
+  written exactly as `iii-node` prescribes; it is what gives both halves
+  hot reload under `pnpm dev`.
 - **Order.** The backend first, because it owns every function id's schema
   and the UI delivery plumbing; the frontend after, against registered
   functions.

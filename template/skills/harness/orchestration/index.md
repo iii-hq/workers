@@ -13,7 +13,7 @@ description: >-
 Two wires, one direction each.
 
 - **Downstream is `harness::spawn`.** The `task` you pass is the child's
-  whole brief. It arrives knowing only its own profile and that text;
+  whole brief. It arrives knowing only its own identity and that text;
   anything you leave out, it invents.
 - **Upstream is `state`.** The brief names one state key; the child writes
   its result there when it finishes. You armed a `state` wake on that key
@@ -24,6 +24,8 @@ for you. It reads its brief, does the work, writes the key it was given, and
 stops. Every answer you want to give it is another `harness::spawn` into the
 same `session_id`. The child's half of this is the `report` skill
 (`harness/orchestration/report`), which every profile you dispatch preloads.
+An ad hoc child without a profile must read that skill as its brief directs;
+the communication protocol is the same.
 
 ## Before the first spawn
 
@@ -32,7 +34,11 @@ same `session_id`. The child's half of this is the `report` skill
   the return shape are what matter.
 - `directory::agents::get { "id": "<profile>", "raw": true }` for each
   profile you dispatch into. Its `skills:` and `functions:` are what the
-  child knows; everything else goes in the brief.
+  child knows; everything else goes in the brief. Skip this lookup for an
+  ad hoc child: give it an explicit `options.system_prompt` and a brief
+  that tells it to read `harness/orchestration/report` through
+  `directory::skills::get`. `options.skills` only filters the skill index;
+  it does not preload skill bodies.
 - Anything long-lived (a spec, an architecture, a plan) goes to a file in
   the project before the spawn, and the brief names its path. Your chat is
   gone when your session ends; a file survives, and the user can read and
@@ -74,8 +80,12 @@ Choose the child's `session_id`: a readable slug plus a short random suffix,
    }
    ```
 
-   - `agent` is a profile id from `directory::agents::list`, never a
-     display name.
+   - When supplied, `agent` is a profile id from `directory::agents::list`,
+     never a display name. For an ad hoc child, omit `agent` and supply
+     `options.system_prompt`; omit both and the child inherits your profile.
+     Never combine `agent` with `options.system_prompt`. Use
+     `options.system_prompt_strategy: "override"` when that prompt should
+     be the child's whole identity instead of enriching the default.
    - `options: { "orchestrator": true }` only for a child that must spawn
      children of its own. Everything else is a leaf: it may arm a wake for
      its own work, and cannot spawn, send, or unregister anything.

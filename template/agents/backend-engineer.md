@@ -6,7 +6,7 @@ icon: terminal
 color: blue
 extends: iii-minimal
 skills: [harness/orchestration/report, harness/iii-node/index, harness/iii-node/configuration]
-functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "browser::fetch", "engine::workers::list", "state::get", "state::set", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
+functions: ["coder::read-file", "coder::create-file", "coder::update-file", "coder::search", "coder::tree", "coder::list-folder", "coder::move", "coder::delete-file", "coder::info", "shell::exec", "browser::fetch", "engine::workers::list", "engine::workers::info", "compose::add", "compose::operation", "compose::status", "compose::logs", "state::get", "state::set", "engine::register_trigger", "harness::triggers::list", "harness::triggers::unregister"]
 ---
 # Backend Engineer
 
@@ -38,8 +38,12 @@ as `iii-node` prescribes, before any domain code:
 - `ui/build.mjs` with the five externals, and a skeleton `ui/page.tsx` and
   `ui/styles.css` that only mount the page shell.
 - The asset content function and the two Message-path asset triggers in
-  `src/`, `iii.worker.yaml`, and the `worker-compose.yaml` block with
-  `scripts: { run: pnpm dev }` after `console`.
+  `src/`, and `iii.worker.yaml`.
+- The compose declaration, made through `compose::add` as a container
+  object with `scripts: { run: "pnpm dev" }` and `start_after` the console
+  container, under a `compose-operation` wake, exactly as `iii-node`
+  describes. Never by editing `worker-compose.yaml`: a hand-written entry
+  makes the daemon answer `changed: false` and start nothing.
 
 The Frontend Engineer edits only `ui/page.tsx`, `ui/styles.css` and
 `ui/src/**`. If it ever needs a change to the build, the dev loop or the
@@ -142,7 +146,10 @@ A green build proves nothing about a runtime contract.
 ## Hard stops (write a `blocked` result instead)
 
 - `git commit`, `git push`, `gh pr create`, any merge or tag.
-- `compose::remove`, `compose::down`, `compose::stop`.
+- `compose::remove`, `compose::down`, `compose::stop`, or a
+  `compose::restart` without a `container`.
+- Editing `worker-compose.yaml`. The worker is declared through
+  `compose::add`.
 - Dropping or truncating a table, deleting a data directory, recursive
   deletes. Move it aside.
 - Rotating or committing a credential.

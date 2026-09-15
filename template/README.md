@@ -159,22 +159,23 @@ you choose when to refresh it. Run the script from any working directory:
 # Preview changes without replacing generated files.
 ./sync.sh --dry-run
 
-# Preview the still-open Harness Medium PR before it is merged.
-./sync.sh --ref refs/pull/84/head
+# Reproduce the merged Harness Medium revision (branches and tags also work).
+./sync.sh --ref d9ac5f2d183a6fbf79b3bac445a97a9c3e761118
 
-# Reproduce a specific version (branch names and tags also work).
-./sync.sh --ref fab5e83895b599d4522e64fb8e05d76b7568010c
+# Preview another pull request explicitly before it is merged.
+./sync.sh --ref refs/pull/<number>/head --dry-run
 
 # Use another checkout instead of GitHub, for local template development.
 ./sync.sh --repo /absolute/path/to/templates --ref main
 ```
 
 The source is [`iii-hq/templates`](https://github.com/iii-hq/templates),
-`iii/harness/`. The default ref is **main**, not the moving head of
-[PR #84](https://github.com/iii-hq/templates/pull/84). While that PR is open, use
-`--ref refs/pull/84/head` explicitly to try its changes. Every invocation fetches
-the requested ref; it never relies on an old local checkout. No upstream code
-or installer is executed.
+`iii/harness/`. The default ref is **main**. The Harness Medium instructions from
+[PR #84](https://github.com/iii-hq/templates/pull/84) were merged on September 15,
+2026 and are available through the default sync. Use `--ref refs/pull/<number>/head`
+explicitly to preview a future pull request. Every invocation fetches the
+requested ref; it never relies on an old local checkout. No upstream code or
+installer is executed.
 
 The script manages these generated directories:
 
@@ -208,8 +209,9 @@ concurrent runs are blocked by `.sync.lock/` (remove a stale lock only after
 confirming no synchronization is running).
 
 After syncing, run the validation suite above and review `git diff -- template/`
-from the repository root before committing. The checked-in baseline was imported
-from PR #84 at `fab5e83895b599d4522e64fb8e05d76b7568010c`; **`upstream/sync.json` is
-the authoritative current provenance** after subsequent synchronizations. The
+from the repository root before committing. The checked-in snapshot includes
+PR #84's merged revision `d9ac5f2d183a6fbf79b3bac445a97a9c3e761118`;
+**`upstream/sync.json` is the authoritative current provenance** after subsequent
+synchronizations. The
 local-source Compose is maintained separately so updates never switch the
 Harness to a published package.
