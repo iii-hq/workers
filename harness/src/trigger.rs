@@ -755,10 +755,15 @@ pub fn denied_result(function_id: &str) -> ResultData {
 /// model-emitted JSON serializes with literal UTF-8, and a byte-indexed
 /// `String::truncate` panics mid-char on CJK/emoji payloads.
 fn arguments_preview(arguments: &Value) -> String {
-    let s = arguments.to_string();
-    match s.char_indices().nth(200) {
+    truncate_chars(&arguments.to_string(), PREVIEW_CHARS)
+}
+
+const PREVIEW_CHARS: usize = 200;
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
         Some((i, _)) => s[..i].to_string(),
-        None => s,
+        None => s.to_string(),
     }
 }
 
@@ -799,7 +804,7 @@ pub fn truncated_arguments_result(
     arguments: &Value,
     stop_reason: crate::types::event::StopReason,
 ) -> ResultData {
-    let got = arguments_preview(&without_salvage_markers(arguments));
+    let got = salvage_preview(arguments);
     let hit_output_limit = stop_reason == crate::types::event::StopReason::Length;
     let msg = if hit_output_limit {
         format!(
@@ -828,13 +833,23 @@ pub fn truncated_arguments_result(
     }
 }
 
-/// The salvaged fields without the `_partial`/`_raw`/`_streaming` markers,
+/// What the model actually sent, for the teachable message. A `_raw` salvage
+/// (arguments that never parsed) shows the text it carried; a `_partial`
+/// salvage shows the fields that did parse. Neither shows the marker keys,
 /// which read like a system fault to the model and the user.
+fn salvage_preview(arguments: &Value) -> String {
+    match arguments.get("_raw").and_then(Value::as_str) {
+        Some(raw) => truncate_chars(raw, PREVIEW_CHARS),
+        None => arguments_preview(&without_salvage_markers(arguments)),
+    }
+}
+
+/// The salvaged fields without the `_partial`/`_raw`/`_streaming` markers.
 fn without_salvage_markers(arguments: &Value) -> Value {
     match arguments {
         Value::Object(map) => Value::Object(
             map.iter()
-                .filter(|(k, _)| !matches!(k.as_str(), "_partial" | "_streaming"))
+                .filter(|(k, _)| !matches!(k.as_str(), "_partial" | "_raw" | "_streaming"))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
         ),
@@ -1048,6 +1063,23 @@ mod tests {
         assert!(text.contains("complete, valid JSON"), "{text}");
         assert!(!text.contains("maximum output length"), "{text}");
         assert_eq!(bad.details["cause"], "incomplete_json");
+    }
+
+    #[test]
+    fn truncated_arguments_show_a_raw_salvage_as_the_text_it_carried() {
+        use crate::types::event::StopReason;
+        let args = json!({ "_raw": "{\"path\":\"/tm" });
+        let bad = truncated_arguments_result("coder::create-file", &args, StopReason::End);
+        let text = match &bad.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(!text.contains("_raw"), "{text}");
+        assert!(text.contains(r#"received {"path":"/tm)"#), "{text}");
+        assert!(
+            arguments_preview(&without_salvage_markers(&json!({ "_raw": 1, "a": 2 })))
+                == r#"{"a":2}"#
+        );
     }
 
     #[test]

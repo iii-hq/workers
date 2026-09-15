@@ -10,6 +10,11 @@
 //! session-manager was down at that instant (a restart mid-turn), the
 //! session stayed `working` forever and Stop fast-outed on the terminal
 //! record without touching it.
+//!
+//! Every path here that writes from a record it READ takes the per-session
+//! lock and re-reads under it. The loop writes `working` under that same
+//! lock when a turn starts, so a projection spawned from a stale terminal
+//! record cannot land after it and mark a live turn `done`.
 
 use std::time::Duration;
 
@@ -69,6 +74,11 @@ async fn write(session: &SessionClient, session_id: &str, status: &str, reason: 
 /// record (a state store that lost it) means no turn is known — `idle` — and
 /// a live record is left alone.
 pub async fn repair(deps: &Deps, session_id: &str) -> Result<bool, HarnessError> {
+    let _guard = deps.locks.guard(session_id).await;
+    repair_locked(deps, session_id).await
+}
+
+async fn repair_locked(deps: &Deps, session_id: &str) -> Result<bool, HarnessError> {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
     match crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await? {
@@ -88,21 +98,46 @@ pub async fn repair(deps: &Deps, session_id: &str) -> Result<bool, HarnessError>
 
 /// [`repair`] guarded by the store: only a session still marked `working` is
 /// touched, so a plain read never flips a finished session that has no record.
+/// Status and record are read under the same lock, so a turn that starts in
+/// between is seen as live and left alone.
 pub async fn reconcile(deps: &Deps, session_id: &str) -> Result<bool, HarnessError> {
+    let _guard = deps.locks.guard(session_id).await;
     let session = deps.session().await;
     if session.status(session_id).await?.as_deref() != Some("working") {
         return Ok(false);
     }
-    repair(deps, session_id).await
+    repair_locked(deps, session_id).await
 }
 
-/// Background projection from a request handler: the reply never waits on
-/// the session-manager; the `status-changed` event carries the repair.
+/// Background projection from a request handler that observed a terminal
+/// record: the reply never waits on the session-manager; the
+/// `status-changed` event carries the repair. The record is re-read under the
+/// session lock and projected only if it is still the current terminal turn;
+/// a turn that started since owns the status now.
 pub fn spawn_project(deps: &Deps, record: TurnRecord) {
     let deps = deps.clone();
     tokio::spawn(async move {
-        let session = deps.session().await;
-        project(&session, &record).await;
+        let _guard = deps.locks.guard(&record.session_id).await;
+        let cfg = deps.cfg().await;
+        let current = match crate::state::get_turn(
+            &deps.iii,
+            &record.session_id,
+            cfg.session_timeout_ms,
+        )
+        .await
+        {
+            Ok(current) => current,
+            Err(error) => {
+                tracing::warn!(session_id = %record.session_id, %error, "session status projection skipped: turn record unreadable");
+                return;
+            }
+        };
+        if let Some(current) = current {
+            if current.turn_id == record.turn_id && current.status.is_terminal() {
+                let session = deps.session().await;
+                project(&session, &current).await;
+            }
+        }
     });
 }
 

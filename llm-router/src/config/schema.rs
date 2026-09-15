@@ -78,7 +78,8 @@ pub fn compose_entry_schema(provider_schemas: &BTreeMap<String, Value>) -> Value
                         "default": 2
                     },
                     "output_token_max": {
-                        "type": ["number", "null"],
+                        "type": ["integer", "null"],
+                        "minimum": 0,
                         "description": "Optional router-wide cap on output tokens. Unset (the default) forwards each model's own output ceiling, so providers run without an artificial limit."
                     }
                 }

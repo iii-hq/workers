@@ -53,6 +53,7 @@ import {
 import type {
   ApprovalStreamEvent,
   CompactResult,
+  ContextUsageReport,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
 import { requestComposerFocus } from '@/lib/composer-insert'
@@ -72,6 +73,7 @@ import {
   parseCompactCommand,
   slashChip,
 } from '@/lib/slash-commands'
+import { onThinkingLevelChangeRequest } from '@/lib/thinking-level-request'
 import {
   CHAT_FOCUS_DROP_GRACE_MS,
   clearChatMessageFocus,
@@ -91,7 +93,6 @@ import {
   fetchNewChatWorkingDir,
   workingDirScopeNotice,
 } from '@/lib/working-dir'
-import { onThinkingLevelChangeRequest } from '@/lib/thinking-level-request'
 import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
 import {
   consoleClaimFor,
@@ -879,9 +880,9 @@ export function ChatView({
    * ends; the estimate inside ContextUsage only stands in before the first
    * generate. Kept across a turn so the bar does not fall back to the
    * estimate mid-stream. */
-  const [contextTokens, setContextTokens] = useState<{
+  const [contextReport, setContextReport] = useState<{
     id: string
-    tokens: number
+    report: ContextUsageReport
   } | null>(null)
   useEffect(() => {
     const contextUsage = backend.contextUsage
@@ -894,9 +895,9 @@ export function ChatView({
       return
     let alive = true
     void contextUsage(conversation.id)
-      .then((tokens) => {
-        if (alive && tokens !== null)
-          setContextTokens({ id: conversation.id, tokens })
+      .then((report) => {
+        if (alive && report !== null)
+          setContextReport({ id: conversation.id, report })
       })
       .catch(() => {})
     return () => {
@@ -909,8 +910,8 @@ export function ChatView({
     conversation.hydrated,
     streamingIndicator,
   ])
-  const reportedContextTokens =
-    contextTokens?.id === conversation.id ? contextTokens.tokens : undefined
+  const reportedContext =
+    contextReport?.id === conversation.id ? contextReport.report : undefined
 
   /* Injected turn summaries live beside the composer rather than in the
    * transcript. Workers own their data and subscribe by session id; the host
@@ -2555,7 +2556,7 @@ export function ChatView({
                 <ContextUsage
                   messages={conversation.messages}
                   contextWindow={contextWindow}
-                  tokens={reportedContextTokens}
+                  reported={reportedContext}
                 />
               )}
             </div>

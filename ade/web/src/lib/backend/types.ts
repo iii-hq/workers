@@ -258,6 +258,18 @@ export interface QueuedMessagePreview {
   queuedAt: number
 }
 
+/**
+ * The harness's own context accounting for a session's last generate step
+ * (`harness::status` → `context`): `total` is what the request cost, `usable`
+ * the input budget it was fit into (the model's window minus the output
+ * allocation), `free` what was left of that budget.
+ */
+export interface ContextUsageReport {
+  total: number
+  usable: number
+  free: number
+}
+
 export interface ChatBackend {
   /** stable identifier used by the playground for telemetry / labels */
   readonly id: string
@@ -309,11 +321,11 @@ export interface ChatBackend {
   listQueued?(sessionId: string): Promise<QueuedMessagePreview[]>
   /**
    * The harness's own context accounting for the session's last generate
-   * step (`harness::status` → `context.total`, provider-exact once usage
-   * lands). `null` before the first generate; the chat then shows an
-   * estimate.
+   * step (`harness::status` → `context`, provider-exact once usage lands).
+   * `null` before the first generate; the chat then shows an estimate
+   * against the model's window.
    */
-  contextUsage?(sessionId: string): Promise<number | null>
+  contextUsage?(sessionId: string): Promise<ContextUsageReport | null>
   /**
    * Remove a still-parked message from the server-side queue by its entry id
    * (`harness::unqueue`). Lets the composer pull a queued message back for
