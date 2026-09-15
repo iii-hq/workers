@@ -39,6 +39,7 @@ import {
   registerExtTriggerActivityRenderer,
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
+import { requestThinkingLevelChange } from '@/lib/thinking-level-request'
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
 import type {
   ComposerActionProps,
@@ -305,7 +306,10 @@ function makeHost(
       compose(draft) {
         if (draft.files && draft.files.length > 0) attachToComposer(draft.files)
         if (draft.text) {
-          insertIntoComposer(draft.text, { inline: draft.inline === true })
+          insertIntoComposer(draft.text, {
+            inline: draft.inline === true,
+            submit: draft.submit === true,
+          })
         }
         requestComposerFocus()
       },
@@ -314,6 +318,9 @@ function makeHost(
       },
       requestWorkingDirectoryChange(request) {
         return requestWorkingDirectoryChange(request)
+      },
+      requestThinkingLevelChange(request) {
+        return requestThinkingLevelChange(request)
       },
       composerModel(conversationId) {
         return conversationAdapter.composerModel(conversationId)

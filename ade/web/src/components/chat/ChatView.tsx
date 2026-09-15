@@ -91,6 +91,7 @@ import {
   fetchNewChatWorkingDir,
   workingDirScopeNotice,
 } from '@/lib/working-dir'
+import { onThinkingLevelChangeRequest } from '@/lib/thinking-level-request'
 import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
 import {
   consoleClaimFor,
@@ -256,6 +257,10 @@ export function ChatView({
   const handleOpenModelPicker = useCallback(() => {
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [])
+  /* An agent profile that pins the model locks the model-and-reasoning panel
+     (ChatSettingsSheet passes `modelDisabled` to the panel that carries the
+     effort control, not only to the model list). */
+  const modelLocked = Boolean(conversation.agentProfile?.model)
   const handleThinkingLevelChange = useCallback(
     (next: ThinkingLevel) => onUpdateThinkingLevel(conversation.id, next),
     [conversation.id, onUpdateThinkingLevel],
@@ -2289,6 +2294,23 @@ export function ChatView({
     [conversation.id, handleWorkingDirChange, workingDirEnabled],
   )
 
+  /* Same shape as the working-directory request above: the page asks, the
+     view that owns the session decides. `handleThinkingLevelChange` is the
+     one the picker calls, so a page and the picker leave the conversation in
+     the same state. */
+  useEffect(
+    () =>
+      onThinkingLevelChangeRequest(({ sessionId, level }) => {
+        // An agent profile that pins the model disables the whole
+        // model-and-reasoning panel, effort included, so a page must not
+        // reach past a control the operator cannot use.
+        if (sessionId !== conversation.id || modelLocked) return false
+        handleThinkingLevelChange(level)
+        return true
+      }),
+    [conversation.id, handleThinkingLevelChange, modelLocked],
+  )
+
   // Picking a worktree claims it for this session; the working dir itself
   // arrives through the picker's shell-validated selection flow
   // (onWorkingDirChange with the worker-echoed canonical path), like every
@@ -2683,7 +2705,7 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             modelPickerOpenRequest={modelPickerOpenRequest}
-            modelLocked={Boolean(conversation.agentProfile?.model)}
+            modelLocked={modelLocked}
             functionEntries={functionEntries}
             searchFiles={searchFiles}
             onOpenFileMention={

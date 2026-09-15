@@ -370,7 +370,8 @@ export function TabStrip({
         style={
           maskImage ? { maskImage, WebkitMaskImage: maskImage } : undefined
         }
-        className="workspace-tab-strip flex min-w-0 items-center gap-1.5 overflow-x-auto"
+        /* onboarding-tabs: tour anchor (workers/onboarding). Do not remove. */
+        className="onboarding-tabs workspace-tab-strip flex min-w-0 items-center gap-1.5 overflow-x-auto"
       >
         {tabs.map((tab, index) => {
           const active = tab.id === activeTabId

@@ -159,6 +159,61 @@
           }
         ]
       }
+    },
+    {
+      "name": "relative_to places the column beside another mounted screen",
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 2,
+          "screens": ["chat", "ext:onboarding"],
+          "paneIds": ["a:pane:0", "a:pane:1"],
+          "sizes": [0.6, 0.4]
+        }
+      ],
+      "activeTabId": "a",
+      "screen": "traces",
+      "relativeTo": "ext:onboarding",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 3,
+            "screens": ["chat", "ext:onboarding", "traces"],
+            "paneIds": ["a:pane:0", "a:pane:1", "pane-new"],
+            "sizes": [0.4, 0.2666666666666667, 0.3333333333333333]
+          }
+        ]
+      }
+    },
+    {
+      "name": "direction left puts the column before the anchor",
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 2,
+          "screens": ["chat", "ext:onboarding"],
+          "paneIds": ["a:pane:0", "a:pane:1"],
+          "sizes": [0.6, 0.4]
+        }
+      ],
+      "activeTabId": "a",
+      "screen": "traces",
+      "relativeTo": "ext:onboarding",
+      "direction": "left",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 3,
+            "screens": ["chat", "traces", "ext:onboarding"],
+            "paneIds": ["a:pane:0", "pane-new", "a:pane:1"],
+            "sizes": [0.4, 0.3333333333333333, 0.2666666666666667]
+          }
+        ]
+      }
     }
   ],
   "close": [

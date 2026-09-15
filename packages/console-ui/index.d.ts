@@ -508,7 +508,18 @@ export interface Host {
      * drop or a paste would, and put the caret there. Files become
      * attachments. Absent on older consoles; feature-detect.
      */
-    compose?(draft: { text?: string; files?: File[]; inline?: boolean }): void
+    compose?(draft: {
+      text?: string
+      files?: File[]
+      inline?: boolean
+      /**
+       * Send the draft once the text lands, rather than leaving it for the
+       * user to send. For a surface handing over a whole prompt, where the
+       * click already WAS the decision to send. Ignored by a composer that
+       * cannot send right now (streaming, blocked): the text stays a draft.
+       */
+      submit?: boolean
+    }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
@@ -523,6 +534,16 @@ export interface Host {
      * a folder in a page that sits beside the chat.
      */
     requestWorkingDirectoryChange?(request: { sessionId: string; path: string }): boolean
+    /**
+     * Ask the mounted conversation to adopt a reasoning effort — `minimal`,
+     * `low`, `medium`, `high`, `xhigh`, or `default` to drop the override;
+     * anything else is refused. The page cannot write this itself: the level
+     * lives on the console's conversation record and is sent from there on
+     * every turn, so a write into session metadata would never reach the next
+     * one. Returns whether a mounted conversation took it. Absent on older
+     * consoles; feature-detect.
+     */
+    requestThinkingLevelChange?(request: { sessionId: string; level: string }): boolean
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }

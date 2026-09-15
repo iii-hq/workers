@@ -26,6 +26,7 @@ pub const ROUTED_SCREENS: [&str; 2] = ["traces", "workers"];
 pub const MAX_COLUMNS: usize = 64;
 
 const CODE_INVALID_SCREEN: &str = "WORKSPACE_INVALID_SCREEN";
+const CODE_INVALID_SIZES: &str = "WORKSPACE_INVALID_SIZES";
 const CODE_UNAVAILABLE: &str = "WORKSPACE_UNAVAILABLE";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -286,6 +287,28 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Which side of the anchor column a new column lands on.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    #[default]
+    Right,
+    Left,
+}
+
+/// Where the caller wants the screen to land.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementRequest {
+    /// Reuse a tab already showing the screen, else place it beside
+    /// `relative_to` in the active tab, else open a fresh tab.
+    #[default]
+    Auto,
+    /// Always open a fresh tab, even when the screen is mounted elsewhere and
+    /// even when the active tab has room.
+    NewTab,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
@@ -312,18 +335,36 @@ pub struct Opened {
 /// Place `screen` beside chat in `tab`: the column right after chat when it
 /// is empty, else any empty column, else a new column after chat. `None`
 /// when the tab is full.
-fn place_beside_chat(
+/// The anchor's column. `chat` matches whichever chat screen is mounted
+/// (plain or session-pinned); every other value is matched exactly.
+fn anchor_column(screens: &[Option<String>], relative_to: &str) -> Option<usize> {
+    if relative_to == CHAT_SCREEN {
+        return screens
+            .iter()
+            .position(|s| s.as_deref().is_some_and(is_chat_screen));
+    }
+    screens
+        .iter()
+        .position(|s| s.as_deref() == Some(relative_to))
+}
+
+fn place_beside(
     tab: &Tab,
     screen: &str,
+    relative_to: &str,
+    direction: Direction,
     new_pane_id: impl FnOnce() -> String,
 ) -> Option<(Tab, usize, Placement)> {
     let columns = tab.column_count();
     let mut screens = tab.normalized_screens(columns);
-    let chat_index = screens
-        .iter()
-        .position(|s| s.as_deref().is_some_and(is_chat_screen));
-    let adjacent_empty = chat_index
-        .map(|i| i + 1)
+    let anchor = anchor_column(&screens, relative_to);
+    // An empty column next to the anchor, on the asked-for side, before any
+    // other empty one: the caller said where it wants this.
+    let adjacent_empty = anchor
+        .and_then(|i| match direction {
+            Direction::Right => Some(i + 1),
+            Direction::Left => i.checked_sub(1),
+        })
         .filter(|&i| i < columns && screens[i].is_none());
     let empty = adjacent_empty.or_else(|| screens.iter().position(Option::is_none));
     if let Some(index) = empty {
@@ -337,7 +378,13 @@ fn place_beside_chat(
     if columns >= MAX_COLUMNS {
         return None;
     }
-    let insert_at = chat_index.map(|i| i + 1).unwrap_or(columns);
+    // No anchor mounted: the screen still has to go somewhere, and the end is
+    // the one place that displaces nothing.
+    let insert_at = match (anchor, direction) {
+        (Some(i), Direction::Right) => i + 1,
+        (Some(i), Direction::Left) => i,
+        (None, _) => columns,
+    };
     screens.insert(insert_at, Some(screen.to_string()));
     let mut pane_ids = tab.normalized_pane_ids(columns);
     pane_ids.insert(insert_at, new_pane_id());
@@ -356,12 +403,15 @@ fn place_beside_chat(
 }
 
 /// Stay on the active tab when it already shows the screen, else reuse the
-/// tab that does; otherwise place it beside chat in the active tab; otherwise
-/// open a fresh tab. Existing screens are never replaced.
+/// tab that does; otherwise place it beside `relative_to` in the active tab,
+/// on the `direction` side; otherwise open a fresh tab. Existing screens are
+/// never replaced.
 pub fn open_screen(
     tabs: &[Tab],
     active_tab_id: &str,
     screen: &str,
+    relative_to: &str,
+    direction: Direction,
     new_id: impl FnOnce() -> String,
     new_pane_id: impl FnOnce() -> String,
 ) -> Opened {
@@ -382,7 +432,7 @@ pub fn open_screen(
         };
     }
     if let Some((placed, column, placement)) =
-        active.and_then(|tab| place_beside_chat(tab, screen, new_pane_id))
+        active.and_then(|tab| place_beside(tab, screen, relative_to, direction, new_pane_id))
     {
         let placed_id = placed.id.clone();
         let mut next = tabs.to_vec();
@@ -401,6 +451,13 @@ pub fn open_screen(
             tabs: Some(next),
         };
     }
+    open_in_new_tab(tabs, screen, new_id)
+}
+
+/// A fresh tab carrying `screen`, appended after the ones that exist. Every
+/// screen but chat gets a chat column beside it, so a new tab is never a lone
+/// panel with no conversation next to it.
+pub fn open_in_new_tab(tabs: &[Tab], screen: &str, new_id: impl FnOnce() -> String) -> Opened {
     let (screens, column) = if is_chat_screen(screen) {
         (vec![Some(screen.to_string())], 0)
     } else {
@@ -507,6 +564,48 @@ fn validated_screen(raw: &str) -> Result<String, Error> {
     }
 }
 
+/// Column widths for a tab of `columns` columns: one positive, finite number
+/// each, normalized by their sum. Rejected rather than ignored — a list that
+/// does not match the layout is a caller bug, and silently dropping it would
+/// report success for a width that never landed.
+fn validated_sizes(sizes: &[f64], columns: usize) -> Result<Vec<f64>, Error> {
+    if sizes.len() != columns {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            format!(
+                "`sizes` must carry one width per column: got {}, the tab has {columns}",
+                sizes.len()
+            ),
+        ));
+    }
+    if sizes.iter().any(|s| !s.is_finite() || *s <= 0.0) {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            "every entry of `sizes` must be a finite number greater than zero",
+        ));
+    }
+    // Widths large enough to overflow the sum would normalize to zero, which
+    // the parser later rejects as an invalid tab.
+    let total: f64 = sizes.iter().sum();
+    if !total.is_finite() {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            "the entries of `sizes` are too large to normalize",
+        ));
+    }
+    // A finite sum is not enough: `[f64::MAX, f64::MIN_POSITIVE]` clears every
+    // check above and still divides down to `0.0`, which `is_valid_tab` later
+    // refuses — the tab would be stored and then read back as unparseable.
+    let normalized: Vec<f64> = sizes.iter().map(|s| s / total).collect();
+    if normalized.iter().any(|s| !s.is_finite() || *s <= 0.0) {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            "the entries of `sizes` are too far apart to normalize",
+        ));
+    }
+    Ok(normalized)
+}
+
 fn validated_screen_target(
     raw_screen: &str,
     raw_session_id: Option<&str>,
@@ -581,6 +680,10 @@ pub struct TabSummary {
     pub columns: usize,
     /// One entry per column; `null` is an empty column.
     pub screens: Vec<Option<String>>,
+    /// One fraction per column, summing to 1. Equal widths when the stored
+    /// layout has none, or has a list that does not match the column count —
+    /// the same normalization the browser renders from.
+    pub sizes: Vec<f64>,
     pub active: bool,
 }
 
@@ -600,9 +703,28 @@ pub struct OpenInput {
     /// With `screen: "chat"`, pin the panel to this conversation session.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// The screen the new column lands next to, in the same vocabulary as
+    /// `screen`. Defaults to `chat`, which matches whichever chat panel is
+    /// mounted. A screen that is not mounted puts the column at the end.
+    #[serde(default)]
+    pub relative_to: Option<String>,
+    /// Which side of `relative_to` to land on: `right` (default) or `left`.
+    #[serde(default)]
+    pub direction: Option<Direction>,
+    /// Column widths for the tab AFTER this call — one positive number per
+    /// column, normalized by their sum. Applied in the same write that places
+    /// the screen, so there is no window for another writer in between. Omit
+    /// to let the console share the widths out.
+    #[serde(default)]
+    pub sizes: Option<Vec<f64>>,
     /// Make the tab holding the screen the active one (default true).
     #[serde(default)]
     pub activate: Option<bool>,
+    /// `auto` (default) reuses a tab already showing the screen; `new-tab`
+    /// always opens a fresh one. Pair `new-tab` with `activate: false` to put
+    /// a screen aside without moving the operator off the tab they are on.
+    #[serde(default)]
+    pub placement: Option<PlacementRequest>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -611,6 +733,9 @@ pub struct OpenOutput {
     pub column: usize,
     pub placement: Placement,
     pub screens: Vec<Option<String>>,
+    /// The tab's column widths as stored, whether they came from `sizes` or
+    /// from the console sharing them out.
+    pub sizes: Vec<f64>,
     pub activated: bool,
 }
 
@@ -645,6 +770,7 @@ pub fn register(iii: &Arc<IIIClient>) {
                         name: t.name.clone(),
                         columns: t.column_count(),
                         screens: t.normalized_screens(t.column_count()),
+                        sizes: t.normalized_sizes(t.column_count()),
                         active: t.id == layout.active_tab_id,
                     })
                     .collect();
@@ -655,9 +781,11 @@ pub fn register(iii: &Arc<IIIClient>) {
             }
         })
         .description(
-            "List the console workspace the human sees: every tab with its columns and \
-             screens, plus which tab is active. Screens are `chat`, `chat:<session-id>`, \
-             `traces`, `workers`, or `ext:<page>` for worker pages.",
+            "List the console workspace the human sees: every tab with its columns, \
+             screens and column widths, plus which tab is active. Screens are `chat`, \
+             `chat:<session-id>`, `traces`, `workers`, or `ext:<page>` for worker pages. \
+             Read this before passing `sizes` to `open`, so the widths you send are \
+             relative to the layout that is actually up.",
         ),
     );
 
@@ -670,35 +798,63 @@ pub fn register(iii: &Arc<IIIClient>) {
             let lock = lock.clone();
             async move {
                 let screen = validated_screen_target(&input.screen, input.session_id.as_deref())?;
+                let relative_to = match input.relative_to.as_deref() {
+                    Some(raw) => validated_screen(raw.trim())?,
+                    None => CHAT_SCREEN.to_string(),
+                };
+                let direction = input.direction.unwrap_or_default();
                 let activate = input.activate.unwrap_or(true);
                 let _guard = lock.lock().await;
                 let layout = load_layout(&iii).await?;
-                let opened = open_screen(
-                    &layout.tabs,
-                    &layout.active_tab_id,
-                    &screen,
-                    new_tab_id,
-                    new_pane_id,
-                );
+                let opened = match input.placement.unwrap_or_default() {
+                    PlacementRequest::NewTab => open_in_new_tab(&layout.tabs, &screen, new_tab_id),
+                    PlacementRequest::Auto => open_screen(
+                        &layout.tabs,
+                        &layout.active_tab_id,
+                        &screen,
+                        &relative_to,
+                        direction,
+                        new_tab_id,
+                        new_pane_id,
+                    ),
+                };
                 let active_tab_id = if activate {
                     opened.tab_id.clone()
                 } else {
                     layout.active_tab_id.clone()
                 };
                 let pointer_moved = active_tab_id != layout.active_tab_id;
-                match opened.tabs {
-                    Some(tabs) => layout.store(&iii, &tabs, &active_tab_id).await?,
-                    None if pointer_moved => {
-                        let tabs = layout.tabs.clone();
-                        layout.store(&iii, &tabs, &active_tab_id).await?
+                // Placement and widths land in ONE store. A caller that opened
+                // first and resized second would leave a gap, and the browser
+                // writes this same entry on every divider drag.
+                let mut tabs = opened.tabs.clone().unwrap_or_else(|| layout.tabs.clone());
+                let resized = match input.sizes.as_deref() {
+                    Some(requested) => {
+                        let tab = tabs
+                            .iter_mut()
+                            .find(|t| t.id == opened.tab_id)
+                            .ok_or_else(|| remote(CODE_INVALID_SIZES, "the opened tab is gone"))?;
+                        let columns = tab.column_count();
+                        let sizes = validated_sizes(requested, columns)?;
+                        *tab = tab.with_layout(tab.normalized_screens(columns), Some(sizes), None);
+                        true
                     }
-                    None => {}
+                    None => false,
+                };
+                if opened.tabs.is_some() || resized || pointer_moved {
+                    layout.store(&iii, &tabs, &active_tab_id).await?;
                 }
+                let sizes = tabs
+                    .iter()
+                    .find(|t| t.id == opened.tab_id)
+                    .map(|t| t.normalized_sizes(t.column_count()))
+                    .unwrap_or_default();
                 Ok::<_, Error>(OpenOutput {
                     tab_id: opened.tab_id,
                     column: opened.column,
                     placement: opened.placement,
                     screens: opened.screens,
+                    sizes,
                     activated: activate,
                 })
             }
@@ -707,7 +863,9 @@ pub fn register(iii: &Arc<IIIClient>) {
             "Show a screen in the console workspace next to the conversation (reusing the tab \
              that already shows it). Screens: `ext:shell` (files), `ext:browser`, \
              `ext:editor`, `workers`, or `{\"screen\":\"chat\",\"session_id\":\"<id>\"}` \
-             for a pinned chat.",
+             for a pinned chat. It lands right of the chat panel unless \
+             `relative_to` names another mounted screen, and `direction` picks the side \
+             (`right` or `left`).",
         ),
     );
 
@@ -780,6 +938,38 @@ mod tests {
     }
 
     #[test]
+    fn sizes_are_normalized_and_checked_against_the_column_count() {
+        assert_eq!(
+            validated_sizes(&[3.0, 4.0, 3.0], 3).unwrap(),
+            vec![0.3, 0.4, 0.3]
+        );
+        assert_eq!(
+            validated_sizes(&[0.3, 0.4, 0.3], 3).unwrap(),
+            vec![0.3, 0.4, 0.3]
+        );
+        for bad in [vec![0.5, 0.5], vec![0.3, 0.4, 0.3, 0.1]] {
+            assert!(validated_sizes(&bad, 3).is_err(), "{bad:?}");
+        }
+        for bad in [
+            vec![0.5, 0.0, 0.5],
+            vec![0.5, -0.1, 0.6],
+            vec![0.5, f64::NAN, 0.5],
+            // Finite on their own, infinite once summed.
+            vec![f64::MAX, f64::MAX, f64::MAX],
+        ] {
+            assert!(validated_sizes(&bad, 3).is_err(), "{bad:?}");
+        }
+        // Finite sum, but the small entry divides down to zero — which
+        // `is_valid_tab` rejects, so the write must not get that far.
+        for bad in [
+            vec![f64::MAX, f64::MIN_POSITIVE],
+            vec![f64::MIN_POSITIVE, f64::MAX],
+        ] {
+            assert!(validated_sizes(&bad, 2).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn structured_chat_target_validation() {
         assert_eq!(
             validated_screen_target("chat", Some("child:attempt:2")).unwrap(),
@@ -805,6 +995,8 @@ mod tests {
                 &tabs,
                 active,
                 case["screen"].as_str().unwrap(),
+                case["relativeTo"].as_str().unwrap_or(CHAT_SCREEN),
+                serde_json::from_value(case["direction"].clone()).unwrap_or_default(),
                 fixed_id,
                 fixed_pane_id,
             );
@@ -841,7 +1033,15 @@ mod tests {
         let tabs = tabs_from(&json!([
             { "id": "a", "columns": 2, "screens": ["chat", "ext:shell"] }
         ]));
-        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:shell",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::Existing);
         assert!(opened.tabs.is_none());
         assert_eq!(opened.column, 1);
@@ -857,7 +1057,15 @@ mod tests {
                 "paneIds": ["pane-chat", "pane-traces"]
             }
         ]));
-        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:shell",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         let opened_tabs = opened.tabs.unwrap();
         assert_eq!(
             opened_tabs[0].rest.get("paneIds"),
@@ -891,7 +1099,15 @@ mod tests {
             sizes: None,
             rest: Map::new(),
         };
-        let opened = open_screen(&[full], "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[full],
+            "a",
+            "ext:shell",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.tab_id, "tab-new");
         let next = opened.tabs.unwrap();
@@ -915,7 +1131,15 @@ mod tests {
             sizes: None,
             rest: Map::new(),
         };
-        let opened = open_screen(&[full], "a", "chat:child", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[full],
+            "a",
+            "chat:child",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.column, 0);
         let next = opened.tabs.unwrap();
@@ -959,7 +1183,15 @@ mod tests {
         ];
         let tabs: Vec<Tab> = raw.iter().filter_map(parse_tab).collect();
         assert_eq!(tabs.len(), 2);
-        let opened = open_screen(&tabs, "a", "ext:shell", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &tabs,
+            "a",
+            "ext:shell",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         let merged = merge_tabs(&raw, &opened.tabs.unwrap());
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0]["screens"], json!(["chat", "ext:shell"]));
@@ -969,9 +1201,17 @@ mod tests {
 
         let appended = merge_tabs(
             &raw,
-            &open_screen(&tabs, "c", "workers", fixed_id, fixed_pane_id)
-                .tabs
-                .unwrap(),
+            &open_screen(
+                &tabs,
+                "c",
+                "workers",
+                CHAT_SCREEN,
+                Direction::Right,
+                fixed_id,
+                fixed_pane_id,
+            )
+            .tabs
+            .unwrap(),
         );
         assert_eq!(appended.len(), 3);
         assert_eq!(appended[2]["screens"], json!(["chat", "workers", "traces"]));
@@ -980,15 +1220,59 @@ mod tests {
     }
 
     #[test]
+    fn a_new_tab_is_forced_even_when_the_screen_is_already_mounted() {
+        let tabs = tabs_from(&json!([
+            { "id": "a", "columns": 2, "screens": ["chat", "traces"] }
+        ]));
+        // `open_screen` would hand back the tab that already shows it.
+        assert_eq!(
+            open_screen(
+                &tabs,
+                "a",
+                "traces",
+                CHAT_SCREEN,
+                Direction::Right,
+                fixed_id,
+                fixed_pane_id
+            )
+            .placement,
+            Placement::Existing
+        );
+        let opened = open_in_new_tab(&tabs, "traces", fixed_id);
+        assert_eq!(opened.placement, Placement::NewTab);
+        assert_ne!(opened.tab_id, "a");
+        // Chat rides along, and the caller is told which column it landed in.
+        assert_eq!(
+            opened.screens,
+            vec![Some("chat".into()), Some("traces".into())]
+        );
+        assert_eq!(opened.column, 1);
+        // The tab it was already on is left alone.
+        let next = opened.tabs.unwrap();
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].screens, tabs[0].screens);
+    }
+
+    #[test]
     fn empty_layouts_never_panic() {
         assert!(resolve_active(&[], Some("x")).is_none());
-        let opened = open_screen(&[], "x", "workers", fixed_id, fixed_pane_id);
+        let opened = open_screen(
+            &[],
+            "x",
+            "workers",
+            CHAT_SCREEN,
+            Direction::Right,
+            fixed_id,
+            fixed_pane_id,
+        );
         assert_eq!(opened.placement, Placement::NewTab);
         assert_eq!(opened.tabs.unwrap().len(), 1);
         let stale = open_screen(
             &default_tabs(),
             "missing",
             "workers",
+            CHAT_SCREEN,
+            Direction::Right,
             fixed_id,
             fixed_pane_id,
         );

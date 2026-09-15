@@ -544,7 +544,18 @@ export interface Host {
      * last line (a `#file(path:from-to)` reference, say) instead of
      * starting a paragraph of its own.
      */
-    compose(draft: { text?: string; files?: File[]; inline?: boolean }): void
+    compose(draft: {
+      text?: string
+      files?: File[]
+      inline?: boolean
+      /**
+       * Send the draft once the text lands, rather than leaving it for the
+       * user to send. For a surface handing over a whole prompt, where the
+       * click already WAS the decision to send. Ignored by a composer that
+       * cannot send right now (streaming, blocked): the text stays a draft.
+       */
+      submit?: boolean
+    }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     registerComposerAction(action: ComposerActionRegistration): () => void
@@ -558,6 +569,19 @@ export interface Host {
     requestWorkingDirectoryChange?(request: {
       sessionId: string
       path: string
+    }): boolean
+    /**
+     * Ask the mounted conversation to adopt a reasoning effort — one of
+     * `THINKING_LEVELS`; anything else is refused. The page cannot write this
+     * itself: the level lives on the console's conversation record and is
+     * sent from there on every turn, so a write into session metadata would
+     * never reach the next one.
+     *
+     * Returns whether a mounted conversation took it.
+     */
+    requestThinkingLevelChange?(request: {
+      sessionId: string
+      level: string
     }): boolean
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null

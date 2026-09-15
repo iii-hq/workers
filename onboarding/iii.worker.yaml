@@ -1,0 +1,42 @@
+iii: v1
+name: onboarding
+language: javascript
+deploy: bundle
+license: Apache-2.0
+manifest: package.json
+tags: [onboarding, tour, console, ui, docs]
+description: Guided console tour — step content, per-operator progress in state, and an injected page that spotlights the console element each step talks about.
+
+runtime:
+  kind: javascript
+  # The iii node image. With a base_image the worker runs in its own VM, and
+  # `scripts.install` runs inside that guest before `scripts.start` — which is
+  # what lets a source checkout still build itself.
+  base_image: docker.io/iiidev/node:latest
+
+scripts:
+  # Build whenever there is source to build. A published artifact ships
+  # `dist/bundle` and nothing else (see this worker's `include` list in
+  # `.deploy/workers.yaml`), so it has no `src` and goes straight to `start`.
+  #
+  # The test is on the SOURCE, not on `dist`: `dist` is git-ignored, so the
+  # source sync never replaces it, and a guest that had already built one
+  # would keep serving it for the life of its writable layer — source edits
+  # would reach the worker never, rather than on the next prepare.
+  #
+  # `install` runs when the guest is PREPARED, not on every boot, so a source
+  # edit reaches the worker on the next prepare (`iii compose --up`), not on a
+  # plain restart.
+  #
+  # npm and esbuild only. The guest gets the worker directory alone, so the
+  # build must not need the repo's pnpm workspace: `pnpm --dir ui build` adds
+  # `tsc --noEmit` against `@iii-dev/console-ui`, which lives in that
+  # workspace and is types-only anyway (esbuild treats it as external).
+  install: if [ -f src/index.mjs ]; then npm install && npm run build:bundle; fi
+  start: node ./dist/bundle/index.mjs
+
+dependencies:
+  # The console worker is published as `ade`; `console` is still an alias.
+  # Its bus surface is unchanged, so the page keeps calling `console::*`.
+  ade: "latest"
+  state: "latest"
