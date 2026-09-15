@@ -139,7 +139,7 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Open the page for me when it is done.",
+          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes). Open the page for me when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
@@ -158,11 +158,11 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off.",
+          text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off by the user, not you the agent.",
           label: "Ask the agent",
         },
         title: "Reactivity",
-        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers to listen for when they're done. Watch the Triggers react as you check the boxes.",
+        body: "Now ask the agent to add 3 items to the TODO list, and to set Triggers that fire when you check each one off yourself. The agent adds the items and the Triggers; you tick the boxes. Watch the Triggers react as you do.",
       }),
       {
         id: "stay-in-touch",
@@ -204,7 +204,16 @@ export function getTour(id) {
   return TOURS.find((tour) => tour.id === id);
 }
 
-/** @returns {Step | undefined} */
-export function getStep(tourId, stepId) {
-  return getTour(tourId)?.steps.find((step) => step.id === stepId);
+/**
+ * The step, its tour, and its 1-based number in that tour — the number is
+ * what the `onboarding:steps:complete` event reports, so it is read from
+ * the ordered step list rather than stored beside it.
+ *
+ * @returns {{ tour: Tour, step: Step, number: number } | undefined}
+ */
+export function findStep(tourId, stepId) {
+  const tour = getTour(tourId);
+  const index = tour?.steps.findIndex((step) => step.id === stepId) ?? -1;
+  if (!tour || index < 0) return undefined;
+  return { tour, step: tour.steps[index], number: index + 1 };
 }
