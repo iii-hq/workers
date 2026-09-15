@@ -490,6 +490,9 @@ export interface Host {
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
   workspace?: { recentDirectories(): string[] }
+  /** Best-effort visible-screen lease for finite foreground work (e.g. dictation).
+   * Release on completion/error/cancel; also auto-released on script dispose. */
+  screen?: { keepAwake(): () => void }
   pages: {
     register(page: PageRegistration): () => void
   }

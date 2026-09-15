@@ -22,6 +22,7 @@ import {
 } from '@/hooks/use-harness-status'
 import { isMemoryAvailable, useMemoryStatus } from '@/hooks/use-memory-status'
 import { useModelPickerSource } from '@/hooks/use-model-picker-source'
+import { useScreenWakeLock } from '@/hooks/use-screen-wake-lock'
 import {
   isSessionManagerAvailable,
   useSessionManagerStatus,
@@ -33,6 +34,7 @@ import {
 } from '@/hooks/use-worktree-status'
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
+import { hasWorkingConversation } from '@/lib/chat-activity'
 import type { IiiClient } from '@/lib/iii-client'
 import {
   type ProviderListEntry,
@@ -165,6 +167,15 @@ export function ConversationsProvider({
     catalogKeys,
     !catalogLoading,
     backend.id === 'real' && sessionManagerAvailable,
+  )
+
+  // Hoisted above workspace routes: switching panels must not release a
+  // running chat/subagent, but stale offline statuses must not hold a lock.
+  useScreenWakeLock(
+    hasWorkingConversation(
+      api.conversations,
+      api.connectionState === 'connected',
+    ),
   )
 
   const [refreshingModels, setRefreshingModels] = useState(false)

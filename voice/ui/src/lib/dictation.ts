@@ -82,6 +82,7 @@ export class DictationController {
   private readonly listeners = new Set<() => void>()
   private sessionId: string | null = null
   private capture: CaptureHandle | null = null
+  private releaseScreenWakeLock: (() => void) | null = null
   private offHandler: (() => void) | null = null
   private starting = false
   private stopping = false
@@ -107,6 +108,13 @@ export class DictationController {
 
   private set(next: DictationReduceState | ((s: DictationReduceState) => DictationReduceState)): void {
     this.state = typeof next === 'function' ? next(this.state) : next
+    const active = ['starting', 'listening', 'stopping'].includes(this.state.status)
+    if (active) {
+      this.releaseScreenWakeLock ??= this.host.screen?.keepAwake() ?? null
+    } else {
+      this.releaseScreenWakeLock?.()
+      this.releaseScreenWakeLock = null
+    }
     for (const listener of this.listeners) listener()
   }
 

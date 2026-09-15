@@ -26,6 +26,7 @@ import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { registerPaletteSource } from '@/lib/palette/providers'
 import { PaneConfigurationProvider } from '@/lib/pane-configuration'
 import { requestPanelOpen } from '@/lib/panel-context'
+import { acquireScreenWakeLock } from '@/lib/screen-wake-lock'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
   registerExtComposerAction,
@@ -133,6 +134,10 @@ function makeHost(
   cleanups: Array<() => void>,
 ): Host {
   const scope = path.split('/')[0]
+  let screenDisposed = false
+  cleanups.push(() => {
+    screenDisposed = true
+  })
   const track = (off: () => void): (() => void) => {
     cleanups.push(off)
     return off
@@ -167,6 +172,19 @@ function makeHost(
         return track(
           registerPageCommands({ pageId, source: 'worker', commands }),
         )
+      },
+    },
+    screen: {
+      keepAwake() {
+        // An async extension operation may finish after its script unloads.
+        if (screenDisposed) return () => undefined
+        const release = acquireScreenWakeLock()
+        const off = () => {
+          release()
+          const index = cleanups.indexOf(off)
+          if (index !== -1) cleanups.splice(index, 1)
+        }
+        return track(off)
       },
     },
     workspace: {

@@ -23,6 +23,11 @@ import {
   setUiAssetsStatus,
 } from './ui-slots'
 
+const wakeLockMocks = vi.hoisted(() => ({ acquire: vi.fn() }))
+vi.mock('./screen-wake-lock', () => ({
+  acquireScreenWakeLock: wakeLockMocks.acquire,
+}))
+
 type UiModule = { default?: SetupFn }
 
 function deferred<T>() {
@@ -133,6 +138,37 @@ function renderCurrentForm(): string {
 afterEach(() => {
   setUiAssetsStatus('unavailable')
   vi.restoreAllMocks()
+})
+
+describe('extension screen leases', () => {
+  it('releases unfinished activities on dispose without retaining finished leases', async () => {
+    const finished = vi.fn()
+    const unfinished = vi.fn()
+    let keepAwake: (() => () => void) | undefined
+    wakeLockMocks.acquire
+      .mockReturnValueOnce(finished)
+      .mockReturnValueOnce(unfinished)
+    const harness = createHarness({
+      importModule: async () => ({
+        default(host) {
+          keepAwake = host.screen?.keepAwake
+          host.screen?.keepAwake()()
+          host.screen?.keepAwake()
+        },
+      }),
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'voice/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(finished).toHaveBeenCalledTimes(1))
+    expect(unfinished).not.toHaveBeenCalled()
+    harness.stop()
+    expect(finished).toHaveBeenCalledTimes(1)
+    expect(unfinished).toHaveBeenCalledTimes(1)
+    keepAwake?.()()
+    expect(wakeLockMocks.acquire).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('injectable UI loader readiness', () => {

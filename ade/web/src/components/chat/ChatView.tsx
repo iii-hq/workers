@@ -63,6 +63,7 @@ import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { requestPanelOpen } from '@/lib/panel-context'
+import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
 import { isCallSettled } from '@/lib/sessions/entry-mapper'
 import {
@@ -702,7 +703,7 @@ export function ChatView({
             : d,
         ),
       )
-      void (async () => {
+      void withScreenWakeLock(async () => {
         let attachedBlocks: string[] | undefined
         const workingDir = conversation.workingDir
         if (backend.id === 'real' && workingDir) {
@@ -1289,7 +1290,7 @@ export function ChatView({
     }
   }, [backend.id, conversation.id, getDraftAttachments, setDraftAttachments])
 
-  const handleSubmit = useCallback(
+  const submit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (submitBlockedRef.current) return
       const conversationId = conversation.id
@@ -2013,6 +2014,10 @@ export function ChatView({
       workingDirEnabled,
     ],
   )
+
+  // Includes session creation, attachment preparation/uploads, queue sends
+  // and /compact, before any server working/streaming event can arrive.
+  const handleSubmit = useMemo(() => withScreenWakeLock(submit), [submit])
 
   const handleStop = useCallback(() => {
     if (stopRequestedRef.current) return
