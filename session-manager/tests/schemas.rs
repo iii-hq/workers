@@ -45,6 +45,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "session::store::list-metas",
             "session::store::get-entry",
             "session::store::put-entry",
+            "session::store::commit-append",
             "session::store::list-entries",
             "session::store::delete-entries",
             "session::store::get-active-leaf",

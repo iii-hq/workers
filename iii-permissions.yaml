@@ -85,6 +85,7 @@ rules:
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
+  - '!console::conversations::*'
   # session-manager: deny-by-default for in-run agents (integration.md §2).
   # An agent that can write here can rewrite its own transcript; the raw
   # store protocol (session::store::*) bypasses every invariant. Reads stay

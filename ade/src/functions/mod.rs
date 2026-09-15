@@ -39,6 +39,7 @@ pub fn register_all(
         tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
     }
     workspace::register(iii);
+    crate::conversations::register(iii);
     tracing::info!(
         "registered console::status, console::ui-manifest, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{list,open,close}}"
     );

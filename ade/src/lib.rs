@@ -4,6 +4,7 @@
 pub mod assets;
 pub mod config;
 pub mod configuration;
+pub mod conversations;
 pub mod functions;
 pub mod manifest;
 pub mod probe;

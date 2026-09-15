@@ -42,6 +42,7 @@ use super::recorder::{Recorder, RecorderDeliverer};
 pub struct SessionWorld {
     /// @pure stack, rebuilt before every scenario.
     pub deps: Arc<Deps>,
+    pub store: Arc<FsStore>,
     pub emitter: Arc<Emitter>,
     pub recorder: Recorder,
     pub clock: Arc<FakeClock>,
@@ -86,6 +87,7 @@ impl SessionWorld {
         let pure = build_pure_stack();
         Self {
             deps: pure.deps,
+            store: pure.store,
             emitter: pure.emitter,
             recorder: pure.recorder,
             clock: pure.clock,
@@ -107,6 +109,7 @@ impl SessionWorld {
     pub fn reset_pure(&mut self) {
         let pure = build_pure_stack();
         self.deps = pure.deps;
+        self.store = pure.store;
         self.emitter = pure.emitter;
         self.recorder = pure.recorder;
         self.clock = pure.clock;
@@ -201,6 +204,7 @@ impl SessionWorld {
 
 struct PureStack {
     deps: Arc<Deps>,
+    store: Arc<FsStore>,
     emitter: Arc<Emitter>,
     recorder: Recorder,
     clock: Arc<FakeClock>,
@@ -217,7 +221,7 @@ fn build_pure_stack() -> PureStack {
     let ids = Arc::new(SeqIds::default());
     let store = Arc::new(FsStore::new(&fs_dir).expect("open scenario FsStore"));
     let service = Arc::new(SessionService::with_parts(
-        store,
+        store.clone(),
         ids.clone(),
         clock.clone(),
         &cfg,
@@ -233,6 +237,7 @@ fn build_pure_stack() -> PureStack {
     });
     PureStack {
         deps,
+        store,
         emitter,
         recorder,
         clock,

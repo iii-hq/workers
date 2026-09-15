@@ -72,6 +72,34 @@ Feature: session::append — append one entry, idempotent on entry_id
       """
     Then the response field "meta.message_count" is 1
 
+  # Prevents: a store failure after writing the entry but before moving the
+  # active leaf making every idempotent retry return success while the message
+  # remains outside the visible transcript.
+  Scenario: retry completes an entry left by a partial append
+    Given a binding "b1" on "session::message-added" delivering to "ui::recv" with config:
+      """
+      {}
+      """
+    And an incomplete user entry "original" with id "turn1-user" persisted to "s_001"
+    When I call "session::append" with:
+      """
+      { "session_id": "s_001", "entry_id": "turn1-user",
+        "message": { "role": "user", "content": [{ "type": "text", "text": "DIFFERENT" }], "timestamp": 2 } }
+      """
+    Then the call succeeds
+    And function "ui::recv" received 1 "session::message-added" delivery
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_001" }
+      """
+    Then the response field "messages" has length 1
+    And the response field "messages.0.message.content.0.text" is "original"
+    When I call "session::get" with:
+      """
+      { "session_id": "s_001" }
+      """
+    Then the response field "meta.message_count" is 1
+
   # Prevents: an idempotent replay yanking the active leaf backwards,
   # which would re-parent the next streamed message onto stale history.
   Scenario: an idempotent replay does not move the active leaf

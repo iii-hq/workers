@@ -11,6 +11,7 @@
 //! {"type":"meta","meta":{ ...SessionMeta }}
 //! {"type":"entry","entry":{ ...SessionEntry }}
 //! {"type":"leaf","entry_id":"e_..."}
+//! {"type":"append","entry":{ ...SessionEntry },"meta":{ ...SessionMeta }}
 //! ```
 //!
 //! Mutations append (meta rewrites, entry writes/updates, leaf moves);
@@ -25,30 +26,43 @@
 //! removes the folder.
 //!
 //! A lazy per-session cache makes reads cheap: the file is replayed on
-//! first access and kept write-through afterwards. This is safe because
-//! the service serializes mutations per session and this worker is the
-//! single writer of its data_dir. A truncated trailing line (crash
+//! first access and kept write-through afterwards. Appends are serialized
+//! here because several bridged services can share this worker as their
+//! storage authority. A truncated trailing line (crash
 //! mid-append) is tolerated with a warning; malformed lines are
 //! warn-and-skipped.
 
-use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::{SessionStore, StoreError};
+use super::{CommitAppendResult, SessionStore, StoreError};
 use crate::types::{AttachmentMeta, SessionEntry, SessionMeta};
 
 /// One JSONL line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Record {
-    Meta { meta: SessionMeta },
-    Entry { entry: SessionEntry },
-    Leaf { entry_id: Option<String> },
+    Meta {
+        meta: SessionMeta,
+    },
+    Entry {
+        entry: SessionEntry,
+    },
+    Leaf {
+        entry_id: Option<String>,
+    },
+    Append {
+        entry: SessionEntry,
+        meta: SessionMeta,
+    },
+    Commit {
+        entry_id: String,
+    },
 }
 
 /// Materialized state of one session file.
@@ -57,6 +71,8 @@ struct LoadedSession {
     meta: Option<SessionMeta>,
     entries: BTreeMap<String, SessionEntry>,
     leaf: Option<String>,
+    committed: BTreeSet<String>,
+    pending_legacy_append: bool,
 }
 
 impl LoadedSession {
@@ -66,11 +82,44 @@ impl LoadedSession {
 
     fn apply(&mut self, record: Record) {
         match record {
-            Record::Meta { meta } => self.meta = Some(meta),
+            Record::Meta { meta } => {
+                self.meta = Some(meta);
+                if self.pending_legacy_append {
+                    self.mark_active_path_committed();
+                    self.pending_legacy_append = false;
+                }
+            }
             Record::Entry { entry } => {
                 self.entries.insert(entry.id().to_string(), entry);
             }
-            Record::Leaf { entry_id } => self.leaf = entry_id,
+            Record::Leaf { entry_id } => {
+                self.leaf = entry_id;
+                self.pending_legacy_append = true;
+            }
+            Record::Append { entry, meta } => {
+                let id = entry.id().to_string();
+                self.entries.insert(id.clone(), entry);
+                self.leaf = Some(id.clone());
+                self.meta = Some(meta);
+                self.committed.insert(id);
+                self.pending_legacy_append = false;
+            }
+            Record::Commit { entry_id } => {
+                self.committed.insert(entry_id);
+            }
+        }
+    }
+
+    fn mark_active_path_committed(&mut self) {
+        let mut cursor = self.leaf.clone();
+        while let Some(id) = cursor {
+            if !self.committed.insert(id.clone()) {
+                break;
+            }
+            cursor = self
+                .entries
+                .get(&id)
+                .and_then(|entry| entry.parent_id().map(str::to_string));
         }
     }
 
@@ -85,12 +134,54 @@ impl LoadedSession {
                 entry: entry.clone(),
             });
         }
+        for entry_id in &self.committed {
+            records.push(Record::Commit {
+                entry_id: entry_id.clone(),
+            });
+        }
         if self.leaf.is_some() {
             records.push(Record::Leaf {
                 entry_id: self.leaf.clone(),
             });
         }
         records
+    }
+}
+
+fn with_parent(entry: &SessionEntry, parent_id: Option<String>) -> SessionEntry {
+    match entry {
+        SessionEntry::Message {
+            id,
+            timestamp,
+            revision,
+            origin,
+            message,
+            ..
+        } => SessionEntry::Message {
+            id: id.clone(),
+            parent_id,
+            timestamp: *timestamp,
+            revision: *revision,
+            origin: origin.clone(),
+            message: message.clone(),
+        },
+        SessionEntry::Custom {
+            id,
+            timestamp,
+            revision,
+            origin,
+            custom_type,
+            data,
+            ..
+        } => SessionEntry::Custom {
+            id: id.clone(),
+            parent_id,
+            timestamp: *timestamp,
+            revision: *revision,
+            origin: origin.clone(),
+            custom_type: custom_type.clone(),
+            data: data.clone(),
+        },
     }
 }
 
@@ -137,6 +228,12 @@ pub struct FsStore {
     cache: Mutex<HashMap<String, LoadedSession>>,
     #[cfg(test)]
     after_replay: Option<ReplayHook>,
+    #[cfg(test)]
+    before_commit: Option<ReplayHook>,
+    #[cfg(test)]
+    after_mutation_write: Option<ReplayHook>,
+    #[cfg(test)]
+    after_snapshot_write: Option<ReplayHook>,
 }
 
 impl FsStore {
@@ -150,6 +247,12 @@ impl FsStore {
             cache: Mutex::new(HashMap::new()),
             #[cfg(test)]
             after_replay: None,
+            #[cfg(test)]
+            before_commit: None,
+            #[cfg(test)]
+            after_mutation_write: None,
+            #[cfg(test)]
+            after_snapshot_write: None,
         })
     }
 
@@ -248,20 +351,107 @@ impl FsStore {
         Ok(f(loaded))
     }
 
-    /// Append one record to the session's file (write-through is the
-    /// caller's job via [`Self::with_loaded`]).
+    /// Append one record to the session's file. A failed prior write may have
+    /// left a partial final line; remove only that invalid tail before retrying.
     fn append_record(&self, session_id: &str, record: &Record) -> Result<(), StoreError> {
         let path = self.file_path(session_id);
-        let mut line = serde_json::to_string(record)
-            .map_err(|e| StoreError(format!("serialize session record: {e}")))?;
-        line.push('\n');
         let mut file = std::fs::OpenOptions::new()
             .create(true)
+            .read(true)
+            .write(true)
             .append(true)
             .open(&path)
             .map_err(|e| StoreError(format!("open {}: {e}", path.display())))?;
+        let len = file
+            .metadata()
+            .map_err(|e| StoreError(format!("stat {}: {e}", path.display())))?
+            .len();
+        let needs_separator = if len > 0 {
+            file.seek(SeekFrom::End(-1))
+                .and_then(|_| {
+                    let mut byte = [0];
+                    file.read_exact(&mut byte).map(|_| byte[0])
+                })
+                .map_err(|e| StoreError(format!("read {}: {e}", path.display())))?
+                != b'\n'
+        } else {
+            false
+        };
+        let needs_separator = if needs_separator {
+            let mut end = len;
+            let tail_start = loop {
+                let start = end.saturating_sub(8192);
+                let mut chunk = vec![0; (end - start) as usize];
+                file.seek(SeekFrom::Start(start))
+                    .and_then(|_| file.read_exact(&mut chunk))
+                    .map_err(|e| StoreError(format!("read {}: {e}", path.display())))?;
+                if let Some(index) = chunk.iter().rposition(|byte| *byte == b'\n') {
+                    break start + index as u64 + 1;
+                }
+                if start == 0 {
+                    break 0;
+                }
+                end = start;
+            };
+            let mut tail = vec![0; (len - tail_start) as usize];
+            file.seek(SeekFrom::Start(tail_start))
+                .and_then(|_| file.read_exact(&mut tail))
+                .map_err(|e| StoreError(format!("read {}: {e}", path.display())))?;
+            if serde_json::from_slice::<Record>(&tail).is_ok() {
+                true
+            } else {
+                file.set_len(tail_start)
+                    .map_err(|e| StoreError(format!("repair {}: {e}", path.display())))?;
+                false
+            }
+        } else {
+            false
+        };
+        let mut line = serde_json::to_string(record)
+            .map_err(|e| StoreError(format!("serialize session record: {e}")))?;
+        line.push('\n');
+        if needs_separator {
+            file.write_all(b"\n")
+                .map_err(|e| StoreError(format!("append to {}: {e}", path.display())))?;
+        }
         file.write_all(line.as_bytes())
             .map_err(|e| StoreError(format!("append to {}: {e}", path.display())))?;
+        Ok(())
+    }
+
+    async fn append_and_apply(&self, session_id: &str, record: Record) -> Result<(), StoreError> {
+        self.with_loaded(session_id, |_| ()).await?;
+        let mut cache = self.lock();
+        self.append_record(session_id, &record)?;
+        #[cfg(test)]
+        if let Some(hook) = &self.after_mutation_write {
+            hook(session_id);
+        }
+        cache
+            .get_mut(session_id)
+            .expect("cache entries are never evicted")
+            .apply(record);
+        Ok(())
+    }
+
+    async fn mutate_snapshot(
+        &self,
+        session_id: &str,
+        mutate: impl FnOnce(&mut LoadedSession),
+    ) -> Result<(), StoreError> {
+        self.with_loaded(session_id, |_| ()).await?;
+        let mut cache = self.lock();
+        let current = cache
+            .get_mut(session_id)
+            .expect("cache entries are never evicted");
+        let mut next = current.clone();
+        mutate(&mut next);
+        self.persist_snapshot(session_id, &next)?;
+        #[cfg(test)]
+        if let Some(hook) = &self.after_snapshot_write {
+            hook(session_id);
+        }
+        *current = next;
         Ok(())
     }
 
@@ -347,24 +537,12 @@ impl SessionStore for FsStore {
     }
 
     async fn put_meta(&self, meta: &SessionMeta) -> Result<(), StoreError> {
-        // Disk first, cache second: a failed append must never leave the
-        // cache claiming state the file doesn't have (it would silently
-        // revert on restart). Cold-cache replay after the append already
-        // contains the record, so the closure is idempotent.
         let record = Record::Meta { meta: meta.clone() };
-        self.append_record(&meta.session_id, &record)?;
-        self.with_loaded(&meta.session_id, |s| s.meta = Some(meta.clone()))
-            .await
+        self.append_and_apply(&meta.session_id, record).await
     }
 
     async fn delete_meta(&self, session_id: &str) -> Result<(), StoreError> {
-        let snapshot = self
-            .with_loaded(session_id, |s| {
-                s.meta = None;
-                s.clone()
-            })
-            .await?;
-        self.persist_snapshot(session_id, &snapshot)
+        self.mutate_snapshot(session_id, |s| s.meta = None).await
     }
 
     async fn list_metas(&self) -> Result<Vec<SessionMeta>, StoreError> {
@@ -390,11 +568,74 @@ impl SessionStore for FsStore {
         let record = Record::Entry {
             entry: entry.clone(),
         };
+        self.append_and_apply(session_id, record).await
+    }
+
+    async fn commit_append(
+        &self,
+        session_id: &str,
+        entry: &SessionEntry,
+        parent_explicit: bool,
+    ) -> Result<CommitAppendResult, StoreError> {
+        self.with_loaded(session_id, |_| ()).await?;
+        #[cfg(test)]
+        if let Some(hook) = &self.before_commit {
+            hook(session_id);
+        }
+
+        // The fs instance is the storage owner for every bridge. Keep the
+        // decision, durable write and cache update under its lock so separate
+        // bridge services cannot commit from the same stale leaf or metadata.
+        let mut cache = self.lock();
+        let session = cache
+            .get_mut(session_id)
+            .expect("cache entries are never evicted");
+        let meta = session
+            .meta
+            .clone()
+            .ok_or_else(|| StoreError(format!("session {session_id} does not exist")))?;
+
+        if let Some(existing) = session.entries.get(entry.id()).cloned() {
+            if session.committed.contains(existing.id()) {
+                return Ok(CommitAppendResult {
+                    entry: existing,
+                    meta,
+                    committed: false,
+                });
+            }
+        }
+
+        let entry = match session.entries.get(entry.id()).cloned() {
+            // Preserve an entry left by the legacy multi-write append.
+            Some(existing) => existing,
+            None if parent_explicit => {
+                if let Some(parent_id) = entry.parent_id() {
+                    if !session.entries.contains_key(parent_id) {
+                        return Err(StoreError(format!(
+                            "parent entry {parent_id} does not exist in session {session_id}"
+                        )));
+                    }
+                }
+                entry.clone()
+            }
+            None => with_parent(entry, session.leaf.clone()),
+        };
+        let mut meta = meta;
+        if matches!(entry, SessionEntry::Message { .. }) {
+            meta.message_count += 1;
+        }
+        meta.updated_at = entry.timestamp();
+        let record = Record::Append {
+            entry: entry.clone(),
+            meta: meta.clone(),
+        };
         self.append_record(session_id, &record)?;
-        self.with_loaded(session_id, |s| {
-            s.entries.insert(entry.id().to_string(), entry.clone());
+        session.apply(record);
+        Ok(CommitAppendResult {
+            entry,
+            meta,
+            committed: true,
         })
-        .await
     }
 
     async fn list_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>, StoreError> {
@@ -403,13 +644,8 @@ impl SessionStore for FsStore {
     }
 
     async fn delete_entries(&self, session_id: &str) -> Result<(), StoreError> {
-        let snapshot = self
-            .with_loaded(session_id, |s| {
-                s.entries.clear();
-                s.clone()
-            })
-            .await?;
-        self.persist_snapshot(session_id, &snapshot)
+        self.mutate_snapshot(session_id, |s| s.entries.clear())
+            .await
     }
 
     async fn get_active_leaf(&self, session_id: &str) -> Result<Option<String>, StoreError> {
@@ -420,19 +656,11 @@ impl SessionStore for FsStore {
         let record = Record::Leaf {
             entry_id: Some(entry_id.to_string()),
         };
-        self.append_record(session_id, &record)?;
-        self.with_loaded(session_id, |s| s.leaf = Some(entry_id.to_string()))
-            .await
+        self.append_and_apply(session_id, record).await
     }
 
     async fn delete_active_leaf(&self, session_id: &str) -> Result<(), StoreError> {
-        let snapshot = self
-            .with_loaded(session_id, |s| {
-                s.leaf = None;
-                s.clone()
-            })
-            .await?;
-        self.persist_snapshot(session_id, &snapshot)
+        self.mutate_snapshot(session_id, |s| s.leaf = None).await
     }
 
     async fn put_attachment(&self, meta: &AttachmentMeta, bytes: &[u8]) -> Result<(), StoreError> {
@@ -654,6 +882,357 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commit_append_recovers_partial_write_and_keeps_replays_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        let first = entry("e_1", None, "one", 0);
+        store.put_meta(&meta("s_1", "session")).await.unwrap();
+
+        // The old three-write append could fail after put_entry and leave this
+        // exact durable state behind.
+        store.put_entry("s_1", &first).await.unwrap();
+        let recovered = store.commit_append("s_1", &first, false).await.unwrap();
+        assert!(recovered.committed);
+        assert_eq!(
+            store.get_active_leaf("s_1").await.unwrap().as_deref(),
+            Some("e_1")
+        );
+        assert_eq!(
+            store.get_meta("s_1").await.unwrap().unwrap().message_count,
+            1
+        );
+
+        let second = entry("e_2", Some("e_1"), "two", 0);
+        assert!(
+            store
+                .commit_append("s_1", &second, true)
+                .await
+                .unwrap()
+                .committed
+        );
+
+        // A complete replay returns the original entry without moving the leaf
+        // or applying the caller's newly calculated metadata.
+        let replay = store
+            .commit_append("s_1", &entry("e_1", None, "different", 0), false)
+            .await
+            .unwrap();
+        assert!(!replay.committed);
+        assert_eq!(replay.entry, first);
+        assert_eq!(
+            store.get_active_leaf("s_1").await.unwrap().as_deref(),
+            Some("e_2")
+        );
+        assert_eq!(
+            store.get_meta("s_1").await.unwrap().unwrap().message_count,
+            2
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_bridge_commits_of_the_same_id_commit_once() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = FsStore::new(dir.path()).unwrap();
+        store.put_meta(&meta("s_1", "session")).await.unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        store.before_commit = Some(Arc::new({
+            let barrier = Arc::clone(&barrier);
+            move |_| {
+                barrier.wait();
+            }
+        }));
+        let store = Arc::new(store);
+
+        let first = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move {
+                store
+                    .commit_append("s_1", &entry("e_1", None, "first", 0), false)
+                    .await
+                    .unwrap()
+            }
+        });
+        let second = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move {
+                store
+                    .commit_append("s_1", &entry("e_1", None, "second", 0), false)
+                    .await
+                    .unwrap()
+            }
+        });
+        let (first, second) = tokio::join!(first, second);
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert_ne!(first.committed, second.committed);
+        assert_eq!(first.entry, second.entry);
+        assert_eq!(store.list_entries("s_1").await.unwrap().len(), 1);
+        assert_eq!(
+            store.get_meta("s_1").await.unwrap().unwrap().message_count,
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_bridge_commits_from_the_same_leaf_form_a_chain() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = FsStore::new(dir.path()).unwrap();
+        let mut initial_meta = meta("s_1", "session");
+        initial_meta.message_count = 1;
+        store.put_meta(&initial_meta).await.unwrap();
+        store
+            .put_entry("s_1", &entry("e_root", None, "root", 0))
+            .await
+            .unwrap();
+        store.set_active_leaf("s_1", "e_root").await.unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        store.before_commit = Some(Arc::new({
+            let barrier = Arc::clone(&barrier);
+            move |_| {
+                barrier.wait();
+            }
+        }));
+        let store = Arc::new(store);
+
+        let first = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move {
+                store
+                    .commit_append("s_1", &entry("e_1", Some("e_root"), "first", 0), false)
+                    .await
+                    .unwrap()
+            }
+        });
+        let second = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move {
+                store
+                    .commit_append("s_1", &entry("e_2", Some("e_root"), "second", 0), false)
+                    .await
+                    .unwrap()
+            }
+        });
+        let (first, second) = tokio::join!(first, second);
+        let first = first.unwrap();
+        let second = second.unwrap();
+
+        assert!(first.committed && second.committed);
+        let parents = [first.entry.parent_id(), second.entry.parent_id()];
+        assert!(parents.contains(&Some("e_root")));
+        assert!(parents.contains(&Some("e_1")) || parents.contains(&Some("e_2")));
+        assert_eq!(store.list_entries("s_1").await.unwrap().len(), 3);
+        assert_eq!(
+            store.get_meta("s_1").await.unwrap().unwrap().message_count,
+            3
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn commit_cannot_overtake_a_metadata_write_in_cache() {
+        use std::sync::{mpsc, Arc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = FsStore::new(dir.path()).unwrap();
+        store.put_meta(&meta("s_1", "initial")).await.unwrap();
+        let (written_tx, written_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (commit_started_tx, commit_started_rx) = mpsc::channel();
+        let release_rx = Mutex::new(Some(release_rx));
+        store.after_mutation_write = Some(Arc::new(move |_| {
+            written_tx.send(()).unwrap();
+            release_rx.lock().unwrap().take().unwrap().recv().unwrap();
+        }));
+        let store = Arc::new(store);
+
+        let put_meta = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.put_meta(&meta("s_1", "renamed")).await.unwrap() }
+        });
+        tokio::task::spawn_blocking(move || written_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("metadata write reached the cache seam");
+
+        let commit = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move {
+                commit_started_tx.send(()).unwrap();
+                store
+                    .commit_append("s_1", &entry("e_1", None, "one", 0), false)
+                    .await
+                    .unwrap();
+            }
+        });
+        tokio::task::spawn_blocking(move || commit_started_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("commit reached the lock seam");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!commit.is_finished());
+        release_tx.send(()).unwrap();
+        put_meta.await.unwrap();
+        commit.await.unwrap();
+
+        let cached = store.get_meta("s_1").await.unwrap().unwrap();
+        let reopened = FsStore::new(dir.path())
+            .unwrap()
+            .get_meta("s_1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.title, "renamed");
+        assert_eq!(cached.message_count, 1);
+        assert_eq!(cached, reopened);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn commit_cannot_overtake_an_active_leaf_write_in_cache() {
+        use std::sync::{mpsc, Arc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = FsStore::new(dir.path()).unwrap();
+        let mut initial_meta = meta("s_1", "session");
+        initial_meta.message_count = 2;
+        store.put_meta(&initial_meta).await.unwrap();
+        store
+            .put_entry("s_1", &entry("e_root", None, "root", 0))
+            .await
+            .unwrap();
+        store
+            .put_entry("s_1", &entry("e_branch", Some("e_root"), "branch", 0))
+            .await
+            .unwrap();
+        store.set_active_leaf("s_1", "e_root").await.unwrap();
+        let (written_tx, written_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (commit_started_tx, commit_started_rx) = mpsc::channel();
+        let release_rx = Mutex::new(Some(release_rx));
+        store.after_mutation_write = Some(Arc::new(move |_| {
+            written_tx.send(()).unwrap();
+            release_rx.lock().unwrap().take().unwrap().recv().unwrap();
+        }));
+        let store = Arc::new(store);
+
+        let set_leaf = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.set_active_leaf("s_1", "e_branch").await.unwrap() }
+        });
+        tokio::task::spawn_blocking(move || written_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("leaf write reached the cache seam");
+
+        let commit = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move {
+                commit_started_tx.send(()).unwrap();
+                store
+                    .commit_append("s_1", &entry("e_next", Some("e_root"), "next", 0), false)
+                    .await
+                    .unwrap();
+            }
+        });
+        tokio::task::spawn_blocking(move || commit_started_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("commit reached the lock seam");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!commit.is_finished());
+        release_tx.send(()).unwrap();
+        set_leaf.await.unwrap();
+        commit.await.unwrap();
+
+        let cached_leaf = store.get_active_leaf("s_1").await.unwrap();
+        let reopened = FsStore::new(dir.path()).unwrap();
+        assert_eq!(cached_leaf.as_deref(), Some("e_next"));
+        assert_eq!(cached_leaf, reopened.get_active_leaf("s_1").await.unwrap());
+        assert_eq!(
+            store
+                .get_entry("s_1", "e_next")
+                .await
+                .unwrap()
+                .unwrap()
+                .parent_id(),
+            Some("e_branch")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn commit_cannot_overtake_a_metadata_snapshot_delete() {
+        use std::sync::{mpsc, Arc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = FsStore::new(dir.path()).unwrap();
+        store.put_meta(&meta("s_1", "session")).await.unwrap();
+        let (written_tx, written_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (commit_started_tx, commit_started_rx) = mpsc::channel();
+        let release_rx = Mutex::new(Some(release_rx));
+        store.after_snapshot_write = Some(Arc::new(move |_| {
+            written_tx.send(()).unwrap();
+            release_rx.lock().unwrap().take().unwrap().recv().unwrap();
+        }));
+        let store = Arc::new(store);
+
+        let delete = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.delete_meta("s_1").await.unwrap() }
+        });
+        tokio::task::spawn_blocking(move || written_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("snapshot write reached the cache seam");
+
+        let commit = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move {
+                commit_started_tx.send(()).unwrap();
+                store
+                    .commit_append("s_1", &entry("e_1", None, "one", 0), false)
+                    .await
+            }
+        });
+        tokio::task::spawn_blocking(move || commit_started_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("commit started while snapshot cache update was parked");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!commit.is_finished());
+        release_tx.send(()).unwrap();
+        delete.await.unwrap();
+        assert!(commit.await.unwrap().is_err());
+
+        assert!(store.get_meta("s_1").await.unwrap().is_none());
+        assert!(FsStore::new(dir.path())
+            .unwrap()
+            .get_meta("s_1")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_snapshot_write_does_not_change_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        store.put_meta(&meta("s_1", "session")).await.unwrap();
+        store
+            .put_entry("s_1", &entry("e_1", None, "one", 0))
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(dir.path()).unwrap();
+
+        assert!(store.delete_entries("s_1").await.is_err());
+        assert!(store.get_entry("s_1", "e_1").await.unwrap().is_some());
+        assert!(store.get_meta("s_1").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
     async fn truncated_tail_is_tolerated() {
         let dir = tempfile::tempdir().unwrap();
         {
@@ -679,6 +1258,69 @@ mod tests {
         let store = FsStore::new(dir.path()).unwrap();
         assert_eq!(store.get_meta("s_1").await.unwrap().unwrap().title, "ok");
         assert_eq!(store.list_entries("s_1").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn append_repairs_a_partial_tail_before_writing_the_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        store.put_meta(&meta("s_1", "session")).await.unwrap();
+        let path = store.file_path("s_1");
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"type\":\"append\",\"entry\":")
+            .unwrap();
+
+        store
+            .commit_append("s_1", &entry("e_1", None, "one", 0), false)
+            .await
+            .unwrap();
+
+        let reopened = FsStore::new(dir.path()).unwrap();
+        assert!(reopened.get_entry("s_1", "e_1").await.unwrap().is_some());
+        assert_eq!(
+            reopened.get_active_leaf("s_1").await.unwrap().as_deref(),
+            Some("e_1")
+        );
+        assert_eq!(
+            reopened
+                .get_meta("s_1")
+                .await
+                .unwrap()
+                .unwrap()
+                .message_count,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn append_preserves_a_valid_final_record_without_a_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(format!("{}.jsonl", encode_session_id("s_1")));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&Record::Meta {
+                meta: meta("s_1", "session"),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let store = FsStore::new(dir.path()).unwrap();
+        store
+            .commit_append("s_1", &entry("e_1", None, "one", 0), false)
+            .await
+            .unwrap();
+
+        let reopened = FsStore::new(dir.path()).unwrap();
+        assert_eq!(
+            reopened.get_meta("s_1").await.unwrap().unwrap().title,
+            "session"
+        );
+        assert!(reopened.get_entry("s_1", "e_1").await.unwrap().is_some());
     }
 
     #[tokio::test]
