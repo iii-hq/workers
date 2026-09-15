@@ -145,6 +145,13 @@ class SyncTests(unittest.TestCase):
         for relative, expected in self.protected.items():
             self.assertEqual((self.destination / relative).read_text(), expected)
 
+    def test_force_with_dry_run_preserves_local_edits(self):
+        self.run_sync()
+        (self.destination / "agents/custom.md").write_text("# Keep local edits\n")
+        before = self.files()
+        self.run_sync("--force", "--dry-run")
+        self.assertEqual(self.files(), before)
+
     def test_incomplete_upstream_fails_without_partial_updates(self):
         self.run_sync()
         before = self.files()

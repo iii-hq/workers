@@ -23,9 +23,11 @@ Run from any working directory.
 HELP
 }
 
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo=https://github.com/iii-hq/templates.git
 ref=main
-options=()
+# Bash 3.2 treats empty arrays as unset under set -u; keep a required argument.
+options=(--destination "$script_dir")
 while (($#)); do
   case "$1" in
     --ref|--repo)
@@ -40,7 +42,6 @@ while (($#)); do
   esac
 done
 
-script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 command -v git >/dev/null || { echo 'Git is required.' >&2; exit 1; }
 python3 -c 'import sys; assert sys.version_info >= (3, 11)' 2>/dev/null || {
   echo 'Python 3.11+ is required.' >&2; exit 1;
@@ -70,4 +71,4 @@ GIT_TERMINAL_PROMPT=0 git -C "$scratch/repo" -c protocol.ext.allow=never \
 commit=$(git -C "$scratch/repo" rev-parse --verify 'FETCH_HEAD^{commit}')
 python3 "$script_dir/scripts/sync_template.py" \
   --checkout "$scratch/repo" --commit "$commit" --repo "$repo" --ref "$ref" \
-  --destination "$script_dir" "${options[@]}"
+  "${options[@]}"

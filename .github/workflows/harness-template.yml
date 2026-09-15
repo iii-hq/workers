@@ -32,3 +32,24 @@ jobs:
         run: python -m pip install --quiet PyYAML==6.0.3
       - name: Validate local Compose, configuration and upstream instructions
         run: python -m unittest discover -s template/tests -p test_template.py -v
+
+  macos-bash:
+    name: Sync compatibility (macOS Bash 3.2)
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Select the native macOS Bash for the script shebang
+        run: |
+          /bin/bash --version
+          test "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"')" = '3.2'
+          mkdir -p "$RUNNER_TEMP/system-bash"
+          ln -s /bin/bash "$RUNNER_TEMP/system-bash/bash"
+          echo "$RUNNER_TEMP/system-bash" >> "$GITHUB_PATH"
+      - name: Test direct script execution with Bash 3.2
+        run: python -m unittest discover -s template/tests -p test_sync.py -v
