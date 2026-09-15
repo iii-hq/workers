@@ -1,7 +1,6 @@
 import {
   Button,
   type Host,
-  PageBody,
   PageHeader,
   PageMain,
   type PageRenderProps,
@@ -678,14 +677,20 @@ function Frame({
 }) {
   return (
     <PageShell className="ob-page">
+      <PageHeader title={title} description={description} onClose={onClose} />
       <PageMain className="ob-page">
-        <PageHeader title={title} description={description} onClose={onClose} />
-        <PageBody>
+        {/* `PageMain` is `overflow-hidden`, and so is every other piece of the
+            page chrome — a page that wants to scroll has to say so. Without
+            this the tour is simply cut off at the bottom of the pane, with no
+            way to reach the last steps. The scroller sits OUTSIDE the centred
+            column so the scrollbar rides the pane's edge rather than the
+            text's. */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {/* Centred column: the pane is often narrow beside a chat, but a
               page wide enough to be a whole tab should not leave the list
               stranded on one edge. */}
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-6">{children}</div>
-        </PageBody>
+        </div>
       </PageMain>
     </PageShell>
   )
