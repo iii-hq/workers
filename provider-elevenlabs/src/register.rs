@@ -22,6 +22,7 @@ pub fn declaration() -> ProviderDeclaration {
     ProviderDeclaration {
         id: PROVIDER_ID.into(),
         display_name: Some("ElevenLabs".into()),
+        icon_svg: None,
         credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
         defaults: Some(ProviderDefaults {
             api_url: Some(DEFAULT_API_URL.into()),
