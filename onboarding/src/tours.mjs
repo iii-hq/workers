@@ -40,8 +40,9 @@ const STATE_SCOPE = 'onboarding'
  * A step the AGENT finishes, not the operator.
  *
  * Its prompt ends by telling the agent to write `step_<id>_completed` into
- * the onboarding state scope, and the step waits on a `state` trigger bound
- * to that one key. The page binds every reachable condition when the step is
+ * the onboarding state scope as it ENDS ITS TURN — not merely when it thinks
+ * it is done, which it reports too early — and the step waits on a `state`
+ * trigger bound to that one key. The page binds every reachable condition when the step is
  * DISPLAYED, before any button is clicked, so the step the operator is
  * looking at is the step the agent is still working on — a long build no
  * longer reads as finished the moment the prompt is sent.
@@ -58,7 +59,7 @@ const agentStep = (step) => {
     ...step,
     ask: {
       ...step.ask,
-      text: `${step.ask.text} When you are done, write ${key}: true to state, scope "${STATE_SCOPE}".`,
+      text: `${step.ask.text} When you are ending your turn, write ${key}: true to state, scope "${STATE_SCOPE}".`,
     },
     condition: {
       type: 'state',

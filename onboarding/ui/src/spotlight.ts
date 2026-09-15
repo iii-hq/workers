@@ -71,6 +71,41 @@ function firstMatch(selectors: readonly string[]): Element | null {
 }
 
 /**
+ * Resolve once one of `selectors` is in the document, or give up after
+ * `timeoutMs`. Reports whether the element actually landed.
+ *
+ * This is what tells `the engine stored the layout` apart from `the panel is
+ * on screen`. `console::workspace::open` returns in a few milliseconds, but
+ * the console re-reads that layout on a five-second poll, so a panel another
+ * worker opens can take up to five seconds to mount. Watching for the element
+ * is the only signal that covers the whole trip.
+ *
+ * ponytail: one `querySelector` per animation frame — the budget the
+ * spotlight already spends — rather than a MutationObserver over the
+ * console's whole tree. It stops as soon as the element lands. A background
+ * tab throttles the frames, which only means the wait finishes when the
+ * operator comes back to look.
+ */
+export function waitForAnchor(
+  selectors: readonly string[] | null | undefined,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (!selectors || selectors.length === 0) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs
+    const look = () => {
+      if (firstMatch(selectors)) return resolve(true)
+      // The ceiling is not an error. A console that never mounts the panel —
+      // an older build, a screen it does not have — must still let the
+      // operator past the step.
+      if (Date.now() >= deadline) return resolve(false)
+      requestAnimationFrame(look)
+    }
+    look()
+  })
+}
+
+/**
  * A scroll animation is not reachable from CSS, so the stylesheet's
  * `prefers-reduced-motion` block cannot cover this one — it is asked for
  * here.

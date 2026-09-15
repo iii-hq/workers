@@ -10,7 +10,7 @@ import {
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bindCondition, type Condition, type Fired } from './conditions'
-import { disposeSpotlight, hideSpotlight, showSpotlight } from './spotlight'
+import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from './spotlight'
 
 /**
  * One list, one open step.
@@ -25,6 +25,14 @@ import { disposeSpotlight, hideSpotlight, showSpotlight } from './spotlight'
  * has to render on whatever console build is in front of the operator,
  * including ones older than a component it would otherwise import.
  */
+
+/**
+ * How long `Opening…` may stand before the button gives up and offers
+ * `Continue` anyway. The console re-reads its layout on a five-second poll,
+ * so a panel opened through the engine lands within that; this leaves room
+ * for a slow one without ever stranding the operator.
+ */
+const OPEN_TIMEOUT_MS = 8_000
 
 /** Console class recipes, with a literal fallback for an older build that
     does not publish them. */
@@ -82,6 +90,11 @@ export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRe
   // opening a panel and being done reading it are two separate clicks — the
   // step used to close on the first one, before the panel had been looked at.
   const [opened, setOpened] = useState<string | null>(null)
+  // The step whose panel has been asked for but is not on screen yet. The
+  // engine stores the layout in milliseconds; the console re-reads it on a
+  // five-second poll, so the button says `Opening…` for that whole gap
+  // instead of looking like the click was missed.
+  const [opening, setOpening] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -157,6 +170,11 @@ export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRe
    * The button moves on whether or not the call lands: an older console
    * rejects `relative_to`, and the step is about reading the panel, not about
    * us. The step itself closes on the `Continue` this turns into.
+   *
+   * `Continue` waits for the panel to be ON SCREEN, not for the call to
+   * return. Returning only means the engine stored the layout — the console
+   * polls that entry, so the panel follows up to five seconds later, and a
+   * button that flipped on the response would be pointing at nothing.
    */
   const openScreen = useCallback(
     (step: Step) => {
@@ -175,7 +193,13 @@ export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRe
             .catch(() => open())
             .catch(() => {})
         : Promise.resolve()
-      void placed.then(() => setOpened(step.id))
+      setOpening(step.id)
+      void placed
+        .then(() => waitForAnchor(step.anchors, OPEN_TIMEOUT_MS))
+        .then(() => {
+          setOpening(null)
+          setOpened(step.id)
+        })
     },
     [host],
   )
@@ -383,8 +407,12 @@ export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRe
                   ) : null}
                   {state !== 'complete' && !step.condition && !step.ask ? (
                     step.screen && opened !== step.id ? (
-                      <Button className="self-start" onClick={() => openScreen(step)}>
-                        Open {step.screen}
+                      <Button
+                        className="self-start"
+                        disabled={opening === step.id}
+                        onClick={() => openScreen(step)}
+                      >
+                        {opening === step.id ? 'Opening…' : `Open ${step.screen}`}
                       </Button>
                     ) : (
                       // Once the panel is up, the button changes colour and

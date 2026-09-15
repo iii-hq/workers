@@ -45,9 +45,11 @@ The tour ships two kinds. The first step waits on `harness::turn-completed`,
 so it closes when the agent answers. The four steps whose work the AGENT does
 — Composability, Discoverability, Extensibility, Reactivity — each wait on a
 `state` trigger bound to one key, `step_<id>_completed`, in the `onboarding`
-scope; their prompts end by telling the agent to write it. The trigger matches
-the key, not the value: whatever the agent writes there, the write is the
-report.
+scope; their prompts end by telling the agent to write it as it ends its turn.
+The end of the turn is the boundary, not the agent's own sense of being
+finished — asked for the latter it reports while it is still working. The
+trigger matches the key, not the value: whatever the agent writes there, the
+write is the report.
 
 That is what keeps the open step and the step being worked on the same step. A
 long build used to read as finished the moment its prompt was sent, because
@@ -97,6 +99,14 @@ The Observability step takes two clicks. The first places the traces panel
 beside the tour; the button then becomes a green, briefly pulsing `Continue`,
 which is what closes the step. Opening a panel and having read it are
 different things, and one click could only say the first.
+
+Between the two the button reads `Opening…`, and it waits for the panel to be
+on screen rather than for the call to return. `console::workspace::open`
+answers in a few milliseconds — it only stores the layout — while the console
+re-reads that entry on a five-second poll, so a panel opened through the
+engine mounts up to five seconds later. The page watches for the step's own
+anchor and gives up after eight seconds, so an older console that never mounts
+the screen still lets the operator past.
 
 ## Build
 
