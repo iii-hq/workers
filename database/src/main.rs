@@ -180,14 +180,10 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            // The first sentence is all `directory::search_functions` shows
-            // an agent before it fetches the schema — the RETURNING rule has
-            // to be in it.
-            .description(
-                "Run a write statement (INSERT/UPDATE/DELETE/DDL); put RETURNING in the SQL \
-                 to get rows back and into row-changed events. The `returning` option never \
-                 adds the clause.",
-            ),
+            // The const carries the discovery rule (first sentence ≤ 160
+            // bytes — all `directory::search_functions` shows an agent) and
+            // is pinned by a test in `handlers::execute`.
+            .description(execute::DESCRIPTION),
         );
     }
     {

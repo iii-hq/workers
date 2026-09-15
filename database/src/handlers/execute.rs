@@ -9,6 +9,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The registered description, kept as a const so a test can hold it to the
+/// discovery budget: `directory::search_functions` indexes only the FIRST
+/// SENTENCE of a description (capped at 160 bytes), so the RETURNING rule has
+/// to live in the opening sentence or the model never learns it — which is
+/// exactly how MOT-4777 happened.
+pub const DESCRIPTION: &str =
+    "Run a write statement (INSERT/UPDATE/DELETE/DDL); put RETURNING in the SQL to get rows \
+     back and into row-changed events. The `returning` option never adds the clause.";
+
 #[derive(Deserialize, JsonSchema)]
 pub struct ExecuteReq {
     /// Logical database name. Optional — omitting it targets the sole
@@ -185,6 +194,30 @@ mod tests {
         assert!(properties.contains_key("sql"));
         assert!(!properties.contains_key("query"));
         assert_eq!(properties["params"]["type"], "array");
+    }
+
+    /// The search index shows an agent the description's first sentence and
+    /// nothing else, so the rule this ticket exists for has to survive that
+    /// cut. Mirrors `slim_description` in iii-directory's search index.
+    #[test]
+    fn description_first_sentence_names_the_returning_rule() {
+        let line = DESCRIPTION.lines().next().unwrap();
+        let sentence = line
+            .char_indices()
+            .find_map(|(position, punctuation)| {
+                let end = position + punctuation.len_utf8();
+                (matches!(punctuation, '.' | '?' | '!')
+                    && line[end..].chars().next().is_none_or(char::is_whitespace))
+                .then_some(&line[..end])
+            })
+            .unwrap_or(line)
+            .trim_end();
+        assert!(sentence.contains("RETURNING"), "{sentence}");
+        assert!(
+            sentence.len() <= 160,
+            "first sentence is {} bytes, past the 160-byte index cap: {sentence}",
+            sentence.len()
+        );
     }
 
     /// The published schema is what an agent reads before calling (through
