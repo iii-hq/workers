@@ -430,11 +430,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                   ) : null}
                   {state !== 'complete' && !step.condition && !step.ask ? (
                     step.screen && opened !== step.id ? (
-                      <Button
-                        className="self-start"
-                        disabled={opening === step.id}
-                        onClick={() => openScreen(step)}
-                      >
+                      <Button className="self-start" disabled={opening === step.id} onClick={() => openScreen(step)}>
                         {opening === step.id ? 'Opening…' : `Open ${step.screen}`}
                       </Button>
                     ) : (

@@ -86,10 +86,7 @@ function firstMatch(selectors: readonly string[]): Element | null {
  * tab throttles the frames, which only means the wait finishes when the
  * operator comes back to look.
  */
-export function waitForAnchor(
-  selectors: readonly string[] | null | undefined,
-  timeoutMs: number,
-): Promise<boolean> {
+export function waitForAnchor(selectors: readonly string[] | null | undefined, timeoutMs: number): Promise<boolean> {
   if (!selectors || selectors.length === 0) return Promise.resolve(false)
   return new Promise((resolve) => {
     const deadline = Date.now() + timeoutMs

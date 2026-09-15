@@ -257,6 +257,10 @@ export function ChatView({
   const handleOpenModelPicker = useCallback(() => {
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [])
+  /* An agent profile that pins the model locks the model-and-reasoning panel
+     (ChatSettingsSheet passes `modelDisabled` to the panel that carries the
+     effort control, not only to the model list). */
+  const modelLocked = Boolean(conversation.agentProfile?.model)
   const handleThinkingLevelChange = useCallback(
     (next: ThinkingLevel) => onUpdateThinkingLevel(conversation.id, next),
     [conversation.id, onUpdateThinkingLevel],
@@ -2297,11 +2301,14 @@ export function ChatView({
   useEffect(
     () =>
       onThinkingLevelChangeRequest(({ sessionId, level }) => {
-        if (sessionId !== conversation.id) return false
+        // An agent profile that pins the model disables the whole
+        // model-and-reasoning panel, effort included, so a page must not
+        // reach past a control the operator cannot use.
+        if (sessionId !== conversation.id || modelLocked) return false
         handleThinkingLevelChange(level)
         return true
       }),
-    [conversation.id, handleThinkingLevelChange],
+    [conversation.id, handleThinkingLevelChange, modelLocked],
   )
 
   // Picking a worktree claims it for this session; the working dir itself
@@ -2698,7 +2705,7 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             modelPickerOpenRequest={modelPickerOpenRequest}
-            modelLocked={Boolean(conversation.agentProfile?.model)}
+            modelLocked={modelLocked}
             functionEntries={functionEntries}
             searchFiles={searchFiles}
             onOpenFileMention={

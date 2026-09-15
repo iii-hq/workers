@@ -593,7 +593,17 @@ fn validated_sizes(sizes: &[f64], columns: usize) -> Result<Vec<f64>, Error> {
             "the entries of `sizes` are too large to normalize",
         ));
     }
-    Ok(sizes.iter().map(|s| s / total).collect())
+    // A finite sum is not enough: `[f64::MAX, f64::MIN_POSITIVE]` clears every
+    // check above and still divides down to `0.0`, which `is_valid_tab` later
+    // refuses — the tab would be stored and then read back as unparseable.
+    let normalized: Vec<f64> = sizes.iter().map(|s| s / total).collect();
+    if normalized.iter().any(|s| !s.is_finite() || *s <= 0.0) {
+        return Err(remote(
+            CODE_INVALID_SIZES,
+            "the entries of `sizes` are too far apart to normalize",
+        ));
+    }
+    Ok(normalized)
 }
 
 fn validated_screen_target(
@@ -948,6 +958,14 @@ mod tests {
             vec![f64::MAX, f64::MAX, f64::MAX],
         ] {
             assert!(validated_sizes(&bad, 3).is_err(), "{bad:?}");
+        }
+        // Finite sum, but the small entry divides down to zero — which
+        // `is_valid_tab` rejects, so the write must not get that far.
+        for bad in [
+            vec![f64::MAX, f64::MIN_POSITIVE],
+            vec![f64::MIN_POSITIVE, f64::MAX],
+        ] {
+            assert!(validated_sizes(&bad, 2).is_err(), "{bad:?}");
         }
     }
 
