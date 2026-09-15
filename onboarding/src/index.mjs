@@ -152,7 +152,7 @@ iii.registerFunction(
  * follow a tour (the engine's telemetry among them) subscribes instead of
  * reaching into this worker's state.
  */
-const STEP_TOPIC = 'onboarding:step'
+const STEP_TOPIC = 'onboarding:steps:complete'
 
 /**
  * Published through the `queue` worker, not fire-and-forget pub/sub: a step

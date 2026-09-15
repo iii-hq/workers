@@ -206,8 +206,8 @@ export function getTour(id) {
 
 /**
  * The step, its tour, and its 1-based number in that tour — the number is
- * what the `onboarding:step` event reports, so it is read from the ordered
- * step list rather than stored beside it.
+ * what the `onboarding:steps:complete` event reports, so it is read from
+ * the ordered step list rather than stored beside it.
  *
  * @returns {{ tour: Tour, step: Step, number: number } | undefined}
  */

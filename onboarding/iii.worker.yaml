@@ -41,5 +41,5 @@ dependencies:
   ade: "latest"
   state: "latest"
   # `onboarding::steps::complete` announces each closed step on the
-  # `onboarding:step` topic, which the `queue` worker serves.
+  # `onboarding:steps:complete` topic, which the `queue` worker serves.
   queue: "latest"

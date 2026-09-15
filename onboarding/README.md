@@ -17,7 +17,7 @@ Three parts:
 - `onboarding::tours::list` — every tour in curriculum order.
 - `onboarding::tours::get` — one tour with all of its steps.
 - `onboarding::progress::get` — the status of every step per tour, with the trigger evidence that closed it, plus the next tour to offer.
-- `onboarding::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `onboarding:step` topic (see Events).
+- `onboarding::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `onboarding:steps:complete` topic (see Events).
 - `onboarding::steps::reset` — forget one tour and start it again.
 - `onboarding::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
 
@@ -30,7 +30,7 @@ and the read drops nulls on the way out.
 
 ## Events
 
-Each closed step is published to the `onboarding:step` topic through the
+Each closed step is published to the `onboarding:steps:complete` topic through the
 `queue` worker, so anything that follows a tour subscribes instead of reading
 this worker's state. The payload:
 
