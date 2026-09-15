@@ -34,6 +34,22 @@ describe('DirectoryPicker narrow layout', () => {
     expect(html).toContain('overflow-x-hidden overflow-y-auto')
   })
 
+  it('renders validation errors inside both scrollable list panels', () => {
+    const source = readFileSync(
+      new URL('./DirectoryPicker.tsx', import.meta.url),
+      'utf8',
+    )
+    for (const view of ['projects', 'worktrees']) {
+      const panel = source.split(`view === '${view}' ? (`).at(-1) ?? ''
+      const beforeError = panel.split('{validationError}')[0]
+      expect(panel).toContain('{validationError}')
+      expect(beforeError).toContain('overflow-y-auto')
+      expect(beforeError).not.toContain('</div>')
+    }
+    expect(source.match(/\{validationError\}/g)).toHaveLength(2)
+    expect(source).not.toContain("view !== 'browse' && error")
+  })
+
   it('keeps mobile scrolling inside the list and wraps long errors', () => {
     const source = readFileSync(
       new URL('./DirectoryPicker.tsx', import.meta.url),

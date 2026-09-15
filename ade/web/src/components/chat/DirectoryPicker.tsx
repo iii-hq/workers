@@ -670,6 +670,13 @@ export function DirectoryPicker({
       basename(value))
     : emptyLabel
 
+  const validationError = error ? (
+    <div className="mb-2 flex items-start gap-2 rounded-md bg-warn-muted px-3 py-2 font-sans text-base text-warn md:text-[11px]">
+      <AlertCircle className="size-4 shrink-0" aria-hidden />
+      <span className="min-w-0 [overflow-wrap:anywhere]">{error}</span>
+    </div>
+  ) : null
+
   if (locked && !embedded) {
     return (
       <span
@@ -801,14 +808,6 @@ export function DirectoryPicker({
           />
         </div>
 
-        {/* validation/error (shown in the projects view; browse has its own) */}
-        {view !== 'browse' && error ? (
-          <div className="mx-4 mb-2 flex items-start gap-2 rounded-md bg-warn-muted px-3 py-2 font-sans text-base text-warn md:mx-0 md:text-[11px]">
-            <AlertCircle className="size-4 shrink-0" aria-hidden />
-            <span className="min-w-0 [overflow-wrap:anywhere]">{error}</span>
-          </div>
-        ) : null}
-
         {/* body */}
         {view === 'worktrees' ? (
           <div
@@ -817,6 +816,7 @@ export function DirectoryPicker({
               embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
             )}
           >
+            {validationError}
             {wtLoading ? (
               <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
                 Loading worktrees…
@@ -917,6 +917,7 @@ export function DirectoryPicker({
               embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
             )}
           >
+            {validationError}
             {isAbsPath(query) ? (
               <button
                 type="button"
