@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
+use crate::clients::SessionClient;
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -513,7 +514,10 @@ async fn seed_child(
             id.clone()
         }
         Some(id) => {
-            let ensured = session.ensure(id, title, linkage.as_ref()).await?;
+            let kind = parent_session_kind(&session, parent).await?;
+            let ensured = session
+                .ensure(id, title, linkage.as_ref(), kind.as_deref())
+                .await?;
             if !ensured.created {
                 // Reuse is legitimate for a parentless caller (a fork, or
                 // delivering a reaction into an existing chat). From a live
@@ -538,7 +542,12 @@ async fn seed_child(
             }
             id.clone()
         }
-        None => session.create(title, linkage.as_ref()).await?,
+        None => {
+            let kind = parent_session_kind(&session, parent).await?;
+            session
+                .create(title, linkage.as_ref(), kind.as_deref())
+                .await?
+        }
     };
 
     let previous_child = if reused {
@@ -714,6 +723,20 @@ fn child_session_metadata(
         );
     }
     (!metadata.is_empty()).then_some(Value::Object(metadata))
+}
+
+/// The kind to stamp on a child session: the live parent's, so a machine-made
+/// run never spawns human-facing chats (an `e2e` suite's sub-agents stay
+/// `e2e`). Costs one `session::get`, and only on the paths that create a
+/// session; a parentless spawn takes session-manager's default.
+async fn parent_session_kind(
+    session: &SessionClient,
+    parent: Option<&ParentLink>,
+) -> Result<Option<String>, HarnessError> {
+    match parent {
+        Some(parent) => session.kind_of(&parent.session_id).await,
+        None => Ok(None),
+    }
 }
 
 /// The child's provider. An explicit request wins; otherwise the parent's

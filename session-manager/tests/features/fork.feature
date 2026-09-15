@@ -167,6 +167,23 @@ Feature: session::fork — copy history up to an entry into a new session
     Then the response field "entry.revision" is 0
     And the response field "entry.message.content.0.text" is "rev1"
 
+  # Prevents: a fork of a machine run reappearing as a human chat — kind
+  # travels with the copy, the way tenancy metadata does.
+  Scenario: a fork inherits the source session's kind
+    Given a session created with:
+      """
+      { "title": "e2e run", "kind": "e2e" }
+      """
+    And a user message "one" appended to "s_002"
+    When I call "session::fork" with:
+      """
+      { "session_id": "s_002", "entry_id": "e_004" }
+      """
+    Then the call succeeds
+    And the response field "session_id" is "s_003"
+    And the response field "meta.kind" is "e2e"
+    And the response field "meta.forked_from" is "s_002"
+
   # Prevents: forking from entries that don't exist or sessions that
   # don't exist.
   Scenario: fork at an unknown entry or session is rejected

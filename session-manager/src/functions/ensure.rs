@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Deps;
 use crate::error::SessionError;
-use crate::types::{JsonMap, SessionMeta};
+use crate::types::{JsonMap, SessionKind, SessionMeta};
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct EnsureRequest {
@@ -15,6 +15,8 @@ pub struct EnsureRequest {
     pub title: Option<String>,
     /// Description applied only when the session is created.
     pub description: Option<String>,
+    /// Kind applied only when the session is created. Defaults to `user`.
+    pub kind: Option<SessionKind>,
     /// Metadata applied only when the session is created.
     pub metadata: Option<JsonMap>,
 }

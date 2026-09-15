@@ -560,7 +560,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use crate::types::{AgentMessage, ContentBlock, SessionStatus};
+    use crate::types::{AgentMessage, ContentBlock, SessionKind, SessionStatus};
 
     fn meta(session_id: &str, title: &str) -> SessionMeta {
         SessionMeta {
@@ -569,6 +569,7 @@ mod tests {
             description: String::new(),
             status: SessionStatus::Idle,
             status_reason: None,
+            kind: SessionKind::User,
             metadata: None,
             forked_from: None,
             draft: None,

@@ -12,7 +12,13 @@ import { useEffect, useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
-import type { Conversation, SubagentColor } from '@/types/chat'
+import { CONVERSATION_KIND_TAGS } from '@/lib/conversation-view'
+import { cn } from '@/lib/utils'
+import type {
+  Conversation,
+  ConversationKind,
+  SubagentColor,
+} from '@/types/chat'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -43,6 +49,11 @@ interface ConversationRowProps {
   treeCollapsed?: boolean
   /** Toggle this row's subtree (only wired when `hasChildren`). */
   onToggleTree?: () => void
+  /**
+   * The kind this row is listed under, when the list mixes kinds and the
+   * row needs telling apart. Omitted (or `user`) draws no tag.
+   */
+  kind?: ConversationKind
 }
 
 function formatRelative(ts: number): string {
@@ -102,6 +113,7 @@ export function ConversationRow({
   hasChildren = false,
   treeCollapsed = false,
   onToggleTree,
+  kind,
 }: ConversationRowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(conversation.title)
@@ -138,6 +150,7 @@ export function ConversationRow({
   }
 
   const glyph = resolveGlyph(conversation, depth)
+  const kindTag = kind ? CONVERSATION_KIND_TAGS[kind] : undefined
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: row hosts nested editing/caret/delete <button>s; using a real <button> here would nest interactive elements.
@@ -244,6 +257,17 @@ export function ConversationRow({
               tone="alert"
               title={conversation.statusReason ?? 'error'}
             />
+          ) : null}
+          {kindTag ? (
+            <span
+              className={cn(
+                uiClasses.treeItemMeta,
+                'rounded-xs bg-surface px-1 font-mono text-[10px]',
+              )}
+              title={kindTag.title}
+            >
+              {kindTag.label}
+            </span>
           ) : null}
           <span className={uiClasses.treeItemMeta}>
             {formatRelative(conversation.updatedAt)}

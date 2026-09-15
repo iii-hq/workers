@@ -41,6 +41,23 @@ export const DEFAULT_THINKING_LEVEL: ThinkingLevel = 'default'
 
 export type Role = 'user' | 'assistant' | 'thought' | 'function-trigger'
 
+/**
+ * Who a session is for (`SessionMeta.kind`): a chat a person started, a run
+ * an automation started, or a session an end-to-end suite created. The
+ * sidebar filters on it; nothing else changes with it.
+ */
+export type ConversationKind = 'user' | 'automation' | 'e2e'
+
+export const CONVERSATION_KINDS: readonly ConversationKind[] = [
+  'user',
+  'automation',
+  'e2e',
+]
+
+export function isConversationKind(value: unknown): value is ConversationKind {
+  return (CONVERSATION_KINDS as readonly unknown[]).includes(value)
+}
+
 export interface Attachment {
   id: string
   name: string
@@ -472,6 +489,12 @@ export interface Conversation {
   title: string
   /** flips to true after the user explicitly renames; otherwise auto-derived */
   titleManual?: boolean
+  /**
+   * Who the session is for. Absent means `user`: a local draft, or a
+   * session-manager that predates kinds. A spawned sub-agent carries its
+   * own value but is listed under its root's (see `conversation-view`).
+   */
+  kind?: ConversationKind
   model: ModelId | null
   /**
    * Per-session reasoning effort, persisted as session metadata. Drafts seed

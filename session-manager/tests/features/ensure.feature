@@ -58,7 +58,7 @@ Feature: session::ensure — idempotently ensure a session exists
     Then the call fails with code "session/invalid_request"
 
   # Prevents: ensure-created sessions drifting from create-created ones
-  # (both must start idle with zero messages).
+  # (both must start idle with zero messages, kind "user").
   Scenario: an ensured session has the same fresh shape as a created one
     When I call "session::ensure" with:
       """
@@ -66,5 +66,32 @@ Feature: session::ensure — idempotently ensure a session exists
       """
     Then the response field "meta.message_count" is 0
     And the response field "meta.status" is "idle"
+    And the response field "meta.kind" is "user"
     And the response field "meta.created_at" is 1000000
     And the response field "meta.updated_at" is 1000000
+
+  # Prevents: ensure dropping the kind — suites that own their session ids
+  # (harness-e2e) only ever create through ensure.
+  Scenario: kind is applied when ensure creates the session
+    When I call "session::ensure" with:
+      """
+      { "session_id": "e2e-run-7", "kind": "e2e" }
+      """
+    Then the call succeeds
+    And the response field "created" is true
+    And the response field "meta.kind" is "e2e"
+
+  # Prevents: a redelivered (or differently-configured) ensure relabelling
+  # a live session — kind is fixed at creation, like title and metadata.
+  Scenario: ensure of an existing session keeps the stored kind
+    Given I call "session::ensure" with:
+      """
+      { "session_id": "chat-42", "kind": "e2e" }
+      """
+    When I call "session::ensure" with:
+      """
+      { "session_id": "chat-42", "kind": "user" }
+      """
+    Then the call succeeds
+    And the response field "created" is false
+    And the response field "meta.kind" is "e2e"

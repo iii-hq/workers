@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Deps;
 use crate::error::SessionError;
-use crate::types::{JsonMap, SessionMeta};
+use crate::types::{JsonMap, SessionKind, SessionMeta};
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct CreateRequest {
@@ -13,6 +13,8 @@ pub struct CreateRequest {
     pub title: Option<String>,
     /// Session description. Default "".
     pub description: Option<String>,
+    /// Session kind. Default `user`.
+    pub kind: Option<SessionKind>,
     /// App-defined metadata persisted onto `SessionMeta` — the tenancy
     /// hook (e.g. `{ "owner": "u_1" }`) that `session::list` and every
     /// trigger config can filter on.

@@ -53,6 +53,46 @@ Feature: session::list — pagination, ordering and filters
     Then the response field "sessions" has length 1
     And the response field "sessions.0.session_id" is "s_002"
 
+  # Prevents: the console's human inbox listing automation/e2e runs (and
+  # an e2e dashboard listing human chats).
+  Scenario: kinds filters to exactly those kinds
+    Given a bare session
+    And a session created with:
+      """
+      { "kind": "e2e" }
+      """
+    And a session created with:
+      """
+      { "kind": "automation" }
+      """
+    When I call "session::list" with:
+      """
+      { "kinds": ["e2e"] }
+      """
+    Then the response field "sessions" has length 1
+    And the response field "sessions.0.session_id" is "s_002"
+    When I call "session::list" with:
+      """
+      { "kinds": ["user", "e2e"] }
+      """
+    Then the response field "sessions" has length 2
+    When I call "session::list" with "{}"
+    Then the response field "sessions" has length 3
+
+  # Prevents: an empty kinds list being read as "no filter" and dumping
+  # every session on a caller that asked for none.
+  Scenario: an empty kinds list matches nothing
+    Given a bare session
+    And a session created with:
+      """
+      { "kind": "e2e" }
+      """
+    When I call "session::list" with:
+      """
+      { "kinds": [] }
+      """
+    Then the response field "sessions" has length 0
+
   # Prevents: tenancy leaks through list — the metadata filter must be
   # subset equality, not best-effort.
   Scenario: metadata filters by subset equality

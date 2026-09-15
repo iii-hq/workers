@@ -96,6 +96,7 @@ import {
   type Conversation,
   type ConversationMetadataEdits,
   DEFAULT_THINKING_LEVEL,
+  isConversationKind,
   type Message,
   type MessagePatch,
   type ModelId,
@@ -218,6 +219,7 @@ export function emptyConversation(
     ...(draft
       ? { draftText: draft.text, titleManual: Boolean(draft.title?.trim()) }
       : {}),
+    kind: 'user',
     model: defaultModel,
     thinkingLevel: defaultThinkingLevel,
     // Drafts start with no working dir; ChatView pre-fills the last-used
@@ -679,6 +681,7 @@ function conversationFromMeta(
     id: meta.session_id,
     title: meta.title || meta.session_id,
     titleManual: md.title_manual === true,
+    kind: isConversationKind(meta.kind) ? meta.kind : 'user',
     model:
       typeof md.model === 'string' && md.model.length > 0
         ? md.model
@@ -2795,6 +2798,9 @@ export function useConversations(
           session_id: id,
           title,
           metadata: metadataFor(conv),
+          // A chat someone starts here is a user session; automations and
+          // the e2e suite name their own kind when they create theirs.
+          kind: 'user',
         })
         patchConversation(id, (c) => ({
           ...mergeConversationMeta(
