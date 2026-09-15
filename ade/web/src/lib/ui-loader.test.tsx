@@ -79,6 +79,7 @@ function setupConfiguredPage(): UiModule {
 function createHarness({
   conversationAdapter = {
     selectConversation: vi.fn(),
+    openDraft: vi.fn(),
     composerModel: vi.fn(() => null),
   },
   importModule = vi.fn(async () => setupForm('default')),
@@ -119,6 +120,7 @@ function createHarness({
     },
     offHandler,
     offTrigger,
+    client,
     stop,
   }
 }
@@ -421,6 +423,42 @@ describe('injectable UI script updates', () => {
 })
 
 describe('injectable UI conversation adapters', () => {
+  it('opens an editable investigation draft without selecting or sending a session', async () => {
+    const openDraft = vi.fn()
+    const selectConversation = vi.fn()
+    const harness = createHarness({
+      conversationAdapter: {
+        openDraft,
+        selectConversation,
+        composerModel: () => null,
+      },
+      importModule: async () => ({
+        default(host) {
+          host.chat.openDraft({
+            text: 'Investigate execution 123',
+            title: 'Execution investigation',
+          })
+        },
+      }),
+    })
+
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'harness-e2e/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(openDraft).toHaveBeenCalledOnce())
+    expect(openDraft).toHaveBeenCalledWith({
+      text: 'Investigate execution 123',
+      title: 'Execution investigation',
+    })
+    expect(selectConversation).not.toHaveBeenCalled()
+    expect(harness.client.trigger).not.toHaveBeenCalledWith(
+      expect.stringMatching(/session::|harness::send/),
+      expect.anything(),
+    )
+    harness.stop()
+  })
+
   it('keeps concurrent loader hosts isolated through teardown and reload', async () => {
     const selectA = vi.fn()
     const selectB = vi.fn()
@@ -436,6 +474,7 @@ describe('injectable UI conversation adapters', () => {
     const first = createHarness({
       conversationAdapter: {
         selectConversation: selectA,
+        openDraft: vi.fn(),
         composerModel: modelA,
       },
       importModule: async () => moduleFor('session-a'),
@@ -443,6 +482,7 @@ describe('injectable UI conversation adapters', () => {
     const second = createHarness({
       conversationAdapter: {
         selectConversation: selectB,
+        openDraft: vi.fn(),
         composerModel: modelB,
       },
       importModule: async () => moduleFor('session-b'),

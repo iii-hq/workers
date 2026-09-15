@@ -86,6 +86,7 @@ interface UiLoaderOptions {
 
 export interface ConversationAdapter {
   selectConversation(sessionId: string): void
+  openDraft(draft: { text: string; title?: string }): void
   composerModel(conversationId?: string | null): string | null
 }
 
@@ -253,6 +254,9 @@ function makeHost(
       },
     },
     chat: {
+      openDraft(draft) {
+        conversationAdapter.openDraft(draft)
+      },
       registerSessionChip(chip) {
         const Chip = chip.render
         return track(

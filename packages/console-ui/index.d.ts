@@ -501,6 +501,8 @@ export interface Host {
    * declared optional so worker scripts degrade without casts.
    */
   chat?: {
+    /** Open a new, editable human chat draft without sending or creating a session. */
+    openDraft?(draft: { text: string; title?: string }): void
     /**
      * Hand text and files to the active conversation's composer, the way a
      * drop or a paste would, and put the caret there. Files become

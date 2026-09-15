@@ -204,14 +204,19 @@ function deriveTitle(text: string): string {
   return clean.length > 32 ? `${clean.slice(0, 32)}…` : clean
 }
 
-function emptyConversation(
+export function emptyConversation(
   defaultModel: ModelId | null,
   defaultThinkingLevel: ThinkingLevel,
+  draft?: { text: string; title?: string },
 ): Conversation {
   const now = Date.now()
   return {
     id: newSessionId(),
-    title: 'new chat',
+    title:
+      draft?.title?.trim() || (draft ? deriveTitle(draft.text) : 'new chat'),
+    ...(draft
+      ? { draftText: draft.text, titleManual: Boolean(draft.title?.trim()) }
+      : {}),
     model: defaultModel,
     thinkingLevel: defaultThinkingLevel,
     // Drafts start with no working dir; ChatView pre-fills the last-used
@@ -1077,7 +1082,7 @@ export interface ConversationsApi {
   connectionState: IIIConnectionState
   /** Exact session ids confirmed absent/deleted by session-manager. */
   missingConversationIds: ReadonlySet<string>
-  createNew: () => string
+  createNew: (draft?: { text: string; title?: string }) => string
   select: (id: string) => void
   /** Keep one session hydrated and subscribed while a chat panel is mounted. */
   watchConversation: (id: string) => () => void
@@ -2255,26 +2260,30 @@ export function useConversations(
     [missingSessionIds],
   )
 
-  const createNew = useCallback(() => {
-    // Asking for a new chat while an untouched one is already open reads as
-    // "nothing happened": the second empty draft is indistinguishable from
-    // the first, and they pile up in the list. Hand back the one in front of
-    // you instead, and put the caret in it.
-    const current = conversations.find(
-      (conversation) => conversation.id === activeId,
-    )
-    if (current && isUntouchedDraft(current)) {
-      requestComposerFocus()
-      return current.id
-    }
-    const next = emptyConversation(
-      loadLastModel(),
-      loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
-    )
-    setConversations((list) => [next, ...list])
-    setActiveId(next.id)
-    return next.id
-  }, [conversations, activeId])
+  const createNew = useCallback(
+    (draft?: { text: string; title?: string }) => {
+      // Asking for a new chat while an untouched one is already open reads as
+      // "nothing happened": the second empty draft is indistinguishable from
+      // the first, and they pile up in the list. Hand back the one in front of
+      // you instead, and put the caret in it.
+      const current = conversations.find(
+        (conversation) => conversation.id === activeId,
+      )
+      if (!draft && current && isUntouchedDraft(current)) {
+        requestComposerFocus()
+        return current.id
+      }
+      const next = emptyConversation(
+        loadLastModel(),
+        loadLastThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+        draft,
+      )
+      setConversations((list) => [next, ...list])
+      setActiveId(next.id)
+      return next.id
+    },
+    [conversations, activeId],
+  )
 
   const select = useCallback((id: string) => {
     pendingSelectIdRef.current = id

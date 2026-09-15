@@ -25,6 +25,7 @@ import {
   completePreSendMetaUpdate,
   conversationBeforeQueuedCompletion,
   draftSaveIsRedundant,
+  emptyConversation,
   type HydrationRun,
   type HydrationUpsert,
   isUntouchedDraft,
@@ -74,6 +75,27 @@ function sessionMeta(overrides: Partial<SessionMeta>): SessionMeta {
     ...overrides,
   }
 }
+
+describe('prefilled chat draft', () => {
+  it('starts a separate unsent conversation with editable text', () => {
+    const previous = emptyConversation(null, 'medium')
+    const next = emptyConversation(null, 'medium', {
+      text: 'Investigate execution 123',
+      title: 'Execution investigation',
+    })
+
+    expect(next.id).not.toBe(previous.id)
+    expect(previous.draftText).toBeUndefined()
+    expect(next).toMatchObject({
+      title: 'Execution investigation',
+      titleManual: true,
+      draftText: 'Investigate execution 123',
+      draft: true,
+      messages: [],
+    })
+    expect(isUntouchedDraft(next)).toBe(false)
+  })
+})
 
 describe('applyCatalogModelFallback', () => {
   it('preserves activity timestamps when replacing stale model ids', () => {

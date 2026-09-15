@@ -35,6 +35,7 @@ import {
 import type { ChatBackend } from '@/lib/backend'
 import { getDefaultBackend } from '@/lib/backend'
 import { hasWorkingConversation } from '@/lib/chat-activity'
+import { requestComposerFocus } from '@/lib/composer-insert'
 import type { IiiClient } from '@/lib/iii-client'
 import {
   type ProviderListEntry,
@@ -200,6 +201,8 @@ export function ConversationsProvider({
 
   const selectConversationRef = useRef(api.select)
   selectConversationRef.current = api.select
+  const createNewRef = useRef(api.createNew)
+  createNewRef.current = api.createNew
   const conversationsRef = useRef(api.conversations)
   conversationsRef.current = api.conversations
   const activeIdRef = useRef(api.activeId)
@@ -230,6 +233,11 @@ export function ConversationsProvider({
         // Selecting is only half of it: a page that started a turn wants the
         // operator to see it, and the chat pane may not be on screen at all.
         conversationRequestedRef.current?.(id)
+      },
+      openDraft(draft) {
+        const id = createNewRef.current(draft)
+        conversationRequestedRef.current?.(id)
+        window.requestAnimationFrame(requestComposerFocus)
       },
       composerModel(conversationId) {
         const requested = conversationId?.trim()
