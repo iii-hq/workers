@@ -56,7 +56,7 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
   const started = new Set<string>()
   let latest: { id: string; timestamp: number } | null = null
   let stream: { turnId: string; speech: StreamingSpeech } | null = null
-  let pendingSnapshot: SpeechSnapshot | null = null
+  const pendingSnapshots = new Map<string, { snapshot: SpeechSnapshot; firstTimestamp: number }>()
   let checkingSnapshot = false
   const startStream = (turnId: string) => {
     if (!options.streaming || stream?.turnId === turnId) return
@@ -71,31 +71,53 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
   const outdated = (event: TurnEvent) => !Number.isFinite(event.timestamp)
     || (latest !== null && event.timestamp < latest.timestamp)
   const offs: Array<() => void> = []
-  const bind = (kind: 'started' | 'completed', handler: (event: TurnEvent) => void) => {
+  const failed = (event: TurnEvent) => event.status === 'failed' || event.status === 'cancelled' || Boolean(event.result_error)
+  const prunePending = () => {
+    for (const [key, { snapshot }] of pendingSnapshots) {
+      const turnId = snapshot.origin?.turn_id ?? ''
+      if (seen.has(turnId) || (latest && turnId !== latest.id && snapshot.timestamp < latest.timestamp)) {
+        pendingSnapshots.delete(key)
+      }
+    }
+  }
+  const drainPending = (turnId: string) => {
+    const entries = [...pendingSnapshots.entries()]
+      .filter(([, entry]) => entry.snapshot.origin?.turn_id === turnId)
+      .sort((a, b) => a[1].firstTimestamp - b[1].firstTimestamp)
+    for (const [key] of entries) pendingSnapshots.delete(key)
+    if (!active || !entries.length) return
+    startStream(turnId)
+    for (const [, entry] of entries) {
+      stream?.speech.update({ ...entry.snapshot, timestamp: entry.firstTimestamp })
+    }
+  }
+  const bind = (kind: 'started' | 'completed', handler: (event: TurnEvent, confirmed?: boolean) => void) => {
     const id = `iii::voice-ui::auto-${kind}::${sessionId}`
     offs.push(iii.on<TurnEvent>(id, (event) => {
-      if (!active || event?.session_id !== sessionId || !event.turn_id || outdated(event)) return
-      if (!latest || event.timestamp !== latest.timestamp || event.turn_id === latest.id) {
+      if (!active || event?.session_id !== sessionId || !event.turn_id || outdated(event) || seen.has(event.turn_id)) return
+      const needsTerminalConfirmation = kind === 'completed' && failed(event) && latest?.id !== event.turn_id
+      if (!needsTerminalConfirmation && (!latest || event.timestamp !== latest.timestamp || event.turn_id === latest.id)) {
         handler(event)
         return
       }
-      // Millisecond timestamps can collide across turns, and delivery is
-      // unordered. Resolve only this ambiguity from the current turn record;
-      // arrival order and random turn IDs are not ordering keys. This is one
-      // event-driven read, not a poll or a new harness protocol requirement.
+      // Resolve tied timestamps and unseen failed/cancelled turns against the
+      // current record. Delivery order and random IDs are not ordering keys.
+      // These are serialized event-driven reads, not polling.
       tieLookup = tieLookup.then(async () => {
-        if (!active || outdated(event)) return
+        if (!active || outdated(event) || seen.has(event.turn_id)) return
         if (latest?.id === event.turn_id) { handler(event); return }
         const request = generation
         try {
           const current = await iii.trigger<{ session_id: string; turn_id: string | null; status: string } | null>(
             'harness::status', { session_id: sessionId })
-          if (!active || generation !== request || current?.session_id !== sessionId
-            || current.turn_id !== event.turn_id) return
+          if (!active || outdated(event) || seen.has(event.turn_id)
+            || (generation !== request && latest?.id !== event.turn_id)
+            || current?.session_id !== sessionId || current.turn_id !== event.turn_id) return
           // The turn may finish while this read is in flight. Its identity
           // still confirms the start; the handler's seen/generation guards
           // prevent stopping audio if that completion was already handled.
-          if (kind === 'started' || current.status === 'completed') handler(event)
+          if (kind === 'started' || (current.status === event.status
+            && ['completed', 'failed', 'cancelled'].includes(current.status))) handler(event, true)
         } catch (error) {
           if (active && generation === request) options.onError(error)
         }
@@ -113,12 +135,16 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
       generation += 1
       if (stream?.turnId !== event.turn_id) options.onStarted()
       startStream(event.turn_id)
+      drainPending(event.turn_id)
+      prunePending()
     })
-    bind('completed', (event) => {
-      if (active && event?.session_id === sessionId && latest?.id === event.turn_id
-        && (event.status === 'failed' || event.status === 'cancelled' || event.result_error)) {
+    bind('completed', (event, confirmed) => {
+      if (!active || event?.session_id !== sessionId || !event.turn_id || seen.has(event.turn_id) || outdated(event)) return
+      if (failed(event) && (latest?.id === event.turn_id || confirmed)) {
+        latest = { id: event.turn_id, timestamp: event.timestamp }
         generation += 1
         remember(seen, event.turn_id)
+        prunePending()
         stream?.speech.stop()
         options.onStarted()
         return
@@ -132,6 +158,12 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
       remember(seen, event.turn_id)
       latest = { id: event.turn_id, timestamp: event.timestamp }
       const request = ++generation
+      if (options.streaming) {
+        if (stream?.turnId !== event.turn_id) options.onStarted()
+        startStream(event.turn_id)
+        drainPending(event.turn_id)
+      }
+      prunePending()
       void options.readReply(event.turn_id).then((reply) => {
         if (!active || generation !== request) return
         if (options.streaming) {
@@ -153,31 +185,50 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
           || event.message?.role !== 'assistant' || !Number.isFinite(event.timestamp) || seen.has(turnId)) return
         if (latest?.id === turnId) {
           startStream(turnId)
+          drainPending(turnId)
           stream?.speech.update(event)
           return
         }
         if (latest && event.timestamp < latest.timestamp) return
-        if (!pendingSnapshot || pendingSnapshot.entry_id !== event.entry_id
-          || (event.revision ?? 0) > (pendingSnapshot.revision ?? 0)) pendingSnapshot = event
+        const revision = event.revision ?? 0
+        if (!Number.isSafeInteger(revision) || revision < 0 || event.elided) return
+        const key = JSON.stringify([turnId, event.entry_id])
+        const previous = pendingSnapshots.get(key)
+        prunePending()
+        const textSize = (event.message.content ?? []).reduce((size, block) => size + (block.text?.length ?? 0), 0)
+        if ((!previous && pendingSnapshots.size >= 128) || textSize > 262144) {
+          active = false
+          generation += 1
+          pendingSnapshots.clear()
+          stopStream()
+          options.onStarted()
+          options.onError(new Error('Streaming read-aloud pending message limit reached.'))
+          return
+        }
+        if (!previous || revision > (previous.snapshot.revision ?? 0)) {
+          pendingSnapshots.set(key, { snapshot: event,
+            firstTimestamp: Math.min(previous?.firstTimestamp ?? event.timestamp, event.timestamp) })
+        }
         if (checkingSnapshot) return
         checkingSnapshot = true
         const request = generation
         void iii.trigger<{ session_id: string; turn_id: string | null } | null>(
           'harness::status', { session_id: sessionId }).then((current) => {
-          const pending = pendingSnapshot
-          pendingSnapshot = null
-          if (!active || !pending || seen.has(pending.origin?.turn_id ?? '')) return
+          if (!active) return
           if (generation !== request) {
-            if (latest?.id === pending.origin?.turn_id) stream?.speech.update(pending)
+            if (latest && !seen.has(latest.id)) drainPending(latest.id)
+            prunePending()
             return
           }
-          if (current?.session_id !== sessionId || !current.turn_id
-            || current.turn_id !== pending.origin?.turn_id) return
-          latest = { id: current.turn_id!, timestamp: pending.timestamp }
+          if (current?.session_id !== sessionId || !current.turn_id || seen.has(current.turn_id)) return
+          const entries = [...pendingSnapshots.values()].filter((entry) => entry.snapshot.origin?.turn_id === current.turn_id)
+          if (!entries.length) return
+          latest = { id: current.turn_id, timestamp: Math.min(...entries.map((entry) => entry.firstTimestamp)) }
           generation += 1
           options.onStarted()
-          startStream(current.turn_id!)
-          stream?.speech.update(pending)
+          startStream(current.turn_id)
+          drainPending(current.turn_id)
+          prunePending()
         }).catch((error) => {
           if (active && generation === request) options.onError(error)
         }).finally(() => { checkingSnapshot = false })
@@ -191,6 +242,7 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
     }
   } catch (error) {
     active = false
+    pendingSnapshots.clear()
     stopStream()
     for (const off of offs.reverse()) off()
     throw error
@@ -198,6 +250,7 @@ export function subscribeAutoReplies(iii: ExtensionIii, sessionId: string, optio
   return () => {
     active = false
     generation += 1
+    pendingSnapshots.clear()
     stream?.speech.stop()
     for (const off of offs.reverse()) off()
   }

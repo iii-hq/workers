@@ -285,7 +285,8 @@ The chat footer has three independent controls:
   the old queue. **Stop** also turns automatic reading off. Switching chats,
   closing the view, or a playback error disables it; other clients are unaffected.
 
-Streaming speech still synthesizes on the worker, one short text request at a\ntime, with at most one next clip prepared ahead of the current audio. It is not
+Streaming speech still synthesizes on the worker, one short text request
+at a time, with at most one next clip prepared ahead of the current audio. It is not
 sample-level TTS streaming: first-audio latency depends on receiving a complete
 sentence/phrase and the selected backend's synthesis speed. Snapshot preparation
 is coalesced over 120 ms; no history polling is used. The same CommonMark parser
