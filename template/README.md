@@ -1,20 +1,19 @@
 # Harness local development template
 
-Run the local Harness stack with the Harness Medium agent profiles and skills
-already available in the console. This directory is a runnable project inside
-the workers checkout, not a standalone copy of the Harness source.
+Run the Harness from this checkout with the Harness Medium agents and skills
+already available. This is a project inside the workers repository, not a
+standalone copy of the Harness source.
 
 ## Start
 
 Requirements:
 
 - The `iii` CLI `0.23.0-rc.4` or a compatible build with managed Compose engines.
-- The Rust toolchain selected by [`../rust-toolchain.toml`](../rust-toolchain.toml).
-- Node.js and the pnpm version declared in [`../package.json`](../package.json).
-  The Rust build scripts build the console and worker UIs with pnpm.
-- Network access on the first build for Cargo, pnpm, ONNX Runtime and browser
-  dependencies. See [`../iii-directory/README.md`](../iii-directory/README.md)
-  for offline ONNX Runtime setup.
+- The Rust toolchain in [`../rust-toolchain.toml`](../rust-toolchain.toml).
+- Node.js and the pnpm version in [`../package.json`](../package.json).
+- Network access on the first build for Cargo, pnpm and worker dependencies.
+  See [`../iii-directory/README.md`](../iii-directory/README.md) for offline
+  ONNX Runtime setup.
 
 From the repository root:
 
@@ -23,25 +22,22 @@ cd template
 iii compose --up
 ```
 
-No file generation, template download or published Harness package is required.
-Compose starts its managed engine at `ws://127.0.0.1:49134`, then runs each worker
-with `cargo run` in its sibling source directory. The first build can take
-several minutes; later runs reuse the Cargo and pnpm caches. The startup timeout
-is 15 minutes per worker.
+The checked-in instructions need no download before startup. Compose starts its
+managed engine at `ws://127.0.0.1:49134` and runs the sibling workers with
+`cargo run`, including `path://../harness`. It follows the
+[source-only stack](../harness/worker-compose.yaml) and adds the browser worker
+used by the profiles. The first build can take several minutes; later runs reuse
+the build caches. Open **http://127.0.0.1:3113** when the stack is ready.
 
-Open **http://127.0.0.1:3113** when the workers are ready. Pick a model you have
-authenticated and an agent profile, then start a conversation.
-
-Do not run this and `harness/worker-compose.yaml` on the same ports. Stop the
-other stack first, or set `III_ENGINE_PORT` in the Compose terminal and choose a
-different `http_port` in `config/console.yaml` before the template's first boot.
-Do not start a separate engine or pass `--engine` for this managed project.
+Do not run this and the original stack on the same ports. Stop the other stack,
+or set `III_ENGINE_PORT` in the Compose terminal and change the Console port in
+`config/console.yaml` before the first boot. Do not start a separate engine or
+pass `--engine` for this managed project.
 
 ## Authentication
 
-The checked-in `workers-dev.env.example` contains no credentials and is the default
-`env_file`, so the stack can start immediately. Model calls still need a valid
-provider credential. To use an API key:
+`workers-dev.env.example` contains no credentials and is the default env file.
+The stack can start without keys, but model calls require authentication:
 
 ```bash
 cp workers-dev.env.example .env
@@ -49,169 +45,117 @@ cp workers-dev.env.example .env
 WORKERS_DEV_ENV_FILE=.env iii compose --up
 ```
 
-The selected file is relative to this directory and is passed to the workers,
-including `llm-router`, where API credentials are resolved. `.env` is ignored by
-Git. Keep real keys out of `workers-dev.env.example`, YAML and commits. Restart the Compose
-daemon after changing which env file it uses.
+The env-file path is relative to `template/`. All workers receive it, including
+`llm-router`, which resolves provider credentials. `.env` is ignored; never
+commit real keys. Restart the Compose daemon after changing its env-file choice.
+Alternatively, `provider-openai-codex` can use an existing Codex CLI login in
+`~/.codex/auth.json` without an API key.
 
-The included `provider-openai-codex` can also read an existing Codex CLI login
-from `~/.codex/auth.json`; it does not require an API key.
-
-## Layout and configuration
+## Local files and synchronized files
 
 ```text
 template/
-├── sync.sh                    fetch and synchronize upstream template data
-├── worker-compose.yaml        local workers, including path://../harness
+├── worker-compose.yaml        local-source stack; never synchronized
+├── config/                    local Console and Directory seeds
 ├── workers-dev.env.example    credential-free startup defaults
-├── config-overrides/          maintained local configuration overrides
-├── config/                    generated upstream seeds + local overrides
-├── agents/                    synchronized Harness Medium profiles
-├── skills/harness/            synchronized skill documents
-├── upstream/                  source metadata, Compose reference and checksums
+├── sync.sh                    upstream fetch entrypoint
+├── scripts/sync_template.py   data-only import, using Python's standard library
+├── agents/                    upstream profiles
+├── skills/harness/            upstream skill documents
+├── upstream/sync.json         imported revision and file checksums
+├── upstream/config/           optional upstream configs, for review only
 └── data/                      runtime state and downloaded skills (ignored)
 ```
 
-The Compose stack follows [`../harness/worker-compose.yaml`](../harness/worker-compose.yaml):
-queue, state, session manager, router, OpenAI/Codex/Anthropic providers, context
-manager, directory, cron, ADE, IDE and Harness. It adds the local `browser`
-worker used by the profiles for verification. All workers run from this checkout;
-editing `../harness/src/` changes the Harness used here after a restart.
+**Edit local configuration directly in `config/`.** It is not generated, merged
+or overwritten by `sync.sh`. The Console and Directory commands explicitly load
+these seeds via `III_COMPOSE_DIR`, because their processes run in sibling source
+directories. Relative worker data paths resolve under this project.
 
-Compose supplies `III_COMPOSE_DIR` as this directory while each worker's process
-runs in its source directory. The directory and console commands explicitly
-load the YAML seeds from `template/config/`. Worker-owned relative data paths
-resolve under the Compose project rather than polluting the source directories.
+These files are **first-registration seeds**. After first boot, use the Console
+configuration UI for saved settings; seeds do not overwrite them on restart.
+Directory folder changes require restarting `iii-directory`; Console bind
+changes require restarting `ade`. Additional runtime configuration files are
+ignored by Git; only the two local development seeds are versioned.
 
-Configuration files are **first-registration seeds**, not files reloaded over
-saved settings at every restart. After the first boot, use the console's
-configuration UI to change the `iii-directory` or `console` entry. Directory
-folder changes require restarting `iii-directory`; console bind-address changes
-require restarting `ade`. No separate `harness/config.yaml` needs to be created.
+The Directory reads `agents/` and local `skills/`, while automatic worker-skill
+downloads go to `data/skills/`. The existing `skills/harness/` namespace prevents
+auto-download from replacing the checked-in Medium instructions.
 
-The directory uses `skills/` as its local override root and `data/skills/` for
-automatically downloaded worker skills. The existing `skills/harness/` namespace
-wins and makes automatic reconciliation skip the Harness registry bundle. This
-keeps the checked-in Medium instructions intact while allowing other workers'
-skills to download normally. Agent profiles are read from `agents/`.
+The five profiles are `ade-worker-builder`, `tech-lead`, `backend-engineer`,
+`frontend-engineer` and `agent-profile-creator`. They extend `iii-minimal` and
+preload skills covering orchestration, Node workers, configuration and frontend
+work. The Directory watches instruction edits; start a new session to use them,
+since existing sessions retain their frozen prompts.
 
-## Included profiles
+## Synchronize upstream instructions
 
-| Profile | Responsibility |
-| --- | --- |
-| `ade-worker-builder` | Plans the worker with the user and accepts it in the console. |
-| `tech-lead` | Designs the architecture, delegates implementation and verifies the integration. |
-| `backend-engineer` | Builds the Node worker, function contracts and UI delivery. |
-| `frontend-engineer` | Builds and verifies the injected console UI. |
-| `agent-profile-creator` | Plans and writes additional agent profiles. |
+Requires **Bash, Git and Python 3.11+**, with no third-party Python dependencies.
+Run from any directory; the destination is always the directory of `sync.sh`:
 
-Each extends the built-in `iii-minimal` identity and references skills by
-`harness/...` id. They inherit the selected model. Orchestrators dispatch through
-`harness::spawn`; children report through the `state` worker. The skills cover
-orchestration, Node workers, configuration, console design and frontend work.
+```bash
+# From template/: synchronize the latest merged upstream template.
+./sync.sh
+./sync.sh --dry-run
 
-Edits to profiles and skills are watched by the directory. Start a new session
-to use changed instructions: existing sessions retain their frozen prompt.
+# Reproduce a commit, or use another branch/tag.
+./sync.sh --ref d9ac5f2d183a6fbf79b3bac445a97a9c3e761118
 
-## Development loop
+# Work against a local templates checkout instead of GitHub.
+./sync.sh --repo /absolute/path/to/templates --ref main
+```
+
+The source is [`iii-hq/templates`](https://github.com/iii-hq/templates),
+`iii/harness/`, defaulting to `main`. To preview a pull request, pass
+`--ref 'refs/pull/<number>/head' --dry-run`. Each invocation fetches the ref into
+a temporary Git repository without checking out or executing upstream code.
+
+Only three directories are managed:
+
+- `agents/` and `skills/`: Markdown instructions copied verbatim.
+- `upstream/`: `sync.json` records the repository, ref, commit and SHA-256 file
+  checksums. Any upstream YAML/JSON configuration is copied to `upstream/config/`
+  **as reference only**, never applied to the local stack. The current snapshot
+  has no upstream configs. The upstream README, package Compose and template
+  installer manifest are not copied; consult them in the source repository.
+
+Sync removes obsolete files only in those directories. It preserves local
+`config/`, Compose, README, environment files and runtime data, even with
+`--force`. It refuses edited or newly added managed files by default. Save local
+agents/skills before refreshing; use `--force` only to intentionally discard
+those edits. Review new instructions and reference configs before committing.
+
+Fetch or validation failures leave the snapshot unchanged. Replacements are
+staged with rollback on filesystem errors; a lock prevents concurrent syncs.
+After a crash, remove `.sync.lock/` only if no sync process is running.
+
+The checked-in snapshot comes from merged
+[PR #84](https://github.com/iii-hq/templates/pull/84).
+**`upstream/sync.json` is the authoritative imported revision.** Review
+`git diff -- template/` from the repository root after each refresh.
+
+## Development and validation
 
 Edit the sibling worker source, then restart just that container from another
-terminal in `template/`, targeting this project's engine and namespace:
+terminal in `template/`:
 
 ```bash
 iii trigger compose::restart --namespace my-project container=harness
 ```
 
-The worker's `cargo run` recompiles the changed source. There is no automatic
-Rust source watcher in this Compose file. To restart the whole project, press
-`Ctrl-C` in its Compose terminal and run `iii compose --up` again. Avoid stopping
-or restarting the project from a Harness session it hosts.
+`cargo run` recompiles changed source; this Compose has no Rust source watcher.
+To restart the whole stack, stop it in its Compose terminal and run
+`iii compose --up` again, not from a Harness session that the stack hosts.
 
-## Validate the template
-
-The structural tests do not start an engine, call a model or require credentials:
+Run the tests from `template/`:
 
 ```bash
 uv run --with PyYAML==6.0.3 python -m unittest discover -s tests -v
 ```
 
-They check the local worker paths and binaries, dependency ordering, default env
-file, configuration seeds, agent frontmatter, skill references and Git ignore
-rules. The synchronization tests run the real Bash script against disposable
-local Git repositories: updates, removals, idempotence, pinned revisions,
-dry runs, failed fetches, invalid configuration, edit protection and symlink
-rejection are exercised without network access. The same suite runs in
-`.github/workflows/harness-template.yml` on pull requests and pushes to main.
-Runtime acceptance is separate: start Compose, open the console, confirm
-the five profiles appear and send a message with an authenticated model.
-
-## Synchronize with upstream
-
-`sync.sh` replaces manual copying with a repeatable fetch-and-sync workflow. It
-requires Bash, Git and either **uv**, or Python 3.11+ with PyYAML 6.0.3 installed.
-The checked-in generated snapshot still supports starting the stack offline;
-you choose when to refresh it. Run the script from any working directory:
-
-```bash
-# From template/: fetch the latest merged template from main.
-./sync.sh
-
-# Preview changes without replacing generated files.
-./sync.sh --dry-run
-
-# Reproduce the merged Harness Medium revision (branches and tags also work).
-./sync.sh --ref d9ac5f2d183a6fbf79b3bac445a97a9c3e761118
-
-# Preview another pull request explicitly before it is merged.
-./sync.sh --ref refs/pull/<number>/head --dry-run
-
-# Use another checkout instead of GitHub, for local template development.
-./sync.sh --repo /absolute/path/to/templates --ref main
-```
-
-The source is [`iii-hq/templates`](https://github.com/iii-hq/templates),
-`iii/harness/`. The default ref is **main**. The Harness Medium instructions from
-[PR #84](https://github.com/iii-hq/templates/pull/84) were merged on September 15,
-2026 and are available through the default sync. Use `--ref refs/pull/<number>/head`
-explicitly to preview a future pull request. Every invocation fetches the
-requested ref; it never relies on an old local checkout. No upstream code or
-installer is executed.
-
-The script manages these generated directories:
-
-- `agents/` and `skills/`: upstream Markdown instructions, copied verbatim.
-- `config/`: upstream YAML/JSON seeds, if present, recursively merged with
-  `config-overrides/*.yaml`. The local overrides win on conflicting values;
-  unrelated upstream settings are retained. These files are first-registration
-  seeds, not live updates to saved configuration. Additional worker configs are
-  copied but require wiring in the local Compose before that worker uses them.
-- `upstream/`: the upstream README, package-based Compose and template manifest
-  for review, plus `sync.json` recording repository, ref, exact commit and
-  SHA-256 checksums of every generated file. The reference Compose is **never**
-  used to start the stack. Do not run Compose from this reference directory.
-
-The current upstream has no `config/` directory, so its absence is supported:
-our local overrides still produce the Console and Directory seeds. If upstream
-adds that directory later, the same script picks it up automatically.
-
-Updates remove obsolete files **only inside those four generated directories**.
-The runnable `worker-compose.yaml`, this README, `config-overrides/`, `.env`,
-other environment files and runtime data are preserved. Secret files, arbitrary
-scripts and other unrecognized upstream paths are not imported. Only request
-refs/repositories you trust, and review new configuration before committing it.
-
-The script refuses to overwrite edited or newly added generated files. Keep
-custom configuration in `config-overrides/`. Save custom agents/skills before a
-refresh; if you intentionally want to discard their local edits, use
-`./sync.sh --force`. That flag still cannot replace the local Compose or runtime
-data. Fetch and validation failures leave the current snapshot unchanged;
-concurrent runs are blocked by `.sync.lock/` (remove a stale lock only after
-confirming no synchronization is running).
-
-After syncing, run the validation suite above and review `git diff -- template/`
-from the repository root before committing. The checked-in snapshot includes
-PR #84's merged revision `d9ac5f2d183a6fbf79b3bac445a97a9c3e761118`;
-**`upstream/sync.json` is the authoritative current provenance** after subsequent
-synchronizations. The
-local-source Compose is maintained separately so updates never switch the
-Harness to a published package.
+PyYAML is needed only by the structural tests to read Compose and agent YAML,
+not by the synchronization script. The Bash integration tests use temporary local
+Git repositories and need no network or credentials. CI runs both suites and
+checks Bash syntax. Structural checks cover versioned files, not extra local
+profiles. Full runtime acceptance is separate: start Compose, confirm the
+profiles in the Console and send a message using an authenticated model.

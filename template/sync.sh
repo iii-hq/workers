@@ -6,20 +6,20 @@ usage() {
   cat <<'HELP'
 Usage: ./sync.sh [--ref REF] [--repo URL_OR_PATH] [--dry-run] [--force]
 
-Fetch iii/harness from iii-hq/templates (main by default), synchronize agents,
-skills and configuration seeds, and record the resolved commit in upstream/.
-Local config-overrides are merged last. The local Compose, environment files
-and runtime data are never imported or replaced. No upstream scripts are run.
+Fetch agents and skills from iii-hq/templates (main by default). Record the
+resolved commit in upstream/sync.json; keep any upstream configuration under
+upstream/config/ for review only. Local config/, Compose, environment files
+and runtime data are never replaced. No upstream scripts are run.
 
-  --ref REF       Branch, tag, commit, or refs/pull/84/head (default: main)
+  --ref REF       Branch, tag, commit, or pull request ref (default: main)
   --repo SOURCE   Git URL or local repository (default: iii-hq/templates)
   --dry-run       Fetch and validate, but do not replace generated files
-  --force         Discard edits inside generated agents/, skills/, config/ and
-                  upstream/ only (the normal mode refuses to overwrite edits)
+  --force         Discard edits in agents/, skills/ and upstream/ only
+                  (the normal mode refuses to overwrite edits)
   --help          Show this help
 
-Requires Bash, Git and Python 3.11+ with PyYAML 6.0.3, or uv to supply Python
-and the pinned dependency automatically. Run from any working directory.
+Requires Bash, Git and Python 3.11+ (standard library only).
+Run from any working directory.
 HELP
 }
 
@@ -42,14 +42,9 @@ done
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 command -v git >/dev/null || { echo 'Git is required.' >&2; exit 1; }
-if command -v python3 >/dev/null && python3 -c 'import sys, yaml; assert sys.version_info >= (3, 11)' 2>/dev/null; then
-  runner=(python3)
-elif command -v uv >/dev/null; then
-  runner=(uv run --script)
-else
-  echo 'Install uv, or Python 3.11+ and PyYAML==6.0.3, then run sync.sh again.' >&2
-  exit 1
-fi
+python3 -c 'import sys; assert sys.version_info >= (3, 11)' 2>/dev/null || {
+  echo 'Python 3.11+ is required.' >&2; exit 1;
+}
 
 # Prevent concurrent replacements; a crashed process leaves an explicit lock
 # to inspect rather than allowing another invocation to race partial output.
@@ -73,6 +68,6 @@ git init --quiet "$scratch/repo"
 GIT_TERMINAL_PROMPT=0 git -C "$scratch/repo" -c protocol.ext.allow=never \
   fetch --quiet --depth=1 --no-tags -- "$repo" "$ref"
 commit=$(git -C "$scratch/repo" rev-parse --verify 'FETCH_HEAD^{commit}')
-"${runner[@]}" "$script_dir/scripts/sync_template.py" \
+python3 "$script_dir/scripts/sync_template.py" \
   --checkout "$scratch/repo" --commit "$commit" --repo "$repo" --ref "$ref" \
   --destination "$script_dir" "${options[@]}"

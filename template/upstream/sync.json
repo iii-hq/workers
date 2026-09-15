@@ -6,8 +6,6 @@
     "agents/backend-engineer.md": "3f5b7ad5ec4c9e6b983c36668b91e6d5037354ed832cdb701eae9285637e0b7e",
     "agents/frontend-engineer.md": "2126df7b8e79b76aadd8a6a2f0791bd192b71588cae96eb2802a7c7255ee9ddd",
     "agents/tech-lead.md": "0e4b1e9d1f6cc4a89fa76846dbd1e160addaea4245e8f0c94b84be38ae5a6ebd",
-    "config/console.yaml": "7380ac933164896495677ea178997bc07ebabf1775b6b4d090773d026b1f0e37",
-    "config/iii-directory.yaml": "a58261903a4b1b99cca116faf34b172caf8d6dda9e49a614336aa97391090949",
     "skills/harness/ade-worker-design/console-design.md": "0cf6f051241b26539c80d6dcbdb9c3b48974b163ab5d4f2486b6e8f8abea16f4",
     "skills/harness/ade-worker-design/console-injectable-ui.md": "4b6e3eff8671c204d7642dd4704cbfdd81230648a4599167ed6d0da933845915",
     "skills/harness/ade-worker-design/index.md": "4554e5f90aade4c7fdfb67854d9351594704134dd453cb2178a6924cab4b69ec",
@@ -24,10 +22,7 @@
     "skills/harness/iii-node/configuration.md": "f760e42a6d6aea916bdd6c99822f872921e90b39434c1b97a014ea8374203557",
     "skills/harness/iii-node/index.md": "0b2400cdcdd6f7ffcafe41786fdb30db9f66b4f7c67d039097b70b56bc1020c6",
     "skills/harness/orchestration/index.md": "ff0758523f4d66b72a11b244dfc87bffd71b525114ab3348da9efa6c70ddf7fa",
-    "skills/harness/orchestration/report.md": "3814911aa2b2711903ad4afadd9cd01a949b4f928178689f57e8016a4a1e6a4b",
-    "upstream/README.md": "c3712090b57d90617cefac4a63b3ca0e95a68918ad4ff439b0b6f6285b43537a",
-    "upstream/template.yaml": "fc7a2c99d777116f7ec42c86f5d97c4d79b8d0c67a225025852189893bf69690",
-    "upstream/worker-compose.yaml": "3d4dfbea6e6780c54459ff4c976928d720c952b2c884e257aa904b27bc7ec7ac"
+    "skills/harness/orchestration/report.md": "3814911aa2b2711903ad4afadd9cd01a949b4f928178689f57e8016a4a1e6a4b"
   },
   "ref": "d9ac5f2d183a6fbf79b3bac445a97a9c3e761118",
   "repository": "https://github.com/iii-hq/templates.git",

@@ -7,8 +7,6 @@ import subprocess
 import tempfile
 import unittest
 
-import yaml
-
 TEMPLATE = Path(__file__).resolve().parents[1]
 
 
@@ -36,10 +34,11 @@ class SyncTests(unittest.TestCase):
         (self.destination / "scripts").mkdir(parents=True)
         shutil.copyfile(TEMPLATE / "sync.sh", self.destination / "sync.sh")
         shutil.copyfile(TEMPLATE / "scripts/sync_template.py", self.destination / "scripts/sync_template.py")
-        shutil.copytree(TEMPLATE / "config-overrides", self.destination / "config-overrides")
         self.protected = {
             "worker-compose.yaml": "containers: {harness: {worker: 'path://../harness'}}\n",
             "README.md": "# Local development\n",
+            "config/console.yaml": "# Local settings\nhttp_host: 127.0.0.1\nhttp_port: 3113\n",
+            "config/iii-directory.yaml": "agents_folder: agents\nlocal_skills_folder: skills\n",
             ".env": "LOCAL_TEST_KEY=preserve-me\n",
             "data/skills/browser/index.md": "Local runtime cache\n",
         }
@@ -86,10 +85,15 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(manifest["commit"], self.git("rev-parse", "HEAD"))
         self.assertEqual(manifest["ref"], "main")
         self.assertEqual((self.destination / "skills/harness/index.md").read_text(), "# Initial skill\n")
-        config = yaml.safe_load((self.destination / "config/console.yaml").read_text())
-        self.assertEqual(config, {"http_host": "127.0.0.1", "http_port": 3113, "theme": "dark"})
-        self.assertTrue((self.destination / "config/new-worker.yaml").is_file())
-        self.assertIn("package://harness", (self.destination / "upstream/worker-compose.yaml").read_text())
+        for name in ("console.yaml", "new-worker.yaml"):
+            self.assertEqual(
+                (self.destination / "upstream/config" / name).read_bytes(),
+                (self.upstream / "iii/harness/config" / name).read_bytes(),
+            )
+        for name in ("README.md", "worker-compose.yaml", "template.yaml"):
+            self.assertFalse((self.destination / "upstream" / name).exists())
+        self.assertFalse((self.destination / "config/new-worker.yaml").exists())
+        self.assertFalse(any(path.startswith("config/") for path in manifest["files"]))
         self.assertFalse((self.destination / "setup.sh").exists())
         self.assertFalse((self.destination / "upstream/.env").exists())
         for relative, expected in self.protected.items():
@@ -107,7 +111,7 @@ class SyncTests(unittest.TestCase):
         self.commit()
         self.run_sync()
         self.assertFalse((self.destination / "agents/example.md").exists())
-        self.assertFalse((self.destination / "config/new-worker.yaml").exists())
+        self.assertFalse((self.destination / "upstream/config/new-worker.yaml").exists())
         self.assertTrue((self.destination / "agents/replacement.md").is_file())
         self.assertEqual((self.destination / "skills/harness/index.md").read_text(), "# Updated skill\n")
 
@@ -138,17 +142,13 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.files(), before)
         self.run_sync("--force")
         self.assertFalse(local.exists())
-        self.assertEqual((self.destination / ".env").read_text(), self.protected[".env"])
+        for relative, expected in self.protected.items():
+            self.assertEqual((self.destination / relative).read_text(), expected)
 
-    def test_incomplete_upstream_and_invalid_config_fail_without_partial_updates(self):
+    def test_incomplete_upstream_fails_without_partial_updates(self):
         self.run_sync()
         before = self.files()
         shutil.rmtree(self.upstream / "iii/harness/agents")
-        self.commit()
-        self.run_sync(success=False)
-        self.assertEqual(self.files(), before)
-        self.write("agents/example.md", "# Restored\n")
-        self.write("config/broken.yaml", "not: [valid\n")
         self.commit()
         self.run_sync(success=False)
         self.assertEqual(self.files(), before)
@@ -171,9 +171,9 @@ class SyncTests(unittest.TestCase):
         shutil.rmtree(self.upstream / "iii/harness/config")
         self.commit()
         self.run_sync()
-        config = yaml.safe_load((self.destination / "config/console.yaml").read_text())
-        self.assertEqual(config["http_host"], "127.0.0.1")
-        self.assertEqual(config["http_port"], 3113)
+        self.assertFalse((self.destination / "upstream/config").exists())
+        for relative, expected in self.protected.items():
+            self.assertEqual((self.destination / relative).read_text(), expected)
 
 
 if __name__ == "__main__":

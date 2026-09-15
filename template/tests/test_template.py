@@ -1,7 +1,3 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["PyYAML==6.0.3"]
-# ///
 """Structural checks for the local Harness template; no engine or credentials needed."""
 
 from pathlib import Path
@@ -17,6 +13,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "template"
+
+
+def tracked_files(*paths):
+    """Validate the deliverable, not additional local profiles or runtime files."""
+    output = subprocess.check_output(["git", "ls-files", "-z", "--", *paths], cwd=ROOT)
+    return [ROOT / name.decode() for name in output.split(b"\0") if name and (ROOT / name.decode()).is_file()]
 
 
 def load_yaml(path):
@@ -96,7 +98,7 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(config["http_port"], 3113)
 
     def test_agent_profiles_resolve_all_preloaded_skills(self):
-        agents = sorted((TEMPLATE / "agents").glob("*.md"))
+        agents = tracked_files("template/agents/*.md")
         self.assertTrue(agents, "Run sync.sh to populate agent profiles")
         self.assertTrue((ROOT / "iii-directory/prompts/iii-minimal.md").is_file())
         for path in agents:
@@ -117,15 +119,15 @@ class TemplateTests(unittest.TestCase):
         manifest = json.loads((TEMPLATE / "upstream/sync.json").read_text())
         self.assertRegex(manifest["commit"], r"^[0-9a-f]{40}$")
         actual = {}
-        for root in ("agents", "skills", "config", "upstream"):
-            for path in (TEMPLATE / root).rglob("*"):
-                if path.is_file() and path != TEMPLATE / "upstream/sync.json":
-                    self.assertFalse(path.is_symlink())
-                    actual[path.relative_to(TEMPLATE).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in tracked_files("template/agents", "template/skills", "template/upstream"):
+            if path != TEMPLATE / "upstream/sync.json":
+                self.assertFalse(path.is_symlink())
+                actual[path.relative_to(TEMPLATE).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.assertFalse(any(path.startswith("config/") for path in manifest["files"]))
         self.assertEqual(actual, manifest["files"], "Run sync.sh; do not edit generated files directly")
 
     def test_all_upstream_skill_documents_are_present(self):
-        skills = sorted((TEMPLATE / "skills/harness").rglob("*.md"))
+        skills = tracked_files("template/skills/harness")
         self.assertTrue(skills, "Run sync.sh to populate upstream skills")
         for path in skills:
             self.assertTrue(path.read_text(encoding="utf-8").strip(), path)
@@ -134,14 +136,16 @@ class TemplateTests(unittest.TestCase):
     def test_git_tracks_seeds_and_instructions_but_ignores_runtime_files(self):
         tracked = [
             "template/config/iii-directory.yaml", "template/config/console.yaml",
-            "template/config/new-worker.yaml", "template/upstream/sync.json",
+            "template/upstream/config/new-worker.yaml", "template/upstream/sync.json",
             "template/workers-dev.env.example", "template/worker-compose.yaml",
-            *[str(path.relative_to(ROOT)) for path in (TEMPLATE / "agents").glob("*.md")],
-            *[str(path.relative_to(ROOT)) for path in (TEMPLATE / "skills").rglob("*.md")],
+            *[str(path.relative_to(ROOT)) for path in tracked_files("template/agents")],
+            *[str(path.relative_to(ROOT)) for path in tracked_files("template/skills")],
         ]
         ignored = [
             "template/.env", "template/.env.local", "template/data/skills/browser/index.md",
-            "template/.sync.lock/owner", "template/.iii/runtime.json",
+            "template/.sync.lock/owner", "template/.sync-stage-test/file", "template/.iii/runtime.json",
+            "template/config/new-worker.yaml", "template/worker-compose.lock",
+            "template/scripts/.null-ls_test_sync_template.py",
         ]
         for paths, expected in [(tracked, set()), (ignored, set(ignored))]:
             result = subprocess.run(
