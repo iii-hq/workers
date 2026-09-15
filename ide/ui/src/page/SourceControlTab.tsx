@@ -5,8 +5,10 @@
    index against HEAD for staged rows, worktree against index otherwise. */
 
 import { ConfirmDialog, IconButton } from '@iii-dev/console-ui'
-import { Check, GitBranch, Minus, Plus, RefreshCw, Undo2 } from 'lucide-react'
+import { Check, FolderTree, GitBranch, List, Minus, Plus, RefreshCw, Undo2 } from 'lucide-react'
 import { useState } from 'react'
+import { ChangeEntries } from './ChangeEntries'
+import { readScmViewMode, writeScmViewMode } from './scm-view'
 import { FileTypeIcon } from './file-type-icon'
 import type { GitComparisonEntry } from './git'
 import { statusLetter, statusTitle } from './git-actions'
@@ -27,6 +29,12 @@ interface SourceControlTabProps {
 type PendingDiscard = { kind: 'one'; entry: GitComparisonEntry } | { kind: 'all'; entries: readonly GitComparisonEntry[] }
 
 export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, onOpenFile }: SourceControlTabProps) {
+  const [viewMode, setViewMode] = useState(readScmViewMode)
+  const toggleViewMode = () => {
+    const next = viewMode === 'list' ? 'tree' : 'list'
+    setViewMode(next)
+    writeScmViewMode(next)
+  }
   const [message, setMessage] = useState('')
   const [stagedOpen, setStagedOpen] = useState(true)
   const [changesOpen, setChangesOpen] = useState(true)
@@ -60,9 +68,14 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
           ) : undefined
         }
         actions={
-          <IconButton label="Refresh" onClick={scm.reload} disabled={scm.busy}>
-            <RefreshCw aria-hidden />
-          </IconButton>
+          <>
+            <IconButton label={viewMode === 'list' ? 'View as Tree' : 'View as List'} onClick={toggleViewMode}>
+              {viewMode === 'list' ? <FolderTree aria-hidden /> : <List aria-hidden />}
+            </IconButton>
+            <IconButton label="Refresh" onClick={scm.reload} disabled={scm.busy}>
+              <RefreshCw aria-hidden />
+            </IconButton>
+          </>
         }
       />
       {scm.phase === 'not-a-repo' ? (
@@ -122,10 +135,12 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
                   </IconButton>
                 }
               >
-                {scm.staged.map((entry) => (
+                <ChangeEntries entries={scm.staged} mode={viewMode} renderEntry={(entry, depth) => (
                   <ChangeRow
                     key={`staged:${entry.path}`}
                     entry={entry}
+                    depth={depth}
+                    showDirectory={viewMode === 'list'}
                     active={activeSide === 'staged' && activePath === entry.path}
                     busy={scm.busy}
                     onOpen={(pin) => onOpenChange('staged', entry.path, pin)}
@@ -136,7 +151,7 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
                       </IconButton>
                     }
                   />
-                ))}
+                )} />
               </ViewSection>
             ) : null}
             <ViewSection
@@ -162,10 +177,12 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
               {scm.unstaged.length === 0 ? (
                 <div className="shui-scm-empty">{scm.staged.length === 0 ? 'No changes' : 'No unstaged changes'}</div>
               ) : (
-                scm.unstaged.map((entry) => (
+                <ChangeEntries entries={scm.unstaged} mode={viewMode} renderEntry={(entry, depth) => (
                   <ChangeRow
                     key={`unstaged:${entry.path}`}
                     entry={entry}
+                    depth={depth}
+                    showDirectory={viewMode === 'list'}
                     active={activeSide === 'unstaged' && activePath === entry.path}
                     busy={scm.busy}
                     onOpen={(pin) => onOpenChange('unstaged', entry.path, pin)}
@@ -181,7 +198,7 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
                       </>
                     }
                   />
-                ))
+                )} />
               )}
             </ViewSection>
           </div>
@@ -210,6 +227,8 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
 
 function ChangeRow({
   entry,
+  depth,
+  showDirectory,
   active,
   busy,
   onOpen,
@@ -217,6 +236,8 @@ function ChangeRow({
   actions,
 }: {
   entry: GitComparisonEntry
+  depth: number
+  showDirectory: boolean
   active: boolean
   busy: boolean
   onOpen: (pin: boolean) => void
@@ -230,6 +251,7 @@ function ChangeRow({
       <button
         type="button"
         className="shui-scm-row-main"
+        style={{ paddingLeft: 20 + depth * 14 }}
         onClick={() => onOpen(false)}
         onDoubleClick={() => onOpen(true)}
         title={entry.path}
@@ -237,7 +259,7 @@ function ChangeRow({
       >
         <FileTypeIcon path={entry.path} className="file-icon" />
         <span className="name">{name}</span>
-        {dir ? <span className="dir">{dir}</span> : null}
+        {showDirectory && dir ? <span className="dir">{dir}</span> : null}
         {entry.renameFrom ? <span className="dir">from {entry.renameFrom}</span> : null}
       </button>
       <span className="shui-scm-row-actions">

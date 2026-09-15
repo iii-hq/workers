@@ -7,8 +7,10 @@
    from the worker's pre-image store. */
 
 import { ConfirmDialog, IconButton } from '@iii-dev/console-ui'
-import { Bot, ChevronDown, ChevronRight, RefreshCw, Undo2 } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight, FolderTree, List, RefreshCw, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { ChangeEntries } from './ChangeEntries'
+import { readScmViewMode, writeScmViewMode } from './scm-view'
 import { FileTypeIcon } from './file-type-icon'
 import { basename, dirname } from './paths'
 import { relativeToRoot, type SessionTurnSummary, turnLabel, turnTitle } from './turns'
@@ -57,6 +59,8 @@ function kindStatus(kind: string): string {
   }
 }
 
+const VIEW_STORAGE_KEY = 'iii::ide::timeline-view-mode'
+
 type PendingRevert =
   | { kind: 'turn'; turnId: string; title: string; count: number }
   | { kind: 'file'; turnId: string; path: string }
@@ -76,6 +80,12 @@ export function TimelineTab({
   onRevertTurn,
   onRevertFile,
 }: TimelineTabProps) {
+  const [viewMode, setViewMode] = useState(() => readScmViewMode(VIEW_STORAGE_KEY))
+  const toggleViewMode = () => {
+    const next = viewMode === 'list' ? 'tree' : 'list'
+    setViewMode(next)
+    writeScmViewMode(next, VIEW_STORAGE_KEY)
+  }
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const [pending, setPending] = useState<PendingRevert | null>(null)
 
@@ -106,9 +116,14 @@ export function TimelineTab({
         title="Timeline"
         detail={turns.length > 0 ? `${turns.length} ${turns.length === 1 ? 'turn' : 'turns'}` : undefined}
         actions={
-          <IconButton label="Refresh timeline" onClick={onRefresh}>
-            <RefreshCw aria-hidden />
-          </IconButton>
+          <>
+            <IconButton label={viewMode === 'list' ? 'View as Tree' : 'View as List'} onClick={toggleViewMode}>
+              {viewMode === 'list' ? <FolderTree aria-hidden /> : <List aria-hidden />}
+            </IconButton>
+            <IconButton label="Refresh timeline" onClick={onRefresh}>
+              <RefreshCw aria-hidden />
+            </IconButton>
+          </>
         }
       />
       {!hasSession ? (
@@ -157,7 +172,7 @@ export function TimelineTab({
                     {turn.files.length === 0 ? (
                       <div className="shui-scm-empty">{running ? 'no file changes yet' : 'no file changes'}</div>
                     ) : (
-                      turn.files.map((file) => {
+                      <ChangeEntries entries={turn.files} mode={viewMode} getPath={(file) => relativeToRoot(file.path, root)} renderEntry={(file, depth) => {
                         const rel = relativeToRoot(file.path, root)
                         const shown = rel ?? file.path
                         const agentName = file.agent ? (file.agent.name ?? 'sub-agent') : null
@@ -167,6 +182,7 @@ export function TimelineTab({
                             key={file.path}
                             className={`shui-scm-row${isActive ? ' active' : ''}${rel === null ? ' outside' : ''}`}
                             data-status={kindStatus(file.kind)}
+                            style={viewMode === 'tree' ? { paddingLeft: 6 + depth * 14 } : undefined}
                           >
                             <button
                               type="button"
@@ -188,7 +204,7 @@ export function TimelineTab({
                             >
                               <FileTypeIcon path={shown} className="file-icon" />
                               <span className="name">{basename(shown)}</span>
-                              {dirname(shown) ? <span className="dir">{dirname(shown)}</span> : null}
+                              {(viewMode === 'list' || rel === null) && dirname(shown) ? <span className="dir">{dirname(shown)}</span> : null}
                               {agentName ? (
                                 <span className="shui-agent-tag" title={`changed by ${agentName}`}>
                                   <Bot aria-hidden />
@@ -215,7 +231,7 @@ export function TimelineTab({
                             </span>
                           </div>
                         )
-                      })
+                      }} />
                     )}
                   </div>
                 ) : null}
