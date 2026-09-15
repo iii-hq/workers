@@ -190,8 +190,17 @@ fn pg_cell_to_row_value(
             Some(f) => RowValue::Float(f),
             None => RowValue::Null,
         },
-        T::TEXT | T::VARCHAR | T::BPCHAR | T::NAME | T::UUID => match get!(String) {
+        T::TEXT | T::VARCHAR | T::BPCHAR | T::NAME => match get!(String) {
             Some(s) => RowValue::Text(s),
+            None => RowValue::Null,
+        },
+        // `String: FromSql` accepts only the text-family OIDs
+        // (postgres-types-0.2/src/lib.rs:729), so decoding a uuid cell as
+        // String failed with WrongType and took the whole query down — the
+        // same class as the `"char"` and NUMERIC arms in this function.
+        // Decode as Uuid and surface the canonical lowercase-hyphenated text.
+        T::UUID => match get!(uuid::Uuid) {
+            Some(u) => RowValue::Text(u.to_string()),
             None => RowValue::Null,
         },
         // The internal one-byte "char" (OID 18) — what pg_catalog uses for
@@ -1003,6 +1012,28 @@ mod tests {
             }
             other => panic!("expected Timestamp for TIMESTAMPTZ column, got {other:?}"),
         }
+    }
+
+    /// Regression: uuid shared the text arm and was decoded as `String`,
+    /// whose `FromSql::accepts` is gated to text-family OIDs — every result
+    /// with a uuid column failed with WrongType. The e2e fixtures key on
+    /// BIGSERIAL, so nothing exercised it until the native-capture key work.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_query_decodes_uuid_as_text() {
+        let Some(p) = fresh_pool().await else { return };
+        let r = query(
+            &p,
+            "SELECT '550E8400-E29B-41D4-A716-446655440000'::uuid AS u, NULL::uuid AS none",
+            &[],
+            30_000,
+        )
+        .await
+        .unwrap();
+        match &r.rows[0].0[0] {
+            RowValue::Text(s) => assert_eq!(s, "550e8400-e29b-41d4-a716-446655440000"),
+            other => panic!("expected canonical uuid text, got {other:?}"),
+        }
+        assert!(matches!(&r.rows[0].0[1], RowValue::Null));
     }
 
     #[tokio::test(flavor = "multi_thread")]
