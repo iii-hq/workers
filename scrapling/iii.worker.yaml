@@ -15,7 +15,7 @@ description: >-
   and a declarative crawl over the iii bus.
 
 dependencies:
-  configuration: "0.x"
+  configuration: "latest"
 
 runtime:
   language: python

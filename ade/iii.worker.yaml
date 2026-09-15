@@ -23,4 +23,4 @@ config:
   http_port: 3113
   http_host: 127.0.0.1
 dependencies:
-  configuration: "0.x"
+  configuration: "latest"

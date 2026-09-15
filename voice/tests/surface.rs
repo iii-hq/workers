@@ -17,6 +17,7 @@ fn the_catalog_lists_every_public_function_in_order() {
             "voice::dictation::list",
             "voice::transcribe",
             "voice::speak",
+            "voice::speech::prepare",
             "voice::speak::stop",
             "voice::models::list",
             "voice::models::download",
@@ -54,6 +55,26 @@ fn request_schemas_name_their_required_fields() {
         .required
         .clone();
     assert!(required.contains("output_function_id"));
+}
+
+#[test]
+fn speech_text_format_defaults_to_markdown_but_supports_literal_text() {
+    use voice::speech_text::{prepare, TextFormat};
+    let req: functions::speak::Request =
+        serde_json::from_value(serde_json::json!({"text": "**Olá**"})).unwrap();
+    assert_eq!(prepare(&req.text, req.text_format, 100).unwrap(), "Olá");
+    let req: functions::speak::Request =
+        serde_json::from_value(serde_json::json!({"text": "**literal**", "text_format": "plain"}))
+            .unwrap();
+    assert!(matches!(req.text_format, TextFormat::Plain));
+    assert_eq!(
+        prepare(&req.text, req.text_format, 100).unwrap(),
+        "**literal**"
+    );
+    assert!(serde_json::from_value::<functions::speak::Request>(
+        serde_json::json!({"text": "Hello", "text_format": "html"})
+    )
+    .is_err());
 }
 
 #[test]

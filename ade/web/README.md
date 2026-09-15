@@ -22,6 +22,39 @@ npm run dev
 Then open the printed `Local:` URL (Vite picks the first free port from
 5173 upwards).
 
+## Keeping the mobile screen awake
+
+The console uses the browser's Screen Wake Lock API while the document is
+visible and there is active work:
+
+- A connected session is `working` (model wait, reasoning, streamed replies,
+  tool calls and in-turn approvals), including subagents and other workspace
+  panels. The shared conversation provider owns this, not the selected pane.
+- A local send/queued-message edit is still preparing or uploading attachments,
+  submitting, streaming, or compacting a session with `/compact`.
+- Voice dictation is starting, listening, or flushing its final transcription.
+
+Concurrent activities share a lock; completion, errors and cancellation release
+their own leases. Idle/done/error sessions, unsent drafts, armed future triggers,
+background catalog/trace refreshes and an open WebSocket do not keep it awake.
+Audio playback alone is not a reason to force the screen on.
+
+The lock is released when hidden and reacquired when visible if work remains.
+This requires browser support and a secure context (normally HTTPS); denial or
+battery-saving restrictions degrade silently. It does **not** prevent manual
+locking, override OS policy, or guarantee execution in the background.
+
+Injected UI can opt in for finite foreground work with
+`const release = host.screen?.keepAwake()`, calling `release?.()` on every
+completion/error/cancel path. Leases are also cleaned up on script disposal.
+Feature-detect this optional API for older consoles; do not acquire merely
+because a page is mounted or a subscription is registered.
+
+Manual device check: install/open the PWA over HTTPS, start a turn longer than
+the phone's auto-lock timeout (also try a slow tool, subagent and voice dictation),
+and verify the screen stays on. Switch away and back during work, then confirm
+normal auto-lock resumes after all activity finishes or is cancelled.
+
 ## Scripts
 
 | command            | what it does                              |

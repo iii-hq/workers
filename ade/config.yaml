@@ -1,6 +1,6 @@
 # First-registration seed/fallback. After registration, the `console`
 # configuration worker entry is authoritative and port edits apply live.
 http_port: 3113
-# Interface the listener binds. Loopback by default; set 0.0.0.0 to expose the
-# console (and its engine WebSocket proxy) on every interface. Boot-time only.
-http_host: 127.0.0.1
+# Interface the listener binds. All IPv4 interfaces by default; set 127.0.0.1
+# to limit the console and its engine WebSocket proxy to local access. Boot-time only.
+http_host: 0.0.0.0

@@ -34,4 +34,4 @@ config:
   agents_path: agents
 
 dependencies:
-  configuration: "0.x"
+  configuration: "latest"

@@ -1,4 +1,4 @@
-//! The worker's public surface: ten functions over one engine, one session
+//! The worker's public surface: twelve functions over one engine, one session
 //! registry and one speaker.
 //!
 //! Every handler reads the live config snapshot per call so a configuration
@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod dictation;
 pub mod doctor;
 pub mod speak;
+pub mod speech_prepare;
 pub mod transcribe;
 
 use std::sync::Arc;
@@ -84,6 +85,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<transcribe::Request, transcribe::Response>(transcribe::ID, transcribe::DESC),
         spec::<speak::Request, speak::Response>(speak::ID, speak::DESC),
+        spec::<speech_prepare::Request, speech_prepare::Response>(
+            speech_prepare::ID,
+            speech_prepare::DESC,
+        ),
         spec::<speak::StopRequest, speak::StopResponse>(speak::STOP_ID, speak::STOP_DESC),
         spec::<catalog::ListRequest, catalog::ListResponse>(catalog::LIST_ID, catalog::LIST_DESC),
         spec::<catalog::DownloadRequest, catalog::DownloadResponse>(
@@ -150,6 +155,13 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &Arc<AppState>) {
         transcribe::handle
     );
     register!(iii, state, speak::ID, speak::DESC, speak::handle);
+    register!(
+        iii,
+        state,
+        speech_prepare::ID,
+        speech_prepare::DESC,
+        speech_prepare::handle
+    );
     register!(iii, state, speak::STOP_ID, speak::STOP_DESC, speak::stop);
     register!(
         iii,
@@ -182,7 +194,7 @@ mod tests {
     #[test]
     fn every_function_id_is_namespaced_and_unique() {
         let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
-        assert_eq!(ids.len(), 11);
+        assert_eq!(ids.len(), 12);
         for id in &ids {
             assert!(id.starts_with("voice::"), "{id}");
         }

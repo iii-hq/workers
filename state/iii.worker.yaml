@@ -13,4 +13,4 @@ config:
     config:
       store_method: file_based
 dependencies:
-  configuration: "0.x"
+  configuration: "latest"

@@ -26,6 +26,7 @@ import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { registerPaletteSource } from '@/lib/palette/providers'
 import { PaneConfigurationProvider } from '@/lib/pane-configuration'
 import { requestPanelOpen } from '@/lib/panel-context'
+import { acquireScreenWakeLock } from '@/lib/screen-wake-lock'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
   registerExtComposerAction,
@@ -62,6 +63,8 @@ interface LoadedScript {
   kind: 'script'
   path: string
   hash: string
+  /** Set before any teardown, so callbacks cannot reacquire a screen lease. */
+  screenDisposed: boolean
   /** Every host registration + any setup() teardown, run LIFO on dispose. */
   cleanups: Array<() => void>
 }
@@ -127,13 +130,15 @@ export function ExtErrorChip({ path, error }: { path: string; error: Error }) {
   )
 }
 
+/** Bind extension APIs and screen leases to one script candidate's lifecycle. */
 function makeHost(
   api: ConsoleApi,
   conversationAdapter: ConversationAdapter,
   path: string,
-  cleanups: Array<() => void>,
+  entry: LoadedScript,
 ): Host {
   const scope = path.split('/')[0]
+  const { cleanups } = entry
   const track = (off: () => void): (() => void) => {
     cleanups.push(off)
     return off
@@ -168,6 +173,19 @@ function makeHost(
         return track(
           registerPageCommands({ pageId, source: 'worker', commands }),
         )
+      },
+    },
+    screen: {
+      keepAwake() {
+        // An async extension operation may finish after its script unloads.
+        if (entry.screenDisposed) return () => undefined
+        const release = acquireScreenWakeLock()
+        const off = () => {
+          release()
+          const index = cleanups.indexOf(off)
+          if (index !== -1) cleanups.splice(index, 1)
+        }
+        return track(off)
       },
     },
     workspace: {
@@ -336,16 +354,22 @@ export function startUiLoader(
         default?: SetupFn
       }>)
 
+  /** Revoke screen access before LIFO cleanup, draining teardown registrations. */
   function disposeEntry(entry: Loaded) {
     if (entry.kind === 'style') {
       entry.link.remove()
       return
     }
-    for (const cleanup of [...entry.cleanups].reverse()) {
-      try {
-        cleanup()
-      } catch (err) {
-        console.error(`[iii-ui] cleanup for ${entry.path} threw`, err)
+    entry.screenDisposed = true
+    while (entry.cleanups.length > 0) {
+      // Remove the current batch before invoking callbacks. Registrations
+      // made by a teardown are drained in the next pass, not left behind.
+      for (const cleanup of entry.cleanups.splice(0).reverse()) {
+        try {
+          cleanup()
+        } catch (err) {
+          console.error(`[iii-ui] cleanup for ${entry.path} threw`, err)
+        }
       }
     }
   }
@@ -364,26 +388,27 @@ export function startUiLoader(
   async function applyScript(path: string, hash: string) {
     const previous = loaded.get(path)
     const cleanups: Array<() => void> = []
+    const entry: LoadedScript = {
+      kind: 'script',
+      path,
+      hash,
+      cleanups,
+      screenDisposed: false,
+    }
     try {
       const mod = await importModule(assetUrl(path, hash))
       if (typeof mod.default !== 'function') {
         throw new Error('no default setup() export')
       }
-      const host = makeHost(api, conversationAdapter, path, cleanups)
+      const host = makeHost(api, conversationAdapter, path, entry)
       const teardown = await mod.default(host)
       if (typeof teardown === 'function') cleanups.push(teardown)
-      loaded.set(path, { kind: 'script', path, hash, cleanups })
+      loaded.set(path, entry)
       if (previous) disposeEntry(previous)
     } catch (err) {
       // Non-fatal and atomic: discard only the failed candidate. The last
       // good version stays registered until a replacement finishes setup.
-      for (const cleanup of [...cleanups].reverse()) {
-        try {
-          cleanup()
-        } catch {
-          /* already failing */
-        }
-      }
+      disposeEntry(entry)
       console.error(`[iii-ui] failed to load ${path}@${hash}`, err)
     }
   }

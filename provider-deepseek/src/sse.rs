@@ -70,6 +70,17 @@ impl PartialState {
         self.stop_reason
     }
 
+    /// Empty tool-call placeholders are kept for stream-integrity checks,
+    /// but do not prove that the model has started generating anything.
+    pub(crate) fn generation_started(&self) -> bool {
+        self.segments.iter().any(|segment| match segment {
+            Segment::Text(text) | Segment::Thinking(text) => !text.is_empty(),
+            Segment::Call(call) => {
+                !call.id.is_empty() || !call.function_id.is_empty() || !call.args_json.is_empty()
+            }
+        })
+    }
+
     /// True when the open block is a thinking (resp. text) block, so a delta
     /// of that kind extends it instead of starting a new one.
     fn open_is_thinking(&self) -> bool {
@@ -278,11 +289,9 @@ pub fn merge_usage(raw: &Value, into: &mut Usage) {
 }
 
 /// Build a terminal error frame outside the SSE flow (fetch/HTTP failures).
+/// Diagnostics belong in error_message; no model output was generated.
 pub fn synthetic_error_event(message: &str, model: &str, kind: ErrorKind) -> AssistantMessageEvent {
     let mut error = empty_assistant(model);
-    error.content = vec![ContentBlock::Text {
-        text: message.to_string(),
-    }];
     error.stop_reason = StopReason::Error;
     error.error_message = Some(message.to_string());
     error.error_kind = Some(kind);
@@ -961,6 +970,11 @@ mod tests {
         let ev = synthetic_error_event("boom", "deepseek-test", ErrorKind::RateLimited);
         match ev {
             AssistantMessageEvent::Error { error } => {
+                assert!(
+                    error.content.is_empty(),
+                    "provider errors are not model output"
+                );
+                assert_eq!(error.error_message.as_deref(), Some("boom"));
                 assert_eq!(error.error_kind, Some(ErrorKind::RateLimited));
                 assert_eq!(error.stop_reason, StopReason::Error);
                 assert_eq!(error.provider, "deepseek");

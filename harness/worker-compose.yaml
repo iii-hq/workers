@@ -47,7 +47,8 @@ containers:
     environment:
       RUST_LOG: info
       CI: "true"
-    env_file: ['./.env']
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     scripts:
       run: cargo run --bin llm-router
 

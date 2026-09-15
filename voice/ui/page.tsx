@@ -57,4 +57,6 @@ export default function setup(host: Host) {
   }
   chat?.registerTurnSummary?.(createVoiceLiveSummary(host, controller))
   chat?.registerTurnSummary?.(createVoiceTurnSummary(host))
+
+  return () => { void controller.cancel() }
 }

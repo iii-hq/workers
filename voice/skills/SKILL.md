@@ -17,7 +17,11 @@ Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine b
 
 - Audio in is 16 kHz mono 16-bit PCM for dictation; WAV files of any rate for `voice::transcribe`. No other container is decoded.
 - The bundled models are English. Portuguese and other languages need `stt.backend: whisper_cpp` with a multilingual GGML model, or a remote backend.
-- `voice::speak` on the host backend plays on the machine running the worker, not in the caller's browser; the `openai` backend returns audio for the caller to play.
+- For natural local read-aloud, install `piper-tts`, enter your language in Voice's Piper language filter, choose a matching voice from the bundled multilingual catalog, explicitly download it, and select `tts.backend: piper`. `piper-pt-br-faber-medium` remains available for Brazilian Portuguese. Filtering does not download or change the active voice. `tts.piper.command` is an executable path, not a shell command. No fallback to robotic eSpeak occurs if Piper is unavailable.
+- `tts.piper.device` defaults to `auto` (request NVIDIA CUDA, allow ONNX Runtime CPU fallback; retry once on CPU if the GPU-preferred process fails). `cpu` forces CPU. Auto allocates 30 seconds per attempt; CPU-only gets 60 seconds. GPU requires compatible onnxruntime-gpu/CUDA/cuDNN in Piper's own environment. No drivers are auto-installed; doctor reports policy, not verified GPU usage.
+- In Console, Read selection speaks only highlighted text in that chat. Voice chat is opt-in per browser/conversation and reads live assistant text in sentence/phrase chunks before the turn ends (including visible progress, never thinking/tool arguments). It deduplicates snapshots and flushes only the unread tail at completion; it does not send messages or keep the microphone open. Stop disables automatic reading.
+- `voice::speak` accepts `text_format: markdown` (default) to read prose without Markdown markers, hidden link URLs or block code; `plain` preserves literal text. Chat selections use plain because they are already rendered. The character cap applies after conversion. No messages are modified and no remote links are fetched.
+- Every `voice::speak` backend returns `audio_base64` and `mime` to the caller. `host` generates WAV using say/espeak in file-output mode, never server playback. The requesting browser plays/stops its own audio; other clients are unaffected.
 - Dictation sessions idle past `session_idle_secs` are closed by the worker.
 
 ## Functions
@@ -28,7 +32,8 @@ Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine b
 - `voice::dictation::stop` — close a session and return its transcript (`discard` to drop it).
 - `voice::dictation::list` — open sessions.
 - `voice::speak` — read text aloud; returns a `speech_id`.
-- `voice::speak::stop` — stop host playback.
+- `voice::speech::prepare` — stateless Markdown snapshot preparation (`text`, `complete`); returns plain text and `max_chunk_chars`. Withhold unfinished syntax, then queue plain-text `voice::speak` clips in the requesting browser.
+- `voice::speak::stop` — legacy compatibility, returns `stopped: 0`. Stop browser audio locally.
 - `voice::models::list` — local models, whether each is installed, and each one's license, author and source (Parakeet TDT 0.6B v2 is CC BY 4.0: keep the attribution if you copy its files elsewhere).
 - `voice::models::download` — install a local model, checksum-verified.
 - `voice::models::remove` — delete a downloaded model.

@@ -15,4 +15,4 @@ scripts:
   install: cargo build --release
   start: ./target/release/email
 dependencies:
-  configuration: "0.x"
+  configuration: "latest"

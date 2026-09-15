@@ -9,5 +9,5 @@ tags: [tailscale, tailnet, vpn, remote-access, serve, funnel, taildrop, exit-nod
 description: Tailscale as an iii worker — tailscale::* functions for connectivity and peers, exit nodes and preferences, Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, and updates, plus a Console page with QR links.
 
 dependencies:
-  configuration: "0.x"
-  ade: "^1.9.11"
+  configuration: "latest"
+  ade: "latest"

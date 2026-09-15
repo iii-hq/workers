@@ -16,7 +16,7 @@ scripts:
   install: cargo build
   start: cargo run --bin voice
 dependencies:
-  configuration: "0.x"
+  configuration: "latest"
 
 # The speech engine links a prebuilt onnxruntime that its upstream publishes
 # only for these four triples (glibc Linux and macOS). musl and armv7 have no

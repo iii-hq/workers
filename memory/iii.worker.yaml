@@ -9,8 +9,8 @@ tags: [memory, rag, bm25, recall, agent, context]
 description: Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories, hybrid BM25 + entity recall, pinning, and supersede-never-delete history. Plain files on disk; every operation is a traced function.
 
 dependencies:
-  configuration: "0.x"
-  session-manager: "^1.0.13"
-  llm-router: "^1.4.12"
-  state: "^0.22.2"
-  queue: "^0.21.5"
+  configuration: "latest"
+  session-manager: "latest"
+  llm-router: "latest"
+  state: "latest"
+  queue: "latest"

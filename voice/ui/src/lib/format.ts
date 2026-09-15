@@ -1,7 +1,7 @@
 /**
  * Small pure formatting/encoding helpers shared across the chip, turn
  * summary and page: error-to-string, seconds, bytes and duration
- * formatting, text truncation, markdown code-fence stripping, and
+ * formatting, text truncation, and
  * PCM16→base64 encoding.
  */
 
@@ -35,12 +35,6 @@ export function formatDuration(secs: number): string {
 export function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text
   return `${text.slice(0, Math.max(0, maxChars - 1))}…`
-}
-
-/** Replace fenced code blocks with a spoken-friendly placeholder before
-    handing text to text-to-speech. */
-export function stripCodeFences(text: string): string {
-  return text.replace(/```[\s\S]*?```/g, 'code block')
 }
 
 /** Base64-encode a little-endian Int16 PCM buffer for the wire. */

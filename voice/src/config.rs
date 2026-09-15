@@ -9,8 +9,8 @@
 //! downloaded on first use into `models_dir` and nothing leaves the machine.
 //! `stt.backend` can also invoke a local `whisper-cli` process directly, use an
 //! OpenAI-compatible audio endpoint, or route through llm-router.
-//! Read-aloud has no local engine in this release: it uses the host's own
-//! speech command or an OpenAI-compatible speech endpoint.
+//! Read-aloud generates audio through the host command, local neural Piper,
+//! an OpenAI-compatible endpoint, or llm-router, and returns it to the caller.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -159,8 +159,8 @@ pub struct WhisperCppSttConfig {
     #[serde(default = "default_whisper_cpp_command")]
     pub command: String,
 
-    /// Multilingual whisper.cpp GGML model path. Relative paths resolve from
-    /// the Compose project directory.
+    /// Catalog GGML model id (download via voice::models::download), or a
+    /// custom model path relative to the Compose project directory.
     #[serde(default = "default_whisper_cpp_model")]
     pub model: String,
 
@@ -178,8 +178,11 @@ pub struct WhisperCppSttConfig {
 #[serde(rename_all = "snake_case")]
 pub enum TtsBackend {
     /// The host's own speech command: `say` on macOS, `espeak-ng` (or
-    /// `espeak`) on Linux. Audio plays on the machine running the worker.
+    /// `espeak`) on Linux. Generates WAV returned to the requesting caller;
+    /// never plays on the machine running the worker.
     Host,
+    /// Local neural Piper synthesis; WAV returned to the requesting browser.
+    Piper,
     /// An OpenAI-compatible `/v1/audio/speech` endpoint. Audio is returned to
     /// the caller for playback in the browser.
     Openai,
@@ -193,7 +196,7 @@ pub enum TtsBackend {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TtsConfig {
-    /// `host` (default), `openai`, or `off`.
+    /// `host` (basic system voice), `piper` (local neural voice), `openai`, `router`, or `off`.
     #[serde(default = "default_tts_backend")]
     pub backend: TtsBackend,
 
@@ -211,6 +214,10 @@ pub struct TtsConfig {
     #[serde(default = "default_max_speak_chars")]
     pub max_speak_chars: usize,
 
+    /// Settings for the local neural Piper backend.
+    #[serde(default)]
+    pub piper: PiperTtsConfig,
+
     /// Settings for the `openai` backend.
     #[serde(default)]
     pub openai: OpenaiTtsConfig,
@@ -218,6 +225,49 @@ pub struct TtsConfig {
     /// Settings for the `router` backend.
     #[serde(default)]
     pub router: RouterTtsConfig,
+}
+
+/// Device preference, not a claim about the provider used for a particular request.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PiperDevice {
+    /// Request NVIDIA CUDA first; allow ONNX Runtime's CPU fallback and retry
+    /// once without CUDA if that attempt fails. No GPU dependencies are installed.
+    #[default]
+    Auto,
+    /// Never request GPU execution.
+    Cpu,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PiperTtsConfig {
+    /// Executable path, not a shell command. Install piper-tts separately.
+    #[serde(default = "default_piper_command")]
+    pub command: String,
+    /// A piper_onnx catalog id. Download explicitly in Voice → Models.
+    #[serde(default = "default_piper_model")]
+    pub model: String,
+    /// `auto` (default): prefer CUDA, fall back to CPU. `cpu`: force CPU.
+    #[serde(default)]
+    pub device: PiperDevice,
+}
+
+fn default_piper_command() -> String {
+    "piper".into()
+}
+fn default_piper_model() -> String {
+    "piper-pt-br-faber-medium".into()
+}
+
+impl Default for PiperTtsConfig {
+    fn default() -> Self {
+        Self {
+            command: default_piper_command(),
+            model: default_piper_model(),
+            device: PiperDevice::Auto,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
@@ -345,7 +395,7 @@ fn default_whisper_cpp_command() -> String {
 }
 
 fn default_whisper_cpp_model() -> String {
-    iii_worker_paths::default_path("data/voice/models/ggml-large-v3-turbo.bin")
+    "whisper-large-v3-turbo".to_string()
 }
 
 fn default_whisper_cpp_language() -> String {
@@ -439,6 +489,7 @@ impl Default for TtsConfig {
             voice: String::new(),
             rate_wpm: 0,
             max_speak_chars: default_max_speak_chars(),
+            piper: PiperTtsConfig::default(),
             openai: OpenaiTtsConfig::default(),
             router: RouterTtsConfig::default(),
         }
@@ -512,6 +563,16 @@ impl WorkerConfig {
         ] {
             if !(value.is_finite() && value > 0.0) {
                 return Err(format!("{name} must be a positive number"));
+            }
+        }
+        if self.tts.backend == TtsBackend::Piper {
+            if self.tts.piper.command.trim().is_empty() {
+                return Err("tts.piper.command must not be empty".into());
+            }
+            if !crate::models::find(&self.tts.piper.model)
+                .is_some_and(|m| m.kind == crate::models::ModelKind::PiperOnnx)
+            {
+                return Err("tts.piper.model must name a Piper voice from the catalog".into());
             }
         }
         if self.tts.max_speak_chars == 0 {
@@ -610,6 +671,26 @@ mod tests {
         assert_eq!(parsed, WorkerConfig::default());
         assert_eq!(parsed.stt.backend, SttBackend::Local);
         assert_eq!(parsed.tts.backend, TtsBackend::Host);
+    }
+
+    #[test]
+    fn piper_device_defaults_to_auto_and_accepts_cpu() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"tts": {"piper": {"model": "piper-pt-br-faber-medium"}}}),
+        ] {
+            let cfg = WorkerConfig::from_json(&value).unwrap();
+            assert_eq!(cfg.tts.piper.device, PiperDevice::Auto);
+            assert_eq!(cfg.to_json()["tts"]["piper"]["device"], "auto");
+        }
+        let cfg =
+            WorkerConfig::from_json(&serde_json::json!({"tts": {"piper": {"device": "cpu"}}}))
+                .unwrap();
+        assert_eq!(cfg.tts.piper.device, PiperDevice::Cpu);
+        assert!(
+            WorkerConfig::from_json(&serde_json::json!({"tts": {"piper": {"device": "gpu"}}}))
+                .is_err()
+        );
     }
 
     #[test]

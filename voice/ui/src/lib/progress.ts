@@ -43,5 +43,5 @@ export function useModelProgress(host: Host, onDone?: (event: ModelProgressEvent
 
 export function percent(event: ModelProgressEvent | undefined): number | null {
   if (!event || event.done || event.total_bytes <= 0) return null
-  return Math.round((event.received_bytes / event.total_bytes) * 100)
+  return Math.max(0, Math.min(100, Math.round((event.received_bytes / event.total_bytes) * 100)))
 }

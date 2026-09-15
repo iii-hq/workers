@@ -183,8 +183,9 @@
 }
 
 [data-iii-ui='voice'] .voice-model-list {
+  container: voice-models / inline-size;
   display: grid;
-  gap: 0.25rem;
+  gap: 0.75rem;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -192,18 +193,26 @@
 
 [data-iii-ui='voice'] .voice-model-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 0.75rem;
-  align-items: center;
-  padding: 0.625rem 0.5rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1rem 0.75rem;
+  align-items: start;
+  padding: 1rem;
+  border: 1px solid var(--color-edge);
   border-radius: 8px;
   background: var(--color-panel);
 }
 
+[data-iii-ui='voice'] .voice-model-indicator {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+}
+
 [data-iii-ui='voice'] .voice-model-main {
   display: grid;
-  gap: 0.125rem;
+  gap: 0.25rem;
   min-width: 0;
+  line-height: 1.5;
 }
 
 [data-iii-ui='voice'] .voice-model-main > * {
@@ -211,10 +220,105 @@
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui='voice'] .voice-model-side {
-  display: flex;
+/* Keep badges out of the action group, as in Directory's save toolbar. */
+[data-iii-ui='voice'] .voice-model-download {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+[data-iii-ui='voice'] .voice-model-status {
+  display: inline-flex;
   align-items: center;
   flex-shrink: 0;
+}
+
+[data-iii-ui='voice'] .voice-model-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+[data-iii-ui='voice'] .voice-model-actions > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  white-space: nowrap;
+}
+
+[data-iii-ui='voice'] .voice-model-actions > button > svg {
+  flex-shrink: 0;
+}
+
+[data-iii-ui='voice'] .voice-model-use {
+  border: 1px solid var(--color-edge);
+}
+
+[data-iii-ui='voice'] .voice-model-remove:hover:not(:disabled) {
+  color: var(--color-alert);
+}
+
+[data-iii-ui='voice'] .voice-model-footer {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-edge);
+}
+
+@container voice-models (max-width: 28rem) {
+  [data-iii-ui='voice'] .voice-model-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  [data-iii-ui='voice'] .voice-model-footer .voice-model-actions {
+    width: 100%;
+  }
+
+  [data-iii-ui='voice'] .voice-model-footer .voice-model-actions > button {
+    flex: 1 0 auto;
+  }
+}
+
+[data-iii-ui='voice'] .voice-piper-picker,
+[data-iii-ui='voice'] .voice-piper-language {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+[data-iii-ui='voice'] .voice-piper-language {
+  padding: 0.75rem 0;
+}
+
+[data-iii-ui='voice'] .voice-language-input {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 32rem;
+  min-width: 0;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font: inherit;
+}
+
+[data-iii-ui='voice'] .voice-language-input:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+[data-iii-ui='voice'] .voice-language-input:disabled {
+  opacity: 0.5;
 }
 
 /* ── dictate ─────────────────────────────────────────────────────────── */
@@ -444,6 +548,7 @@
 
 [data-iii-ui='voice'] .voice-turn-summary {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   padding: 0.25rem 0.75rem;
@@ -462,6 +567,12 @@
   color: inherit;
   font: inherit;
   cursor: pointer;
+}
+
+[data-iii-ui='voice'] .voice-turn-action[aria-pressed='true'] {
+  background: var(--color-surface-hover);
+  box-shadow: inset 0 0 0 1px var(--color-edge);
+  color: var(--color-ink);
 }
 
 [data-iii-ui='voice'] .voice-turn-action:hover:not(:disabled) {

@@ -12,6 +12,7 @@ use tokio::process::Command;
 use crate::audio::{self, TARGET_SAMPLE_RATE};
 use crate::config::WorkerConfig;
 use crate::engine::{join_segments, Segment, Transcript};
+use crate::models::{self, ModelKind};
 
 const STDERR_LIMIT: usize = 600;
 
@@ -29,9 +30,23 @@ pub fn command_path(command: &str) -> Option<PathBuf> {
     which::which(command).ok()
 }
 
-/// Resolve the configured model relative to the Compose project when needed.
+/// Resolve a catalog GGML id under models_dir, or preserve a custom model path.
 pub fn model_path(cfg: &WorkerConfig) -> PathBuf {
-    iii_worker_paths::resolve_path(cfg.stt.whisper_cpp.model.trim())
+    let configured = cfg.stt.whisper_cpp.model.trim();
+    if let Some(spec) = models::find(configured).filter(|s| s.kind == ModelKind::WhisperGgml) {
+        return spec.dir(&cfg.models_path()).join(spec.files[0].name);
+    }
+    iii_worker_paths::resolve_path(configured)
+}
+
+/// Catalog weights must be complete; custom paths remain user-managed.
+pub fn model_installed(cfg: &WorkerConfig) -> bool {
+    if let Some(spec) =
+        models::find(cfg.stt.whisper_cpp.model.trim()).filter(|s| s.kind == ModelKind::WhisperGgml)
+    {
+        return spec.is_installed(&cfg.models_path());
+    }
+    model_path(cfg).is_file()
 }
 
 /// Explain why this backend cannot run, if a required host artifact is absent.
@@ -43,9 +58,9 @@ pub fn problem(cfg: &WorkerConfig) -> Option<String> {
         ));
     }
     let model = model_path(cfg);
-    if !model.is_file() {
+    if !model_installed(cfg) {
         return Some(format!(
-            "whisper.cpp model `{}` was not found; set stt.whisper_cpp.model to a multilingual ggml model",
+            "whisper.cpp model `{}` is missing or incomplete; choose and download a model on the Voice page, or set stt.whisper_cpp.model to an existing GGML file",
             model.display()
         ));
     }
@@ -65,9 +80,9 @@ pub async fn transcribe(
         )
     })?;
     let model = model_path(cfg);
-    if !model.is_file() {
+    if !model_installed(cfg) {
         return Err(format!(
-            "whisper.cpp model `{}` was not found; set stt.whisper_cpp.model to a multilingual ggml model",
+            "whisper.cpp model `{}` is missing or incomplete; choose and download a model on the Voice page, or set stt.whisper_cpp.model to an existing GGML file",
             model.display()
         ));
     }
@@ -190,6 +205,39 @@ fn parse_output(body: &str, duration_secs: f32) -> Result<Transcript, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_model_resolves_under_configured_models_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cfg = WorkerConfig {
+            models_dir: temp.path().to_string_lossy().into_owned(),
+            ..WorkerConfig::default()
+        };
+        cfg.stt.whisper_cpp.model = "whisper-tiny".into();
+        assert_eq!(
+            model_path(&cfg),
+            temp.path().join("whisper-tiny/ggml-tiny.bin")
+        );
+        assert!(!model_installed(&cfg));
+        std::fs::create_dir_all(model_path(&cfg).parent().unwrap()).unwrap();
+        let file = std::fs::File::create(model_path(&cfg)).unwrap();
+        file.set_len(1).unwrap();
+        assert!(!model_installed(&cfg));
+        file.set_len(models::find("whisper-tiny").unwrap().files[0].size_bytes)
+            .unwrap();
+        assert!(model_installed(&cfg));
+    }
+
+    #[test]
+    fn custom_model_path_is_preserved() {
+        let temp = tempfile::tempdir().unwrap();
+        let custom = temp.path().join("custom.bin");
+        std::fs::write(&custom, b"user managed").unwrap();
+        let mut cfg = WorkerConfig::default();
+        cfg.stt.whisper_cpp.model = custom.to_string_lossy().into_owned();
+        assert_eq!(model_path(&cfg), custom);
+        assert!(model_installed(&cfg));
+    }
 
     #[test]
     fn parse_output_preserves_whisper_cpp_segments() {

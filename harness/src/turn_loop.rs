@@ -1138,13 +1138,17 @@ async fn finish_step(
             .unwrap_or(&generation_error.message)
             .to_string();
         preserve_assistant_partial(&mut record.result, &outcome.message);
-        if transient_resume_allowed(
-            failure.retryable.then_some(ErrorKind::Transient),
-            record.transient_resumes,
-            record.options.max_transient_resumes,
-            record.turn_count,
-            record.options.max_turns,
-        ) {
+        // Recovery continues a partial response. Retrying a failed startup is
+        // the router's responsibility; there is no response to resume here.
+        if assistant_partial_result(&outcome.message).is_some()
+            && transient_resume_allowed(
+                failure.retryable.then_some(ErrorKind::Transient),
+                record.transient_resumes,
+                record.options.max_transient_resumes,
+                record.turn_count,
+                record.options.max_turns,
+            )
+        {
             let attempt = record.transient_resumes + 1;
             record_recovery_telemetry(&record, &detail, attempt);
             let _ = session
@@ -2315,9 +2319,13 @@ fn record_failure_telemetry(record: &TurnRecord, reason: &str, failure: FailureI
 
 /// Keep a streamed partial available to failure observers without turning it
 /// into a successful turn result. Text stays ergonomic; non-text blocks retain
-/// their typed wire shape.
+/// their typed wire shape. Blank text alone is not a recoverable partial.
 fn assistant_partial_result(message: &AssistantMessage) -> Option<Value> {
-    if message.content.is_empty() {
+    if message
+        .content
+        .iter()
+        .all(|block| matches!(block, ContentBlock::Text { text } if text.trim().is_empty()))
+    {
         return None;
     }
     let text = ContentBlock::join_text(&message.content);
@@ -3922,6 +3930,46 @@ mod tests {
             16,
             16
         ));
+    }
+
+    #[test]
+    fn failed_stream_does_not_preserve_blank_text_as_partial_output() {
+        let mut message = crate::types::message::empty_assistant("deepseek", "deepseek-flash");
+        for content in [
+            vec![],
+            vec![ContentBlock::text("")],
+            vec![ContentBlock::text(" \n\t")],
+            vec![ContentBlock::text(""), ContentBlock::text(" \n")],
+        ] {
+            message.content = content;
+            assert_eq!(super::assistant_partial_result(&message), None);
+
+            let mut preserved = Some(serde_json::json!("earlier partial"));
+            super::preserve_assistant_partial(&mut preserved, &message);
+            assert_eq!(preserved, Some(serde_json::json!("earlier partial")));
+        }
+    }
+
+    #[test]
+    fn failed_stream_preserves_non_text_partial_output_alongside_blank_text() {
+        let mut message = crate::types::message::empty_assistant("deepseek", "deepseek-flash");
+        for block in [
+            ContentBlock::Thinking {
+                text: "useful reasoning".into(),
+                signature: None,
+            },
+            ContentBlock::FunctionCall {
+                id: "call_1".into(),
+                function_id: "worker::status".into(),
+                arguments: serde_json::json!({}),
+            },
+        ] {
+            message.content = vec![ContentBlock::text(" \n"), block];
+            assert_eq!(
+                super::assistant_partial_result(&message),
+                Some(serde_json::to_value(&message.content).unwrap()),
+            );
+        }
     }
 
     #[test]

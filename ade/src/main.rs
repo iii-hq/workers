@@ -40,8 +40,8 @@ struct Cli {
     #[arg(long)]
     http_port: Option<u16>,
 
-    /// Interface to bind (`127.0.0.1` by default; `0.0.0.0` exposes the console
-    /// and its engine WebSocket proxy on every interface). Overrides
+    /// Interface to bind (`0.0.0.0` by default; `127.0.0.1` limits the console
+    /// and its engine WebSocket proxy to local access). Overrides
     /// `http_host` from the seed file. Boot-time only: it does not hot-reload.
     #[arg(long)]
     http_host: Option<String>,

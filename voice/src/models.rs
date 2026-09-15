@@ -7,12 +7,12 @@
 //! directory sees the same verified files, because a file is renamed into
 //! place only after its hash matched.
 //!
-//! Two kinds of model live here: a small streaming transducer that produces
-//! live partial text, and a large offline transducer that re-decodes each
-//! finished utterance for the final text with punctuation and casing.
+//! The catalog includes streaming and offline ONNX transducers, plus GGML
+//! weights for a separately installed whisper-cli. GGML models download only
+//! when explicitly requested; the whisper.cpp backend never fetches weights.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
@@ -31,6 +31,10 @@ pub enum ModelKind {
     StreamingTransducer,
     /// NeMo offline transducer: one decode per finished utterance.
     OfflineNemoTransducer,
+    /// GGML weights loaded by a separate whisper-cli process.
+    WhisperGgml,
+    /// Neural text-to-speech loaded by the separately installed Piper process.
+    PiperOnnx,
 }
 
 /// One downloadable file of a model.
@@ -169,7 +173,22 @@ static PARAKEET_TDT_06B_V2_FILES: [ModelFile; 4] = [
     },
 ];
 
-static CATALOG: [ModelSpec; 3] = [
+static CATALOG: [ModelSpec; 9] = [
+    ModelSpec {
+        id: "piper-pt-br-faber-medium",
+        name: "Piper Faber · Brazilian Portuguese (neural)",
+        kind: ModelKind::PiperOnnx,
+        languages: &["pt-BR"],
+        license: "CC0-1.0 (dataset; see model card)",
+        author: "OHF-Voice / Piper contributors",
+        source:
+            "https://huggingface.co/rhasspy/piper-voices/blob/main/pt/pt_BR/faber/medium/MODEL_CARD",
+        files: &PIPER_FABER_FILES,
+        encoder: "",
+        decoder: "",
+        joiner: "",
+        tokens: "",
+    },
     ModelSpec {
         id: DEFAULT_MODEL,
         name: "Zipformer streaming 20M",
@@ -213,14 +232,119 @@ static CATALOG: [ModelSpec; 3] = [
         joiner: "joiner.int8.onnx",
         tokens: "tokens.txt",
     },
+    whisper_spec("whisper-tiny", "Whisper tiny (multilingual)", &WHISPER_TINY),
+    whisper_spec("whisper-base", "Whisper base (multilingual)", &WHISPER_BASE),
+    whisper_spec(
+        "whisper-small",
+        "Whisper small (multilingual)",
+        &WHISPER_SMALL,
+    ),
+    whisper_spec(
+        "whisper-medium",
+        "Whisper medium (multilingual)",
+        &WHISPER_MEDIUM,
+    ),
+    whisper_spec(
+        "whisper-large-v3-turbo",
+        "Whisper large v3 turbo (multilingual)",
+        &WHISPER_TURBO,
+    ),
 ];
 
+static PIPER_FABER_FILES: [ModelFile; 3] = [
+    ModelFile {
+        name: "pt_BR-faber-medium.onnx",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/pt_BR-faber-medium.onnx",
+        sha256: "858555e3a064209c57088fe6bd70c4c3dc54d03eaa00c45d5ecaf43a33f95aa7",
+        size_bytes: 63_201_294,
+    },
+    ModelFile {
+        name: "pt_BR-faber-medium.onnx.json",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/pt_BR-faber-medium.onnx.json",
+        sha256: "7e694de195ae3fc36dd732c445eb04fb49b649854893cb5506b978f0d50a1d6f",
+        size_bytes: 4855,
+    },
+    ModelFile {
+        name: "MODEL_CARD",
+        url: "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/MODEL_CARD",
+        sha256: "01f1a5bcfd0538782726059ae407eae9c2dd1b5b35f7298fd53a68de91afe563",
+        size_bytes: 279,
+    },
+];
+
+// Sizes and SHA-256 digests from ggerganov/whisper.cpp's Hugging Face LFS metadata.
+static WHISPER_TINY: [ModelFile; 1] = [ModelFile {
+    name: "ggml-tiny.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+    sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+    size_bytes: 77_691_713,
+}];
+static WHISPER_BASE: [ModelFile; 1] = [ModelFile {
+    name: "ggml-base.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+    size_bytes: 147_951_465,
+}];
+static WHISPER_SMALL: [ModelFile; 1] = [ModelFile {
+    name: "ggml-small.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+    sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+    size_bytes: 487_601_967,
+}];
+static WHISPER_MEDIUM: [ModelFile; 1] = [ModelFile {
+    name: "ggml-medium.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+    sha256: "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+    size_bytes: 1_533_763_059,
+}];
+static WHISPER_TURBO: [ModelFile; 1] = [ModelFile {
+    name: "ggml-large-v3-turbo.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+    sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+    size_bytes: 1_624_555_275,
+}];
+
+const fn whisper_spec(
+    id: &'static str,
+    name: &'static str,
+    files: &'static [ModelFile],
+) -> ModelSpec {
+    ModelSpec {
+        id,
+        name,
+        kind: ModelKind::WhisperGgml,
+        languages: &["multilingual"],
+        license: "MIT",
+        author: "OpenAI (GGML conversion by whisper.cpp)",
+        source: "https://huggingface.co/ggerganov/whisper.cpp",
+        files,
+        // Only ONNX transducers use these fields; whisper-cli takes the GGML file.
+        encoder: "",
+        decoder: "",
+        joiner: "",
+        tokens: "",
+    }
+}
+
+// Preserve existing model ids and the installed Faber directory. The remaining
+// Piper voices are borrowed from a finite snapshot; no runtime network lookup.
+static ALL_MODELS: LazyLock<Vec<ModelSpec>> = LazyLock::new(|| {
+    let mut models = CATALOG.to_vec();
+    models.extend(
+        crate::piper_catalog::catalog()
+            .iter()
+            .filter(|m| !CATALOG.iter().any(|existing| existing.id == m.id))
+            .cloned(),
+    );
+    models
+});
+
 pub fn catalog() -> &'static [ModelSpec] {
-    &CATALOG
+    &ALL_MODELS
 }
 
 pub fn find(id: &str) -> Option<&'static ModelSpec> {
-    CATALOG.iter().find(|m| m.id == id)
+    catalog().iter().find(|m| m.id == id)
 }
 
 /// Download progress, one report per megabyte and a final `done`.
@@ -422,6 +546,39 @@ mod tests {
             .set_len(1)
             .unwrap();
         assert!(!spec.is_installed(dir.path()));
+    }
+
+    #[test]
+    fn whisper_catalog_has_only_pinned_single_file_models() {
+        let whisper: Vec<_> = catalog()
+            .iter()
+            .filter(|m| m.kind == ModelKind::WhisperGgml)
+            .collect();
+        assert_eq!(whisper.len(), 5);
+        for model in whisper {
+            assert_eq!(model.files.len(), 1);
+            let file = &model.files[0];
+            assert!(file.name.starts_with("ggml-") && file.name.ends_with(".bin"));
+            assert!(file
+                .url
+                .starts_with("https://huggingface.co/ggerganov/whisper.cpp/"));
+            assert_eq!(file.sha256.len(), 64);
+            assert!(file.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+            assert!(file.size_bytes > 70_000_000);
+        }
+    }
+
+    #[tokio::test]
+    async fn removing_whisper_keeps_other_models_and_custom_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = find("whisper-tiny").unwrap();
+        std::fs::create_dir_all(spec.dir(dir.path())).unwrap();
+        std::fs::write(spec.dir(dir.path()).join(spec.files[0].name), b"weights").unwrap();
+        let custom = dir.path().join("custom.bin");
+        std::fs::write(&custom, b"keep").unwrap();
+        remove(spec, dir.path()).await.unwrap();
+        assert!(!spec.dir(dir.path()).exists());
+        assert_eq!(std::fs::read(custom).unwrap(), b"keep");
     }
 
     #[test]

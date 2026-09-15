@@ -9,4 +9,4 @@ tags: [introspect, registry, skills, directory, search, functions, agents]
 description: Engine introspection, workers registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus lexical function search with a conditional pre-generate hint.
 
 dependencies:
-  configuration: "0.x"
+  configuration: "latest"

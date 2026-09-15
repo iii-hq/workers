@@ -52,6 +52,16 @@ models listing is always read from that endpoint's `/models` sibling.
   channel write (caller gone / `router::abort`) drops the SSE receiver and
   aborts the in-flight HTTP request. DeepSeek holds an overloaded request
   open with `: keep-alive` SSE comments, which the decoder ignores.
+  Generation must start within **120s** of the upstream request, including
+  the wait for HTTP headers. Keepalives, empty deltas, and usage-only chunks
+  cannot extend that deadline. On expiry the provider closes the HTTP
+  request and emits one `transient` error explaining that generation did
+  not start; the model selection and catalog stay unchanged. The first
+  text, reasoning, or tool-call content disarms this startup deadline, so
+  a long answer continues under the normal router stream/idle budgets.
+  Set `PROVIDER_READ_TIMEOUT_SECS` on the **provider worker** to change both
+  this startup budget and the existing HTTP read-silence timeout (for example,
+  when a self-hosted `api_url` needs a longer prompt evaluation).
 - **Errors:** 401/403 → `auth_expired`, **402 (out of balance) →
   `permanent`** (a billing wall retry cannot fix), 429 → `rate_limited`,
   400/422 → `permanent` unless the message says the prompt did not fit,
@@ -60,6 +70,9 @@ models listing is always read from that endpoint's `/models` sibling.
   running out of capacity mid-generation — terminates the stream as a
   `transient` error so the router retries instead of returning a silently
   truncated answer. No transport retries here: the router owns retry policy.
+  Pre-generation diagnostics stay in `error_message`, with empty assistant
+  content. A read failure after generation starts retains the streamed content,
+  usage, and warnings so the Harness can preserve and resume the partial response.
 - **Structured output:** `json_object` mode only — DeepSeek documents no
   strict json_schema mode. A `response_format` schema is dropped with a
   report-and-continue warning; every catalog record declares

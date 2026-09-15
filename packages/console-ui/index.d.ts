@@ -447,6 +447,10 @@ export interface Host {
    * lists them so both pickers agree on where work happens.
    */
   workspace?: { recentDirectories(): string[] }
+  /** Best-effort visible-screen lease for finite foreground work (e.g. dictation).
+   * Release on completion/error/cancel; also auto-released on script dispose.
+   * Absent on older consoles; feature-detect. Not a background-execution API. */
+  screen?: { keepAwake(): () => void }
   /**
    * Palette rows for a page this script owns, alive exactly as long as the
    * script. For a page that may not be open yet; `run` usually calls

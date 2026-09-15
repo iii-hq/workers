@@ -23,6 +23,11 @@ import {
   setUiAssetsStatus,
 } from './ui-slots'
 
+const wakeLockMocks = vi.hoisted(() => ({ acquire: vi.fn() }))
+vi.mock('./screen-wake-lock', () => ({
+  acquireScreenWakeLock: wakeLockMocks.acquire,
+}))
+
 type UiModule = { default?: SetupFn }
 
 function deferred<T>() {
@@ -133,6 +138,124 @@ function renderCurrentForm(): string {
 afterEach(() => {
   setUiAssetsStatus('unavailable')
   vi.restoreAllMocks()
+  wakeLockMocks.acquire.mockReset()
+})
+
+describe('extension screen leases', () => {
+  it.each(['stop', 'delete', 'replace'] as const)(
+    'blocks new leases before %s cleanup and drains registrations made during teardown',
+    async (action) => {
+      const order: string[] = []
+      const release = vi.fn(() => {
+        order.push('lease')
+      })
+      wakeLockMocks.acquire.mockReturnValue(release)
+      const teardown = vi.fn()
+      const harness = createHarness({
+        importModule: vi
+          .fn()
+          .mockResolvedValueOnce({
+            default: ((host) => {
+              host.screen?.keepAwake()
+              return () => {
+                order.push('teardown')
+                host.screen?.keepAwake()
+                // Registrations added after the cleanup snapshot still need
+                // their own cleanup pass; they must not outlive this script.
+                host.configForms.register('teardown-only', () => (
+                  <p>temporary</p>
+                ))
+                teardown()
+              }
+            }) satisfies SetupFn,
+          })
+          .mockResolvedValue({ default: () => undefined }),
+      })
+      harness.emit({
+        event: 'sync',
+        assets: [{ path: 'voice/page.js', kind: 'script', hash: 'one' }],
+      })
+      await vi.waitFor(() => expect(getUiAssetsStatus()).toBe('ready'))
+      if (action === 'stop') harness.stop()
+      else if (action === 'delete') {
+        harness.emit({
+          event: 'delete',
+          path: 'voice/page.js',
+          kind: 'script',
+          hash: 'one',
+        })
+      } else {
+        harness.emit({
+          event: 'set',
+          path: 'voice/page.js',
+          kind: 'script',
+          hash: 'two',
+        })
+      }
+      await vi.waitFor(() => expect(teardown).toHaveBeenCalledTimes(1))
+      expect(wakeLockMocks.acquire).toHaveBeenCalledTimes(1)
+      expect(release).toHaveBeenCalledTimes(1)
+      expect(order).toEqual(['teardown', 'lease'])
+      expect(getExtConfigForm('teardown-only')).toBeUndefined()
+      harness.stop()
+    },
+  )
+
+  it('blocks reacquisition while cleaning up a failed setup', async () => {
+    let keepAwake: (() => () => void) | undefined
+    const release = vi.fn(() => {
+      keepAwake?.()
+    })
+    wakeLockMocks.acquire.mockReturnValue(release)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const harness = createHarness({
+      importModule: async () => ({
+        default(host) {
+          keepAwake = host.screen?.keepAwake
+          host.screen?.keepAwake()
+          throw new Error('setup failed')
+        },
+      }),
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'voice/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(1))
+    expect(release).toHaveBeenCalledTimes(1)
+    keepAwake?.()()
+    expect(wakeLockMocks.acquire).toHaveBeenCalledTimes(1)
+    harness.stop()
+  })
+
+  it('releases unfinished activities on dispose without retaining finished leases', async () => {
+    const finished = vi.fn()
+    const unfinished = vi.fn()
+    let keepAwake: (() => () => void) | undefined
+    wakeLockMocks.acquire
+      .mockReturnValueOnce(finished)
+      .mockReturnValueOnce(unfinished)
+    const harness = createHarness({
+      importModule: async () => ({
+        default(host) {
+          keepAwake = host.screen?.keepAwake
+          host.screen?.keepAwake()()
+          host.screen?.keepAwake()
+        },
+      }),
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'voice/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(finished).toHaveBeenCalledTimes(1))
+    expect(unfinished).not.toHaveBeenCalled()
+    harness.stop()
+    expect(finished).toHaveBeenCalledTimes(1)
+    expect(unfinished).toHaveBeenCalledTimes(1)
+    keepAwake?.()()
+    expect(wakeLockMocks.acquire).toHaveBeenCalledTimes(2)
+  })
 })
 
 describe('injectable UI loader readiness', () => {

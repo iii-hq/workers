@@ -819,6 +819,10 @@ pub(super) struct TruncatedCall<'a> {
 }
 
 enum ResponseKind {
+    StartupError {
+        message: String,
+        kind: ErrorKind,
+    },
     StreamedText {
         text: String,
         chunks: Vec<String>,
@@ -849,6 +853,17 @@ enum ResponseKind {
 }
 
 impl Response {
+    /// An accepted stream that sends only keepalives before failing.
+    pub(super) fn startup_error(message: &str, kind: ErrorKind) -> Self {
+        Self {
+            kind: ResponseKind::StartupError {
+                message: message.to_string(),
+                kind,
+            },
+            usage: usage(0, 0),
+        }
+    }
+
     pub(super) fn streamed_text<I, S>(
         text: &str,
         chunks: I,
@@ -1051,6 +1066,38 @@ impl Response {
                 true,
                 None,
             ),
+            ResponseKind::StartupError { message, kind } => {
+                let mut error = assistant_message(
+                    Vec::new(),
+                    StopReason::Error,
+                    Some(usage.clone()),
+                    model,
+                    timestamp,
+                );
+                error.error_message = Some(message.clone());
+                error.error_kind = Some(kind);
+                (
+                    vec![
+                        AssistantMessageEvent::Start {
+                            partial: assistant_message(
+                                Vec::new(),
+                                StopReason::End,
+                                None,
+                                model,
+                                timestamp,
+                            ),
+                        },
+                        AssistantMessageEvent::Ping,
+                        AssistantMessageEvent::Error { error },
+                    ],
+                    StopReason::Error,
+                    false,
+                    Some(ErrorShape {
+                        code: error_kind_code(kind).to_string(),
+                        message,
+                    }),
+                )
+            }
             ResponseKind::TerminalError {
                 text,
                 chunks,

@@ -1,23 +1,18 @@
-//! Read-aloud. Two backends, neither linked into the binary:
-//!
-//! - `host`: the machine's own speech command (`say` on macOS, `espeak-ng` or
-//!   `espeak` on Linux) as a child process. Audio plays on the worker's host.
-//! - `openai`: an OpenAI-compatible `/v1/audio/speech` endpoint. The audio
-//!   comes back to the caller, base64, for playback wherever the caller is.
-//!
-//! Child processes are tracked so `voice::speak::stop` can end them.
+//! Read-aloud synthesis. Every backend returns audio to the requesting caller.
+//! `host` runs say/espeak in file-output mode: it never opens a server speaker.
 
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use tokio::process::{Child, Command};
-use tokio::sync::{oneshot, Mutex};
+use tokio::process::Command;
 
-use crate::config::{TtsBackend, WorkerConfig};
-use crate::events::{Emitter, EventKind, SpeechEndedEvent};
-use crate::session::now_ms;
+use crate::config::{PiperDevice, TtsBackend, WorkerConfig};
+use crate::events::Emitter;
+
+const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_SYNTHESIS_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The host command this platform speaks with, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,8 +53,8 @@ fn on_path(program: &str) -> bool {
     std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
 }
 
-/// Arguments for the host command. Text goes through stdin so no shell and
-/// no argument-length limit is involved.
+/// Voice/rate arguments. Synthesis MUST also add file-output arguments below.
+/// Text goes through stdin without a shell.
 pub fn host_args(kind: HostKind, voice: &str, rate_wpm: u32) -> Vec<String> {
     let mut args = Vec::new();
     match kind {
@@ -90,6 +85,167 @@ pub fn host_args(kind: HostKind, voice: &str, rate_wpm: u32) -> Vec<String> {
     args
 }
 
+/// Both commands must write a private WAV, never their default audio device.
+fn file_output_args(kind: HostKind, output: &std::path::Path) -> Vec<std::ffi::OsString> {
+    match kind {
+        HostKind::Say => vec![
+            "--file-format=WAVE".into(),
+            "--data-format=LEI16@22050".into(),
+            "-o".into(),
+            output.as_os_str().to_owned(),
+        ],
+        HostKind::Espeak => vec!["-w".into(), output.as_os_str().to_owned()],
+    }
+}
+
+async fn local_speech(
+    command: &HostCommand,
+    text: &str,
+    voice: &str,
+    rate: u32,
+) -> Result<Vec<u8>, String> {
+    synthesize_wav(command.program, text, |path| {
+        let mut args = file_output_args(command.kind, path);
+        args.extend(
+            host_args(command.kind, voice, rate)
+                .into_iter()
+                .map(Into::into),
+        );
+        args
+    })
+    .await
+}
+
+/// Resolve both executable and installed weights without silently falling back to eSpeak.
+pub fn piper_paths(cfg: &WorkerConfig) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let command = which::which(&cfg.tts.piper.command)
+        .map_err(|_| "Piper is not installed; install piper-tts and set tts.piper.command to its executable path".to_string())?;
+    let model = crate::models::find(&cfg.tts.piper.model)
+        .filter(|m| m.kind == crate::models::ModelKind::PiperOnnx)
+        .ok_or("Choose a Piper voice from Voice → Models")?;
+    if !model.is_installed(&cfg.models_path()) {
+        return Err(format!(
+            "Piper voice {} is missing; download it in Voice → Models",
+            model.id
+        ));
+    }
+    Ok((
+        command,
+        model.dir(&cfg.models_path()).join(model.files[0].name),
+    ))
+}
+
+fn piper_args(
+    model: &std::path::Path,
+    output: &std::path::Path,
+    cuda: bool,
+) -> Vec<std::ffi::OsString> {
+    let mut args = vec![
+        "--model".into(),
+        model.as_os_str().to_owned(),
+        "--output-file".into(),
+        output.as_os_str().to_owned(),
+    ];
+    if cuda {
+        args.push("--cuda".into());
+    }
+    args
+}
+
+/// At most two attempts. In auto mode each gets half the existing budget so
+/// fallback cannot double the maximum synthesis time or outlive the UI request.
+async fn piper_with_fallback<T, F, Fut>(device: PiperDevice, mut synthesize: F) -> Result<T, String>
+where
+    F: FnMut(bool, Duration) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    if device == PiperDevice::Cpu {
+        return synthesize(false, SYNTHESIS_TIMEOUT).await;
+    }
+    match synthesize(true, SYNTHESIS_TIMEOUT / 2).await {
+        Ok(audio) => Ok(audio), // ONNX Runtime may itself have fallen back to CPU.
+        Err(cuda_error) => {
+            tracing::warn!("Piper CUDA-preferred attempt failed; retrying once on CPU");
+            synthesize(false, SYNTHESIS_TIMEOUT / 2).await.map_err(|cpu_error|
+                format!("Piper automatic synthesis failed; CUDA-preferred attempt: {cuda_error}; CPU attempt: {cpu_error}"))
+        }
+    }
+}
+
+async fn synthesize_wav(
+    program: impl AsRef<std::ffi::OsStr>,
+    text: &str,
+    args: impl FnOnce(&std::path::Path) -> Vec<std::ffi::OsString>,
+) -> Result<Vec<u8>, String> {
+    synthesize_wav_with_timeout(program, text, args, SYNTHESIS_TIMEOUT).await
+}
+
+async fn synthesize_wav_with_timeout(
+    program: impl AsRef<std::ffi::OsStr>,
+    text: &str,
+    args: impl FnOnce(&std::path::Path) -> Vec<std::ffi::OsString>,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    // A fresh directory per request isolates concurrent clients and is removed
+    // on success, error, timeout or cancellation.
+    let dir = tempfile::tempdir().map_err(|e| format!("create speech directory: {e}"))?;
+    let path = dir.path().join("speech.wav");
+    let mut child = Command::new(program)
+        .args(args(&path))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("spawn speech synthesizer: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("speech command has no stdin")?;
+    let operation = async {
+        use tokio::io::AsyncWriteExt;
+        let write = async move {
+            stdin.write_all(text.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
+            stdin.shutdown().await
+        };
+        // Drain diagnostics while writing so neither pipe can block the other.
+        let (_, output) = tokio::try_join!(write, child.wait_with_output())
+            .map_err(|e| format!("synthesize speech: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "speech synthesizer failed ({}): {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+                    .chars()
+                    .take(300)
+                    .collect::<String>()
+            ));
+        }
+        let size = tokio::fs::metadata(&path)
+            .await
+            .map_err(|e| format!("speech output: {e}"))?
+            .len();
+        if size > MAX_SYNTHESIS_BYTES {
+            return Err("synthesized speech exceeds the 64 MiB audio limit".to_string());
+        }
+        let audio = tokio::fs::read(&path)
+            .await
+            .map_err(|e| format!("read speech WAV: {e}"))?;
+        let wav = hound::WavReader::new(std::io::Cursor::new(&audio))
+            .map_err(|e| format!("invalid speech WAV: {e}"))?;
+        if wav.len() == 0 {
+            return Err("speech command returned an empty WAV".to_string());
+        }
+        Ok(audio)
+    };
+    tokio::time::timeout(timeout, operation)
+        .await
+        .map_err(|_| {
+            format!(
+                "local speech synthesis timed out after {} seconds",
+                timeout.as_secs()
+            )
+        })?
+}
+
 /// Trim a request to what one call may read.
 pub fn clip_text(text: &str, max_chars: usize) -> Result<String, String> {
     let trimmed = text.trim();
@@ -108,13 +264,13 @@ pub fn clip_text(text: &str, max_chars: usize) -> Result<String, String> {
 /// What a speak call produced.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct Spoken {
-    /// `host` or `openai`.
+    /// `host`, `piper`, `openai`, or `router`.
     pub backend: String,
-    /// Id of the playback, for `voice::speak::stop`.
+    /// Unique id of this synthesis result.
     pub speech_id: String,
-    /// `true` when audio started playing on the worker's host.
+    /// Legacy compatibility field; always false. Playback belongs to the caller.
     pub played: bool,
-    /// Base64 audio for the caller to play (openai backend only).
+    /// Base64 audio for the requesting caller to play, on every enabled backend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_base64: Option<String>,
     /// MIME type of `audio_base64`.
@@ -122,56 +278,14 @@ pub struct Spoken {
     pub mime: Option<String>,
 }
 
-pub struct Speaker {
-    /// Live host playbacks by speech id; sending on the channel stops one.
-    playing: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
-    emitter: Arc<Emitter>,
-}
+pub struct Speaker;
 
 impl Speaker {
-    pub fn new(emitter: Arc<Emitter>) -> Self {
-        Self {
-            playing: Arc::new(Mutex::new(HashMap::new())),
-            emitter,
-        }
+    pub fn new(_emitter: Arc<Emitter>) -> Self {
+        Self
     }
 
-    /// Own the child until it exits or is told to stop, then drop it from the
-    /// live set and announce `voice::speech-ended` with why.
-    async fn watch(&self, speech_id: String, mut child: Child) {
-        let (stop_tx, stop_rx) = oneshot::channel::<()>();
-        self.playing.lock().await.insert(speech_id.clone(), stop_tx);
-        let playing = self.playing.clone();
-        let emitter = self.emitter.clone();
-        let ended_id = speech_id.clone();
-        tokio::spawn(async move {
-            let reason = tokio::select! {
-                status = child.wait() => match status {
-                    Ok(status) if status.success() => "ended",
-                    Ok(_) => "failed",
-                    Err(_) => "failed",
-                },
-                _ = stop_rx => {
-                    let _ = child.kill().await;
-                    "stopped"
-                }
-            };
-            playing.lock().await.remove(&ended_id);
-            emitter
-                .emit(
-                    EventKind::SpeechEnded,
-                    Some(&ended_id),
-                    &SpeechEndedEvent {
-                        speech_id: ended_id.clone(),
-                        reason: reason.to_string(),
-                        timestamp_ms: now_ms(),
-                    },
-                )
-                .await;
-        });
-    }
-
-    /// Speak `text` on the configured backend.
+    /// Synthesize `text` on the configured backend; never play it on the server.
     pub async fn speak(
         &self,
         cfg: &WorkerConfig,
@@ -193,31 +307,38 @@ impl Speaker {
                 })?;
                 let voice = voice.unwrap_or(&cfg.tts.voice);
                 let rate = rate_wpm.unwrap_or(cfg.tts.rate_wpm);
-                let mut child = Command::new(command.program)
-                    .args(host_args(command.kind, voice, rate))
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .kill_on_drop(true)
-                    .spawn()
-                    .map_err(|e| format!("spawn {}: {e}", command.program))?;
-                if let Some(mut stdin) = child.stdin.take() {
-                    use tokio::io::AsyncWriteExt;
-                    let mut body = text.clone().into_bytes();
-                    body.push(b'\n');
-                    stdin
-                        .write_all(&body)
-                        .await
-                        .map_err(|e| format!("write to {}: {e}", command.program))?;
-                    stdin.shutdown().await.ok();
-                }
-                self.watch(speech_id.clone(), child).await;
+                let audio = local_speech(&command, &text, voice, rate).await?;
                 Ok(Spoken {
                     backend: "host".into(),
                     speech_id,
-                    played: true,
-                    audio_base64: None,
-                    mime: None,
+                    played: false,
+                    audio_base64: Some(BASE64_STANDARD.encode(audio)),
+                    mime: Some("audio/wav".into()),
+                })
+            }
+            TtsBackend::Piper => {
+                let (command, model) = piper_paths(cfg)?;
+                let audio = piper_with_fallback(cfg.tts.piper.device, |cuda, timeout| {
+                    let command = &command;
+                    let model = &model;
+                    let text = &text;
+                    async move {
+                        synthesize_wav_with_timeout(
+                            command,
+                            text,
+                            |path| piper_args(model, path, cuda),
+                            timeout,
+                        )
+                        .await
+                    }
+                })
+                .await?;
+                Ok(Spoken {
+                    backend: "piper".into(),
+                    speech_id,
+                    played: false,
+                    audio_base64: Some(BASE64_STANDARD.encode(audio)),
+                    mime: Some("audio/wav".into()),
                 })
             }
             TtsBackend::Openai => {
@@ -236,31 +357,15 @@ impl Speaker {
         }
     }
 
-    /// Stop every host playback (or one, by id). Returns how many were live.
-    pub async fn stop(&self, speech_id: Option<&str>) -> usize {
-        let mut playing = self.playing.lock().await;
-        let ids: Vec<String> = match speech_id {
-            Some(id) => playing
-                .contains_key(id)
-                .then(|| id.to_string())
-                .into_iter()
-                .collect(),
-            None => playing.keys().cloned().collect(),
-        };
-        let mut stopped = 0;
-        for id in ids {
-            if let Some(stop) = playing.remove(&id) {
-                if stop.send(()).is_ok() {
-                    stopped += 1;
-                }
-            }
-        }
-        stopped
+    /// Kept for API compatibility. There is no server playback to stop;
+    /// browsers stop their own audio elements without affecting other clients.
+    pub async fn stop(&self, _speech_id: Option<&str>) -> usize {
+        0
     }
 
-    /// How many host playbacks are still running.
+    /// Browser playback is client-local, not tracked on the server.
     pub async fn playing(&self) -> usize {
-        self.playing.lock().await.len()
+        0
     }
 }
 
@@ -343,6 +448,176 @@ mod tests {
             host_args(HostKind::Espeak, "en-us", 160),
             vec!["-v", "en-us", "-s", "160", "--stdin"]
         );
+    }
+
+    #[test]
+    fn both_host_commands_require_file_output() {
+        let path = std::path::Path::new("/private/client speech.wav");
+        assert_eq!(
+            file_output_args(HostKind::Espeak, path),
+            vec![std::ffi::OsString::from("-w"), path.as_os_str().to_owned()]
+        );
+        assert_eq!(
+            file_output_args(HostKind::Say, path),
+            vec![
+                std::ffi::OsString::from("--file-format=WAVE"),
+                "--data-format=LEI16@22050".into(),
+                "-o".into(),
+                path.as_os_str().to_owned()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires say or espeak-ng installed; generates WAV without speaker playback"]
+    async fn local_tts_returns_isolated_wav_audio() {
+        let speaker = Speaker::new(test_emitter());
+        let mut cfg = WorkerConfig::default();
+        cfg.tts.backend = TtsBackend::Host;
+        let (first, second) = tokio::join!(
+            speaker.speak(&cfg, "Hello from the first browser.", None, None),
+            speaker.speak(
+                &cfg,
+                "A different reply for the second browser.",
+                None,
+                None
+            ),
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_ne!(first.speech_id, second.speech_id);
+        assert_ne!(first.audio_base64, second.audio_base64);
+        for result in [first, second] {
+            assert!(!result.played);
+            assert_eq!(result.mime.as_deref(), Some("audio/wav"));
+            let bytes = BASE64_STANDARD
+                .decode(result.audio_base64.unwrap())
+                .unwrap();
+            let reader = hound::WavReader::new(std::io::Cursor::new(bytes)).unwrap();
+            assert!(reader.len() > 0);
+        }
+        assert_eq!(speaker.playing().await, 0);
+        assert_eq!(speaker.stop(None).await, 0);
+    }
+
+    #[test]
+    fn piper_gpu_flag_preserves_model_and_output_paths() {
+        let model = std::path::Path::new("/models/voice with spaces.onnx");
+        let output = std::path::Path::new("/private/result.wav");
+        let cpu = piper_args(model, output, false);
+        assert_eq!(
+            cpu,
+            vec![
+                std::ffi::OsString::from("--model"),
+                model.as_os_str().to_owned(),
+                "--output-file".into(),
+                output.as_os_str().to_owned()
+            ]
+        );
+        let cuda = piper_args(model, output, true);
+        assert_eq!(&cuda[..cpu.len()], cpu.as_slice());
+        assert_eq!(cuda.last().unwrap(), "--cuda");
+    }
+
+    #[tokio::test]
+    async fn automatic_device_prefers_cuda_without_duplicate_synthesis() {
+        let mut calls = Vec::new();
+        let result = piper_with_fallback(PiperDevice::Auto, |cuda, timeout| {
+            calls.push((cuda, timeout));
+            std::future::ready(Ok(vec![1u8]))
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, vec![1]);
+        assert_eq!(calls, vec![(true, Duration::from_secs(30))]);
+    }
+
+    #[tokio::test]
+    async fn automatic_device_retries_once_on_cpu_for_cuda_errors() {
+        let mut calls = Vec::new();
+        let result = piper_with_fallback(PiperDevice::Auto, |cuda, timeout| {
+            calls.push((cuda, timeout));
+            std::future::ready(if cuda {
+                Err("CUDA unavailable".into())
+            } else {
+                Ok(vec![2u8])
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, vec![2]);
+        assert_eq!(
+            calls,
+            vec![
+                (true, Duration::from_secs(30)),
+                (false, Duration::from_secs(30))
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn cpu_mode_never_requests_cuda() {
+        let mut calls = Vec::new();
+        let result = piper_with_fallback(PiperDevice::Cpu, |cuda, timeout| {
+            calls.push((cuda, timeout));
+            std::future::ready(Ok(vec![3u8]))
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, vec![3]);
+        assert_eq!(calls, vec![(false, SYNTHESIS_TIMEOUT)]);
+    }
+
+    #[tokio::test]
+    async fn cpu_failure_is_reported_without_another_attempt() {
+        let mut calls = 0;
+        let result = piper_with_fallback::<(), _, _>(PiperDevice::Cpu, |_, _| {
+            calls += 1;
+            std::future::ready(Err("invalid model".into()))
+        })
+        .await;
+        assert_eq!(result.unwrap_err(), "invalid model");
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
+    async fn both_failures_are_reported_and_never_loop() {
+        let mut calls = 0;
+        let result = piper_with_fallback::<(), _, _>(PiperDevice::Auto, |cuda, _| {
+            calls += 1;
+            std::future::ready(Err(if cuda { "CUDA error" } else { "CPU error" }.into()))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert!(result.contains("CUDA error") && result.contains("CPU error"));
+    }
+
+    #[test]
+    fn piper_reports_missing_executable_without_robotic_fallback() {
+        let mut cfg = WorkerConfig::default();
+        cfg.tts.piper.command = "/missing/piper".into();
+        assert!(piper_paths(&cfg)
+            .unwrap_err()
+            .contains("Piper is not installed"));
+    }
+
+    #[test]
+    fn piper_requires_a_complete_catalog_voice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = WorkerConfig {
+            models_dir: dir.path().to_string_lossy().into_owned(),
+            ..WorkerConfig::default()
+        };
+        cfg.tts.piper.command = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(piper_paths(&cfg).unwrap_err().contains("download it"));
+        cfg.tts.piper.model = "whisper-tiny".into();
+        assert!(piper_paths(&cfg)
+            .unwrap_err()
+            .contains("Choose a Piper voice"));
     }
 
     #[test]

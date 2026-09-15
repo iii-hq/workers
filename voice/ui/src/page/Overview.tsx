@@ -26,7 +26,10 @@ import { useEffect, useState } from 'react'
 import { modelsDownload } from '../lib/client'
 import { NONE, patchConfig, readConfig, setPath, stringAt } from '../lib/config'
 import { MicIcon } from '../lib/icons'
-import { type ProgressById, percent } from '../lib/progress'
+import { ModelDownload } from '../lib/ModelDownload'
+import { PiperVoicePicker } from '../lib/PiperVoicePicker'
+import { modelOptions } from '../lib/models'
+import type { ProgressById } from '../lib/progress'
 import { routerModelOptions, useRouterSpeechModels } from '../lib/router'
 import type { DictationListEntry, DoctorResponse, ModelInfo, ModelsListResponse } from '../lib/types'
 import { Fact, Facts, formatBytes, formatDuration, SectionCard, useBusyAction } from './shared'
@@ -59,7 +62,9 @@ export function Overview({
   const offline = (models?.models ?? []).filter((m) => m.kind === 'offline_nemo_transducer')
   const accurate: ModelInfo | undefined = offline.find((m) => m.id === stt.final_model)
   const live: ModelInfo | undefined = models?.models.find((m) => m.id === stt.live_model)
-  const pct = percent(progress[stt.final_model])
+  const streaming = (models?.models ?? []).filter((m) => m.kind === 'streaming_transducer')
+  const whisper = (models?.models ?? []).filter((m) => m.kind === 'whisper_ggml')
+  const whisperModel = whisper.find((m) => m.id === stt.model)
   const routerStt = useRouterSpeechModels(host.iii, 'stt', stt.backend === 'router')
   const routerTts = useRouterSpeechModels(host.iii, 'tts', tts.backend === 'router')
   const [routerTtsModel, setRouterTtsModel] = useState('')
@@ -88,34 +93,25 @@ export function Overview({
   const liveWordsFact = (
     <Fact label="Live words">
       <span className="voice-choice">
-        <span className="voice-fact-line">
-          <StatusDot tone={stt.live_loaded ? 'accent' : 'ink'} />
-          <span>{live?.name ?? stt.live_model}</span>
-        </span>
-        {!stt.live_installed ? (
-          <Chip tone="warning">downloads on first use</Chip>
-        ) : (
-          <Chip tone="success">{stt.live_loaded ? 'running' : 'installed'}</Chip>
-        )}
+        <Select
+          aria-label="live speech model"
+          value={stt.live_model}
+          disabled={busy !== null || models === null}
+          onChange={(next) => choose(['stt', 'model'], next, `Live words use ${next}.`)}
+          options={modelOptions(streaming, stt.live_model)}
+        />
+        {live ? (
+          <ModelDownload model={live} progress={progress[live.id]} busy={busy === live.id}
+            disabled={busy !== null} onDownload={() => download(live.id)} />
+        ) : models ? <Chip tone="warning">not in the catalog</Chip> : null}
       </span>
       <span className="voice-sub voice-block">
-        Shows words as you speak and decides where a sentence ends; it always runs on this machine. Change it under All
-        settings.
+        Shows words as you speak and decides where a sentence ends; it always runs on this machine.
       </span>
     </Fact>
   )
 
   const providerOf = (model: string) => model.split('::')[0] ?? ''
-
-  const accurateStatus = (() => {
-    if (stt.final_state === 'off') return null
-    if (stt.final_state === 'loaded') return <Chip tone="success">ready</Chip>
-    if (stt.final_state === 'installed') return <Chip tone="success">installed</Chip>
-    if (stt.final_state === 'downloading')
-      return <Chip tone="accent">{pct === null ? 'downloading' : `downloading ${pct}%`}</Chip>
-    if (stt.final_state === 'unknown') return <Chip tone="danger">not in the catalog</Chip>
-    return <Chip tone="warning">not downloaded</Chip>
-  })()
 
   const ttsAvailability = (() => {
     if (tts.backend !== 'host') return null
@@ -211,25 +207,15 @@ export function Overview({
                     )
                   }
                   options={[
-                    ...offline.map((m) => ({
-                      value: m.id,
-                      label: m.name,
-                      description: `${formatBytes(m.size_bytes)} · ${m.installed ? 'installed' : 'downloads on first use'}`,
-                    })),
+                    ...modelOptions(offline, stt.final_model),
                     { value: NONE, label: 'Live model only', description: 'Fast, no punctuation' },
                   ]}
                 />
-                {accurateStatus}
-                {stt.final_state === 'missing' ? (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => download(stt.final_model)}
-                    disabled={busy !== null}
-                  >
-                    Download {accurate ? formatBytes(accurate.size_bytes) : ''}
-                  </Button>
-                ) : null}
+                {accurate ? (
+                  <ModelDownload model={accurate} progress={progress[accurate.id]}
+                    busy={busy === accurate.id || stt.final_state === 'downloading'}
+                    disabled={busy !== null} onDownload={() => download(accurate.id)} />
+                ) : stt.final_model && models ? <Chip tone="warning">not in the catalog</Chip> : null}
               </span>
               <span className="voice-sub voice-block">
                 {stt.final_model === ''
@@ -246,13 +232,22 @@ export function Overview({
         {stt.backend === 'whisper_cpp' ? (
           <Facts>
             <Fact label="Model">
-              <span className="voice-fact-line">
-                <Chip tone={stt.problem ? 'warning' : 'success'}>{stt.problem ? 'configuration needed' : 'ready'}</Chip>
-                <span className="voice-mono">{stt.model}</span>
+              <span className="voice-choice">
+                <Select aria-label="whisper.cpp model" value={stt.model}
+                  disabled={busy !== null || models === null}
+                  options={modelOptions(whisper, stt.model)}
+                  onChange={(next) => choose(['stt', 'whisper_cpp', 'model'], next, `Transcripts use ${next}.`)} />
+                {whisperModel ? (
+                  <ModelDownload model={whisperModel} progress={progress[whisperModel.id]}
+                    busy={busy === whisperModel.id} disabled={busy !== null}
+                    onDownload={() => download(whisperModel.id)} />
+                ) : <Chip tone={stt.installed ? 'success' : 'warning'}>
+                  {stt.installed ? 'custom model installed' : 'custom model missing'}
+                </Chip>}
               </span>
               <span className="voice-sub voice-block">
-                Final text is produced by a local whisper-cli process. Set its command, multilingual GGML model, and
-                language under All settings.
+                Choose a multilingual model and download it once. Larger models need more memory and processing time.
+                whisper-cli must be installed separately; set its command, language, or a custom model path under All settings.
               </span>
             </Fact>
             {liveWordsFact}
@@ -272,6 +267,7 @@ export function Overview({
                 Audio is sent to the configured endpoint; its address and key are under All settings.
               </span>
             </Fact>
+            {liveWordsFact}
           </Facts>
         ) : null}
         {stt.problem ? <p className="voice-note voice-warn">{stt.problem}</p> : null}
@@ -289,10 +285,11 @@ export function Overview({
                   choose(['tts', 'backend'], next, `Read aloud uses ${next === 'off' ? 'nothing' : next}.`)
                 }
                 options={[
+                  { value: 'piper', label: 'Piper · natural local voice', description: 'Neural voice on the worker, audio in this browser' },
                   {
                     value: 'host',
-                    label: "This machine's speech command",
-                    description: 'say on macOS, espeak-ng on Linux',
+                    label: 'System voice · basic / robotic',
+                    description: 'Generated on the worker, played only in your browser',
                   },
                   {
                     value: 'router',
@@ -306,6 +303,19 @@ export function Overview({
               {ttsAvailability}
             </span>
           </Fact>
+          {tts.backend === 'piper' ? (
+            <Fact label="Neural voice">
+              <PiperVoicePicker models={models?.models ?? null} selected={tts.model ?? ''}
+                disabled={busy !== null} progress={progress} busyId={busy}
+                onSelect={(next) => choose(['tts', 'piper', 'model'], next, 'Neural voice selected.')}
+                onDownload={download} />
+              <span className="voice-sub voice-block">
+                Processing preference: {tts.device === 'cpu' ? 'CPU only' : 'Automatic · prefer GPU, fall back to CPU'}.
+                {' '}Change under All settings. Automatic is a preference, not confirmation of GPU use.
+              </span>
+              {tts.problem ? <p className="voice-note voice-warn">{tts.problem}</p> : null}
+            </Fact>
+          ) : null}
           {tts.backend === 'router' ? (
             <Fact label="Model">
               <span className="voice-choice">
@@ -338,8 +348,8 @@ export function Overview({
               </span>
             </Fact>
           ) : null}
-          <Fact label="Playing">
-            <span>{tts.playing === 0 ? 'nothing' : `${tts.playing} clip${tts.playing === 1 ? '' : 's'}`}</span>
+          <Fact label="Playback">
+            <span>Only in the requesting browser</span>
           </Fact>
         </Facts>
       </SectionCard>

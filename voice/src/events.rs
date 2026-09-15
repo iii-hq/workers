@@ -137,9 +137,8 @@ pub struct SessionStoppedEvent {
     pub timestamp_ms: i64,
 }
 
-/// `voice::speech-ended` — a host playback started by `voice::speak` is
-/// over. Fires for the `host` engine only: the other engines hand the audio
-/// to the caller, who plays it and knows when it ends.
+/// Legacy `voice::speech-ended` payload retained for trigger compatibility.
+/// No longer emitted: all engines return audio; each caller owns playback.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SpeechEndedEvent {
     pub speech_id: String,
