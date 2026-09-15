@@ -1017,7 +1017,9 @@ export function applyEntryUpsert(
     // read brings the whole entry. The result's `function_id` is the real
     // target — the harness resolves `agent_trigger` before recording it —
     // so a wrapper-named placeholder learns its label here. A whole result
-    // clears the flag, since it is what the flag was waiting for.
+    // clears the flag once the arguments are here too: overlapping range
+    // reads can land the result first, and a row without its `input` is
+    // still a placeholder (the output rides along until the call lands).
     const elided = item.elided === true
     const result = item.message
     const settled: FcallPatch = {
@@ -1037,7 +1039,14 @@ export function applyEntryUpsert(
                 functionId: result.function_id,
                 unresolvedTarget: false,
               }
-      : { ...settled, output: functionResultOutput(result), unloaded: false }
+      : (row: FunctionTriggerMessage): FcallPatch =>
+          row.unloaded && row.input === undefined
+            ? { ...settled, output: functionResultOutput(result) }
+            : {
+                ...settled,
+                output: functionResultOutput(result),
+                unloaded: false,
+              }
     const { messages: patched, found } = applyFcallPatch(
       messages,
       result.function_call_id,

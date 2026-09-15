@@ -194,14 +194,15 @@ export interface FunctionTriggerMessage extends BaseMessage {
    * A placeholder from a paged transcript read: the call's arguments and
    * result were left out of the page (`TranscriptItem.elided`) because it
    * sits inside a collapsed activity run. The card draws a skeleton in
-   * place of the panes; expanding the group fetches the whole entries and
-   * this flag goes away. `input` is `undefined` while it is set.
+   * place of the panes; opening the card or expanding the group fetches the
+   * whole entries and this flag goes away. `input` is `undefined` while it
+   * is set.
    */
   unloaded?: boolean
   /**
    * The transcript entry id of this call's `function_result`, when a read has
-   * shown it. It is what lets an expand name the exact entries to fetch
-   * instead of guessing at ids.
+   * shown it. It is what lets an open or expand name the exact entries to
+   * fetch instead of guessing at ids.
    */
   resultEntryId?: string
 }

@@ -72,6 +72,7 @@ import {
   parseCompactCommand,
   slashChip,
 } from '@/lib/slash-commands'
+import { onThinkingLevelChangeRequest } from '@/lib/thinking-level-request'
 import {
   CHAT_FOCUS_DROP_GRACE_MS,
   clearChatMessageFocus,
@@ -91,7 +92,6 @@ import {
   fetchNewChatWorkingDir,
   workingDirScopeNotice,
 } from '@/lib/working-dir'
-import { onThinkingLevelChangeRequest } from '@/lib/thinking-level-request'
 import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
 import {
   consoleClaimFor,
@@ -2185,9 +2185,7 @@ export function ChatView({
   const handleLoadActivityEntries = useMemo(
     () =>
       loadActivityEntries
-        ? (entryIds: string[]) => {
-            void loadActivityEntries(conversation.id, entryIds)
-          }
+        ? (entryIds: string[]) => loadActivityEntries(conversation.id, entryIds)
         : undefined,
     [loadActivityEntries, conversation.id],
   )

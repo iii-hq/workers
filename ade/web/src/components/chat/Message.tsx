@@ -50,7 +50,9 @@ interface MessageProps {
   copyText?: string | (() => string)
   /** Render function-call cards already expanded (showcase surfaces). */
   defaultOpenCalls?: boolean
-  onLoadDetails?: () => void
+  /** Hydrate an unloaded function-call card when it opens; other roles
+      ignore it. May resolve to whether the read succeeded. */
+  onLoadDetails?: () => Promise<boolean> | undefined
   /** Registration detail for a trigger-fired or notification message
       (resolved in MessageList). */
   registration?: TriggerRegistration

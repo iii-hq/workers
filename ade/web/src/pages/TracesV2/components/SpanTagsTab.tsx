@@ -21,7 +21,7 @@ interface SpanTagsTabProps {
  * The exact text one attribute row's copy button puts on the clipboard.
  * Pinned as its own function so the redaction that already ran (see
  * `entries` below) is provably what reaches the clipboard, without needing
- * to simulate a click — ade/web's tests stay jsdom-free.
+ * to simulate a click — this tab's tests stay jsdom-free.
  */
 export function attributeCopyText(key: string, value: unknown): string {
   return `${key}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`

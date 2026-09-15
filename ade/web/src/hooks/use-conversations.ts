@@ -1129,9 +1129,10 @@ export interface ConversationsApi {
    * Fetch whole entries for placeholders a paged read left behind ("show
    * all" on a collapsed group, or a call a renderer must draw while
    * collapsed) and swap them in place. Ids already in flight for the
-   * conversation are not requested twice.
+   * conversation are not requested twice; the caller still waits on them.
+   * Resolves `true` once every id landed, `false` when any read failed.
    */
-  loadActivityEntries: (id: string, entryIds: string[]) => Promise<void>
+  loadActivityEntries: (id: string, entryIds: string[]) => Promise<boolean>
   /**
    * Materialise a draft conversation in session-manager before the first
    * send (idempotent). `titleHint` seeds the session title from the prompt.
@@ -2678,44 +2679,56 @@ export function useConversations(
     [serverEnabled, patchConversation],
   )
 
-  /** Entry ids a range read is fetching, per conversation. */
-  const activityLoadsRef = useRef(new Map<string, Set<string>>())
+  /** Entry ids a range read is fetching, per conversation, with the read's
+      outcome so an overlapping caller can wait on it instead of asking again. */
+  const activityLoadsRef = useRef(
+    new Map<string, Map<string, Promise<boolean>>>(),
+  )
 
   const loadActivityEntries = useCallback(
     async (id: string, entryIds: string[]) => {
-      if (!serverEnabled || entryIds.length === 0) return
+      if (!serverEnabled || entryIds.length === 0) return false
       let inflight = activityLoadsRef.current.get(id)
       if (!inflight) {
-        inflight = new Set()
+        inflight = new Map()
         activityLoadsRef.current.set(id, inflight)
       }
       const wanted: string[] = []
+      const outcomes: Promise<boolean>[] = []
       for (const entryId of new Set(entryIds)) {
-        if (inflight.has(entryId)) continue
-        inflight.add(entryId)
-        wanted.push(entryId)
+        const running = inflight.get(entryId)
+        if (running) outcomes.push(running)
+        else wanted.push(entryId)
       }
-      if (wanted.length === 0) return
-      try {
-        const items = await fetchTranscriptRange(id, { entryIds: wanted })
-        // Whole entries replace their placeholders by entry id; a result
-        // pairs into its row by call id. Nothing here marks running: the
-        // rows are history, and their transient state was settled on read.
-        patchConversation(id, (c) => {
-          let messages = c.messages
-          for (const item of items) {
-            messages = applyEntryUpsert(messages, item, { sessionId: id })
+      if (wanted.length > 0) {
+        const read = (async () => {
+          try {
+            const items = await fetchTranscriptRange(id, { entryIds: wanted })
+            // Whole entries replace their placeholders by entry id; a result
+            // pairs into its row by call id. Nothing here marks running: the
+            // rows are history, and their transient state was settled on read.
+            patchConversation(id, (c) => {
+              let messages = c.messages
+              for (const item of items) {
+                messages = applyEntryUpsert(messages, item, { sessionId: id })
+              }
+              return messages === c.messages ? c : { ...c, messages }
+            })
+            return true
+          } catch (err) {
+            if (import.meta.env.DEV) {
+              console.warn('[conversations] activity entries failed', id, err)
+            }
+            return false
+          } finally {
+            for (const entryId of wanted) inflight.delete(entryId)
+            if (inflight.size === 0) activityLoadsRef.current.delete(id)
           }
-          return messages === c.messages ? c : { ...c, messages }
-        })
-      } catch (err) {
-        if (import.meta.env.DEV) {
-          console.warn('[conversations] activity entries failed', id, err)
-        }
-      } finally {
-        for (const entryId of wanted) inflight.delete(entryId)
-        if (inflight.size === 0) activityLoadsRef.current.delete(id)
+        })()
+        for (const entryId of wanted) inflight.set(entryId, read)
+        outcomes.push(read)
       }
+      return (await Promise.all(outcomes)).every(Boolean)
     },
     [serverEnabled, patchConversation],
   )

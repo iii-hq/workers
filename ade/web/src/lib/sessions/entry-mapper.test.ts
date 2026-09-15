@@ -1753,6 +1753,43 @@ describe('elided placeholders', () => {
     })
   })
 
+  /* Two overlapping range reads (a card open racing "show all") can land a
+     result before its call's arguments when the read carrying the call fails.
+     The row keeps the output but stays a placeholder until the call lands. */
+  it('keeps a placeholder unloaded when only its result lands', () => {
+    const page = transcriptToMessages([
+      elidedCall('e_a1', [{ id: 'fc_1', functionId: 'shell::run' }]),
+      elidedResult('e_r1', 'fc_1'),
+    ])
+    const resultOnly = applyEntryUpsert(page, resultItem('e_r1', 'fc_1', 'ok'))
+    expect(resultOnly[0]).toMatchObject({
+      unloaded: true,
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+    expect((resultOnly[0] as FunctionTriggerMessage).input).toBeUndefined()
+
+    const whole = applyEntryUpsert(
+      resultOnly,
+      assistantItem(
+        'e_a1',
+        [
+          {
+            type: 'function_call',
+            id: 'fc_1',
+            function_id: 'shell::run',
+            arguments: { command: 'ls' },
+          },
+        ],
+        'function_call',
+      ),
+    )
+    expect(whole[0]).toMatchObject({
+      input: { command: 'ls' },
+      output: { content: [{ type: 'text', text: 'ok' }], details: {} },
+    })
+    expect((whole[0] as FunctionTriggerMessage).unloaded).toBeFalsy()
+  })
+
   /* A reconnect re-reads the tail, which elides a run the window already
      holds whole. The re-read must not turn loaded rows back into skeletons. */
   it('keeps a loaded row when a re-read page elides it', () => {
