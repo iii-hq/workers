@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -12,6 +13,7 @@ TEMPLATE = Path(__file__).resolve().parents[1]
 
 class SyncTests(unittest.TestCase):
     def setUp(self):
+        """Create an offline upstream repository and independent local project."""
         self.temporary = tempfile.TemporaryDirectory(prefix="harness-sync-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -48,21 +50,26 @@ class SyncTests(unittest.TestCase):
             path.write_text(content)
 
     def git(self, *args):
+        """Run Git in the disposable upstream repository."""
         return subprocess.check_output(["git", "-C", str(self.upstream), *args], text=True).strip()
 
     def write(self, relative, content):
+        """Create an upstream fixture file with its parent directories."""
         path = self.upstream / "iii/harness" / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
     def commit(self):
+        """Commit fixture changes and return the immutable revision."""
         self.git("add", ".")
         self.git("commit", "--quiet", "-m", "Update fixture")
         return self.git("rev-parse", "HEAD")
 
-    def run_sync(self, *args, success=True):
+    def run_sync(self, *args, success=True, stopped=True):
+        """Execute the public entrypoint and verify its exit status and cleanup."""
+        confirmation = ["--stack-stopped"] if stopped and "--dry-run" not in args else []
         result = subprocess.run(
-            [str(self.destination / "sync.sh"), "--repo", str(self.upstream), *args],
+            [str(self.destination / "sync.sh"), "--repo", str(self.upstream), *confirmation, *args],
             cwd=self.root, text=True, capture_output=True, timeout=60,
         )
         if success:
@@ -74,12 +81,14 @@ class SyncTests(unittest.TestCase):
         return result
 
     def files(self):
+        """Capture file bytes for before/after non-destructive assertions."""
         return {
             path.relative_to(self.destination).as_posix(): path.read_bytes()
             for path in self.destination.rglob("*") if path.is_file()
         }
 
     def test_initial_sync_is_repeatable_and_preserves_local_stack(self):
+        """Import the same revision twice without touching local configuration."""
         self.run_sync()
         manifest = json.loads((self.destination / "upstream/sync.json").read_text())
         self.assertEqual(manifest["commit"], self.git("rev-parse", "HEAD"))
@@ -103,6 +112,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.files(), before)
 
     def test_refresh_adds_updates_and_removes_managed_files(self):
+        """A newer revision replaces and removes only managed files."""
         self.run_sync()
         (self.upstream / "iii/harness/agents/example.md").unlink()
         (self.upstream / "iii/harness/config/new-worker.yaml").unlink()
@@ -116,6 +126,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual((self.destination / "skills/harness/index.md").read_text(), "# Updated skill\n")
 
     def test_dry_run_and_invalid_ref_leave_destination_unchanged(self):
+        """Preview and fetch failures must not modify the existing snapshot."""
         self.run_sync()
         self.write("skills/harness/index.md", "# Changed\n")
         self.commit()
@@ -126,6 +137,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.files(), before)
 
     def test_explicit_commit_can_reproduce_an_older_snapshot(self):
+        """An immutable ref reproduces its contents rather than current main."""
         previous = self.git("rev-parse", "HEAD")
         self.write("skills/harness/index.md", "# Newer\n")
         self.commit()
@@ -133,6 +145,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual((self.destination / "skills/harness/index.md").read_text(), "# Initial skill\n")
 
     def test_local_edits_require_explicit_force(self):
+        """Only explicit force discards edits in managed directories."""
         self.run_sync()
         local = self.destination / "agents/custom.md"
         local.write_text("# Local edits\n")
@@ -146,13 +159,37 @@ class SyncTests(unittest.TestCase):
             self.assertEqual((self.destination / relative).read_text(), expected)
 
     def test_force_with_dry_run_preserves_local_edits(self):
+        """Combining force and preview remains read-only without a stopped stack."""
         self.run_sync()
         (self.destination / "agents/custom.md").write_text("# Keep local edits\n")
         before = self.files()
         self.run_sync("--force", "--dry-run")
         self.assertEqual(self.files(), before)
 
+    def test_writes_require_stop_confirmation_even_with_force(self):
+        """Reject unacknowledged writes before fetching or creating a sync lock."""
+        before = self.files()
+        for options in ((), ("--force",)):
+            with self.subTest(options=options):
+                result = self.run_sync(*options, stopped=False, success=False)
+                self.assertIn("Stop the template stack", result.stderr)
+                self.assertEqual(self.files(), before)
+
+    def test_direct_importer_requires_stop_confirmation(self):
+        """Calling Python directly cannot bypass the stopped-reader precondition."""
+        before = self.files()
+        result = subprocess.run([
+            sys.executable, str(self.destination / "scripts/sync_template.py"),
+            "--checkout", str(self.upstream), "--commit", self.git("rev-parse", "HEAD"),
+            "--repo", str(self.upstream), "--ref", "main",
+            "--destination", str(self.destination), "--force",
+        ], text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--stack-stopped", result.stderr)
+        self.assertEqual(self.files(), before)
+
     def test_incomplete_upstream_fails_without_partial_updates(self):
+        """Missing required instruction folders fail before replacing files."""
         self.run_sync()
         before = self.files()
         shutil.rmtree(self.upstream / "iii/harness/agents")
@@ -161,6 +198,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.files(), before)
 
     def test_symlinks_are_rejected_without_touching_the_target(self):
+        """Reject both upstream and destination links, including forced updates."""
         self.run_sync()
         before = self.files()
         target = self.root / "outside.md"
@@ -175,6 +213,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "Untouched\n")
 
     def test_configuration_directory_is_optional_upstream(self):
+        """No upstream config folder is required to import instruction data."""
         shutil.rmtree(self.upstream / "iii/harness/config")
         self.commit()
         self.run_sync()

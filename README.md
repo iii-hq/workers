@@ -21,7 +21,8 @@ iii compose --up
 It uses the sibling worker directories in this checkout, including `../harness`,
 not a published Harness package. See the [template guide](template/README.md) for
 authentication, the console URL and restarting a worker after a source change.
-Refresh upstream profiles and skills with `./template/sync.sh`; it preserves
+With the stack stopped, refresh upstream profiles and skills using
+`./template/sync.sh --stack-stopped` (or preview with `--dry-run`). It preserves
 local configuration and Compose files and records the exact imported commit.
 The original [source-only stack](harness/DEVELOPMENT.md) remains available.
 

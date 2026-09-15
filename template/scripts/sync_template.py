@@ -13,8 +13,8 @@ SOURCE = "iii/harness/"
 MANIFEST = "upstream/sync.json"
 
 
-
 def snapshot(root):
+    """Hash managed files, excluding provenance, and reject symlink destinations."""
     result = {}
     for name in ROOTS:
         directory = root / name
@@ -29,6 +29,7 @@ def snapshot(root):
 
 
 def stage_snapshot(args, stage):
+    """Extract allowed Git blobs to staging without executing upstream content."""
     for name in ROOTS:
         (stage / name).mkdir()
     listing = subprocess.check_output([
@@ -66,6 +67,9 @@ def stage_snapshot(args, stage):
 
 
 def apply(args):
+    """Validate and replace an offline snapshot, restoring directories on errors."""
+    if not args.dry_run and not args.stack_stopped:
+        raise ValueError("Stop the template stack/readers, then pass --stack-stopped; use --dry-run for a live preview")
     current = snapshot(args.destination)
     manifest_path = args.destination / MANIFEST
     old_manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
@@ -87,8 +91,9 @@ def apply(args):
             print(f"  {name}")
         if args.dry_run:
             return
-        # Build and validate everything first, then swap directories. Roll back
-        # an unsuccessful replacement rather than leaving a half-updated tree.
+        # This is NOT an atomic multi-directory update for live readers.
+        # --stack-stopped is an operator acknowledgment, not a runtime probe.
+        # Keep readers stopped until replacement (or filesystem rollback) ends.
         backup = stage / "backup"
         backup.mkdir()
         installed = []
@@ -111,12 +116,14 @@ def apply(args):
 
 
 def main():
+    """Parse importer arguments and report validation or filesystem failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("checkout", "commit", "repo", "ref"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--destination", required=True, type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--stack-stopped", action="store_true", help="Confirm all snapshot readers are stopped")
     args = parser.parse_args()
     try:
         apply(args)

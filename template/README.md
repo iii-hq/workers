@@ -91,18 +91,23 @@ since existing sessions retain their frozen prompts.
 ## Synchronize upstream instructions
 
 Requires **Bash, Git and Python 3.11+**, with no third-party Python dependencies.
-Run from any directory; the destination is always the directory of `sync.sh`:
+Run from any directory; the destination is always the directory of `sync.sh`.
+**Stop the template stack and any other readers before applying changes.**
+Replacement spans multiple directories and is not atomic for live Directory
+readers. `--stack-stopped` explicitly acknowledges this precondition; it does
+not detect or stop running processes. `--dry-run` is safe while readers run:
 
 ```bash
-# From template/: synchronize the latest merged upstream template.
-./sync.sh
+# From template/: preview while running, then stop the stack in its own terminal.
 ./sync.sh --dry-run
+# After the stack has stopped:
+./sync.sh --stack-stopped
 
 # Reproduce a commit, or use another branch/tag.
-./sync.sh --ref d9ac5f2d183a6fbf79b3bac445a97a9c3e761118
+./sync.sh --stack-stopped --ref d9ac5f2d183a6fbf79b3bac445a97a9c3e761118
 
 # Work against a local templates checkout instead of GitHub.
-./sync.sh --repo /absolute/path/to/templates --ref main
+./sync.sh --stack-stopped --repo /absolute/path/to/templates --ref main
 ```
 
 The source is [`iii-hq/templates`](https://github.com/iii-hq/templates),
@@ -126,7 +131,9 @@ agents/skills before refreshing; use `--force` only to intentionally discard
 those edits. Review new instructions and reference configs before committing.
 
 Fetch or validation failures leave the snapshot unchanged. Replacements are
-staged with rollback on filesystem errors; a lock prevents concurrent syncs.
+staged with rollback on filesystem errors; a lock prevents concurrent syncs,
+not concurrent readers. Restart the stack only after the script has exited.
+This workflow does not guarantee atomic live reload or crash-safe transactions.
 After a crash, remove `.sync.lock/` only if no sync process is running.
 
 The checked-in snapshot comes from merged

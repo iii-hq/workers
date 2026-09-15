@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'HELP'
-Usage: ./sync.sh [--ref REF] [--repo URL_OR_PATH] [--dry-run] [--force]
+Usage: ./sync.sh [--ref REF] [--repo URL_OR_PATH] [--dry-run | --stack-stopped] [--force]
 
 Fetch agents and skills from iii-hq/templates (main by default). Record the
 resolved commit in upstream/sync.json; keep any upstream configuration under
@@ -14,6 +14,8 @@ and runtime data are never replaced. No upstream scripts are run.
   --ref REF       Branch, tag, commit, or pull request ref (default: main)
   --repo SOURCE   Git URL or local repository (default: iii-hq/templates)
   --dry-run       Fetch and validate, but do not replace generated files
+  --stack-stopped Confirm the stack/readers are stopped before replacing files
+                  (required for writes; not an automatic runtime-state check)
   --force         Discard edits in agents/, skills/ and upstream/ only
                   (the normal mode refuses to overwrite edits)
   --help          Show this help
@@ -28,6 +30,8 @@ repo=https://github.com/iii-hq/templates.git
 ref=main
 # Bash 3.2 treats empty arrays as unset under set -u; keep a required argument.
 options=(--destination "$script_dir")
+preview=false
+stack_stopped=false
 while (($#)); do
   case "$1" in
     --ref|--repo)
@@ -36,11 +40,19 @@ while (($#)); do
       }
       if [[ "$1" == --ref ]]; then ref=$2; else repo=$2; fi
       shift 2 ;;
-    --dry-run|--force) options+=("$1"); shift ;;
+    --dry-run) preview=true; options+=("$1"); shift ;;
+    --stack-stopped) stack_stopped=true; options+=("$1"); shift ;;
+    --force) options+=("$1"); shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# Reject writes before fetching unless the operator confirms readers are stopped.
+if [[ "$preview" == false && "$stack_stopped" == false ]]; then
+  echo 'Stop the template stack first, then run ./sync.sh --stack-stopped (or use --dry-run).' >&2
+  exit 2
+fi
 
 command -v git >/dev/null || { echo 'Git is required.' >&2; exit 1; }
 python3 -c 'import sys; assert sys.version_info >= (3, 11)' 2>/dev/null || {
