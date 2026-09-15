@@ -138,8 +138,10 @@ export const CATALOG_CASES: TestCase[] = [
         expectEqual(schema.tables[0].columns.length, 3, 'describeSchema carries the columns')
 
         const diagram = await call('database::schemaDiagram', { db: driver })
+        // Postgres node ids are schema-qualified (`public.e2e_catalog`);
+        // sqlite and mysql have no namespace above the table.
         const node = diagram.nodes.find(
-          (n: any) => String(n.table).toLowerCase() === TABLE,
+          (n: any) => String(n.table).toLowerCase().split('.').pop() === TABLE,
         )
         expect(node !== undefined, 'schemaDiagram places the table')
         expectEqual(node.columns.length, 3, 'the diagram node carries the columns')

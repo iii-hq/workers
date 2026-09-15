@@ -521,15 +521,27 @@ function txGatingCase(target: NativeTarget): TestCase {
         const committed = [await native.next(), await native.next()]
         const ops = committed.map((e) => e.op).sort()
         expectEqual(ops, ['insert', 'update'], 'committed transaction delivers both events')
+        // BIGSERIAL / AUTO_INCREMENT do not roll back, so the discarded
+        // insert above burned an id and the committed row is NOT necessarily
+        // id 1 (sqlite's sequence rides the transaction, the others' do
+        // not). Read the row back and hold the events to what actually
+        // exists — the claim under test is that the event names THE row, not
+        // a particular id.
+        const rows = await call('database::query', {
+          db: target.nativeDb,
+          sql: `SELECT id FROM ${table}`,
+        })
+        expectEqual(rows.rows.length, 1, 'exactly one row committed')
         for (const event of committed) {
           expectEqual(event.affected_rows, 1, `committed ${event.op} affected_rows`)
-          // Both statements touch the one committed row, and the event says
-          // which row that is — through the capture mechanism, not the
+          // Both statements touched the one committed row, and the event
+          // says which row that is — through the capture mechanism, not the
           // worker's classification (which is off for native databases).
+          expectEqual(event.returning?.length, 1, `committed ${event.op} event names one row`)
           expectEqual(
-            event.returning,
-            [{ id: target.keyOf(1) }],
-            `committed ${event.op} event carries the row key`,
+            String(event.returning?.[0]?.id),
+            String(rows.rows[0].id),
+            `committed ${event.op} event names the committed row`,
           )
           expect(event.truncated === undefined, 'one key is under the cap')
         }
