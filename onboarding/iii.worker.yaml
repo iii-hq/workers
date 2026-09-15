@@ -40,3 +40,6 @@ dependencies:
   # Its bus surface is unchanged, so the page keeps calling `console::*`.
   ade: "latest"
   state: "latest"
+  # `onboarding::steps::complete` announces each closed step on the
+  # `onboarding:step` topic, which the `queue` worker serves.
+  queue: "latest"

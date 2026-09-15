@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { TOURS, getTour, listTours } from '../src/tours.mjs'
+import { TOURS, findStep, getTour, listTours } from '../src/tours.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -155,4 +155,17 @@ test('every step that asks the agent to build waits for it to report done', () =
 test('the discoverability step is titled Discoverability', () => {
   const step = getTour('console-basics').steps.find((entry) => entry.id === 'discoverability')
   assert.equal(step.title, 'Discoverability')
+})
+
+test('findStep numbers steps from 1 in tour order', () => {
+  for (const tour of TOURS) {
+    tour.steps.forEach((step, index) => {
+      const found = findStep(tour.id, step.id)
+      assert.equal(found?.step, step)
+      assert.equal(found?.tour, tour)
+      assert.equal(found?.number, index + 1, `${tour.id}/${step.id} numbered wrong`)
+    })
+  }
+  assert.equal(findStep('no-such-tour', 'message'), undefined)
+  assert.equal(findStep(TOURS[0].id, 'no-such-step'), undefined)
 })

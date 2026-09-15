@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerWorker } from 'iii-sdk'
 import { isEmailish, MAX_EMAIL_LENGTH } from './subscribe.mjs'
-import { getStep, getTour, listTours } from './tours.mjs'
+import { findStep, getTour, listTours } from './tours.mjs'
 
 const WORKER = 'onboarding'
 const STATE_SCOPE = 'onboarding'
@@ -147,12 +147,48 @@ iii.registerFunction(
   },
 )
 
+/**
+ * The topic every completed step is announced on, so anything that wants to
+ * follow a tour (the engine's telemetry among them) subscribes instead of
+ * reaching into this worker's state.
+ */
+const STEP_TOPIC = 'onboarding:step'
+
+/**
+ * Published through the `queue` worker, not fire-and-forget pub/sub: a step
+ * closes once, and the message waits in the queue and is retried until a
+ * subscriber takes it, rather than being dropped when nothing is listening at
+ * that instant.
+ *
+ * The publish itself is still best effort — a missing `queue` worker is
+ * logged and never fails the step.
+ */
+const publishStep = (data) =>
+  iii
+    .trigger({
+      function_id: 'iii::durable::publish',
+      payload: { topic: STEP_TOPIC, data },
+      timeoutMs: STATE_TIMEOUT_MS,
+    })
+    .catch((cause) => {
+      console.error(`[${WORKER}] could not publish ${STEP_TOPIC}: ${cause?.message ?? cause}`)
+    })
+
 iii.registerFunction(
   'onboarding::steps::complete',
   async (input) => {
-    const step = getStep(input.tour_id, input.step_id)
-    if (!step) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
+    const found = findStep(input.tour_id, input.step_id)
+    if (!found) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
+    const { tour, step } = found
     const subject = input.subject ?? 'local'
+    // A step closes once per subject, so a reload or a second report from the
+    // agent must not announce it again.
+    // ponytail: read-then-publish, not atomic — two reports racing around this
+    // await can both announce. Move the check into `state::update` if a
+    // duplicate ever matters more than the round trip does.
+    const announced =
+      (await readProgress(subject)).tours?.[input.tour_id]?.steps?.[input.step_id]?.status ===
+      'complete'
     const at = Date.now()
     const record = {
       status: 'complete',
@@ -173,6 +209,15 @@ iii.registerFunction(
       { type: 'merge', path: ['tours', input.tour_id], value: { updated_at: at } },
       { type: 'merge', value: { updated_at: at } },
     ])
+    if (!announced) {
+      await publishStep({
+        tour_id: input.tour_id,
+        tour_title: tour.title,
+        step_number: found.number,
+        step_id: input.step_id,
+        step_title: step.title,
+      })
+    }
     return { step: record }
   },
   {
