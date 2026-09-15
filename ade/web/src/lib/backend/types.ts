@@ -308,6 +308,13 @@ export interface ChatBackend {
    */
   listQueued?(sessionId: string): Promise<QueuedMessagePreview[]>
   /**
+   * The harness's own context accounting for the session's last generate
+   * step (`harness::status` → `context.total`, provider-exact once usage
+   * lands). `null` before the first generate; the chat then shows an
+   * estimate.
+   */
+  contextUsage?(sessionId: string): Promise<number | null>
+  /**
    * Remove a still-parked message from the server-side queue by its entry id
    * (`harness::unqueue`). Lets the composer pull a queued message back for
    * editing without the old version also draining into the transcript. A row

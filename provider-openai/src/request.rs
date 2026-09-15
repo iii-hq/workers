@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 
 pub struct BodyArgs {
     pub model: String,
-    pub max_tokens: u64,
+    /// `None` omits the output-token parameter: the model's own maximum applies.
+    pub max_tokens: Option<u64>,
     pub system_prompt: String,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentFunction>,
@@ -43,11 +44,13 @@ pub fn build_chat_response_format(rf: &ResponseFormat) -> Value {
 fn build_chat_body(args: &BodyArgs) -> Value {
     let mut body = json!({
         "model": args.model,
-        "max_completion_tokens": args.max_tokens,
         "messages": to_wire_messages(&args.messages, &args.system_prompt),
         "stream": true,
         "stream_options": { "include_usage": true },
     });
+    if let Some(max_tokens) = args.max_tokens {
+        body["max_completion_tokens"] = json!(max_tokens);
+    }
     let wire_tools = functions_to_wire(&args.tools);
     if !wire_tools.is_empty() {
         body["tools"] = Value::Array(wire_tools);
@@ -80,11 +83,13 @@ fn build_responses_text(rf: &ResponseFormat) -> Value {
 fn build_responses_body(args: &BodyArgs) -> Value {
     let mut body = json!({
         "model": args.model,
-        "max_output_tokens": args.max_tokens,
         "input": to_responses_input(&args.messages, &args.system_prompt),
         "stream": true,
         "store": false,
     });
+    if let Some(max_tokens) = args.max_tokens {
+        body["max_output_tokens"] = json!(max_tokens);
+    }
     let wire_tools = functions_to_responses_wire(&args.tools);
     if !wire_tools.is_empty() {
         body["tools"] = Value::Array(wire_tools);
@@ -125,7 +130,7 @@ mod tests {
     fn args() -> BodyArgs {
         BodyArgs {
             model: "gpt-5.2".into(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             system_prompt: "be brief".into(),
             messages: vec![AgentMessage::User(UserMessage {
                 role: UserRoleTag::User,
@@ -231,6 +236,17 @@ mod tests {
     }
 
     #[test]
+    fn uncapped_requests_omit_the_output_token_parameter_in_both_modes() {
+        let mut a = args();
+        a.max_tokens = None;
+        let chat = build_body(&a, ApiMode::ChatCompletions);
+        assert!(chat.get("max_completion_tokens").is_none());
+        assert!(chat.get("max_tokens").is_none());
+        let responses = build_body(&a, ApiMode::Responses);
+        assert!(responses.get("max_output_tokens").is_none());
+    }
+
+    #[test]
     fn both_api_modes_send_the_prompt_cache_key() {
         let mut a = args();
         a.prompt_cache_key = Some("stable-session-key".into());
@@ -249,7 +265,7 @@ mod tests {
         let cfg = OpenaiConfig {
             credential_value: "sk-test".into(),
             model: "gpt-5.2".into(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             api_url: "https://api.openai.com/v1/chat/completions".into(),
             api_mode: ApiMode::ChatCompletions,
         };

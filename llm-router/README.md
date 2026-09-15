@@ -35,7 +35,7 @@ const res = await iii.trigger('router::chat', {
   writer_ref: writerRef, // direction "write"
   model: 'claude-sonnet-4',
   messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: Date.now() }],
-}, { timeout_ms: 320_000 }); // outer timeout ≥ the router's 300s stream budget
+}, { timeout_ms: 620_000 }); // outer timeout ≥ the router's 600s stream budget
 // res: { ok, provider, model, stop_reason, usage }
 ```
 
@@ -120,7 +120,7 @@ entry at boot and keeps an in-memory snapshot synchronized by the
   },
   "routing_heuristics": [{ "pattern": "^gpt-", "provider": "openai" }],
   "settings": {
-    "stream_timeout_ms": 300000,
+    "stream_timeout_ms": 600000,
     "idle_timeout_ms": 120000,
     "retry_max": 2,
     "output_token_max": 32000
@@ -130,10 +130,10 @@ entry at boot and keeps an in-memory snapshot synchronized by the
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `stream_timeout_ms` | `300000` | Hard budget for one streamed turn. |
+| `stream_timeout_ms` | `600000` | Hard budget for one streamed turn. |
 | `idle_timeout_ms` | `120000` | Max silence between provider frames before the attempt is cut. |
 | `retry_max` | `2` | Retries per turn for retryable failures before the first forwarded frame (`0`–`10`). |
-| `output_token_max` | `32000` | Ceiling on `max_output_tokens` forwarded to providers. |
+| `output_token_max` | unset | Optional ceiling on `max_output_tokens`. Unset forwards each model's own output ceiling, so providers run without an artificial limit; set it only to cap spend. |
 
 Pasting a key into a provider's slice is the whole onboarding flow: the
 router diffs the changed slice, debounces ~2 s, and kicks that provider's

@@ -238,7 +238,9 @@ fn default_context_timeout_ms() -> u64 {
     320_000
 }
 fn default_router_timeout_ms() -> u64 {
-    320_000
+    // ≥ llm-router's 600s stream budget plus its ack margin: the held-open
+    // router::chat trigger must outlive the longest single provider stream.
+    620_000
 }
 fn default_dispatch_timeout_ms() -> u64 {
     300_000

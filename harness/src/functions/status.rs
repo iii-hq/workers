@@ -65,6 +65,12 @@ pub struct StatusReport {
     /// budget from a finished task.
     #[serde(default)]
     pub stop_reason: Option<String>,
+    /// The last generate step's context accounting (budget, categories,
+    /// provider-exact usage once it lands) — what a UI meter should show
+    /// instead of re-estimating the transcript. Verbose only; absent before
+    /// the first generate.
+    #[serde(default)]
+    pub context: Option<crate::context_snapshot::ContextSnapshotV1>,
 }
 
 const LEAN_RESULT_CHAR_LIMIT: usize = 600;
@@ -123,6 +129,7 @@ impl Serialize for StatusReport {
         if verbose {
             serialize_non_empty(&mut report, "armed_wakes", &self.armed_wakes)?;
             serialize_non_empty(&mut report, "queued", &self.queued)?;
+            serialize_optional(&mut report, "context", &self.context)?;
         }
 
         if let Some(result) = &self.result {
@@ -193,11 +200,17 @@ fn lean_result(result: &Value) -> Result<Value, serde_json::Error> {
 /// `null` for unknown sessions.
 pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusReport>, HarnessError> {
     let cfg = deps.cfg().await;
+    // A read that observes a terminal or missing record re-derives the
+    // session's coarse status in the background (see `session_status`).
     let Some(record) =
         crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
     else {
+        crate::session_status::spawn_reconcile(deps, &req.session_id);
         return Ok(None);
     };
+    if record.status.is_terminal() {
+        crate::session_status::spawn_project(deps, record.clone());
+    }
     let queued = if req.verbose {
         Some(crate::state::list_queued(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?)
     } else {
@@ -242,6 +255,10 @@ pub async fn handle(deps: &Deps, req: StatusRequest) -> Result<Option<StatusRepo
         stop_reason: record.stop_reason.clone(),
         expects_wake,
         armed_wakes,
+        context: req
+            .verbose
+            .then(|| record.context_snapshot.clone())
+            .flatten(),
     }))
 }
 

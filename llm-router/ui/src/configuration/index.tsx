@@ -56,12 +56,23 @@ function formatMs(ms: number): string {
   return rest ? `${minutes}m ${rest}s` : `${minutes}m`
 }
 
-const SETTINGS_FIELDS = [
+type SettingsField = {
+  key: 'stream_timeout_ms' | 'idle_timeout_ms' | 'retry_max' | 'output_token_max'
+  label: string
+  description: string
+  /** Router default when unset; `undefined` means the router applies no value. */
+  defaultValue?: number
+  echo: (value: number) => string
+  /** Shown in place of a default when the field is unset and has none. */
+  unsetLabel?: string
+}
+
+const SETTINGS_FIELDS: readonly SettingsField[] = [
   {
     key: 'stream_timeout_ms',
     label: 'Stream timeout',
     description: 'Maximum total time for a streaming response, in milliseconds.',
-    defaultValue: 300_000,
+    defaultValue: 600_000,
     echo: formatMs,
   },
   {
@@ -81,11 +92,12 @@ const SETTINGS_FIELDS = [
   {
     key: 'output_token_max',
     label: 'Output token limit',
-    description: 'Router-wide ceiling for generated output tokens.',
-    defaultValue: 32_000,
+    description:
+      'Optional router-wide cap on generated output tokens. Leave empty for no cap: each model runs up to its own output ceiling.',
     echo: (value: number) => `${value.toLocaleString()} tokens`,
+    unsetLabel: 'no cap (model ceiling)',
   },
-] as const
+]
 
 export function LlmRouterConfigForm(props: ConfigFormProps) {
   const value = asObject(props.value)
@@ -178,13 +190,14 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
           {SETTINGS_FIELDS.map((field) => {
             const configured = typeof settings[field.key] === 'number'
             const effective = configured ? (settings[field.key] as number) : field.defaultValue
+            const shown = effective === undefined ? (field.unsetLabel ?? 'unset') : field.echo(effective)
             return (
               <SettingsRow
                 key={field.key}
                 data-field={`settings-${field.key}`}
                 label={field.label}
                 description={field.description}
-                meta={configured ? field.echo(effective) : `Default: ${field.echo(effective)}`}
+                meta={configured ? shown : `Default: ${shown}`}
                 control={
                   <Input
                     className="llmr-cfg-number"
@@ -193,7 +206,7 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
                     step={field.key === 'retry_max' ? 1 : 'any'}
                     min={field.key === 'retry_max' ? 0 : undefined}
                     value={configured ? String(settings[field.key]) : ''}
-                    placeholder={String(field.defaultValue)}
+                    placeholder={field.defaultValue === undefined ? (field.unsetLabel ?? '') : String(field.defaultValue)}
                     aria-label={field.label}
                     onChange={(nextValue) => {
                       const next = { ...settings }

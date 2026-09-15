@@ -1302,15 +1302,20 @@ async fn finish_step(
                 continue;
             }
 
-            // Provider-degraded arguments: a stream that died or was cut by
-            // max_tokens mid-args arrives as a salvaged `"_partial": true`
-            // prefix, a raw `{"_raw": …}` evidence object (the router's
-            // degraded_arguments), or no object at all. Executing partial
-            // intent is worse than failing — the complete-looking leading
-            // fields may be missing the constraints the model was still
-            // writing.
+            // Provider-degraded arguments: a call cut by the output-token
+            // limit, or arguments that never formed one valid JSON object,
+            // arrive as a salvaged `"_partial": true` prefix, a raw
+            // `{"_raw": …}` evidence object (the router's degraded_arguments),
+            // or no object at all. Executing partial intent is worse than
+            // failing — the complete-looking leading fields may be missing
+            // the constraints the model was still writing. The stop reason
+            // tells the model which of the two it was.
             if trigger::arguments_degraded(&call.arguments) {
-                let data = trigger::truncated_arguments_result(&call.function_id, &call.arguments);
+                let data = trigger::truncated_arguments_result(
+                    &call.function_id,
+                    &call.arguments,
+                    outcome.message.stop_reason,
+                );
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
                     &session,
@@ -1944,7 +1949,7 @@ async fn finalize_completed(
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
-    let _ = session.set_status(&record.session_id, "done", None).await;
+    crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
             &record.session_id,
@@ -2183,9 +2188,7 @@ async fn finalize_failed(
             Some(&origin(&record.turn_id)),
         )
         .await;
-    let _ = session
-        .set_status(&record.session_id, "error", Some(&summary))
-        .await;
+    crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
             &record.session_id,
@@ -2381,9 +2384,7 @@ async fn finalize_cancelled(
             Some(&origin(&record.turn_id)),
         )
         .await;
-    let _ = session
-        .set_status(&record.session_id, "done", Some("stopped"))
-        .await;
+    crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
             &record.session_id,

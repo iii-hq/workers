@@ -554,7 +554,7 @@ impl ChatPipeline {
         provider: &str,
         provider_generation: u64,
         model_meta: Option<&crate::types::model::Model>,
-        max_output_tokens: u64,
+        max_output_tokens: Option<u64>,
         settings: &RouterSettings,
         inflight: &super::inflight::InflightEntry,
         request_id: &str,
@@ -971,7 +971,7 @@ fn build_stream_input(
     call: &ChatCall,
     provider: &str,
     writer_ref: Value,
-    max_output_tokens: u64,
+    max_output_tokens: Option<u64>,
     model_meta: Option<&crate::types::model::Model>,
     request_id: &str,
 ) -> Value {
@@ -979,7 +979,13 @@ fn build_stream_input(
     input.insert("writer_ref".into(), writer_ref);
     input.insert("model".into(), Value::String(call.model.clone()));
     input.insert("messages".into(), call.messages.clone());
-    input.insert("max_output_tokens".into(), json!(max_output_tokens));
+    // Omitted when the router has no budget to forward (no request, no
+    // config, no soft cap, unknown model): the provider runs uncapped.
+    insert_present(
+        &mut input,
+        "max_output_tokens",
+        max_output_tokens.map(|v| json!(v)),
+    );
     input.insert(
         "resolution_key".into(),
         Value::String(request_id.to_string()),
@@ -1389,7 +1395,7 @@ mod tests {
             &call,
             "anthropic",
             writer_ref.clone(),
-            32_000,
+            Some(32_000),
             None,
             "req-1",
         );
@@ -1397,7 +1403,7 @@ mod tests {
             &call,
             "anthropic",
             writer_ref.clone(),
-            32_000,
+            Some(32_000),
             None,
             "req-1",
         );
@@ -1428,6 +1434,17 @@ mod tests {
             "resolution_key is stable across attempts of one request"
         );
 
+        // No budget to forward: the key is omitted, never null or 0.
+        let uncapped =
+            build_stream_input(&call, "anthropic", writer_ref.clone(), None, None, "req-1");
+        assert!(
+            !uncapped
+                .as_object()
+                .unwrap()
+                .contains_key("max_output_tokens"),
+            "uncapped requests omit max_output_tokens"
+        );
+
         // Present options ride through, and provider_options narrows to this
         // provider's slice.
         let call: ChatCall = serde_json::from_value(json!({
@@ -1440,7 +1457,7 @@ mod tests {
             "provider_options": { "anthropic": { "beta": true }, "openai": { "x": 1 } },
         }))
         .unwrap();
-        let input = build_stream_input(&call, "anthropic", writer_ref, 8192, None, "req-2");
+        let input = build_stream_input(&call, "anthropic", writer_ref, Some(8192), None, "req-2");
         assert_eq!(input["system_prompt"], json!("be brief"));
         assert_eq!(input["thinking_level"], json!("high"));
         assert_eq!(input["session_id"], json!("s_1"));

@@ -31,9 +31,16 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     // generation is interrupted immediately, even while the running step holds
     // the per-session lock across in-flight tool execution. The authoritative
     // abort write happens under the lock below.
+    //
+    // Nothing to stop (no record, or a terminal one): the store may still say
+    // `working` — a terminal projection lost while the session-manager was
+    // down, or a state store that dropped the record. Re-derive it in the
+    // background so the click repairs what it found instead of silently
+    // doing nothing.
     let Some(record) =
         crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
     else {
+        crate::session_status::spawn_reconcile(deps, &req.session_id);
         return Ok(StopResponse { stopping: false });
     };
     if let Some(tid) = &req.turn_id {
@@ -42,6 +49,7 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
         }
     }
     if record.status.is_terminal() {
+        crate::session_status::spawn_project(deps, record);
         return Ok(StopResponse { stopping: false });
     }
     // Idempotent: a prior stop already fired the cancel signal, cascaded to

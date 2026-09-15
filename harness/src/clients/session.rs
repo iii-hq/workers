@@ -43,6 +43,8 @@ pub struct SessionLink {
 struct LoadedSessionMeta {
     session_id: String,
     #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
     metadata: Option<serde_json::Map<String, Value>>,
 }
 
@@ -139,6 +141,19 @@ impl SessionClient {
         &self,
         session_id: &str,
     ) -> Result<Option<serde_json::Map<String, Value>>, HarnessError> {
+        Ok(self
+            .meta(session_id)
+            .await?
+            .map(|meta| meta.metadata.unwrap_or_default()))
+    }
+
+    /// The coarse status the store holds (`idle` / `working` / `done` /
+    /// `error`) — `Ok(None)` when the session does not exist.
+    pub async fn status(&self, session_id: &str) -> Result<Option<String>, HarnessError> {
+        Ok(self.meta(session_id).await?.and_then(|meta| meta.status))
+    }
+
+    async fn meta(&self, session_id: &str) -> Result<Option<LoadedSessionMeta>, HarnessError> {
         let response = self
             .call("session::get", json!({ "session_id": session_id }))
             .await?;
@@ -150,7 +165,40 @@ impl SessionClient {
                 "session::get returned malformed metadata for {session_id}: {error}"
             ))
         })?;
-        Ok(Some(parsed.meta.metadata.unwrap_or_default()))
+        Ok(Some(parsed.meta))
+    }
+
+    /// Every session the store reports `working`, across all pages.
+    pub async fn working_session_ids(&self) -> Result<Vec<String>, HarnessError> {
+        const PAGE_LIMIT: u64 = 500;
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = BTreeSet::new();
+        loop {
+            let mut payload = json!({ "limit": PAGE_LIMIT, "status": "working" });
+            if let Some(value) = &cursor {
+                payload["cursor"] = json!(value);
+            }
+            let response = self.call("session::list", payload).await?;
+            let page: ListSessionsResponse = serde_json::from_value(response).map_err(|error| {
+                HarnessError::Dependency(format!(
+                    "session::list returned malformed metadata while listing working sessions: {error}"
+                ))
+            })?;
+            out.extend(page.sessions.into_iter().map(|meta| meta.session_id));
+            match page.next_cursor.filter(|value| !value.is_empty()) {
+                Some(next) => {
+                    if !seen_cursors.insert(next.clone()) {
+                        return Err(HarnessError::Dependency(
+                            "session::list repeated cursor while listing working sessions".into(),
+                        ));
+                    }
+                    cursor = Some(next);
+                }
+                None => break,
+            }
+        }
+        Ok(out)
     }
 
     /// Load every durable session whose metadata points at `parent_session_id`.

@@ -874,6 +874,44 @@ export function ChatView({
     (chip) => chip.id === 'context',
   )
 
+  /* The context meter reads the harness's own accounting for the last
+   * generate step, once the transcript is ready and again each time a turn
+   * ends; the estimate inside ContextUsage only stands in before the first
+   * generate. Kept across a turn so the bar does not fall back to the
+   * estimate mid-stream. */
+  const [contextTokens, setContextTokens] = useState<{
+    id: string
+    tokens: number
+  } | null>(null)
+  useEffect(() => {
+    const contextUsage = backend.contextUsage
+    if (
+      !contextUsage ||
+      conversation.draft ||
+      conversation.hydrated === false ||
+      streamingIndicator
+    )
+      return
+    let alive = true
+    void contextUsage(conversation.id)
+      .then((tokens) => {
+        if (alive && tokens !== null)
+          setContextTokens({ id: conversation.id, tokens })
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [
+    backend.contextUsage,
+    conversation.id,
+    conversation.draft,
+    conversation.hydrated,
+    streamingIndicator,
+  ])
+  const reportedContextTokens =
+    contextTokens?.id === conversation.id ? contextTokens.tokens : undefined
+
   /* Injected turn summaries live beside the composer rather than in the
    * transcript. Workers own their data and subscribe by session id; the host
    * only gives them the active turn state. */
@@ -2517,6 +2555,7 @@ export function ChatView({
                 <ContextUsage
                   messages={conversation.messages}
                   contextWindow={contextWindow}
+                  tokens={reportedContextTokens}
                 />
               )}
             </div>

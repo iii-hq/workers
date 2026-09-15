@@ -32,6 +32,7 @@ pub mod policy;
 pub mod projects;
 pub mod prompt;
 pub mod queue;
+pub mod session_status;
 pub mod skills;
 pub mod state;
 pub mod subagent;

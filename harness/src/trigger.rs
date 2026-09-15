@@ -784,22 +784,61 @@ pub fn arguments_degraded(arguments: &Value) -> bool {
     }
 }
 
-/// Provider-degraded arguments (a stream that died or hit max_tokens
-/// mid-args, salvaged to a `"_partial": true` prefix or a raw `{"_raw": …}`
-/// evidence object) must never execute: the salvage preserves evidence for
-/// the transcript, not intent. Teachable local failure, mirroring
-/// [`wrapper_without_target_result`].
-pub fn truncated_arguments_result(function_id: &str, arguments: &Value) -> ResultData {
-    let got = arguments_preview(arguments);
-    let msg = format!(
-        "the arguments for {function_id} arrived truncated (the model stream ended \
-         mid-arguments; received {got}). The call was NOT executed — re-issue it with \
-         complete arguments."
-    );
+/// Provider-degraded arguments (a stream cut by the output-token limit or
+/// arguments that never formed one valid JSON object, salvaged to a
+/// `"_partial": true` prefix or a raw `{"_raw": …}` evidence object) must
+/// never execute: the salvage preserves evidence for the transcript, not
+/// intent. Teachable local failure, mirroring [`wrapper_without_target_result`].
+///
+/// The wording names the real cause. Only an ok `Done` outcome reaches
+/// dispatch (a dead stream goes to transient resume instead), so this is
+/// never a transport failure: either the model ran out of output room
+/// (`stop_reason: length`) or the arguments came back incomplete/invalid.
+pub fn truncated_arguments_result(
+    function_id: &str,
+    arguments: &Value,
+    stop_reason: crate::types::event::StopReason,
+) -> ResultData {
+    let got = arguments_preview(&without_salvage_markers(arguments));
+    let hit_output_limit = stop_reason == crate::types::event::StopReason::Length;
+    let msg = if hit_output_limit {
+        format!(
+            "{function_id} did not run: the model reached its maximum output length before it \
+             finished writing this call's arguments, so they arrived incomplete (received {got}). \
+             Nothing is wrong on the system side; the output was simply too long for one turn. \
+             Produce it in smaller pieces: send this call with a shorter payload and continue in \
+             follow-up calls (for example, create a file with its first part and append the rest \
+             in later calls), or split the work across several smaller calls."
+        )
+    } else {
+        format!(
+            "{function_id} did not run: the model ended its turn before this call's arguments \
+             formed one complete, valid JSON object (received {got}). Nothing is wrong on the \
+             system side. Re-issue the call with complete, valid JSON arguments."
+        )
+    };
     ResultData {
         content: vec![ContentBlock::text(msg.clone())],
         is_error: true,
-        details: json!({ "error": "arguments_truncated", "message": msg }),
+        details: json!({
+            "error": "arguments_truncated",
+            "cause": if hit_output_limit { "max_output_tokens" } else { "incomplete_json" },
+            "message": msg,
+        }),
+    }
+}
+
+/// The salvaged fields without the `_partial`/`_raw`/`_streaming` markers,
+/// which read like a system fault to the model and the user.
+fn without_salvage_markers(arguments: &Value) -> Value {
+    match arguments {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(k, _)| !matches!(k.as_str(), "_partial" | "_streaming"))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -973,9 +1012,41 @@ mod tests {
         assert!(args.to_string().starts_with(&preview));
         // Both teachable results render without panicking.
         assert!(wrapper_without_target_result(&args).is_error);
-        assert!(truncated_arguments_result("state::set", &args).is_error);
+        assert!(truncated_arguments_result(
+            "state::set",
+            &args,
+            crate::types::event::StopReason::End
+        )
+        .is_error);
         // Short args pass through whole.
         assert_eq!(arguments_preview(&json!({"a": 1})), r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn truncated_arguments_name_the_real_cause_without_salvage_markers() {
+        use crate::types::event::StopReason;
+        let args = json!({ "_partial": true, "path": "a.rs", "_streaming": "…tail" });
+
+        let cut = truncated_arguments_result("coder::create-file", &args, StopReason::Length);
+        let text = match &cut.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(text.contains("maximum output length"), "{text}");
+        assert!(text.contains("smaller pieces"), "{text}");
+        assert!(!text.contains("_partial") && !text.contains("_streaming"), "{text}");
+        assert!(text.contains(r#"{"path":"a.rs"}"#), "{text}");
+        assert_eq!(cut.details["cause"], "max_output_tokens");
+        assert_eq!(cut.details["error"], "arguments_truncated");
+
+        let bad = truncated_arguments_result("coder::create-file", &args, StopReason::End);
+        let text = match &bad.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("want text, got {other:?}"),
+        };
+        assert!(text.contains("complete, valid JSON"), "{text}");
+        assert!(!text.contains("maximum output length"), "{text}");
+        assert_eq!(bad.details["cause"], "incomplete_json");
     }
 
     #[test]

@@ -67,6 +67,7 @@ import {
   applyEntryUpsert,
   belongsToEntry,
   clearTransientFlags,
+  entryIdOfMessage,
   prependTranscript,
   transcriptToMessages,
 } from '@/lib/sessions/entry-mapper'
@@ -1206,9 +1207,19 @@ export function cancelHydrationRunsForSessions(
 
 /** Fold a hydration read together with what the live feed did meanwhile:
     replay the buffered upserts on top (same entry id → live wins, the
-    fetched snapshot predates them), then re-append live-only messages the
-    read didn't return. Without the replay, an update landing mid-fetch is
-    clobbered by the older snapshot and `hydrated: true` pins it stale. */
+    fetched snapshot predates them), then keep what the read did not return.
+    Without the replay, an update landing mid-fetch is clobbered by the older
+    snapshot and `hydrated: true` pins it stale.
+
+    Live rows are matched to the read by ENTRY, never by segment id: a tail
+    page elides the inside of a run and drops its thinking blocks, so the
+    same call sits at a different block index on each side (`e_x:2` live,
+    `e_x:1` on the page). Matching ids used to re-append every shifted call
+    card after the final answer. An entry the page holds is the page's —
+    unless the page's copy is an elided placeholder and the live copy is
+    whole, which keeps content already on screen instead of a stub that
+    needs a range read to come back. Only entries the page lacks (local
+    notices, rows that landed after the page was cut) are appended. */
 export function mergeHydratedTranscript(
   fetched: Message[],
   live: Message[],
@@ -1223,10 +1234,30 @@ export function mergeHydratedTranscript(
       working: opts.working,
     })
   }
+  const liveByEntry = new Map<string, Message[]>()
   for (const m of live) {
-    if (!messages.some((existing) => existing.id === m.id)) {
-      messages = [...messages, m]
+    const entryId = entryIdOfMessage(m.id)
+    const rows = liveByEntry.get(entryId)
+    if (rows) rows.push(m)
+    else liveByEntry.set(entryId, [m])
+  }
+  const isPlaceholder = (m: Message) =>
+    m.role === 'function-trigger' && m.unloaded === true
+  for (const [entryId, rows] of liveByEntry) {
+    const first = messages.findIndex((m) => belongsToEntry(m.id, entryId))
+    if (first === -1) {
+      messages = [...messages, ...rows]
+      continue
     }
+    const pageElided = messages.some(
+      (m) => belongsToEntry(m.id, entryId) && isPlaceholder(m),
+    )
+    if (!pageElided || rows.some(isPlaceholder)) continue
+    messages = [
+      ...messages.slice(0, first),
+      ...rows,
+      ...messages.slice(first).filter((m) => !belongsToEntry(m.id, entryId)),
+    ]
   }
   return messages
 }

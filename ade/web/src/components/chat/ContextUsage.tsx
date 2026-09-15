@@ -9,15 +9,30 @@ import type { Message } from '@/types/chat'
 interface ContextUsageProps {
   messages: readonly Message[]
   contextWindow?: number
+  /**
+   * The harness's own count for the last request. The chars/4 estimate over
+   * the loaded rows only stands in before the first generate: it grows with
+   * every live row and shrinks to the elided tail page on reload.
+   */
+  tokens?: number
 }
 
 const WARN_THRESHOLD = 0.75
 const DANGER_THRESHOLD = 0.9
 
-export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
+export function ContextUsage({
+  messages,
+  contextWindow,
+  tokens: reported,
+}: ContextUsageProps) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
-  const tokens = useMemo(() => estimateConversationTokens(messages), [messages])
+  const estimate = useMemo(
+    () => estimateConversationTokens(messages),
+    [messages],
+  )
+  const tokens = reported ?? estimate
+  const estimated = reported === undefined
 
   useEffect(() => {
     if (!open) return
@@ -67,7 +82,7 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
     <div ref={rootRef} className="relative flex self-stretch items-center">
       <button
         type="button"
-        aria-label={`context: approximately ${tokens.toLocaleString()} tokens${hasContextWindow ? ` of ${contextWindow.toLocaleString()} (${pct}%)` : ''} — click for details`}
+        aria-label={`context: ${estimated ? 'approximately ' : ''}${tokens.toLocaleString()} tokens${hasContextWindow ? ` of ${contextWindow.toLocaleString()} (${pct}%)` : ''} — click for details`}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
@@ -108,7 +123,9 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
         >
           <div className="flex items-baseline justify-between gap-3">
             <span className="font-medium">Context</span>
-            <span className="text-xs text-ink-faint">Estimated</span>
+            <span className="text-xs text-ink-faint">
+              {estimated ? 'Estimated' : 'Last request'}
+            </span>
           </div>
           <div className="mt-3 space-y-2">
             <ContextDetailRow label="Conversation" value={tokens} />
@@ -120,9 +137,11 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
             ) : null}
           </div>
           <p className="mt-3 border-t border-rule-2 pt-2 text-xs leading-relaxed text-ink-faint">
-            {hasContextWindow
-              ? 'An estimate based on the messages loaded in this chat.'
-              : 'The selected model did not report a context-window limit.'}
+            {!hasContextWindow
+              ? 'The selected model did not report a context-window limit.'
+              : estimated
+                ? 'An estimate based on the messages loaded in this chat.'
+                : 'What the last request sent to the model actually used.'}
           </p>
         </div>
       ) : null}

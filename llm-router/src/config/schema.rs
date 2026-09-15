@@ -69,7 +69,7 @@ pub fn compose_entry_schema(provider_schemas: &BTreeMap<String, Value>) -> Value
             "settings": {
                 "type": "object",
                 "properties": {
-                    "stream_timeout_ms": { "type": "number", "default": 300000 },
+                    "stream_timeout_ms": { "type": "number", "default": 600000 },
                     "idle_timeout_ms": { "type": "number", "default": 120000 },
                     "retry_max": {
                         "type": "integer",
@@ -77,7 +77,10 @@ pub fn compose_entry_schema(provider_schemas: &BTreeMap<String, Value>) -> Value
                         "maximum": MAX_RETRY_MAX,
                         "default": 2
                     },
-                    "output_token_max": { "type": "number", "default": 32000 }
+                    "output_token_max": {
+                        "type": ["number", "null"],
+                        "description": "Optional router-wide cap on output tokens. Unset (the default) forwards each model's own output ceiling, so providers run without an artificial limit."
+                    }
                 }
             },
             "providers": { "type": "object", "properties": provider_schemas }

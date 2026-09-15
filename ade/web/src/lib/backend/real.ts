@@ -485,6 +485,18 @@ async function realListQueued(
   }))
 }
 
+/**
+ * `harness::status` → `context.total`: what the last request actually cost
+ * in context, from the harness's own accounting. `null` before the first
+ * generate (or without a turn record).
+ */
+async function realContextUsage(sessionId: string): Promise<number | null> {
+  const client = await getIiiClient()
+  const status = await getTurnStatus(client, sessionId).catch(() => null)
+  const total = status?.context?.total
+  return typeof total === 'number' ? total : null
+}
+
 /** `harness::unqueue` — pull a still-parked message back out of the queue. */
 async function realRemoveQueued(
   sessionId: string,
@@ -771,6 +783,7 @@ export const realBackend: ChatBackend = {
   stream: realStream,
   queueMessage: realQueueMessage,
   listQueued: realListQueued,
+  contextUsage: realContextUsage,
   removeQueued: realRemoveQueued,
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
