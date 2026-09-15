@@ -78,6 +78,10 @@ export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRe
   // trigger that fires does not throw its payload open over what is being
   // read; the row is there when the detail is wanted.
   const [openSub, setOpenSub] = useState<string | null>(null)
+  // The step whose screen has been placed. Its button becomes `Continue`, so
+  // opening a panel and being done reading it are two separate clicks — the
+  // step used to close on the first one, before the panel had been looked at.
+  const [opened, setOpened] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -150,8 +154,9 @@ export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRe
    * it does not match the column count, which is why it is sent only for the
    * three-column layout this page knows it is making.
    *
-   * The step closes whether or not the call lands: an older console rejects
-   * `relative_to`, and the step is about reading the panel, not about us.
+   * The button moves on whether or not the call lands: an older console
+   * rejects `relative_to`, and the step is about reading the panel, not about
+   * us. The step itself closes on the `Continue` this turns into.
    */
   const openScreen = useCallback(
     (step: Step) => {
@@ -170,9 +175,9 @@ export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRe
             .catch(() => open())
             .catch(() => {})
         : Promise.resolve()
-      void placed.then(() => complete(step.id))
+      void placed.then(() => setOpened(step.id))
     },
-    [complete, host],
+    [host],
   )
 
   /**
@@ -377,9 +382,21 @@ export function OnboardingPage({ host, onRequestClose }: { host: Host } & PageRe
                     </div>
                   ) : null}
                   {state !== 'complete' && !step.condition && !step.ask ? (
-                    <Button className="self-start" onClick={() => openScreen(step)}>
-                      {step.screen ? `Open ${step.screen}` : 'Got it'}
-                    </Button>
+                    step.screen && opened !== step.id ? (
+                      <Button className="self-start" onClick={() => openScreen(step)}>
+                        Open {step.screen}
+                      </Button>
+                    ) : (
+                      // Once the panel is up, the button changes colour and
+                      // pulls a few beats of attention, so the operator sees
+                      // that it is now the way onward and not the way back.
+                      <Button
+                        className={`self-start${step.screen ? ' ob-continue' : ''}`}
+                        onClick={() => complete(step.id)}
+                      >
+                        {step.screen ? 'Continue' : 'Got it'}
+                      </Button>
+                    )
                   ) : null}
                 </div>
               ) : null}

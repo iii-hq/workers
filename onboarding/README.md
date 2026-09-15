@@ -37,13 +37,23 @@ engine delivered, not a simulation.
 
 The condition is its own row under its step, and stays there once it fires:
 the trigger type, its state, and the time it fired. Expanding it shows the
-binding config and the payload, the way the harness shows a function call. A
-trigger that fires opens its row, so the payload arrives in view.
+binding config and the payload, the way the harness shows a function call.
+The row opens when the operator opens it: a trigger that fires does not throw
+its payload over whatever is being read.
 
-The tour ships two: `harness::turn-completed` (send a message) and `state`
-scoped to `tour-scratch` (write a value and watch the trigger fire). The
-second also carries a `prompt` — a sample message, with a copy control, that
-makes the same trigger fire through the agent instead of the shell.
+The tour ships two kinds. The first step waits on `harness::turn-completed`,
+so it closes when the agent answers. The four steps whose work the AGENT does
+— Composability, Discoverability, Extensibility, Reactivity — each wait on a
+`state` trigger bound to one key, `step_<id>_completed`, in the `onboarding`
+scope; their prompts end by telling the agent to write it. The trigger matches
+the key, not the value: whatever the agent writes there, the write is the
+report.
+
+That is what keeps the open step and the step being worked on the same step. A
+long build used to read as finished the moment its prompt was sent, because
+the button closed the step. The page binds every reachable condition when the
+step is displayed, before any button is clicked, so the wait is already
+running when the prompt goes out.
 
 ## Anchors
 
@@ -78,7 +88,15 @@ step, anchored on the console's traces screen), **Discoverable** (one engine,
 one palette), **Extensible** (this page is a worker's page; install more from
 the package repo), **Reactive** (the trigger step). The last step, "Stay in
 touch", takes an email address for the roadmap and product updates, with icon
-links to Discord, GitHub, X and LinkedIn, and a link to the docs.
+links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
+"Clean up" asks the agent to remove this worker and close the pane — the same
+composition move as adding one, run backwards. It carries no condition: the
+worker that would report the step done is the worker being removed.
+
+The Observability step takes two clicks. The first places the traces panel
+beside the tour; the button then becomes a green, briefly pulsing `Continue`,
+which is what closes the step. Opening a panel and having read it are
+different things, and one click could only say the first.
 
 ## Build
 

@@ -171,6 +171,19 @@ export const TOURS = [
         // in the console to point at. The page renders the signup box and the
         // links for this step id.
       },
+      {
+        id: "clean-up",
+        ask: {
+          text: "Remove the onboarding worker from this project, then close the onboarding pane.",
+          label: "Ask the agent",
+        },
+        title: "Clean up",
+        body: "Removing a worker is the same move as adding one. Ask the agent to take the tour back out, and it will close this pane on the way.",
+        // No condition, and this is the one step where that is not a choice:
+        // the worker this page waits on is the worker being removed, so
+        // nothing survives to report the step done. Sending the prompt IS the
+        // step, which is what an `ask` with no condition already does.
+      },
     ],
   },
 ];

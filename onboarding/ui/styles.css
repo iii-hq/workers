@@ -159,6 +159,38 @@
   rotate: 90deg;
 }
 
+/* The step's button once its panel is up: it stops being `Open traces` and
+   becomes `Continue`. Same place, different job, so it changes colour and
+   takes a few beats of attention rather than swapping its label in silence.
+   Finite, not looping — it is a handover, not a state. */
+[data-iii-ui='onboarding'] .ob-continue {
+  background: var(--color-ok);
+  border-color: var(--color-ok);
+  /* `--color-ok` is a deep green in the light theme and a bright mint in the
+     dark one, so the readable ink is not the same colour in both. */
+  color: #fff;
+  animation: onboarding-continue 1.1s var(--motion-ease-standard) 3;
+}
+
+[data-theme='dark'] [data-iii-ui='onboarding'] .ob-continue {
+  color: var(--color-panel);
+}
+
+[data-iii-ui='onboarding'] .ob-continue:hover {
+  background: color-mix(in srgb, var(--color-ok) 85%, black);
+  border-color: color-mix(in srgb, var(--color-ok) 85%, black);
+}
+
+@keyframes onboarding-continue {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--color-ok-muted);
+  }
+  50% {
+    box-shadow: 0 0 0 6px var(--color-ok-muted);
+  }
+}
+
 /* The signup box and the icon links. Console has no input or icon-link
    recipe the page can borrow. */
 [data-iii-ui='onboarding'] .ob-input {
@@ -234,6 +266,7 @@
   [data-iii-ui='onboarding'] .ob-pulse,
   [data-iii-ui='onboarding'] .ob-open,
   [data-iii-ui='onboarding'] .ob-caret,
+  [data-iii-ui='onboarding'] .ob-continue,
   [data-iii-ui='onboarding'] .ob-bar > span {
     transition: none;
     animation: none;
