@@ -32,7 +32,7 @@ class SyncTests(unittest.TestCase):
         self.commit()
         self.destination = self.root / "local template"
         (self.destination / "scripts").mkdir(parents=True)
-        shutil.copyfile(TEMPLATE / "sync.sh", self.destination / "sync.sh")
+        shutil.copy2(TEMPLATE / "sync.sh", self.destination / "sync.sh")
         shutil.copyfile(TEMPLATE / "scripts/sync_template.py", self.destination / "scripts/sync_template.py")
         self.protected = {
             "worker-compose.yaml": "containers: {harness: {worker: 'path://../harness'}}\n",
@@ -62,7 +62,7 @@ class SyncTests(unittest.TestCase):
 
     def run_sync(self, *args, success=True):
         result = subprocess.run(
-            ["bash", str(self.destination / "sync.sh"), "--repo", str(self.upstream), *args],
+            [str(self.destination / "sync.sh"), "--repo", str(self.upstream), *args],
             cwd=self.root, text=True, capture_output=True, timeout=60,
         )
         if success:
