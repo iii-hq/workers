@@ -168,7 +168,10 @@ function ChangeRow({ change }: { change: RowChange }) {
         {rows} {rows === 1 ? 'row' : 'rows'}
       </span>
       {change.returning?.length ? (
-        <Badge variant="default">{change.returning.length} returned</Badge>
+        <Badge variant="default">
+          {change.returning.length}
+          {change.truncated ? '+' : ''} returned
+        </Badge>
       ) : null}
       <span className="db-change-at" title={new Date(change.at).toISOString()}>
         {relative(age)}

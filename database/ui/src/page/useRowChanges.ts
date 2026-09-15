@@ -92,6 +92,7 @@ export function useRowChanges(host: Host, db: string | undefined, table: string 
         op: event?.op ?? 'other',
         affected_rows: Number(event?.affected_rows ?? 0),
         returning: event?.returning,
+        truncated: event?.truncated,
         at: Number.isFinite(at) ? at : Date.now(),
         seen: Date.now(),
         seq: feedSeq++,
