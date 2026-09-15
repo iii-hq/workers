@@ -292,8 +292,10 @@ Worth knowing:
   or atomic with the database write. There is no replay, retry, or exactly-once
   guarantee; a crash between commit and dispatch can lose an event. Subscriber
   failures are logged and never fail the write. A harness wake notification
-  renders the event as a ~600-character summary; the full payload is in the
-  fire record.
+  renders the event as JSON within ~8,000 characters; an over-long `returning`
+  keeps its leading rows and ends with one `"…N more entries omitted"` string,
+  so the text always parses and `affected_rows` stays exact. Re-read the table
+  on wake when a binding can see wide or many-row writes.
 - **`table` can be null on `statements`.** The table is read off the SQL. A
   CTE-wrapped write (`WITH … INSERT`) still fires, with `table: null`, rather
   than being dropped; a binding that named a table simply does not match it.
