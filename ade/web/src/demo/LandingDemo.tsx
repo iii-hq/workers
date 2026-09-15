@@ -208,7 +208,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
               conversations={player.conversations}
               activeId={player.activeId}
               onSelect={player.select}
-              onRename={noop}
+              onRename={async () => null}
               onRemove={noop}
             />
           </PageSidebar>
