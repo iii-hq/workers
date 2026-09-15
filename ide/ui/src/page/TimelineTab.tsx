@@ -204,7 +204,7 @@ export function TimelineTab({
                             >
                               <FileTypeIcon path={shown} className="file-icon" />
                               <span className="name">{basename(shown)}</span>
-                              {(viewMode === 'list' || rel === null) && dirname(shown) ? <span className="dir">{dirname(shown)}</span> : null}
+                              {viewMode === 'list' && dirname(shown) ? <span className="dir">{dirname(shown)}</span> : null}
                               {agentName ? (
                                 <span className="shui-agent-tag" title={`changed by ${agentName}`}>
                                   <Bot aria-hidden />

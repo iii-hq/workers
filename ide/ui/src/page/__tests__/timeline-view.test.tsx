@@ -40,10 +40,13 @@ afterEach(() => vi.unstubAllGlobals())
 describe('Timeline file views', () => {
   it('groups relative paths without changing absolute identities or agent metadata', () => {
     const tree = buildChangeTree(files, (file) => relativeToRoot(file.path, '/repo'))
-    expect(tree.directories.map((dir) => dir.name)).toEqual(['src'])
-    expect(tree.entries).toEqual([files[2]])
-    expect(tree.directories[0].directories[0].entries[0]).toBe(files[0])
-    expect(tree.directories[0].entries[0]).toBe(files[1])
+    expect(tree.directories.map((dir) => dir.name)).toEqual(['Outside workspace', 'src'])
+    expect(tree.entries).toEqual([])
+    const outside = tree.directories[0]
+    expect(outside.directories[0].path).toBe('/elsewhere')
+    expect(outside.directories[0].directories[0].entries[0]).toBe(files[2])
+    expect(tree.directories[1].directories[0].entries[0]).toBe(files[0])
+    expect(tree.directories[1].entries[0]).toBe(files[1])
   })
 
   it.each(['list', 'tree'])('preserves turn order, status, agents and file actions in %s mode', (mode) => {
@@ -59,13 +62,42 @@ describe('Timeline file views', () => {
     expect(html).toContain('disabled="" title="/elsewhere/src/new.ts (outside this folder)"')
     expect(html).toContain(mode === 'list' ? 'View as Tree' : 'View as List')
     if (mode === 'tree') {
-      expect(html.match(/class="shui-scm-folder"/g)).toHaveLength(4)
+      expect(html.match(/class="shui-scm-folder"/g)).toHaveLength(7)
       expect(html).toContain('padding-left:34px')
-      expect(html).not.toContain('title="/elsewhere"')
+      expect(html).toContain('Outside workspace')
+      expect(html).toContain('title="/elsewhere"')
+      expect(html).toContain('title="/elsewhere/src"')
+      expect(html).not.toContain('<span class="dir">/elsewhere/src</span>')
     } else {
       expect(html).not.toContain('shui-scm-folder')
       expect(html).toContain('<span class="dir">src/nested</span>')
     }
+  })
+
+  it('separates matching internal and external paths, including root-level files', () => {
+    const entries: TurnFileHead[] = [
+      { path: '/repo/src/a.ts', kind: 'modified' },
+      { path: '/src/a.ts', kind: 'deleted' },
+      { path: '/a.ts', kind: 'created' },
+      { path: '/other/src/a.ts', kind: 'modified' },
+      { path: '/repo/Outside workspace/a.ts', kind: 'modified' },
+    ]
+    const tree = buildChangeTree(entries, (file) => relativeToRoot(file.path, '/repo'))
+    const outside = tree.directories.find((dir) => dir.path === '/')!
+    expect(outside.entries).toEqual([entries[2]])
+    expect(outside.directories.map((dir) => dir.path)).toEqual(['/other', '/src'])
+    expect(outside.directories[1].entries[0]).toBe(entries[1])
+    expect(outside.directories[0].directories[0].entries[0]).toBe(entries[3])
+    expect(tree.directories.find((dir) => dir.path === 'src')!.entries[0]).toBe(entries[0])
+    expect(tree.directories.find((dir) => dir.path === 'Outside workspace')!.entries[0]).toBe(entries[4])
+  })
+
+  it('builds an external-only tree without empty folder names', () => {
+    const tree = buildChangeTree([files[2]], () => null)
+    expect(tree.entries).toEqual([])
+    expect(tree.directories).toHaveLength(1)
+    expect(tree.directories[0].directories[0].name).toBe('elsewhere')
+    expect(tree.directories[0].directories[0].directories[0].name).toBe('src')
   })
 
   it('keeps the Timeline preference separate from Source Control', () => {
