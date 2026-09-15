@@ -523,6 +523,15 @@ function txGatingCase(target: NativeTarget): TestCase {
         expectEqual(ops, ['insert', 'update'], 'committed transaction delivers both events')
         for (const event of committed) {
           expectEqual(event.affected_rows, 1, `committed ${event.op} affected_rows`)
+          // Both statements touch the one committed row, and the event says
+          // which row that is — through the capture mechanism, not the
+          // worker's classification (which is off for native databases).
+          expectEqual(
+            event.returning,
+            [{ id: target.keyOf(1) }],
+            `committed ${event.op} event carries the row key`,
+          )
+          expect(event.truncated === undefined, 'one key is under the cap')
         }
         await sleep(SILENCE_WINDOW_MS)
         native.expectDrained()
@@ -1094,14 +1103,168 @@ function keyShapesCase(target: NativeTarget): TestCase {
   }
 }
 
-export const NATIVE_CAPTURE_CASES: TestCase[] = TARGETS.flatMap((target) => [
-  crossClientCase(target),
-  tablelessRejectionCase(target),
-  txGatingCase(target),
-  fanOutOpsCase(target),
-  bulkCoalescingCase(target),
-  caseSensitivityCase(target),
-  twoTableIsolationCase(target),
-  missingTableRegistrationCase(target),
-  keyShapesCase(target),
-])
+/**
+ * The postgres trigger builds its NOTIFY payload with a byte budget: an
+ * 8000-byte payload is refused by `pg_notify`, and inside an AFTER trigger
+ * that error would abort the WRITER's statement. So the trigger halves the
+ * key count until the payload fits. Twenty ~1KB text keys cannot all fit —
+ * the write must succeed, the count must stay exact, and the event must say
+ * it dropped keys rather than pretend the list is complete.
+ */
+function pgByteCapCase(): TestCase {
+  return {
+    name: 'native capture trims postgres keys to the NOTIFY payload budget',
+    applies: ['pg_db'],
+    async run({ call, iii }) {
+      const target = TARGETS.find((t) => t.applies === 'pg_db')!
+      const table = 'e2e_native_pg_bytes'
+      const fnId = 'harness::native_pg_bytes'
+      const events: RowChangedEvent[] = []
+      const native = sink(events, 'pg byte-cap subscriber')
+
+      await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: `CREATE TABLE ${table} (k TEXT PRIMARY KEY, n INT)`,
+      })
+      const fnRef = iii.registerFunction(
+        fnId,
+        async (payload: RowChangedEvent) => {
+          events.push(payload)
+          return null
+        },
+        { description: 'Postgres NOTIFY byte-budget E2E sink.' },
+      )
+      const triggerRef = iii.registerTrigger({
+        type: 'database::row-changed',
+        function_id: fnId,
+        config: { db: target.nativeDb, table },
+      })
+
+      try {
+        await waitForCaptureReady(call, iii, target, table)
+        const rows = Array.from({ length: 20 }, (_, i) => `('${'x'.repeat(1000)}${i}', ${i})`)
+        const written = await call('database::execute', {
+          db: target.applies,
+          sql: `INSERT INTO ${table} (k, n) VALUES ${rows.join(', ')}`,
+        })
+        expectEqual(written.affected_rows, 20, 'the write itself is never aborted by the cap')
+
+        const event = await native.next()
+        expectEqual(event.op, 'insert', 'pg byte-cap op')
+        expectEqual(event.affected_rows, 20, 'the count stays exact')
+        const keys = event.returning ?? []
+        expect(
+          keys.length > 0 && keys.length < 20,
+          `some keys fit and not all (got ${keys.length} of 20)`,
+        )
+        expectEqual(event.truncated, true, 'the dropped keys are flagged')
+      } finally {
+        triggerRef.unregister()
+        fnRef.unregister()
+        await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      }
+    },
+  }
+}
+
+/**
+ * Upgrade path: a changelog written by the pre-keys worker has three
+ * columns, and the new triggers write a fourth. The install must migrate the
+ * table in place — a trigger writing `key` into a three-column changelog
+ * would fail the WRITER's statement, not ours.
+ *
+ * The AUTOINCREMENT sequence is pushed past the watcher's cursor on purpose:
+ * the watcher resumes at `MAX(id)` and a recreated table restarts ids at 1,
+ * so without the jump the new rows would land below the cursor and never be
+ * drained — a test that could pass for the wrong reason.
+ */
+function sqliteLegacyChangelogCase(): TestCase {
+  return {
+    name: 'native capture migrates a pre-keys sqlite changelog in place',
+    applies: ['sqlite_db'],
+    async run({ call, iii }) {
+      const target = TARGETS.find((t) => t.applies === 'sqlite_db')!
+      const table = 'e2e_native_legacy'
+      const fnId = 'harness::native_legacy'
+      const events: RowChangedEvent[] = []
+      const native = sink(events, 'legacy-changelog subscriber')
+
+      await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      // Simulate the changelog as the previous worker left it: no `key`.
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: 'DROP TABLE IF EXISTS _iii_row_changes',
+      })
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: 'CREATE TABLE _iii_row_changes (id INTEGER PRIMARY KEY AUTOINCREMENT, tbl TEXT NOT NULL, op TEXT NOT NULL)',
+      })
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: "INSERT INTO _iii_row_changes (tbl, op) VALUES ('legacy-seed', 'insert')",
+      })
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: "UPDATE sqlite_sequence SET seq = 10000000 WHERE name = '_iii_row_changes'",
+      })
+      await call('database::execute', {
+        db: target.nativeDb,
+        sql: `CREATE TABLE ${table} (id ${target.idColumnDDL}, n INT NOT NULL)`,
+      })
+      const fnRef = iii.registerFunction(
+        fnId,
+        async (payload: RowChangedEvent) => {
+          events.push(payload)
+          return null
+        },
+        { description: 'Legacy-changelog migration E2E sink.' },
+      )
+      const triggerRef = iii.registerTrigger({
+        type: 'database::row-changed',
+        function_id: fnId,
+        config: { db: target.nativeDb, table },
+      })
+
+      try {
+        // The install is what migrates the changelog (ALTER … ADD COLUMN).
+        // If it had not, this INSERT would fail in the trigger and the
+        // capture would be silently absent — the event below is the proof.
+        await waitForCaptureReady(call, iii, target, table)
+        await call('database::execute', {
+          db: target.nativeDb,
+          sql: `INSERT INTO ${table} (n) VALUES (${target.ph(1)})`,
+          params: [1],
+        })
+        const event = await native.next()
+        expectEqual(event.op, 'insert', 'legacy-changelog op')
+        expectEqual(event.affected_rows, 1, 'legacy-changelog count')
+        expectEqual(
+          event.returning,
+          [{ id: target.keyOf(1) }],
+          'keys flow through a migrated changelog',
+        )
+      } finally {
+        triggerRef.unregister()
+        fnRef.unregister()
+        await call('database::execute', { db: target.nativeDb, sql: `DROP TABLE IF EXISTS ${table}` })
+      }
+    },
+  }
+}
+
+export const NATIVE_CAPTURE_CASES: TestCase[] = [
+  ...TARGETS.flatMap((target) => [
+    crossClientCase(target),
+    tablelessRejectionCase(target),
+    txGatingCase(target),
+    fanOutOpsCase(target),
+    bulkCoalescingCase(target),
+    caseSensitivityCase(target),
+    twoTableIsolationCase(target),
+    missingTableRegistrationCase(target),
+    keyShapesCase(target),
+  ]),
+  pgByteCapCase(),
+  sqliteLegacyChangelogCase(),
+]

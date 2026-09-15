@@ -328,4 +328,70 @@ export const ROW_CHANGED_CASES: TestCase[] = [
       }
     },
   },
+  {
+    // Known classifier quirk, pinned on purpose: `sql::classify`
+    // (triggers/sql.rs) reads keywords, not a parse, so a CTE statement whose
+    // TEXT contains a DML keyword — even inside a string literal — is
+    // reported as an unknown write. The README documents this. If someone
+    // teaches the classifier about literals, this case is the deliberate
+    // record of the old contract and should change with it.
+    //
+    // MySQL is excluded: a SELECT through `execute` reports no affected rows
+    // there (the result set is dropped), so nothing fires at all.
+    name: 'row-changed reports a CTE read whose text mentions a DML word',
+    applies: ['sqlite_db', 'pg_db'],
+    async run({ driver, call, iii }) {
+      const functionId = `harness::row_changed_cte_${driver}`
+      const events: RowChangedEvent[] = []
+      const fnRef = iii.registerFunction(
+        functionId,
+        async (payload: RowChangedEvent) => {
+          events.push(payload)
+          return null
+        },
+        { description: 'CTE-classification E2E sink.' },
+      )
+      // db-wide: a statement the classifier cannot pin to a table only
+      // reaches bindings that did not name one.
+      const triggerRef = iii.registerTrigger({
+        type: 'database::row-changed',
+        function_id: functionId,
+        config: { db: driver },
+      })
+      try {
+        const registered = await iii.trigger<
+          Record<string, never>,
+          { registered_triggers: Array<{ trigger_type: string; function_id: string }> }
+        >({ function_id: 'engine::registered-triggers::list', payload: {} })
+        expect(
+          registered.registered_triggers.some(
+            (t) => t.trigger_type === 'database::row-changed' && t.function_id === functionId,
+          ),
+          'CTE case: binding is visible to the engine',
+        )
+
+        const read = await call('database::execute', {
+          db: driver,
+          sql: `WITH x AS (SELECT 1 AS n) SELECT 'update' AS note FROM x`,
+        })
+        expectEqual(read.returned_rows.length, 1, 'the read still returns its row')
+
+        const deadline = Date.now() + EVENT_TIMEOUT_MS
+        while (events.length === 0 && Date.now() < deadline) await sleep(20)
+        expectEqual(events.length, 1, 'the keyword in the text fires one event')
+        const event = events[0]
+        expectEqual(event.op, 'other', 'unknown write op')
+        expectEqual(event.table, null, 'the classifier will not guess a table')
+        expectEqual(event.affected_rows, 1, 'the statement count rides along')
+        expectEqual(
+          event.returning,
+          [{ note: 'update' }],
+          "statements mode forwards the writer's rows, reads included",
+        )
+      } finally {
+        triggerRef.unregister()
+        fnRef.unregister()
+      }
+    },
+  },
 ]

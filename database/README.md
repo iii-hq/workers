@@ -297,7 +297,10 @@ Worth knowing:
 - **`table` can be null on `statements`.** The table is read off the SQL. A
   CTE-wrapped write (`WITH … INSERT`) still fires, with `table: null`, rather
   than being dropped; a binding that named a table simply does not match it.
-  Omit `table` to match every write, including these.
+  Omit `table` to match every write, including these. The classifier reads
+  keywords rather than parsing, so any `WITH` statement whose text contains
+  `INSERT`/`UPDATE`/`DELETE`/`MERGE` — even inside a string literal — fires
+  the same way.
 - **`runStatement` does not fire on `statements`.** The prepared-run path
   returns rows, not an affected-row count, and an event that invented one would
   be lying. Use `execute` when you need the change announced. On a `native`
