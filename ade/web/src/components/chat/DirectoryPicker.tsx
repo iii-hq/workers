@@ -136,6 +136,7 @@ function withProject(
   ].sort((a, b) => b.last_used_at - a.last_used_at)
 }
 
+/** Recent-project entry with selection, inline renaming, and optional removal. */
 function ProjectRow({
   project,
   selected,
@@ -295,6 +296,7 @@ export {
   WORKSPACE_VALIDATE_FUNCTION_ID,
 }
 
+/** Select a validated directory from recent projects, folders, or managed worktrees. */
 export function DirectoryPicker({
   value,
   onChange,
@@ -1131,6 +1133,7 @@ export function DirectoryPicker({
   )
 }
 
+/** Host picker content inline, in a mobile sheet, or in a desktop popover. */
 function DirectoryPickerSurface({
   open,
   embedded,

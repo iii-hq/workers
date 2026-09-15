@@ -14,8 +14,7 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import type { Conversation, SubagentColor } from '@/types/chat'
 
-const rowActionClassName =
-  uiClasses.treeItemAction + ' pointer-coarse:min-h-12 pointer-coarse:min-w-12'
+const rowActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12 pointer-coarse:min-w-12`
 
 interface ConversationRowProps {
   conversation: Conversation
@@ -79,6 +78,7 @@ function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
   return { Icon: MessageSquare }
 }
 
+/** Conversation tree row with touch rename actions and explicit-exit focus recovery. */
 export function ConversationRow({
   conversation,
   active,
@@ -93,11 +93,16 @@ export function ConversationRow({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(conversation.title)
   const inputRef = useRef<HTMLInputElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const restoreFocusRef = useRef(false)
 
   useEffect(() => {
     if (editing) {
       inputRef.current?.focus()
       inputRef.current?.select()
+    } else if (restoreFocusRef.current) {
+      restoreFocusRef.current = false
+      rowRef.current?.focus({ preventScroll: true })
     }
   }, [editing])
 
@@ -105,10 +110,18 @@ export function ConversationRow({
     if (!editing) setDraft(conversation.title)
   }, [conversation.title, editing])
 
+  /** Persist a nonempty changed title; blur callers retain their focus destination. */
   const commit = () => {
     setEditing(false)
     const next = draft.trim()
     if (next && next !== conversation.title) onRename(next)
+  }
+
+  /** Discard explicit edits and restore focus after the editor unmounts. */
+  const cancel = () => {
+    restoreFocusRef.current = true
+    setEditing(false)
+    setDraft(conversation.title)
   }
 
   const glyph = resolveGlyph(conversation, depth)
@@ -116,6 +129,7 @@ export function ConversationRow({
   return (
     // biome-ignore lint/a11y/useSemanticElements: row hosts nested editing/caret/delete <button>s; using a real <button> here would nest interactive elements.
     <div
+      ref={rowRef}
       role="button"
       tabIndex={editing ? -1 : 0}
       aria-current={active ? 'page' : undefined}
@@ -150,6 +164,7 @@ export function ConversationRow({
           onClick={(e) => e.stopPropagation()}
           onSubmit={(e) => {
             e.preventDefault()
+            restoreFocusRef.current = true
             commit()
           }}
           onBlur={(e) => {
@@ -158,8 +173,7 @@ export function ConversationRow({
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               e.preventDefault()
-              setEditing(false)
-              setDraft(conversation.title)
+              cancel()
             }
           }}
         >
@@ -184,10 +198,7 @@ export function ConversationRow({
             className={rowActionClassName}
             aria-label="Cancel rename"
             onPointerDown={(e) => e.preventDefault()}
-            onClick={() => {
-              setEditing(false)
-              setDraft(conversation.title)
-            }}
+            onClick={cancel}
           >
             <X aria-hidden />
           </button>

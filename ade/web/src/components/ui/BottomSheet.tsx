@@ -37,6 +37,7 @@ interface BottomSheetContentProps
   overlayClassName?: string
 }
 
+/** Viewport-bounded mobile dialog with in-sheet page navigation and focus recovery. */
 export const BottomSheetContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   BottomSheetContentProps

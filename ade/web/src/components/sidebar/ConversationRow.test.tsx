@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { ConversationRow } from './ConversationRow'
 
+/** Render an isolated conversation row for static accessibility assertions. */
 function renderRow(title: string) {
   return renderToStaticMarkup(
     <ConversationRow
