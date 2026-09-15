@@ -62,7 +62,7 @@ running when the prompt goes out.
 A step's `anchors` are selectors for the console element it talks about, best
 first. The first is always a class the console carries **for this tour**: `onboarding-menu-bar`, `onboarding-tabs`, `onboarding-palette`,
 `onboarding-conversations`, `onboarding-composer`, `onboarding-traces`. Each
-one sits in `console/web/src` beside a short comment that says it is a tour
+one sits in `ade/web/src` beside a short comment that says it is a tour
 anchor. `pnpm test` fails if a step points at a class the console no longer
 has. The selectors after the first are the console's own stable hooks, so the
 box still lands on a console build older than the anchor classes.

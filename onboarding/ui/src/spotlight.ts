@@ -62,12 +62,36 @@ function track(selectors: readonly string[]) {
   frame = requestAnimationFrame(step)
 }
 
+/**
+ * The first match the operator can actually SEE.
+ *
+ * `document.querySelector` returns the first in DOM order, which is not
+ * always the live one. A tab can mount several chat columns, each carrying
+ * its own `.onboarding-composer`. A pane that is animating away stays mounted
+ * with `inert` and `aria-hidden` until the transition ends. And a
+ * desktop-only anchor can sit inside a `hidden sm:flex` header on a narrow
+ * layout — present in the document, never painted. Framing any of those puts
+ * the box over nothing, and lets `waitForAnchor` call a panel open before it
+ * is on screen.
+ *
+ * ponytail: judged by layout box and inert/aria-hidden ancestry rather than
+ * by matching the active conversation id. The box only has to land on
+ * something visible; plumbing the session through would buy a precision this
+ * has no use for.
+ */
 function firstMatch(selectors: readonly string[]): Element | null {
   for (const selector of selectors) {
-    const found = document.querySelector(selector)
-    if (found) return found
+    for (const found of document.querySelectorAll(selector)) {
+      if (isShowing(found)) return found
+    }
   }
   return null
+}
+
+/** On screen: it has a layout box, and nothing above it is inert or hidden. */
+function isShowing(element: Element): boolean {
+  if (element.getClientRects().length === 0) return false
+  return element.closest('[inert], [aria-hidden="true"]') === null
 }
 
 /**
