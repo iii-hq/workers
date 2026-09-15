@@ -565,6 +565,19 @@ export interface Host {
       sessionId: string
       path: string
     }): boolean
+    /**
+     * Ask the mounted conversation to adopt a reasoning effort — one of
+     * `THINKING_LEVELS`; anything else is refused. The page cannot write this
+     * itself: the level lives on the console's conversation record and is
+     * sent from there on every turn, so a write into session metadata would
+     * never reach the next one.
+     *
+     * Returns whether a mounted conversation took it.
+     */
+    requestThinkingLevelChange?(request: {
+      sessionId: string
+      level: string
+    }): boolean
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }

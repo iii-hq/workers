@@ -38,6 +38,7 @@ import {
   registerExtTriggerActivityRenderer,
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
+import { requestThinkingLevelChange } from '@/lib/thinking-level-request'
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
 import type {
   ComposerActionProps,
@@ -295,6 +296,9 @@ function makeHost(
       },
       requestWorkingDirectoryChange(request) {
         return requestWorkingDirectoryChange(request)
+      },
+      requestThinkingLevelChange(request) {
+        return requestThinkingLevelChange(request)
       },
       composerModel(conversationId) {
         return conversationAdapter.composerModel(conversationId)

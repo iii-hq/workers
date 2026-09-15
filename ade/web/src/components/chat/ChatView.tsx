@@ -90,6 +90,7 @@ import {
   fetchNewChatWorkingDir,
   workingDirScopeNotice,
 } from '@/lib/working-dir'
+import { onThinkingLevelChangeRequest } from '@/lib/thinking-level-request'
 import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
 import {
   consoleClaimFor,
@@ -2282,6 +2283,20 @@ export function ChatView({
         return true
       }),
     [conversation.id, handleWorkingDirChange, workingDirEnabled],
+  )
+
+  /* Same shape as the working-directory request above: the page asks, the
+     view that owns the session decides. `handleThinkingLevelChange` is the
+     one the picker calls, so a page and the picker leave the conversation in
+     the same state. */
+  useEffect(
+    () =>
+      onThinkingLevelChangeRequest(({ sessionId, level }) => {
+        if (sessionId !== conversation.id) return false
+        handleThinkingLevelChange(level)
+        return true
+      }),
+    [conversation.id, handleThinkingLevelChange],
   )
 
   // Picking a worktree claims it for this session; the working dir itself
