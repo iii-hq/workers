@@ -46,6 +46,21 @@ const TOUR_THINKING_LEVEL = 'minimal'
  */
 const OPEN_TIMEOUT_MS = 8_000
 
+/**
+ * How long the page waits for the prompt it sent to become a turn.
+ *
+ * `compose({ submit: true })` is a hand-off, not a promise: a composer that
+ * cannot send right now — the agent is mid-turn — keeps the text as a draft
+ * and the click goes nowhere the operator can see. So the page watches for
+ * the turn its own prompt should have started, and says what happened when
+ * none arrives. A turn opens in well under this; the margin is for a busy
+ * engine, not for the agent's reply.
+ */
+const SEND_WINDOW_MS = 6_000
+
+/** What the step says when the composer kept the prompt as a draft. */
+const SEND_DROPPED = 'the agent was busy, please send the message when it is done'
+
 /** Console class recipes, with a literal fallback for an older build that
     does not publish them. */
 const ui = uiClasses ?? {
@@ -107,6 +122,8 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   // five-second poll, so the button says `Opening…` for that whole gap
   // instead of looking like the click was missed.
   const [opening, setOpening] = useState<string | null>(null)
+  // The step whose prompt was handed over but never became a turn.
+  const [dropped, setDropped] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -217,6 +234,38 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   )
 
   /**
+   * Watch for the turn the step's prompt should have started, and mark the
+   * step as dropped when none does. Bound after the hand-off, so the turn
+   * already running when the operator clicked is not mistaken for theirs.
+   */
+  const watchSend = useCallback(
+    (stepId: string) => {
+      if (!conversationId) return
+      let timer = 0
+      let unbind = () => {}
+      const stop = () => {
+        window.clearTimeout(timer)
+        unbind()
+      }
+      unbind = bindCondition(
+        host,
+        `${stepId}::sent`,
+        {
+          type: 'harness::turn-started',
+          config: { session_id: conversationId },
+          label: 'the prompt started a turn',
+        },
+        () => stop(),
+      )
+      timer = window.setTimeout(() => {
+        stop()
+        setDropped(stepId)
+      }, SEND_WINDOW_MS)
+    },
+    [conversationId, host],
+  )
+
+  /**
    * Hand the step's prompt to the chat composer and send it. The console does
    * the sending, so the message is a normal turn — the same one the step's
    * condition is waiting for.
@@ -241,10 +290,12 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
           level: TOUR_THINKING_LEVEL,
         })
       }
+      setDropped(null)
       host.chat.compose({ text: step.ask.text, submit: true })
+      watchSend(step.id)
       if (!step.condition) complete(step.id)
     },
-    [complete, conversationId, host],
+    [complete, conversationId, host, watchSend],
   )
 
   // Every step that is still open for business gets its condition bound, so a
@@ -424,6 +475,11 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                       <Button className="self-start" onClick={() => ask(step)}>
                         {step.ask.label}
                       </Button>
+                      {dropped === step.id ? (
+                        <p className="m-0 text-base leading-relaxed text-alert text-pretty" role="status">
+                          {SEND_DROPPED}
+                        </p>
+                      ) : null}
                       <p className="ob-pre m-0">{step.ask.text}</p>
                     </div>
                   ) : null}
