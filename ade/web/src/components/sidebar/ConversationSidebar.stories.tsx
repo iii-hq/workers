@@ -28,6 +28,7 @@ function conversation(
 const CONVERSATIONS: Conversation[] = [
   conversation({
     id: 'launch',
+    workingDir: '/home/me/harness',
     title: 'Harness launch',
     updatedAt: NOW - 2 * MIN,
     status: 'working',
@@ -40,6 +41,7 @@ const CONVERSATIONS: Conversation[] = [
   }),
   conversation({
     id: 'post-launch',
+    workingDir: '/home/me/harness',
     title: 'Harness post launch',
     updatedAt: NOW - 25 * MIN,
     agentProfile: {
@@ -51,6 +53,7 @@ const CONVERSATIONS: Conversation[] = [
   }),
   conversation({
     id: 'eval',
+    workingDir: '/home/me/harness',
     title: 'Harness eval',
     updatedAt: NOW - 3 * HOUR,
     status: 'error',
@@ -59,6 +62,7 @@ const CONVERSATIONS: Conversation[] = [
   }),
   conversation({
     id: 'console',
+    workingDir: '/home/me/workers/ade',
     title: 'Console UX revamp',
     updatedAt: NOW - 5 * HOUR,
     agentProfile: {
@@ -70,6 +74,7 @@ const CONVERSATIONS: Conversation[] = [
   }),
   conversation({
     id: 'documents',
+    workingDir: '/home/me/docs',
     title: 'Documents',
     updatedAt: NOW - 8 * HOUR,
     agentProfile: { id: 'p-docs', name: 'Docs', icon: 'docs', color: 'purple' },
