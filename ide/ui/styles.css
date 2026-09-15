@@ -4175,6 +4175,17 @@
   height: 14px;
   flex: none;
 }
+[data-iii-ui="shell"] .shui-timeline .shui-scm-folder {
+  min-height: 24px;
+  height: auto;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+[data-iii-ui="shell"] .shui-timeline .shui-scm-folder span {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 [data-iii-ui="shell"] .shui-scm-folder span {
   overflow: hidden;
   text-overflow: ellipsis;

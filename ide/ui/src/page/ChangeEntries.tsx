@@ -6,13 +6,14 @@ type PathEntry = { path: string }
 type RenderEntry<T extends PathEntry> = (entry: T, depth: number) => ReactNode
 
 /** Shared file layout; all actions and original file identities stay with the caller. */
-export function ChangeEntries<T extends PathEntry>({ entries, mode, renderEntry, getPath }: {
+export function ChangeEntries<T extends PathEntry>({ entries, mode, renderEntry, getPath, outsideRoot }: {
   entries: readonly T[]
   mode: ScmViewMode
   renderEntry: RenderEntry<T>
   getPath?: (entry: T) => string | null
+  outsideRoot?: string
 }) {
-  const tree = useMemo(() => mode === 'tree' ? buildChangeTree(entries, getPath) : null, [entries, mode, getPath])
+  const tree = useMemo(() => mode === 'tree' ? buildChangeTree(entries, getPath, outsideRoot) : null, [entries, mode, getPath, outsideRoot])
   if (!tree) return <>{entries.map((entry) => renderEntry(entry, 0))}</>
   return <DirectoryEntries directory={tree} depth={0} renderEntry={renderEntry} />
 }
@@ -46,7 +47,7 @@ function DirectoryRow<T extends PathEntry>({ directory, depth, renderEntry }: {
         type="button"
         className="shui-scm-folder"
         style={{ paddingLeft: 6 + depth * 14 }}
-        title={directory.path}
+        title={directory.title ?? directory.path}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >

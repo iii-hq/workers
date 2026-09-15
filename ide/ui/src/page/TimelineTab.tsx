@@ -10,7 +10,7 @@ import { ConfirmDialog, IconButton } from '@iii-dev/console-ui'
 import { Bot, ChevronDown, ChevronRight, FolderTree, List, RefreshCw, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { ChangeEntries } from './ChangeEntries'
-import { readScmViewMode, writeScmViewMode } from './scm-view'
+import { readScmViewMode, relativeDisplayPath, writeScmViewMode } from './scm-view'
 import { FileTypeIcon } from './file-type-icon'
 import { basename, dirname } from './paths'
 import { relativeToRoot, type SessionTurnSummary, turnLabel, turnTitle } from './turns'
@@ -172,9 +172,9 @@ export function TimelineTab({
                     {turn.files.length === 0 ? (
                       <div className="shui-scm-empty">{running ? 'no file changes yet' : 'no file changes'}</div>
                     ) : (
-                      <ChangeEntries entries={turn.files} mode={viewMode} getPath={(file) => relativeToRoot(file.path, root)} renderEntry={(file, depth) => {
+                      <ChangeEntries entries={turn.files} mode={viewMode} outsideRoot={root} getPath={(file) => relativeToRoot(file.path, root)} renderEntry={(file, depth) => {
                         const rel = relativeToRoot(file.path, root)
-                        const shown = rel ?? file.path
+                        const shown = rel ?? relativeDisplayPath(file.path, root)
                         const agentName = file.agent ? (file.agent.name ?? 'sub-agent') : null
                         const isActive = activeTurn && rel !== null && activePath === rel
                         return (

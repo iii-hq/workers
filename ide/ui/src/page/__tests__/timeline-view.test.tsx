@@ -2,7 +2,7 @@ import type { ComponentProps, ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TimelineTab } from '../TimelineTab'
-import { buildChangeTree, readScmViewMode, writeScmViewMode } from '../scm-view'
+import { buildChangeTree, readScmViewMode, relativeDisplayPath, writeScmViewMode } from '../scm-view'
 import { relativeToRoot, type TurnFileHead } from '../turns'
 
 // The real components are supplied by the Console import map, not Node.
@@ -62,10 +62,10 @@ describe('Timeline file views', () => {
     expect(html).toContain('disabled="" title="/elsewhere/src/new.ts (outside this folder)"')
     expect(html).toContain(mode === 'list' ? 'View as Tree' : 'View as List')
     if (mode === 'tree') {
-      expect(html.match(/class="shui-scm-folder"/g)).toHaveLength(7)
+      expect(html.match(/class="shui-scm-folder"/g)).toHaveLength(6)
       expect(html).toContain('padding-left:34px')
       expect(html).toContain('Outside workspace')
-      expect(html).toContain('title="/elsewhere"')
+      expect(html).toContain('<span>../elsewhere/src</span>')
       expect(html).toContain('title="/elsewhere/src"')
       expect(html).not.toContain('<span class="dir">/elsewhere/src</span>')
     } else {
@@ -98,6 +98,41 @@ describe('Timeline file views', () => {
     expect(tree.directories).toHaveLength(1)
     expect(tree.directories[0].directories[0].name).toBe('elsewhere')
     expect(tree.directories[0].directories[0].directories[0].name).toBe('src')
+  })
+
+  it.each([
+    ['/work/ide/src/a.ts', '/work/harness', '../ide/src/a.ts'],
+    ['/work/ide/a.ts', '/work/harness/', '../ide/a.ts'],
+    ['/other/a.ts', '/work/harness', '../../other/a.ts'],
+    ['/work/harness-old/a.ts', '/work/harness', '../harness-old/a.ts'],
+    ['/a.ts', '/', 'a.ts'],
+    ['/work/a.ts', '/work/harness', '../a.ts'],
+  ])('shows %s relative to %s', (path, root, expected) => {
+    expect(relativeDisplayPath(path, root)).toBe(expected)
+  })
+
+  it('compacts external folder chains and retains absolute tooltips and file identities', () => {
+    const file = { path: '/home/dev/ide/ui/src/a.ts', kind: 'modified' }
+    const tree = buildChangeTree([file], () => null, '/home/dev/harness')
+    const compact = tree.directories[0].directories[0]
+    expect(compact.name).toBe('../ide/ui/src')
+    expect(compact.title).toBe('/home/dev/ide/ui/src')
+    expect(compact.entries[0]).toBe(file)
+    expect(compact.directories).toEqual([])
+  })
+
+  it('stops compacting at branches and directories containing files', () => {
+    const entries = [
+      { path: '/work/ide/a.ts' },
+      { path: '/work/ide/ui/b.ts' },
+      { path: '/work/other/c.ts' },
+    ]
+    const tree = buildChangeTree(entries, () => null, '/work/harness')
+    const parent = tree.directories[0].directories[0]
+    expect(parent.name).toBe('..')
+    expect(parent.directories.map((dir) => dir.name)).toEqual(['ide', 'other'])
+    expect(parent.directories[0].entries[0]).toBe(entries[0])
+    expect(parent.directories[0].directories[0].entries[0]).toBe(entries[1])
   })
 
   it('keeps the Timeline preference separate from Source Control', () => {
