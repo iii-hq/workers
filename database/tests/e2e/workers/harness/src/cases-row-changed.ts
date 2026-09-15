@@ -10,12 +10,48 @@ interface RowChangedEvent {
   op: 'insert' | 'update' | 'delete' | 'other'
   affected_rows: number
   returning?: Record<string, unknown>[]
+  truncated?: boolean
   at: number
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export const ROW_CHANGED_CASES: TestCase[] = [
+  {
+    // What an agent reads before calling: the description (its first
+    // sentence is all directory::search_functions shows) and the request
+    // schema (engine::functions::info) must both say that rows come from a
+    // RETURNING clause in the SQL — the `returning` option never adds one.
+    // Driver-independent; runs once.
+    name: 'execute contract tells callers where returned rows come from',
+    applies: ['sqlite_db'],
+    async run({ iii }) {
+      for (const functionId of ['database::execute', 'database::transactionExecute']) {
+        const info = await iii.trigger<{ function_id: string }, any>({
+          function_id: 'engine::functions::info',
+          payload: { function_id: functionId },
+        })
+        expect(
+          typeof info.description === 'string' && info.description.includes('RETURNING'),
+          `${functionId}: description names RETURNING (got ${JSON.stringify(info.description)})`,
+        )
+        const schema = info.request_format ?? info.request_schema
+        const props = schema?.properties ?? {}
+        expect(
+          String(props.sql?.description ?? '').includes('RETURNING'),
+          `${functionId}: the sql field explains the RETURNING clause`,
+        )
+        expect(
+          String(props.returning?.description ?? '').includes('never adds'),
+          `${functionId}: the returning option says it never adds the clause`,
+        )
+        expect(
+          !(schema?.required ?? []).includes('returning'),
+          `${functionId}: the returning option stays optional`,
+        )
+      }
+    },
+  },
   {
     // A subscriber should not have to guess how the writer spells the
     // table: bindings match case-insensitively (and ignoring any schema
@@ -170,22 +206,36 @@ export const ROW_CHANGED_CASES: TestCase[] = [
 
         const p1 = dialect.placeholder(1)
         const p2 = dialect.placeholder(2)
-        const returning = driver === 'mysql_db' ? [] : ['id', 'n']
-        const returningSql = returning.length > 0 ? ' RETURNING id, n' : ''
+        // The rows on a statements-path event are the writer's own RETURNING
+        // projection, and that clause lives in the SQL — the `returning`
+        // OPTION never adds it. MySQL has no RETURNING, so its events are
+        // count-only. Nothing here is ever truncated: the cap is native's.
+        const hasReturning = driver !== 'mysql_db'
+        const returningSql = hasReturning ? ' RETURNING id, n' : ''
+        const expectProjection = (event: RowChangedEvent, rows: unknown, label: string): void => {
+          if (hasReturning) {
+            expectEqual(event.returning, rows, `${label}: the event carries the writer's RETURNING rows`)
+          } else {
+            expect(event.returning === undefined, `${label}: no RETURNING on mysql, so no rows on the event`)
+          }
+          expect(event.truncated === undefined, `${label}: statements-path events never truncate`)
+        }
         // MySQL permits INSERT without INTO; using that form here also pins
         // the classifier regression while SQLite/PostgreSQL use standard SQL.
         const insertPrefix = driver === 'mysql_db' ? 'INSERT' : 'INSERT INTO'
 
-        await call('database::execute', {
+        // The clause alone, no `returning` option: the rows still come back
+        // to the caller and onto the event, identical.
+        const direct = await call('database::execute', {
           db: driver,
           sql: `${insertPrefix} ${table} (n) VALUES (${p1})${returningSql}`,
           params: [10],
-          returning,
         })
         const inserted = await nextEvent()
         expectEvent(inserted, 'insert')
         expectEvent(await nextInsertEvent(), 'insert')
-        if (returning.length > 0) {
+        expectProjection(inserted, direct.returned_rows, 'direct insert')
+        if (hasReturning) {
           expectEqual(Number(inserted.returning?.[0]?.n), 10, 'row-changed direct RETURNING value')
         }
 
@@ -201,23 +251,30 @@ export const ROW_CHANGED_CASES: TestCase[] = [
         const atomic = await nextEvent()
         expectEvent(atomic, 'insert')
         expectEvent(await nextInsertEvent(), 'insert')
-        if (returning.length > 0) {
+        if (hasReturning) {
           expectEqual(Number(atomic.returning?.[0]?.n), 15, 'row-changed atomic RETURNING value')
         }
+        expect(atomic.truncated === undefined, 'atomic batch events never truncate')
 
+        // No clause: the change is announced, but nothing says which row.
         await call('database::execute', {
           db: driver,
           sql: `UPDATE ${table} SET n = ${p1} WHERE n = ${p2}`,
           params: [11, 10],
         })
-        expectEvent(await nextEvent(), 'update')
+        const updated = await nextEvent()
+        expectEvent(updated, 'update')
+        expect(updated.returning === undefined, 'no RETURNING clause, no rows on the update event')
+        expect(updated.truncated === undefined, 'update event is not truncated')
 
         await call('database::execute', {
           db: driver,
           sql: `DELETE FROM ${table} WHERE n = ${p1}`,
           params: [11],
         })
-        expectEvent(await nextEvent(), 'delete')
+        const deleted = await nextEvent()
+        expectEvent(deleted, 'delete')
+        expect(deleted.returning === undefined, 'no RETURNING clause, no rows on the delete event')
 
         await call('database::execute', {
           db: driver,
@@ -226,12 +283,14 @@ export const ROW_CHANGED_CASES: TestCase[] = [
         })
         await expectSilence()
 
+        // The option alongside the clause is harmless — sqlite validates it,
+        // postgres and mysql ignore it — and the rows are still the SQL's.
         activeTransaction = (await call('database::beginTransaction', { db: driver })).transaction.id
-        await call('database::transactionExecute', {
+        const staged = await call('database::transactionExecute', {
           transaction_id: activeTransaction,
           sql: `INSERT INTO ${table} (n) VALUES (${p1})${returningSql}`,
           params: [20],
-          returning,
+          returning: hasReturning ? ['id', 'n'] : [],
         })
         await expectSilence()
         await call('database::commitTransaction', { transaction_id: activeTransaction })
@@ -239,7 +298,8 @@ export const ROW_CHANGED_CASES: TestCase[] = [
         const committed = await nextEvent()
         expectEvent(committed, 'insert')
         expectEvent(await nextInsertEvent(), 'insert')
-        if (returning.length > 0) {
+        expectProjection(committed, staged.returned_rows, 'committed insert')
+        if (hasReturning) {
           expectEqual(Number(committed.returning?.[0]?.n), 20, 'row-changed committed RETURNING value')
         }
 

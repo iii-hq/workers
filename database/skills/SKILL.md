@@ -33,16 +33,18 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
 ## Boundaries
 
 - Not a migration tool, ORM, or schema designer — pass raw SQL only.
-- Not a general pub/sub bus. `database::row-changed` reports only what THIS
-  worker wrote, on commit — not change data capture; a write from psql or
-  another worker is invisible to it.
+- Not a general pub/sub bus. `database::row-changed` reports what THIS
+  worker wrote, on commit (`capture: statements`, the default) or, on a
+  `capture: native` database, any client's committed writes.
 - `database::query` is read-oriented; use `database::execute` for writes.
-  Running a SELECT through `execute` discards rows.
+  Keep reads on `query`: it runs them read-only, `execute` does not.
 - Prepared handles pin a pool connection until TTL expiry — not transactions.
   Batch `database::transaction` / `database::executeBatch` need every
   statement up front; use the interactive surface when code must branch
   between steps.
-- MySQL ignores the `returning` option on `execute` (warn-once). SQLite
+- Rows come back from a `RETURNING` clause written into the SQL (SQLite,
+  Postgres; MySQL has none). The `returning` option never adds the clause:
+  SQLite rejects it without one, Postgres and MySQL ignore it. SQLite
   degrades `read_committed` / `repeatable_read` isolation to serializable.
 - For filesystem or shell operations, use the `shell` worker instead.
 
@@ -51,7 +53,8 @@ point. Placeholder syntax: `?` for SQLite and MySQL, `$1`/`$2`/… for Postgres.
 - `database::query` — run read-only SQL and return rows, row count, and
   column metadata.
 - `database::execute` — run write SQL (INSERT/UPDATE/DELETE/DDL) and
-  return affected rows, optional last insert id, and optional RETURNING rows.
+  return affected rows, optional last insert id, and the rows of a
+  `RETURNING` clause in the SQL.
 - `database::executeBatch` — convenience form of `transaction`: statements
   may be bare SQL strings or `{sql, params}` objects (prefer `params` for
   dynamic values). Same atomic semantics, envelope, and `failed_index`
@@ -130,10 +133,15 @@ a change, instead of polling:
 { "trigger_type": "database::row-changed", "config": { "db": "primary", "table": "orders", "ops": ["insert"] } }
 ```
 
-The event is `{ db, table, op, affected_rows, returning?, at }`. It fires on
-commit — an interactive transaction's writes are announced by
-`commitTransaction`, and a rollback announces nothing. `table` is null when the
-statement's table cannot be read off the SQL (a CTE-wrapped write), and
-`runStatement` does not fire because it has no affected-row count to report.
-Delivery is best-effort: it is not durable with the commit and has no replay or
+The event is `{ db, table, op, affected_rows, returning?, truncated?, at }`. It
+fires on commit — an interactive transaction's writes are announced by
+`commitTransaction`, and a rollback announces nothing. `returning` says which
+rows: on a `capture: statements` database it is the writer's own `RETURNING`
+projection, so write `RETURNING <primary key>` into the SQL when a listener
+needs row identity; on a `capture: native` database (which also hears other
+clients' writes) it is the changed rows' primary keys, capped at 100 with
+`truncated: true` past that. `table` is null when the statement's table cannot
+be read off the SQL (a CTE-wrapped write), and `runStatement` does not fire on
+the statements path because it has no affected-row count to report. Delivery is
+best-effort: it is not durable with the commit and has no replay or
 exactly-once guarantee.

@@ -180,7 +180,14 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            .description("Run a write statement (INSERT/UPDATE/DELETE/DDL)."),
+            // The first sentence is all `directory::search_functions` shows
+            // an agent before it fetches the schema — the RETURNING rule has
+            // to be in it.
+            .description(
+                "Run a write statement (INSERT/UPDATE/DELETE/DDL); put RETURNING in the SQL \
+                 to get rows back and into row-changed events. The `returning` option never \
+                 adds the clause.",
+            ),
         );
     }
     {
@@ -197,7 +204,8 @@ async fn main() -> Result<()> {
             })
             .description(
                 "Run an ordered batch of SQL statements atomically (bare strings or \
-                 {sql, params} objects); rolls back on first failure.",
+                 {sql, params} objects); rolls back on first failure. A statement's \
+                 RETURNING rows come back in results[].rows.",
             ),
         );
     }
@@ -243,7 +251,10 @@ async fn main() -> Result<()> {
                         .map_err(iii_sdk::errors::Error::from)
                 }
             })
-            .description("Run a list of SQL statements in one atomic transaction."),
+            .description(
+                "Run a list of SQL statements in one atomic transaction. A statement's \
+                 RETURNING rows come back in results[].rows and ride its row-changed event.",
+            ),
         );
     }
     {
@@ -292,8 +303,8 @@ async fn main() -> Result<()> {
                 }
             })
             .description(
-                "Execute a write inside an open transaction. BEGIN/COMMIT/ROLLBACK \
-                 are rejected; use commit/rollbackTransaction.",
+                "Execute a write inside an open transaction; put RETURNING in the SQL to get \
+                 rows back. BEGIN/COMMIT/ROLLBACK are rejected; use commit/rollbackTransaction.",
             ),
         );
     }
@@ -683,8 +694,13 @@ async fn main() -> Result<()> {
     let _row_changed = iii.register_trigger_type(
         RegisterTriggerType::new(
             database::triggers::ROW_CHANGED_TYPE,
-            "Fires after this worker commits a row change, filtered by `db`, optional `table`, and optional `ops`. \
-             Reports only mutations made THROUGH this worker — not change data capture.",
+            "Fires after a row change commits, filtered by `db`, optional `table`, and optional `ops`. \
+             On a `capture: statements` database (the default) it reports only writes made THROUGH \
+             this worker, with the writer's own RETURNING rows as `returning` — a listener that needs \
+             to know WHICH row changed depends on the writer putting `RETURNING <key>` in its SQL. \
+             On a `capture: native` database it reports any client's committed writes, with the \
+             changed rows' primary keys as `returning` (capped; `truncated` flags the rest). \
+             Best-effort delivery, no replay.",
             database::triggers::RowChangedHandler {
                 bus: row_changes.clone(),
                 config: state.config.clone(),

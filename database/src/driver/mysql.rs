@@ -176,7 +176,9 @@ fn row_cells(row: &mysql_async::Row) -> Vec<RowValue> {
     cells
 }
 
-fn my_to_row_value(v: MyValue) -> RowValue {
+/// Also the binlog capture path's encoder, so a primary key in a
+/// `row-changed` event reads exactly like the same column in `database::query`.
+pub(crate) fn my_to_row_value(v: MyValue) -> RowValue {
     match v {
         MyValue::NULL => RowValue::Null,
         MyValue::Int(i) => RowValue::Int(i),

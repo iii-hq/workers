@@ -10,6 +10,7 @@ use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use postgres_types::{ToSql, Type};
 use serde_json::Value as JsonValue;
 use std::time::Duration;
+use tokio_postgres::{Client, Statement};
 
 pub async fn query(
     pool: &PostgresPool,
@@ -284,84 +285,164 @@ pub(crate) fn map_err(e: tokio_postgres::Error) -> DbError {
     }
 }
 
-pub async fn execute(
-    pool: &PostgresPool,
+/// True when the SQL statement is an INSERT — the only statement whose first
+/// `RETURNING` cell can honestly be reported as `last_insert_id`. Same naïve
+/// prefix check as the sqlite and mysql drivers, with the same safe
+/// false-negatives: `WITH … INSERT` and comment-prefixed INSERTs report `None`
+/// rather than the first cell of whatever rows came back.
+fn is_insert(sql: &str) -> bool {
+    sql.trim_start().to_ascii_uppercase().starts_with("INSERT")
+}
+
+/// Stamp a transaction-step index onto an error raised by a helper with no
+/// step context (`map_err`, `pg_cell_to_row_value`). An index already present
+/// is kept. Mirrors `driver::sqlite::with_failed_index`.
+fn with_failed_index(e: DbError, idx: usize) -> DbError {
+    match e {
+        DbError::DriverError {
+            driver,
+            code,
+            message,
+            failed_index,
+        } => DbError::DriverError {
+            driver,
+            code,
+            message,
+            failed_index: failed_index.or(Some(idx)),
+        },
+        other => other,
+    }
+}
+
+fn column_meta(columns: &[tokio_postgres::Column]) -> Vec<ColumnMeta> {
+    columns
+        .iter()
+        .map(|c| ColumnMeta {
+            name: c.name().to_string(),
+            ty: c.type_().name().to_string(),
+        })
+        .collect()
+}
+
+fn row_cells(row: &tokio_postgres::Row) -> Result<Row, DbError> {
+    let mut cells = Vec::with_capacity(row.columns().len());
+    for (i, col) in row.columns().iter().enumerate() {
+        cells.push(pg_cell_to_row_value(row, i, col.type_())?);
+    }
+    Ok(Row(cells))
+}
+
+/// Run one prepared write statement and shape its result.
+///
+/// The prepared statement's column list is the planner's answer to "does this
+/// statement produce rows" — what the sqlite driver already does. It replaces
+/// a `contains(" RETURNING ")` text check that missed the keyword on its own
+/// line (the rows came back, `client.execute` discarded them, and the caller
+/// saw `returned_rows: []` with no error — and a `row-changed` event with no
+/// `returning`) and matched the word inside a literal or comment (routing a
+/// plain write through the query path, which then reported `affected_rows: 0`
+/// for a statement that had committed, so no event fired at all). The same
+/// list routes `EXPLAIN`, `SELECT` and `VALUES` sent through `execute`, which
+/// now return their rows instead of a bare count.
+///
+/// `affected_rows` on the row-returning path is the number of rows returned:
+/// for `RETURNING` that IS the number of rows changed, and tokio-postgres does
+/// not surface the command tag alongside the rows.
+async fn run_write(
+    client: &Client,
+    stmt: &Statement,
     sql: &str,
     params: &[JsonParam],
-    _returning: &[String],
 ) -> Result<ExecuteResult, DbError> {
-    let client = pool.acquire().await?;
     let bound = bind_params(params);
     let bound_refs: Vec<&(dyn ToSql + Sync)> =
         bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
 
-    let upper = sql.to_ascii_uppercase();
-    if upper.contains(" RETURNING ") {
-        let rows = client
-            .query(sql, bound_refs.as_slice())
-            .await
-            .map_err(map_err)?;
-        let columns: Vec<ColumnMeta> = rows
-            .first()
-            .map(|r| {
-                r.columns()
-                    .iter()
-                    .map(|c| ColumnMeta {
-                        name: c.name().to_string(),
-                        ty: c.type_().name().to_string(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let mut returned: Vec<Row> = Vec::with_capacity(rows.len());
-        let mut last_insert_id: Option<String> = None;
-
-        // Postgres has no `last_insert_rowid()` equivalent; we extract
-        // `last_insert_id` from the first cell of the first RETURNING row.
-        // This means the caller's RETURNING clause column ORDER is part of
-        // the contract: `RETURNING id, name` produces last_insert_id = the
-        // id column; `RETURNING name, id` produces last_insert_id = the
-        // name column (which is rarely useful).
-        //
-        // Convention for callers who want the row's PK as last_insert_id:
-        // put it first in RETURNING.
-        for (ri, row) in rows.iter().enumerate() {
-            let mut cells = Vec::with_capacity(row.columns().len());
-            for (i, col) in row.columns().iter().enumerate() {
-                cells.push(pg_cell_to_row_value(row, i, col.type_())?);
-            }
-            if ri == 0 {
-                if let Some(first) = cells.first() {
-                    last_insert_id = match first {
-                        RowValue::Int(i) => Some(i.to_string()),
-                        RowValue::BigInt(i) => Some(i.to_string()),
-                        RowValue::Text(s) => Some(s.clone()),
-                        _ => None,
-                    };
-                }
-            }
-            returned.push(Row(cells));
-        }
-
-        Ok(ExecuteResult {
-            affected_rows: returned.len() as u64,
-            last_insert_id,
-            returned_rows: returned,
-            returned_columns: columns,
-        })
-    } else {
+    if stmt.columns().is_empty() {
         let n = client
-            .execute(sql, bound_refs.as_slice())
+            .execute(stmt, bound_refs.as_slice())
             .await
             .map_err(map_err)?;
-        Ok(ExecuteResult {
+        return Ok(ExecuteResult {
             affected_rows: n,
             last_insert_id: None,
             returned_rows: vec![],
             returned_columns: vec![],
-        })
+        });
     }
+
+    let rows = client
+        .query(stmt, bound_refs.as_slice())
+        .await
+        .map_err(map_err)?;
+    let mut returned: Vec<Row> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        returned.push(row_cells(row)?);
+    }
+
+    // Postgres has no `last_insert_rowid()` equivalent; we extract
+    // `last_insert_id` from the first cell of the first RETURNING row. This
+    // means the caller's RETURNING clause column ORDER is part of the
+    // contract: `RETURNING id, name` produces last_insert_id = the id column;
+    // `RETURNING name, id` produces last_insert_id = the name column (which
+    // is rarely useful). Convention for callers who want the row's PK as
+    // last_insert_id: put it first in RETURNING.
+    //
+    // Gated on INSERT: every row-producing statement takes this path now, and
+    // a `SELECT name, id FROM t` sent through `execute` must not report its
+    // first cell as an insert id.
+    let last_insert_id = if is_insert(sql) {
+        returned
+            .first()
+            .and_then(|r| r.0.first())
+            .and_then(|first| match first {
+                RowValue::Int(i) => Some(i.to_string()),
+                RowValue::BigInt(i) => Some(i.to_string()),
+                RowValue::Text(s) => Some(s.clone()),
+                _ => None,
+            })
+    } else {
+        None
+    };
+
+    Ok(ExecuteResult {
+        affected_rows: returned.len() as u64,
+        last_insert_id,
+        returned_rows: returned,
+        returned_columns: column_meta(stmt.columns()),
+    })
+}
+
+/// The `returning` option does nothing on postgres: it never adds a
+/// RETURNING clause, and the rows come from the SQL alone. SQLite refuses the
+/// contradiction, MySQL warns; postgres used to stay silent, which is how a
+/// caller ends up believing the option is what produces the rows.
+fn warn_returning_option_ignored(returning: &[String]) {
+    if !returning.is_empty() {
+        tracing::warn!(
+            driver = "postgres",
+            "the `returning` option does not add a RETURNING clause and is ignored; \
+             write `RETURNING {}` into the SQL itself",
+            returning.join(", ")
+        );
+    }
+}
+
+pub async fn execute(
+    pool: &PostgresPool,
+    sql: &str,
+    params: &[JsonParam],
+    returning: &[String],
+) -> Result<ExecuteResult, DbError> {
+    warn_returning_option_ignored(returning);
+    let client = pool.acquire().await?;
+    // Prepare explicitly — not deadpool's `prepare_cached`: a cached plan
+    // outlives the call, and a later statement that recreates a table with
+    // a different shape would hit `0A000 cached plan must not change result
+    // type`. `client.query(&str)` prepares internally anyway, so this is one
+    // round trip fewer, not one more.
+    let stmt = client.prepare(sql).await.map_err(map_err)?;
+    run_write(&client, &stmt, sql, params).await
 }
 
 pub async fn transaction(
@@ -369,95 +450,54 @@ pub async fn transaction(
     statements: Vec<TxStatement>,
     isolation: Option<Isolation>,
 ) -> Result<Vec<TxStepResult>, DbError> {
-    let mut client = pool.acquire().await?;
+    let client = pool.acquire().await?;
     let begin_sql = match isolation {
         Some(Isolation::ReadCommitted) => "BEGIN ISOLATION LEVEL READ COMMITTED",
         Some(Isolation::RepeatableRead) => "BEGIN ISOLATION LEVEL REPEATABLE READ",
         Some(Isolation::Serializable) => "BEGIN ISOLATION LEVEL SERIALIZABLE",
         None => "BEGIN",
     };
-    let tx_client = &mut *client;
-    tx_client.batch_execute(begin_sql).await.map_err(map_err)?;
+    client.batch_execute(begin_sql).await.map_err(map_err)?;
 
     let mut results: Vec<TxStepResult> = Vec::with_capacity(statements.len());
-
     for (idx, stmt) in statements.iter().enumerate() {
-        let bound = bind_params(&stmt.params);
-        let bound_refs: Vec<&(dyn ToSql + Sync)> =
-            bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-        let upper = stmt.sql.to_ascii_uppercase();
-        let returns_rows =
-            upper.trim_start().starts_with("SELECT") || upper.contains(" RETURNING ");
-
-        let step = if returns_rows {
-            match tx_client.query(&stmt.sql, bound_refs.as_slice()).await {
-                Ok(rows) => {
-                    let columns = rows
-                        .first()
-                        .map(|row| {
-                            row.columns()
-                                .iter()
-                                .map(|col| ColumnMeta {
-                                    name: col.name().to_string(),
-                                    ty: col.type_().name().to_string(),
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let mut cells_rows: Vec<Row> = Vec::with_capacity(rows.len());
-                    for row in &rows {
-                        let mut cells = Vec::with_capacity(row.columns().len());
-                        for (i, col) in row.columns().iter().enumerate() {
-                            cells.push(pg_cell_to_row_value(row, i, col.type_())?);
-                        }
-                        cells_rows.push(Row(cells));
-                    }
-                    TxStepResult {
-                        affected_rows: cells_rows.len() as u64,
-                        rows: cells_rows,
-                        columns,
-                    }
-                }
-                Err(e) => {
-                    let _ = tx_client.batch_execute("ROLLBACK").await;
-                    return Err(step_err(idx, e));
-                }
+        // Every failure of a step — prepare, execute, cell conversion — takes
+        // this one exit: ROLLBACK, then the error stamped with the step index.
+        // Returning early past the ROLLBACK would hand a connection still
+        // inside BEGIN back to the pool (the Fast recycler issues no ROLLBACK),
+        // and every later caller drawing it would fail with "current
+        // transaction is aborted, commands ignored".
+        match run_tx_step(&client, stmt).await {
+            Ok(step) => results.push(step),
+            Err(e) => {
+                let _ = client.batch_execute("ROLLBACK").await;
+                return Err(with_failed_index(e, idx));
             }
-        } else {
-            match tx_client.execute(&stmt.sql, bound_refs.as_slice()).await {
-                Ok(n) => TxStepResult {
-                    affected_rows: n,
-                    rows: vec![],
-                    columns: vec![],
-                },
-                Err(e) => {
-                    let _ = tx_client.batch_execute("ROLLBACK").await;
-                    return Err(step_err(idx, e));
-                }
-            }
-        };
-        results.push(step);
+        }
     }
 
-    if let Err(e) = tx_client.batch_execute("COMMIT").await {
+    if let Err(e) = client.batch_execute("COMMIT").await {
         // Best-effort ROLLBACK so the connection isn't returned to the pool
         // mid-transaction. deadpool's Fast recycler does not issue ROLLBACK,
         // so without this the next caller on this connection sees
         // "current transaction is aborted, commands ignored".
-        let _ = tx_client.batch_execute("ROLLBACK").await;
+        let _ = client.batch_execute("ROLLBACK").await;
         return Err(map_err(e));
     }
     Ok(results)
 }
 
-fn step_err(idx: usize, e: tokio_postgres::Error) -> DbError {
-    let code = e.code().map(|c| c.code().to_string());
-    DbError::DriverError {
-        driver: "postgres".into(),
-        code,
-        message: e.to_string(),
-        failed_index: Some(idx),
-    }
+/// One step of an atomic batch. Prepared here, after the previous steps ran,
+/// because a step may create the table the next one writes to. The `Statement`
+/// is dropped with this frame, so its `Close` goes out before COMMIT.
+async fn run_tx_step(client: &Client, stmt: &TxStatement) -> Result<TxStepResult, DbError> {
+    let prepared = client.prepare(&stmt.sql).await.map_err(map_err)?;
+    let result = run_write(client, &prepared, &stmt.sql, &stmt.params).await?;
+    Ok(TxStepResult {
+        affected_rows: result.affected_rows,
+        rows: result.returned_rows,
+        columns: result.returned_columns,
+    })
 }
 
 /// Issue `BEGIN [ISOLATION LEVEL ...]` on a pinned client. Used by
@@ -494,75 +534,18 @@ pub async fn tx_rollback(client: &mut crate::pool::postgres::PgClient) -> Result
 
 /// Run an INSERT/UPDATE/DELETE (optionally with `RETURNING`) on a pinned
 /// client that is currently inside `BEGIN ... COMMIT`. Mirrors `execute()`
-/// — but without pool acquire. Used by `transactionExecute`.
+/// — but without pool acquire. Used by `transactionExecute`. A failing
+/// statement leaves the transaction aborted for the caller to finalize, as
+/// before: the registry owns the connection, nothing here returns it to a pool.
 pub async fn tx_execute(
     client: &mut crate::pool::postgres::PgClient,
     sql: &str,
     params: &[JsonParam],
-    _returning: &[String],
+    returning: &[String],
 ) -> Result<ExecuteResult, DbError> {
-    let bound = bind_params(params);
-    let bound_refs: Vec<&(dyn ToSql + Sync)> =
-        bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-
-    let upper = sql.to_ascii_uppercase();
-    if upper.contains(" RETURNING ") {
-        let rows = client
-            .query(sql, bound_refs.as_slice())
-            .await
-            .map_err(map_err)?;
-        let columns: Vec<ColumnMeta> = rows
-            .first()
-            .map(|r| {
-                r.columns()
-                    .iter()
-                    .map(|c| ColumnMeta {
-                        name: c.name().to_string(),
-                        ty: c.type_().name().to_string(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let mut returned: Vec<Row> = Vec::with_capacity(rows.len());
-        let mut last_insert_id: Option<String> = None;
-
-        for (ri, row) in rows.iter().enumerate() {
-            let mut cells = Vec::with_capacity(row.columns().len());
-            for (i, col) in row.columns().iter().enumerate() {
-                cells.push(pg_cell_to_row_value(row, i, col.type_())?);
-            }
-            if ri == 0 {
-                if let Some(first) = cells.first() {
-                    last_insert_id = match first {
-                        RowValue::Int(i) => Some(i.to_string()),
-                        RowValue::BigInt(i) => Some(i.to_string()),
-                        RowValue::Text(s) => Some(s.clone()),
-                        _ => None,
-                    };
-                }
-            }
-            returned.push(Row(cells));
-        }
-
-        Ok(ExecuteResult {
-            affected_rows: returned.len() as u64,
-            last_insert_id,
-            returned_rows: returned,
-            returned_columns: columns,
-        })
-    } else {
-        let n = client
-            .execute(sql, bound_refs.as_slice())
-            .await
-            .map_err(map_err)?;
-        Ok(ExecuteResult {
-            affected_rows: n,
-            last_insert_id: None,
-            returned_rows: vec![],
-            returned_columns: vec![],
-        })
-    }
+    warn_returning_option_ignored(returning);
+    let stmt = client.prepare(sql).await.map_err(map_err)?;
+    run_write(client, &stmt, sql, params).await
 }
 
 pub async fn run_prepared(
@@ -1069,6 +1052,296 @@ mod tests {
         assert_eq!(r.returned_rows.len(), 1);
         assert_eq!(r.returned_columns.len(), 2);
         assert!(r.last_insert_id.is_some());
+    }
+
+    async fn pool_of_one() -> Option<PostgresPool> {
+        let u = url()?;
+        let tls = crate::config::TlsConfig {
+            mode: crate::config::TlsMode::Disable,
+            ..Default::default()
+        };
+        let cfg = PoolConfig {
+            max: 1,
+            ..PoolConfig::default()
+        };
+        Some(PostgresPool::new(&u, &cfg, &tls).await.unwrap())
+    }
+
+    /// Regression: RETURNING was detected with `contains(" RETURNING ")`, so
+    /// the keyword on its own line routed the statement through
+    /// `client.execute`, which discards the rows — the caller saw
+    /// `returned_rows: []` with no error, and the row-changed event carried
+    /// no `returning`. The prepared statement's column list is the routing
+    /// signal now, whatever the whitespace or comments around the keyword.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_execute_returning_split_across_lines_still_returns_rows() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_w_ml", &[], &[]).await;
+        execute(
+            &p,
+            "CREATE TABLE db_w_ml (id SERIAL PRIMARY KEY, n INT)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        for sql in [
+            "INSERT INTO db_w_ml (n) VALUES ($1)\nRETURNING\nid, n",
+            "INSERT INTO db_w_ml (n) VALUES ($1)\tRETURNING\tid, n",
+            "INSERT INTO db_w_ml (n) VALUES ($1) RETURNING/*key*/id, n",
+        ] {
+            // No `returning` option: the SQL alone produces the rows.
+            let r = execute(&p, sql, &[JsonParam::Int(7)], &[]).await.unwrap();
+            assert_eq!(r.affected_rows, 1, "{sql}");
+            assert_eq!(r.returned_rows.len(), 1, "{sql}");
+            assert_eq!(r.returned_columns.len(), 2, "{sql}");
+            assert_eq!(r.returned_columns[0].name, "id", "{sql}");
+            assert!(r.last_insert_id.is_some(), "{sql}");
+        }
+        // Exactly three rows landed — each statement ran once.
+        let q = query(&p, "SELECT COUNT(*) FROM db_w_ml", &[], 30_000)
+            .await
+            .unwrap();
+        assert!(matches!(&q.rows[0].0[0], RowValue::BigInt(3)));
+    }
+
+    /// The inverse false positive: the keyword inside a literal or comment
+    /// used to route a plain write through the query path, which reported
+    /// `affected_rows: 0` for a statement that had committed — and the bus
+    /// fires nothing for zero rows. Now it is a plain write with a real count.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_execute_keyword_in_literal_or_comment_is_a_plain_write() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_w_lit", &[], &[]).await;
+        execute(
+            &p,
+            "CREATE TABLE db_w_lit (id SERIAL PRIMARY KEY, note TEXT)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        for sql in [
+            "INSERT INTO db_w_lit (note) VALUES ('please RETURNING soon')",
+            "INSERT INTO db_w_lit (note) VALUES ('x') /* RETURNING id */",
+            "INSERT INTO db_w_lit (note) VALUES ('y') -- RETURNING id\n",
+        ] {
+            let r = execute(&p, sql, &[], &[]).await.unwrap();
+            assert_eq!(r.affected_rows, 1, "{sql}");
+            assert!(r.returned_rows.is_empty(), "{sql}");
+            assert!(r.last_insert_id.is_none(), "{sql}");
+        }
+    }
+
+    /// Every row-producing statement takes the query path now, so a SELECT
+    /// or VALUES sent through `execute` returns its rows (sqlite parity) —
+    /// and must NOT report its first cell as an insert id.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_execute_select_returns_rows_without_last_insert_id() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_w_sel", &[], &[]).await;
+        execute(
+            &p,
+            "CREATE TABLE db_w_sel (id SERIAL PRIMARY KEY, name TEXT)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        execute(
+            &p,
+            "INSERT INTO db_w_sel (name) VALUES ('ann'), ('bob')",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let r = execute(&p, "SELECT name, id FROM db_w_sel ORDER BY id", &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(r.affected_rows, 2);
+        assert_eq!(r.returned_rows.len(), 2);
+        assert!(matches!(&r.returned_rows[0].0[0], RowValue::Text(s) if s == "ann"));
+        assert!(
+            r.last_insert_id.is_none(),
+            "a SELECT's first cell is not an insert id: {:?}",
+            r.last_insert_id
+        );
+
+        let r = execute(&p, "VALUES (10), (20), (30)", &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(r.affected_rows, 3);
+        assert_eq!(r.returned_rows.len(), 3);
+        assert!(r.last_insert_id.is_none());
+    }
+
+    /// Batch parity with `driver::sqlite`: CTE-prefixed SELECT, VALUES,
+    /// comment-prefixed SELECT and multi-line RETURNING all populate
+    /// `results[].rows`; a statement that returns nothing keeps its count.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_transaction_handles_cte_select_values_and_multiline_returning() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_w_shapes", &[], &[]).await;
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_w_shapes_into", &[], &[]).await;
+        let stmts = vec![
+            // A step may create the table the next one writes to: prepare
+            // per step, after the previous ones ran.
+            TxStatement {
+                sql: "CREATE TABLE db_w_shapes (id SERIAL PRIMARY KEY, n INT)".into(),
+                params: vec![],
+            },
+            TxStatement {
+                sql: "WITH cte AS (SELECT 1 AS n) SELECT n FROM cte".into(),
+                params: vec![],
+            },
+            TxStatement {
+                sql: "VALUES (10), (20), (30)".into(),
+                params: vec![],
+            },
+            TxStatement {
+                sql: "INSERT INTO db_w_shapes (n) VALUES ($1)\nRETURNING\nid, n".into(),
+                params: vec![JsonParam::Int(42)],
+            },
+            TxStatement {
+                sql: "/* read */ SELECT n FROM db_w_shapes".into(),
+                params: vec![],
+            },
+            TxStatement {
+                sql: "UPDATE db_w_shapes SET n = n + 1 WHERE id = $1".into(),
+                params: vec![JsonParam::Int(1)],
+            },
+            TxStatement {
+                sql: "SELECT n INTO db_w_shapes_into FROM db_w_shapes".into(),
+                params: vec![],
+            },
+        ];
+        let results = transaction(&p, stmts, None).await.unwrap();
+        assert_eq!(results.len(), 7);
+        assert_eq!(results[0].affected_rows, 0);
+        assert!(results[0].rows.is_empty());
+        assert_eq!(results[1].rows.len(), 1);
+        assert_eq!(results[1].columns[0].name, "n");
+        assert_eq!(results[2].rows.len(), 3);
+        assert_eq!(results[3].affected_rows, 1);
+        assert_eq!(results[3].rows.len(), 1);
+        assert_eq!(results[3].columns.len(), 2);
+        assert_eq!(results[4].rows.len(), 1);
+        assert!(matches!(&results[4].rows[0].0[0], RowValue::Int(42)));
+        assert_eq!(results[5].affected_rows, 1);
+        assert!(results[5].rows.is_empty());
+        // SELECT INTO produces no result columns: it is a write of one row.
+        assert_eq!(results[6].affected_rows, 1);
+        assert!(results[6].rows.is_empty());
+
+        let _ = execute(&p, "DROP TABLE db_w_shapes_into", &[], &[]).await;
+        let _ = execute(&p, "DROP TABLE db_w_shapes", &[], &[]).await;
+    }
+
+    /// Regression: a cell-conversion failure inside the batch loop used to
+    /// `?` straight out of `transaction()`, past the ROLLBACK, handing a
+    /// connection still inside BEGIN back to the pool — with `max: 1` every
+    /// later caller drew that poisoned connection. Prepare failures now sit
+    /// in the same position. Both must roll back, stamp the step index, and
+    /// leave the connection reusable.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_transaction_step_failures_roll_back_and_free_the_connection() {
+        let Some(p) = pool_of_one().await else { return };
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_w_poison", &[], &[]).await;
+        execute(&p, "CREATE TABLE db_w_poison (n INT)", &[], &[])
+            .await
+            .unwrap();
+
+        // Conversion failure: an int[] cell has no RowValue mapping and the
+        // text fallback rejects the OID, so decoding errors after the
+        // statement ran.
+        let err = transaction(
+            &p,
+            vec![
+                TxStatement {
+                    sql: "INSERT INTO db_w_poison VALUES (1)".into(),
+                    params: vec![],
+                },
+                TxStatement {
+                    sql: "SELECT ARRAY[1, 2] AS cells".into(),
+                    params: vec![],
+                },
+            ],
+            None,
+        )
+        .await
+        .unwrap_err();
+        match &err {
+            DbError::DriverError { failed_index, .. } => assert_eq!(*failed_index, Some(1)),
+            other => panic!("expected DriverError, got {other:?}"),
+        }
+
+        // Prepare failure: the relation does not exist.
+        let err = transaction(
+            &p,
+            vec![
+                TxStatement {
+                    sql: "INSERT INTO db_w_poison VALUES (2)".into(),
+                    params: vec![],
+                },
+                TxStatement {
+                    sql: "INSERT INTO db_w_poison_missing VALUES (2)".into(),
+                    params: vec![],
+                },
+            ],
+            None,
+        )
+        .await
+        .unwrap_err();
+        match &err {
+            DbError::DriverError {
+                failed_index, code, ..
+            } => {
+                assert_eq!(*failed_index, Some(1));
+                assert_eq!(code.as_deref(), Some("42P01"), "{err}");
+            }
+            other => panic!("expected DriverError, got {other:?}"),
+        }
+
+        // The single pooled connection is not stuck in an aborted
+        // transaction, and both first steps were rolled back.
+        let q = query(&p, "SELECT COUNT(*) FROM db_w_poison", &[], 30_000)
+            .await
+            .unwrap();
+        assert!(matches!(&q.rows[0].0[0], RowValue::BigInt(0)), "{q:?}");
+        let _ = execute(&p, "DROP TABLE db_w_poison", &[], &[]).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pg_tx_execute_returning_split_across_lines_returns_rows() {
+        let Some(p) = fresh_pool().await else { return };
+        let _ = execute(&p, "DROP TABLE IF EXISTS db_w_tx_ml", &[], &[]).await;
+        execute(
+            &p,
+            "CREATE TABLE db_w_tx_ml (id SERIAL PRIMARY KEY, n INT)",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let mut client = p.acquire().await.unwrap();
+        tx_begin(&mut client, None).await.unwrap();
+        let r = tx_execute(
+            &mut client,
+            "INSERT INTO db_w_tx_ml (n) VALUES ($1)\nRETURNING id, n",
+            &[JsonParam::Int(5)],
+            &[],
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.affected_rows, 1);
+        assert_eq!(r.returned_rows.len(), 1);
+        assert!(r.last_insert_id.is_some());
+        tx_commit(&mut client).await.unwrap();
+        drop(client);
+        let _ = execute(&p, "DROP TABLE db_w_tx_ml", &[], &[]).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -15,10 +15,20 @@ pub struct ExecuteReq {
     /// configured database, or `primary` when several are configured.
     #[serde(default)]
     pub db: Option<String>,
+    /// The write statement. To get rows back — and to have them ride the
+    /// `database::row-changed` event this write fires — put a `RETURNING`
+    /// clause in the SQL itself: `INSERT INTO t (n) VALUES (?) RETURNING id`
+    /// (SQLite, Postgres; MySQL has no RETURNING). Without one the response
+    /// has `returned_rows: []` and the event carries only `affected_rows`.
     #[serde(alias = "query")]
     pub sql: String,
     #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
     pub params: Vec<Value>,
+    /// Optional, and NOT what produces rows: this never adds a `RETURNING`
+    /// clause or projects columns — write the clause into `sql`. SQLite
+    /// refuses a non-empty list when the statement returns no rows
+    /// (`RETURNING_MISMATCH`), so a write cannot silently lose its identity;
+    /// Postgres and MySQL ignore the list with a warning.
     #[serde(default)]
     pub returning: Vec<String>,
 }
@@ -26,7 +36,12 @@ pub struct ExecuteReq {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ExecuteResp {
     pub affected_rows: u64,
+    /// SQLite/MySQL: the engine's last insert id, INSERT only. Postgres has
+    /// none, so it is the first column of the first `RETURNING` row of an
+    /// INSERT — put the key first: `RETURNING id, name`.
     pub last_insert_id: Option<String>,
+    /// The rows the SQL's `RETURNING` clause produced (or a `SELECT`/`VALUES`
+    /// sent here). Empty without such a clause.
     pub returned_rows: Vec<serde_json::Map<String, Value>>,
 }
 
@@ -170,6 +185,32 @@ mod tests {
         assert!(properties.contains_key("sql"));
         assert!(!properties.contains_key("query"));
         assert_eq!(properties["params"]["type"], "array");
+    }
+
+    /// The published schema is what an agent reads before calling (through
+    /// `engine::functions::info` and iii-directory): it has to say that rows
+    /// come from a RETURNING clause in the SQL, and that the `returning`
+    /// option is neither required nor what produces them.
+    #[test]
+    fn request_schema_explains_where_returned_rows_come_from() {
+        let schema = serde_json::to_value(schemars::schema_for!(ExecuteReq).schema).unwrap();
+        let properties = &schema["properties"];
+        let sql_doc = properties["sql"]["description"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(sql_doc.contains("RETURNING"), "{sql_doc}");
+        assert!(sql_doc.contains("row-changed"), "{sql_doc}");
+        let returning_doc = properties["returning"]["description"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(returning_doc.contains("never adds"), "{returning_doc}");
+        assert_eq!(properties["returning"]["type"], "array");
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(required.contains(&"sql"));
+        assert!(!required.contains(&"returning"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -23,10 +23,18 @@ use serde_json::{json, Value};
 #[derive(Deserialize, JsonSchema)]
 pub struct TxExecuteReq {
     pub transaction_id: String,
+    /// The write statement. Put a `RETURNING` clause in the SQL itself to
+    /// get rows back and onto the `database::row-changed` event that
+    /// `commitTransaction` fires for this write (SQLite, Postgres; MySQL has
+    /// no RETURNING).
     #[serde(alias = "query")]
     pub sql: String,
     #[serde(default, deserialize_with = "crate::handlers::lenient_params")]
     pub params: Vec<Value>,
+    /// Optional, and NOT what produces rows: never adds a `RETURNING` clause
+    /// — write it into `sql`. SQLite refuses a non-empty list when the
+    /// statement returns no rows (`RETURNING_MISMATCH`); Postgres and MySQL
+    /// ignore it with a warning.
     #[serde(default)]
     pub returning: Vec<String>,
 }

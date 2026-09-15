@@ -30,7 +30,11 @@ export interface RowChangedEvent {
   table: string | null
   op: 'insert' | 'update' | 'delete' | 'other'
   affected_rows: number
+  /** Writer's RETURNING projection (statements capture) or the changed rows'
+   *  primary keys (native capture, capped at 100). */
   returning?: Record<string, unknown>[]
+  /** Native capture only: `returning` holds fewer keys than `affected_rows`. */
+  truncated?: boolean
   at: number
 }
 
