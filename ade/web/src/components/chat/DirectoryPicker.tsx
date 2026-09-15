@@ -215,7 +215,7 @@ function ProjectRow({
   return (
     <div
       className={cn(
-        'group flex items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
+        'group flex min-w-0 items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
         selected && 'bg-surface-selected',
       )}
     >
@@ -687,7 +687,7 @@ export function DirectoryPicker({
     <div
       className={cn(
         embedded
-          ? 'flex h-full min-h-0 w-full flex-col'
+          ? 'flex h-full min-h-0 min-w-0 w-full flex-col'
           : 'relative inline-flex min-w-0',
         className,
       )}
@@ -803,7 +803,7 @@ export function DirectoryPicker({
         {view !== 'browse' && error ? (
           <div className="mx-4 mb-2 flex items-start gap-2 rounded-md bg-warn-muted px-3 py-2 font-sans text-base text-warn md:mx-0 md:text-[11px]">
             <AlertCircle className="size-4 shrink-0" aria-hidden />
-            <span>{error}</span>
+            <span className="min-w-0 [overflow-wrap:anywhere]">{error}</span>
           </div>
         ) : null}
 
@@ -811,8 +811,8 @@ export function DirectoryPicker({
         {view === 'worktrees' ? (
           <div
             className={cn(
-              'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-              embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
+              'min-w-0 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-2 md:px-0',
+              embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
             )}
           >
             {wtLoading ? (
@@ -822,7 +822,9 @@ export function DirectoryPicker({
             ) : wtError ? (
               <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
                 <AlertCircle className="size-4 shrink-0" aria-hidden />
-                <span>{wtError}</span>
+                <span className="min-w-0 [overflow-wrap:anywhere]">
+                  {wtError}
+                </span>
               </div>
             ) : filteredWorktrees.length > 0 ? (
               filteredWorktrees.map((wt) => {
@@ -909,8 +911,8 @@ export function DirectoryPicker({
         ) : view === 'projects' ? (
           <div
             className={cn(
-              'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-              embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
+              'min-w-0 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-2 md:px-0',
+              embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
             )}
           >
             {isAbsPath(query) ? (
@@ -1006,9 +1008,14 @@ export function DirectoryPicker({
             </div>
           </div>
         ) : (
-          <div className={cn(embedded && 'flex min-h-0 flex-1 flex-col')}>
+          <div
+            className={cn(
+              'min-w-0',
+              (embedded || mobileSheet) && 'flex min-h-0 flex-1 flex-col',
+            )}
+          >
             {/* browse header */}
-            <div className="mx-4 mb-2 flex min-h-14 shrink-0 items-center justify-between gap-2 rounded-md bg-surface p-1 md:mx-0 md:mb-1 md:min-h-9">
+            <div className="mx-4 mb-2 flex min-h-14 min-w-0 shrink-0 flex-col items-stretch gap-2 rounded-md bg-surface p-1 md:mx-0 md:mb-1 md:min-h-9 md:flex-row md:items-center md:justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-1 font-sans text-base text-ink-faint md:text-[11px]">
                 <button
                   type="button"
@@ -1040,7 +1047,7 @@ export function DirectoryPicker({
                   type="button"
                   disabled={validating !== null}
                   onClick={() => void validateAndSelect(path)}
-                  className="inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-7 md:py-1 md:text-[11px]"
+                  className="inline-flex min-h-12 shrink-0 items-center justify-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-7 md:py-1 md:text-[11px]"
                 >
                   <Check className="size-4 shrink-0" aria-hidden />
                   Use folder
@@ -1050,8 +1057,8 @@ export function DirectoryPicker({
 
             <div
               className={cn(
-                'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-                embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
+                'min-w-0 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-2 md:px-0',
+                embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
               )}
             >
               {isAbsPath(query) ? (
@@ -1074,7 +1081,9 @@ export function DirectoryPicker({
               ) : error ? (
                 <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
                   <AlertCircle className="size-4 shrink-0" aria-hidden />
-                  <span>{error}</span>
+                  <span className="min-w-0 [overflow-wrap:anywhere]">
+                    {error}
+                  </span>
                 </div>
               ) : path === null ? (
                 // roots list (only when multiple roots)
@@ -1145,7 +1154,7 @@ function DirectoryPickerSurface({
       <div
         role="group"
         aria-label="select working directory"
-        className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent"
       >
         {children}
       </div>
@@ -1158,8 +1167,9 @@ function DirectoryPickerSurface({
         <BottomSheetContent
           heading="Projects"
           closeLabel="Close project picker"
+          className="h-[min(36rem,calc(100dvh-1.5rem))]"
         >
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {children}
           </div>
         </BottomSheetContent>
