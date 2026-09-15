@@ -1012,12 +1012,10 @@ mod tests {
         assert!(args.to_string().starts_with(&preview));
         // Both teachable results render without panicking.
         assert!(wrapper_without_target_result(&args).is_error);
-        assert!(truncated_arguments_result(
-            "state::set",
-            &args,
-            crate::types::event::StopReason::End
-        )
-        .is_error);
+        assert!(
+            truncated_arguments_result("state::set", &args, crate::types::event::StopReason::End)
+                .is_error
+        );
         // Short args pass through whole.
         assert_eq!(arguments_preview(&json!({"a": 1})), r#"{"a":1}"#);
     }
@@ -1034,7 +1032,10 @@ mod tests {
         };
         assert!(text.contains("maximum output length"), "{text}");
         assert!(text.contains("smaller pieces"), "{text}");
-        assert!(!text.contains("_partial") && !text.contains("_streaming"), "{text}");
+        assert!(
+            !text.contains("_partial") && !text.contains("_streaming"),
+            "{text}"
+        );
         assert!(text.contains(r#"{"path":"a.rs"}"#), "{text}");
         assert_eq!(cut.details["cause"], "max_output_tokens");
         assert_eq!(cut.details["error"], "arguments_truncated");
