@@ -59,6 +59,9 @@ costs nothing, and needs no network).
 - **Curated snapshot:** `src/curated.rs` carries windows / output ceilings /
   capability flags / pricing (USD per MTok). Update it against models.dev
   when OpenAI ships new models — discovery only supplies bare ids.
+  GPT-6 Astra uses the [official model specifications](https://developers.openai.com/api/docs/models/gpt-6-astra):
+  a 1,050,000-token context window and 128,000-token output ceiling. Its tiered
+  pricing is intentionally omitted from the flat-rate catalog fields.
 
 ## Tests
 

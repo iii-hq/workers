@@ -36,6 +36,7 @@ pub fn is_legacy_generation(model_id: &str) -> bool {
 /// display polish and cost enrichment, never routing.
 fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, Option<Pricing>)> {
     match base {
+        "gpt-6-astra" => Some(("GPT-6 Astra", 1_050_000, 128_000, true, None)),
         "gpt-5.2" => Some(("GPT-5.2", 400_000, 128_000, true, Some(price(1.75, 14.0)))),
         "gpt-5.1" => Some(("GPT-5.1", 400_000, 128_000, false, Some(price(1.25, 10.0)))),
         "gpt-5-mini" => Some((
@@ -176,6 +177,27 @@ mod tests {
             let model = enrich(id);
             assert_eq!(model.context_window, 1_050_000);
             assert_eq!(model.max_output_tokens, 128_000);
+            assert!(
+                model.pricing.is_none(),
+                "the >272K pricing tier cannot be represented by flat rates"
+            );
+        }
+    }
+
+    #[test]
+    fn enrich_applies_gpt_6_astra_metadata_without_flat_pricing() {
+        for id in ["gpt-6-astra", "gpt-6-astra-2026-09-15"] {
+            let model = enrich(id);
+            assert_eq!(model.id, id);
+            assert_eq!(model.provider, PROVIDER_ID);
+            assert_eq!(model.display_name.as_deref(), Some("GPT-6 Astra"));
+            assert_eq!(model.context_window, 1_050_000);
+            assert_eq!(model.max_output_tokens, 128_000);
+            assert_eq!(model.supports_thinking, Some(true));
+            assert_eq!(model.supports_xhigh, Some(true));
+            assert_eq!(model.supports_vision, Some(true));
+            assert_eq!(model.supports_structured_output, Some(true));
+            assert!(!is_legacy_generation(id));
             assert!(
                 model.pricing.is_none(),
                 "the >272K pricing tier cannot be represented by flat rates"
