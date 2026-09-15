@@ -8,6 +8,24 @@ useful.
 Workers are installed via `iii trigger compose::add worker=<name>`, which
 resolves the matching asset for the host from the workers registry API.
 
+## Develop the Harness locally
+
+The [`template/`](template/README.md) project runs the local Harness source with
+Harness Medium agent profiles, skills and configuration seeds already in place:
+
+```bash
+cd template
+iii compose --up
+```
+
+It uses the sibling worker directories in this checkout, including `../harness`,
+not a published Harness package. See the [template guide](template/README.md) for
+authentication, the console URL and restarting a worker after a source change.
+With the stack stopped, refresh upstream profiles and skills using
+`./template/sync.sh --stack-stopped` (or preview with `--dry-run`). It preserves
+local configuration and Compose files and records the exact imported commit.
+The original [source-only stack](harness/DEVELOPMENT.md) remains available.
+
 ## Skills
 
 Each worker ships an agent skill under `<worker>/skills/`. Install them with the

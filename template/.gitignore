@@ -1,0 +1,21 @@
+# Keep only the local development seeds; other files are runtime settings.
+!/config/
+/config/*
+!/config/console.yaml
+!/config/iii-directory.yaml
+
+# Upstream configuration is reference data, never live project settings.
+!/upstream/config/
+!/upstream/config/**
+/.sync.lock/
+/.sync-stage-*/
+
+# Project-owned runtime files and downloaded worker instructions.
+/data/
+/.iii/
+/.workers-dev/
+/worker-compose.lock
+**/.null-ls_*
+*.log
+.env
+.env.*

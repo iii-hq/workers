@@ -1,0 +1,173 @@
+# Local-source counterpart of harness/worker-compose.yaml, with Harness Medium profiles.
+namespace: my-project
+startup_timeout: 15m
+stop_timeout: 10s
+
+engine:
+  url: ws://127.0.0.1:${III_ENGINE_PORT:-49134}
+
+containers:
+  queue:
+    worker: path://../queue
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --bin queue
+
+  state:
+    worker: path://../state
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin state
+
+  session-manager:
+    worker: path://../session-manager
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --bin session-manager
+
+  llm-router:
+    worker: path://../llm-router
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - state
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin llm-router
+
+  provider-openai-codex:
+    worker: path://../provider-openai-codex
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin provider-openai-codex
+
+  provider-openai:
+    worker: path://../provider-openai
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --bin provider-openai
+
+  provider-anthropic:
+    worker: path://../provider-anthropic
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - llm-router
+      - state
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --bin provider-anthropic
+
+  context-manager:
+    worker: path://../context-manager
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - llm-router
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin context-manager
+
+  iii-directory:
+    worker: path://../iii-directory
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+      ORT_PREFER_DYNAMIC_LINK: "0"
+    scripts:
+      # Compose supplies III_COMPOSE_DIR even though Cargo runs in ../iii-directory.
+      run: cargo run --bin iii-directory -- --config "$III_COMPOSE_DIR/config/iii-directory.yaml"
+
+  cron:
+    worker: path://../cron
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin cron
+
+  ade:
+    worker: path://../ade
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin ade -- --config "$III_COMPOSE_DIR/config/console.yaml"
+
+  ide:
+    worker: path://../ide
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin ide
+
+  browser:
+    worker: path://../browser
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin browser
+
+  harness:
+    worker: path://../harness
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - state
+      - queue
+      - session-manager
+      - llm-router
+      - provider-openai-codex
+      - provider-openai
+      - provider-anthropic
+      - context-manager
+      - iii-directory
+      - cron
+      - ade
+      - ide
+      - browser
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin harness

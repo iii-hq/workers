@@ -1,0 +1,6 @@
+# Local first-registration seed. sync.sh never changes this file.
+# Keep project instructions separate from automatically downloaded skills.
+skills_folder: data/skills
+local_skills_folder: skills
+agents_folder: agents
+auto_download: true
