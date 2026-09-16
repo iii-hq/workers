@@ -48,6 +48,8 @@ impl LegacySource for EmptyLegacy {
 struct FakeOAuth {
     authorized: Semaphore,
     polling: Semaphore,
+    /// One permit per in-flight poll that returned or was dropped.
+    settled: Semaphore,
 }
 
 impl Default for FakeOAuth {
@@ -55,7 +57,16 @@ impl Default for FakeOAuth {
         Self {
             authorized: Semaphore::new(0),
             polling: Semaphore::new(0),
+            settled: Semaphore::new(0),
         }
+    }
+}
+
+struct Settled<'a>(&'a Semaphore);
+
+impl Drop for Settled<'_> {
+    fn drop(&mut self) {
+        self.0.add_permits(1);
     }
 }
 
@@ -82,6 +93,7 @@ impl OAuthTransport for FakeOAuth {
                 device.device_auth_id == DEVICE_ID,
                 "unexpected device ceremony"
             );
+            let _settled = Settled(&self.settled);
             self.polling.add_permits(1);
             self.authorized
                 .acquire()
@@ -253,7 +265,7 @@ impl Fixture {
     }
 
     async fn assert_public_state_is_private(&self) -> anyhow::Result<()> {
-        for id in ["state::get", "state::list", "state::get_group"] {
+        for id in ["state::get", "state::list", "state::list_keys"] {
             match call(
                 &self.operator,
                 id,
@@ -263,14 +275,10 @@ impl Fixture {
             {
                 Ok(_) => anyhow::bail!("{id} exposed the private auth scope"),
                 Err(error) => {
-                    let message = error.to_string();
-                    // get_group is a retired spelling; an absent endpoint is
-                    // acceptable, but timeouts and unrelated errors are not.
+                    // Timeouts, missing endpoints, and unrelated errors are
+                    // not denial; only the reserved-scope rejection counts.
                     ensure!(
-                        message.contains("RESERVED_SCOPE")
-                            || (id == "state::get_group"
-                                && (message.contains("function_not_found")
-                                    || message.contains("not found"))),
+                        error.to_string().contains("RESERVED_SCOPE"),
                         "{id} failed for a reason other than private-scope denial"
                     );
                 }
@@ -565,8 +573,13 @@ async fn codex_login_cancel_cannot_persist_a_late_authorization() -> anyhow::Res
         )
         .await?;
     fixture.oauth.authorized.add_permits(1);
-    // Let the already in-flight poll race with cancellation and authorization.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The in-flight poll either observes cancellation (dropped) or delivers the
+    // late authorization (returned); wait for whichever happened.
+    tokio::time::timeout(Duration::from_secs(5), fixture.oauth.settled.acquire())
+        .await
+        .context("in-flight OAuth poll never settled")?
+        .context("OAuth fixture closed")?
+        .forget();
     let poll = fixture
         .rpc(
             "provider::openai-codex::login::poll",

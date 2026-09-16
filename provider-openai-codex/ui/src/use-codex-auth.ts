@@ -90,7 +90,7 @@ export function useCodexAuth(iii: Host['iii']) {
       finishedLogin = state.login?.login_id ?? null
       stopLoginTimers()
       revision++
-      update({ login: null, pollError: null, notice, retry: true })
+      update({ login: null, pollError: null, actionError: null, notice, retry: true })
     }
 
     function scheduleLogin() {
@@ -125,7 +125,7 @@ export function useCodexAuth(iii: Host['iii']) {
       try {
         const auth = await rpc<AuthStatus>('auth::status')
         if (!current(version)) return
-        update({ auth, statusError: null, confirming: false })
+        update({ auth, statusError: null, actionError: null, confirming: false })
         if (auth.login) resume(auth.login)
       } catch {
         if (current(version))
