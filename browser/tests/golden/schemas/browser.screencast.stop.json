@@ -9,6 +9,14 @@
       "session_id"
     ],
     "properties": {
+      "preview": {
+        "description": "Must match the `preview` the start was made with.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "session_id": {
         "description": "Stopping the screencast on an unknown session succeeds.",
         "type": "string"

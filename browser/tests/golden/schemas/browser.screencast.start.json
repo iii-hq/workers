@@ -9,6 +9,14 @@
       "session_id"
     ],
     "properties": {
+      "preview": {
+        "description": "A corner thumbnail rather than a pane: streams frames but does not count as a viewer for `browser::resize` fit arbitration.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "session_id": {
         "type": "string"
       }
