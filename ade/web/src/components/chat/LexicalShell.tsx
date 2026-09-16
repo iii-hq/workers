@@ -85,7 +85,7 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
 }
 
 /**
- * Enter submits, Shift+Enter inserts a newline (Lexical's default).
+ * Enter and Cmd+Enter submit; Shift+Enter inserts a newline (Lexical's default).
  * We listen at LOW priority. While a typeahead menu is open we swallow Enter
  * here (return true) so it can't fall through to PlainTextPlugin's
  * KEY_ENTER_COMMAND at EDITOR priority (which would insert a newline). The
@@ -109,7 +109,7 @@ function SubmitOnEnterPlugin({
           event?.preventDefault()
           return true
         }
-        if (event && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+        if (event && (event.shiftKey || event.ctrlKey)) {
           return false
         }
         event?.preventDefault()
