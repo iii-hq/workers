@@ -23,7 +23,7 @@ import {
 } from '@iii-dev/console-ui'
 import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, MessageSquareQuote, RefreshCw, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage, formatBytes } from '../lib/format'
+import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
 import { Breadcrumbs } from './Breadcrumbs'
 import {
   coderReadFile,
@@ -454,9 +454,9 @@ export function EditorPane({
           </IconButton>
         ) : null}
         {readOnly === null ? (
-          <button type="button" className="shui-save-btn" disabled={!canSave} onClick={save} title="save (⌘S)">
+          <Button type="button" variant="primary" size="sm" disabled={!canSave} onClick={save} title="save (⌘S)">
             {saving ? 'saving…' : 'save'}
-          </button>
+          </Button>
         ) : null}
       </div>
 

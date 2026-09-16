@@ -12,7 +12,8 @@
   --chat-stack-gap: 1.5rem;
 }
 
-@media (min-width: 640px) {
+/* Pane width, not viewport: the chat root is the container. */
+@container (min-width: 42rem) {
   .chat-message-stack {
     --chat-stack-gap: 2rem;
   }

@@ -1,4 +1,5 @@
 import { ChevronRight, EyeOff, Timer, Zap } from 'lucide-react'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import type { TraceListItem } from '../hooks/useTraceData'
@@ -87,11 +88,9 @@ export function TraceListRow({
           tone={statusDotTone(trace.status)}
           pulse={trace.status === 'pending' || isLive}
         />
-        <span className="font-mono text-[13px] text-ink truncate flex-1 lowercase">
+        <span className="font-mono text-[13px] text-ink truncate flex-1">
           {resolved.prefix && (
-            <span className="text-ink-faint text-[11px] mr-1 uppercase tracking-[0.06em]">
-              {resolved.prefix}
-            </span>
+            <Eyebrow className="mr-1">{resolved.prefix}</Eyebrow>
           )}
           {resolved.text}
         </span>

@@ -1,3 +1,4 @@
+import { X } from 'lucide-react'
 import { ActionLine, Chip, MetaRow } from '@/components/chat/sandbox/shared'
 import {
   type NodeState,
@@ -120,7 +121,7 @@ export function StatusView({ input, output, running }: StatusViewProps) {
         </ul>
       )}
       {resp.result_error ? (
-        <ActionLine symbol="✕" tone="warn">
+        <ActionLine icon={<X />} tone="warn">
           <span className="font-mono text-[12.5px] text-warn break-words">
             {resp.result_error}
           </span>

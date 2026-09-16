@@ -18,7 +18,7 @@ function DemoContextChip({ contextWindow }: SessionChipProps) {
   const pct = Math.round((used / window) * 100)
   return (
     <span
-      className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint"
+      className="flex items-center gap-1.5 iii-ui-eyebrow"
       title={`${used.toLocaleString()} / ${window.toLocaleString()} tokens (${pct}%)`}
     >
       <span>ctx</span>

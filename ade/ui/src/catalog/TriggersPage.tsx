@@ -32,6 +32,7 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  SearchField,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeCron, nextCronRun, untilLabel } from './cron'
@@ -82,7 +83,6 @@ import {
   IdentityHead,
   LiveDot,
   Note,
-  SearchField,
   SideCount,
   StatTile,
   useGroupToggle,
@@ -344,10 +344,13 @@ export function TriggersPage({
         <>
           <div className="console-catalog-search-row">
             <SearchField
+              ref={searchInputRef}
+              name="catalog-search"
+              className="console-catalog-search"
               value={search}
               onChange={setSearch}
               placeholder="search triggers…"
-              inputRef={searchInputRef}
+              aria-label="search triggers"
             />
             <Button
               variant="pill"

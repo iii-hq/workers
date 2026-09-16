@@ -246,7 +246,7 @@ export function DescribeView({
       </TableViewport>
       {el.attrs && Object.keys(el.attrs).length > 0 ? (
         <div>
-          <div className="px-3 py-1.5 border-y border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+          <div className="px-3 py-1.5 border-y border-rule-2 bg-paper-2 iii-ui-eyebrow">
             attributes · {Object.keys(el.attrs).length}
           </div>
           <JsonHighlight code={JSON.stringify(el.attrs, null, 2)} wrap />

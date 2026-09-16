@@ -1,7 +1,7 @@
-import type { Host } from '@iii-dev/console-ui'
+import { Button, type Host } from '@iii-dev/console-ui'
+import { ExternalLink } from 'lucide-react'
 import { useState } from 'react'
 import { startBrowserSession } from '../lib/browser'
-import { ExternalLink } from '../lib/icons'
 import { openBrowserPane } from '../overlay/overlay-store'
 
 /**
@@ -12,8 +12,9 @@ import { openBrowserPane } from '../overlay/overlay-store'
 export function OpenInBrowser({ host, url }: { host: Host; url: string }) {
   const [state, setState] = useState<'idle' | 'opening' | 'failed'>('idle')
   return (
-    <button
-      type="button"
+    <Button
+      variant="ghost"
+      size="sm"
       className="br-ui-open-in-browser"
       disabled={state === 'opening'}
       aria-label={`Open ${url} in the browser page`}
@@ -32,8 +33,8 @@ export function OpenInBrowser({ host, url }: { host: Host; url: string }) {
           .catch(() => setState('failed'))
       }}
     >
-      <ExternalLink aria-hidden />
+      <ExternalLink size={16} aria-hidden />
       <span>{state === 'opening' ? 'Opening…' : 'Open in browser'}</span>
-    </button>
+    </Button>
   )
 }

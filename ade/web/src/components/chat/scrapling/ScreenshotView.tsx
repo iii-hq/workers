@@ -1,3 +1,4 @@
+import { ArrowRight } from 'lucide-react'
 import {
   ActionLine,
   Chip,
@@ -38,7 +39,7 @@ export function ScreenshotView({
           <Chip>{req.fetcher ?? 'dynamic'}</Chip>
           {req.full_page ? <Chip>Full page</Chip> : null}
         </MetaRow>
-        <ActionLine symbol="→" tone="ink">
+        <ActionLine icon={<ArrowRight />} tone="ink">
           <span className="break-all">{req.url}</span>
         </ActionLine>
         <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
@@ -74,7 +75,7 @@ export function ScreenshotView({
           <span className="ml-0.5">KB</span>
         </Chip>
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{url}</span>
       </ActionLine>
       <div className="px-3 py-3 space-y-2">
@@ -151,7 +152,7 @@ export function ScreenshotPreview({ input }: { input: unknown }) {
         {req.format ? <Chip>{req.format}</Chip> : null}
         {req.full_page ? <Chip>Full page</Chip> : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{req.url}</span>
       </ActionLine>
     </div>

@@ -117,7 +117,7 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
             </>
           }
         />
-        <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
+        <div className="flex-1 overflow-y-auto px-4 @2xl:px-6 @5xl:px-8 py-4 space-y-4">
           {isError ? (
             <StatusPanel
               variant="alert"

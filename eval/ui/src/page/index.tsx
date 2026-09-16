@@ -1,4 +1,4 @@
-import { EmptyState, type Host, type PageRenderProps, Skeleton, StatusPanel } from '@iii-dev/console-ui'
+import { EmptyState, type Host, type PageRenderProps, Skeleton, StatusPanel, useConfirm } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createEvalApi, errorMessage, isTerminal } from '../api'
 import { useEvalCompleted } from '../events'
@@ -25,6 +25,7 @@ export function EvalPage({ host, panelSide = 'left', panelContext, commands }: {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [actionPending, setActionPending] = useState(false)
+  const { confirm, dialog } = useConfirm()
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true)
@@ -155,7 +156,14 @@ export function EvalPage({ host, panelSide = 'left', panelContext, commands }: {
 
   const remove = useCallback(async () => {
     if (!selectedId) return
-    if (!window.confirm('Delete this evaluation and its stored report?')) return
+    if (
+      !(await confirm({
+        title: 'Delete this evaluation and its stored report?',
+        confirmLabel: 'Delete',
+        tone: 'danger',
+      }))
+    )
+      return
     setActionPending(true)
     try {
       await api.delete(selectedId)
@@ -168,7 +176,7 @@ export function EvalPage({ host, panelSide = 'left', panelContext, commands }: {
     } finally {
       setActionPending(false)
     }
-  }, [api, loadHistory, selectedId])
+  }, [api, loadHistory, selectedId, confirm])
 
   const rerun = useCallback(
     async (reverseOrder: boolean) => {
@@ -240,6 +248,7 @@ export function EvalPage({ host, panelSide = 'left', panelContext, commands }: {
 
   return (
     <div className="eval-ui-container">
+      {dialog}
       <div
         className="eval-ui-tabs"
         role="tablist"

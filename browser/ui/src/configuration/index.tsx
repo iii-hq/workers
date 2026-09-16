@@ -5,20 +5,28 @@
  */
 
 import {
+  Badge,
+  Button,
+  Card,
   type ConfigFormProps,
   ConfirmDialog,
+  Eyebrow,
   type ExtensionIii,
+  IconButton,
   Input,
   type JsonValue,
   SettingsList,
   SettingsRow,
   SettingsSection,
+  StatusDot,
   StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
+import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
+import { ChevronLeft, ChevronRight, Globe } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { clearAllBrowserData, errorMessage } from '../lib/browser'
-import { ChevronLeftIcon, GlobeIcon, useContainerNarrow } from '../lib/widgets'
 import {
   booleanLiteralForRawValue,
   isEnvironmentValue,
@@ -208,21 +216,8 @@ function formatCount(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
 }
 
-function formatDuration(ms: number) {
-  if (ms === 0) return 'off'
-  if (ms < 1_000) return `${ms}ms`
-  const seconds = Math.round(ms / 1_000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainder = seconds % 60
-  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1_024) return `${formatCount(bytes)} B`
-  if (bytes < 1_048_576) return `${Math.round(bytes / 1_024)} KiB`
-  return `${Math.round(bytes / 1_048_576)} MiB`
-}
+/** A timeout of 0 means the feature is off, not "0ms". */
+const durationLabel = (ms: number) => (ms === 0 ? 'off' : formatDuration(ms))
 
 export function focusBrowserNarrowPane(
   root: HTMLElement | null,
@@ -291,7 +286,7 @@ function RawTypedValue({
   const environmentBacked = isEnvironmentValue(value) || /^\$\{[^}]*$/.test(value)
   return (
     <div className="br-cfg-template-control" data-environment-template={environmentBacked ? 'true' : 'false'}>
-      <span className="br-cfg-template-kind">{environmentBacked ? 'Environment' : 'Custom value'}</span>
+      <Badge className="br-cfg-template-kind">{environmentBacked ? 'Environment' : 'Custom value'}</Badge>
       <Input
         id={id}
         name={name}
@@ -307,14 +302,14 @@ function RawTypedValue({
         aria-describedby={errorId}
         onChange={onChange}
       />
-      <button
-        type="button"
-        className="br-cfg-template-replace"
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={onUseLiteral}
         aria-label={`Replace ${label} environment value with ${replacementLabel}`}
       >
         Use {replacementLabel}
-      </button>
+      </Button>
     </div>
   )
 }
@@ -684,7 +679,7 @@ function DefaultOriginPolicy({
   }
 
   return (
-    <div className="br-cfg-policy-card" data-field="default_origin_policy" tabIndex={-1}>
+    <Card className="br-cfg-policy-card" data-field="default_origin_policy" tabIndex={-1}>
       <div className="br-cfg-policy-head">
         <div>
           <h5>Fallback policy</h5>
@@ -695,7 +690,7 @@ function DefaultOriginPolicy({
         </div>
       </div>
       <PolicyControls path={['default_origin_policy']} policy={policy} errors={errors} onChange={commit} />
-    </div>
+    </Card>
   )
 }
 
@@ -746,7 +741,7 @@ function OriginPolicies({
           const originErrorId = originError ? `br-cfg-origin-${index}-error` : undefined
           return (
             // biome-ignore lint/suspicious/noArrayIndexKey: the stable row lets an origin key be renamed without remounting and losing input focus.
-            <div className="br-cfg-policy-card" key={index}>
+            <Card className="br-cfg-policy-card" key={index}>
               <div className="br-cfg-policy-head">
                 <div className="br-cfg-origin-name">
                   <label htmlFor={`br-cfg-origin-${index}`}>Origin or hostname</label>
@@ -765,9 +760,9 @@ function OriginPolicies({
                     onBlur={(event) => renameOrigin(origin, event.target.value.trim())}
                   />
                 </div>
-                <button
-                  type="button"
-                  className="br-cfg-policy-remove"
+                <Button
+                  variant="ghost"
+                  size="sm"
                   aria-label={`Remove origin policy for ${origin || 'unnamed origin'}`}
                   onClick={() => {
                     const next = { ...policies }
@@ -776,7 +771,7 @@ function OriginPolicies({
                   }}
                 >
                   Remove
-                </button>
+                </Button>
               </div>
               <PolicyControls
                 path={['origin_policies', origin]}
@@ -789,13 +784,13 @@ function OriginPolicies({
                   {originError}
                 </p>
               ) : null}
-            </div>
+            </Card>
           )
         })}
       </div>
-      <button type="button" className="br-cfg-policy-add" onClick={addOrigin}>
+      <Button variant="ghost" size="sm" className="br-cfg-policy-add" onClick={addOrigin}>
         Add origin policy
-      </button>
+      </Button>
     </div>
   )
 }
@@ -858,7 +853,7 @@ function ConfigNav({
       id: 'behavior',
       label: 'Behavior',
       description: 'Timeouts and navigation',
-      summary: `${formatDuration(timeout)} · sleep ${formatDuration(sleepAfter)}`,
+      summary: `${durationLabel(timeout)} · sleep ${durationLabel(sleepAfter)}`,
     },
     {
       id: 'access',
@@ -877,7 +872,7 @@ function ConfigNav({
   return (
     <nav className="br-cfg-nav" aria-label="Browser configuration sections">
       <div className="br-cfg-nav-head">
-        <p className="br-cfg-nav-label">Browser settings</p>
+        <Eyebrow as="div">Browser settings</Eyebrow>
         <p>Settings are grouped by when and where they apply.</p>
       </div>
       <ul className="br-cfg-nav-list">
@@ -897,14 +892,14 @@ function ConfigNav({
                   <span className="br-cfg-nav-description">{section.description}</span>
                   <span className="br-cfg-nav-meta">{section.summary}</span>
                 </span>
-                <ChevronLeftIcon className="br-cfg-nav-chevron" />
+                <ChevronRight size={16} aria-hidden className="br-cfg-nav-chevron" />
               </button>
             </li>
           )
         })}
       </ul>
       <div className="br-cfg-nav-foot">
-        <span className="br-cfg-nav-foot-dot" aria-hidden />
+        <StatusDot tone="accent" />
         Changes to limits and timeouts hot-apply after saving.
       </div>
     </nav>
@@ -927,11 +922,11 @@ function EditorHeader({
   return (
     <header className="br-cfg-editor-head">
       {narrow ? (
-        <button type="button" className="br-cfg-back" onClick={onBack} aria-label="Back to configuration sections">
-          <ChevronLeftIcon />
-        </button>
+        <IconButton label="Back to configuration sections" className="br-cfg-back" onClick={onBack}>
+          <ChevronLeft size={16} aria-hidden />
+        </IconButton>
       ) : null}
-      <GlobeIcon className="br-cfg-editor-icon" />
+      <Globe size={16} aria-hidden className="br-cfg-editor-icon" />
       <div className="br-cfg-editor-title">
         <h3 id={titleId}>{title}</h3>
         <p>{description}</p>
@@ -960,18 +955,21 @@ function ClearBrowserData({ iii }: { iii: ExtensionIii }) {
       title="Browser data"
       description="Every regular tab shares one profile: cookies, logins, local storage, cache, and downloads."
     >
-      <div className="br-cfg-danger">
-        <div>
-          <p className="br-cfg-danger-title">Clear browser data</p>
-          <p className="br-cfg-hint">
+      <StatusPanel
+        variant="alert"
+        headline="Clear browser data"
+        detail={
+          <>
             Signs every site out in every tab and deletes the downloads. Open tabs stay and reload into a clean
             profile. Incognito tabs are closed. This cannot be undone.
-          </p>
-        </div>
-        <button type="button" className="br-cfg-policy-remove" disabled={busy} onClick={() => setConfirming(true)}>
-          {busy ? 'Clearing…' : 'Clear browser data…'}
-        </button>
-      </div>
+            <div className="br-cfg-danger-action">
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirming(true)}>
+                {busy ? 'Clearing…' : 'Clear browser data…'}
+              </Button>
+            </div>
+          </>
+        }
+      />
       {status ? (
         <p className="br-cfg-hint" role="status">
           {status}
@@ -1181,9 +1179,11 @@ export function BrowserConfigEditor({
                 />
               </SettingsList>
               {booleanValue(value.allow_attach, DEFAULTS.allow_attach) ? (
-                <div className="br-cfg-warning" role="note">
-                  Attach mode is enabled. Only connect to browser instances you trust.
-                </div>
+                <StatusPanel
+                  variant="warn"
+                  headline="Attach mode is enabled"
+                  detail="Only connect to browser instances you trust."
+                />
               ) : null}
             </ConfigSection>
             {iii ? <ClearBrowserData iii={iii} /> : null}
@@ -1310,7 +1310,7 @@ export function BrowserConfigEditor({
                   label="Default timeout (milliseconds)"
                   value={value.default_timeout_ms}
                   placeholder={DEFAULTS.default_timeout_ms}
-                  hint={`Currently ${formatDuration(numberValue(value.default_timeout_ms, DEFAULTS.default_timeout_ms))}.`}
+                  hint={`Currently ${durationLabel(numberValue(value.default_timeout_ms, DEFAULTS.default_timeout_ms))}.`}
                   error={fieldError(errors, 'default_timeout_ms')}
                   onChange={(next) => setNumber('default_timeout_ms', next)}
                 />
@@ -1319,7 +1319,7 @@ export function BrowserConfigEditor({
                   label="Maximum timeout (milliseconds)"
                   value={value.max_timeout_ms}
                   placeholder={DEFAULTS.max_timeout_ms}
-                  hint={`Currently ${formatDuration(numberValue(value.max_timeout_ms, DEFAULTS.max_timeout_ms))}.`}
+                  hint={`Currently ${durationLabel(numberValue(value.max_timeout_ms, DEFAULTS.max_timeout_ms))}.`}
                   error={fieldError(errors, 'max_timeout_ms')}
                   onChange={(next) => setNumber('max_timeout_ms', next)}
                 />
@@ -1328,7 +1328,7 @@ export function BrowserConfigEditor({
                   label="Sleep idle tabs after (milliseconds)"
                   value={value.inactive_after_ms}
                   placeholder={DEFAULTS.inactive_after_ms}
-                  hint={`Currently ${formatDuration(numberValue(value.inactive_after_ms, DEFAULTS.inactive_after_ms))}. A tab nobody watches or calls for this long closes its page and keeps its place; selecting it loads the page again. Incognito tabs close instead. Set 0 to keep every page open.`}
+                  hint={`Currently ${durationLabel(numberValue(value.inactive_after_ms, DEFAULTS.inactive_after_ms))}. A tab nobody watches or calls for this long closes its page and keeps its place; selecting it loads the page again. Incognito tabs close instead. Set 0 to keep every page open.`}
                   error={fieldError(errors, 'inactive_after_ms')}
                   onChange={(next) => setNumber('inactive_after_ms', next)}
                 />
@@ -1435,9 +1435,11 @@ export function BrowserConfigEditor({
                 />
               </SettingsList>
               {stringValue(asObject(value.scrapling).security_mode, DEFAULTS.scrapling.security_mode) === 'compat' ? (
-                <div className="br-cfg-warning" role="note">
-                  Compat removes the adaptive-storage quota and is rejected on unsupported targets.
-                </div>
+                <StatusPanel
+                  variant="warn"
+                  headline="Compat mode"
+                  detail="Compat removes the adaptive-storage quota and is rejected on unsupported targets."
+                />
               ) : null}
             </ConfigSection>
 
@@ -1578,7 +1580,7 @@ export function BrowserConfigEditor({
 
 export function BrowserConfigForm(props: ConfigFormProps & { iii?: ExtensionIii }) {
   const value = browserConfigurationValue(props.value)
-  const [rootRef, narrow] = useContainerNarrow(CONFIG_NARROW_BELOW)
+  const { ref: rootRef, narrow } = useContainerNarrow({ below: CONFIG_NARROW_BELOW })
   const [selection, setSelection] = useState<SectionId>('launch')
   const [narrowPane, setNarrowPane] = useState<'nav' | 'editor'>('nav')
   const domRef = useRef<HTMLDivElement | null>(null)

@@ -30,6 +30,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
+import { eyebrowClassName } from '@/components/ui/Eyebrow'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
@@ -39,6 +40,10 @@ import { formatCallDuration } from '@/lib/format-call-duration'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type { FunctionTriggerMessage as FunctionTriggerMessageType } from '@/types/chat'
+
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 /**
  * FunctionTriggerCard — the canonical rendering of one iii function trigger:
@@ -234,9 +239,7 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
 function FunctionIdentityRow({ functionId }: { functionId: string }) {
   return (
     <div className="flex min-w-0 items-center gap-2 border-b border-rule-2 bg-paper-2 px-3 py-1.5">
-      <span className="shrink-0 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-        function
-      </span>
+      <span className="shrink-0 iii-ui-eyebrow">function</span>
       <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
         <span className="text-accent italic font-semibold">ƒ</span>{' '}
         <FunctionIdLabel functionId={functionId} />
@@ -903,7 +906,7 @@ export function FunctionTriggerCard({
           {expandedSurface ? (
             <span
               className={cn(
-                'inline-block shrink-0 text-ink-ghost transition-transform duration-150',
+                'inline-block shrink-0 text-ink-ghost transition-transform duration-[var(--motion-duration-control)]',
                 open && 'rotate-90',
               )}
             >
@@ -966,7 +969,10 @@ export function FunctionTriggerCard({
                 type="button"
                 aria-expanded={showRawDetails}
                 onClick={() => setShowRawDetails((value) => !value)}
-                className="w-full cursor-pointer px-3 py-2 text-left font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+                className={cn(
+                  eyebrowClassName,
+                  'w-full cursor-pointer px-3 py-2 text-left hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent',
+                )}
               >
                 {showRawDetails ? 'hide' : 'show'} raw request and response
               </button>
@@ -1145,7 +1151,7 @@ function PaneShell({
       className={cn(bordered && 'border-t border-rule-2')}
       data-function-pane={label}
     >
-      <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
         <span className="min-w-0 flex-1 truncate">
           {label}
           {(hints ?? []).map((hint) => (
@@ -1184,9 +1190,9 @@ function PaneShell({
           type="button"
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
-          className="w-full border-t border-rule-2 bg-paper-2 px-3 py-1 text-center font-mono text-[11px] lowercase text-ink-faint hover:text-ink transition-colors"
+          className="w-full border-t border-rule-2 bg-paper-2 px-3 py-1 text-center font-mono text-[11px] text-ink-faint hover:text-ink transition-colors"
         >
-          {expanded ? '▴ collapse' : `▾ show all · ${lineCount} lines`}
+          {expanded ? '▴ Collapse' : `▾ Show all · ${lineCount} lines`}
         </button>
       ) : null}
     </div>
@@ -1201,7 +1207,7 @@ function PaneShell({
 function StreamingArgsPane({ text }: { text: string }) {
   return (
     <div data-function-pane="request">
-      <div className="bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
         request
         <span className="text-ink-ghost normal-case tracking-normal">
           {' '}
@@ -1278,7 +1284,7 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
         className={cn(bordered && 'border-t border-rule-2')}
         data-function-pane={label}
       >
-        <div className="bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+        <div className="bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
           {label}
           <span className="text-ink-ghost normal-case tracking-normal">
             {' '}
@@ -1326,7 +1332,7 @@ function ValuePane({ label, value, bordered }: ValuePaneProps) {
         )}
         {detailsJson ? (
           <>
-            <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+            <div className="bg-paper-2 px-3 py-1.5 border-y border-rule-2 iii-ui-eyebrow">
               details
             </div>
             <JsonHighlight code={detailsJson} />

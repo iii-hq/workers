@@ -31,6 +31,10 @@ import {
 import { cn } from '@/lib/utils'
 import { IconButton } from './IconButton'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export { PageSidebar, type PageSidebarProps } from './PageSidebar'
 
 /** The pane's root column. Fills the pane whether the parent is a flex
@@ -39,7 +43,7 @@ export function PageShell({ className, ...rest }: React.ComponentProps<'div'>) {
   return (
     <div
       className={cn(
-        'flex-1 h-full min-h-0 min-w-0 flex flex-col bg-panel',
+        '@container flex-1 h-full min-h-0 min-w-0 flex flex-col bg-panel',
         className,
       )}
       {...rest}

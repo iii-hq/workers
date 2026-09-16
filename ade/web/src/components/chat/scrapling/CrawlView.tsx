@@ -1,3 +1,4 @@
+import { ArrowRight, Route } from 'lucide-react'
 import { FilterChip } from '@/components/chat/engine/shared'
 import {
   ActionLine,
@@ -5,6 +6,7 @@ import {
   MetaRow,
   StatusPill,
 } from '@/components/chat/sandbox/shared'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 import {
   type CrawlItem,
@@ -41,7 +43,7 @@ function crawlChips(req: CrawlRequest) {
       {req.allowed_domains?.length ? (
         <FilterChip label="domains" value={req.allowed_domains.join(', ')} />
       ) : req.same_domain === false ? (
-        <Chip className="text-warn border-warn/40">
+        <Chip className="bg-warn-muted text-warn">
           <span>Off-domain</span>
         </Chip>
       ) : null}
@@ -87,21 +89,19 @@ export function CrawlView({
         />
         <FilterChip label="crawled" value={stats.crawled} />
         {stats.errors > 0 ? (
-          <Chip className="text-warn border-warn/40">
-            <span className="uppercase tracking-[0.06em]">
-              {stats.errors} err
-            </span>
+          <Chip className="bg-warn-muted text-warn">
+            <Eyebrow className="text-current">{stats.errors} err</Eyebrow>
           </Chip>
         ) : null}
         {stats.stopped && stats.stopped !== 'done' ? (
-          <Chip className="text-warn border-warn/40">
-            <span className="uppercase tracking-[0.06em]">{stats.stopped}</span>
+          <Chip className="bg-warn-muted text-warn">
+            <Eyebrow className="text-current">{stats.stopped}</Eyebrow>
           </Chip>
         ) : null}
         {crawlChips(req)}
       </MetaRow>
       {res.stream?.name ? (
-        <ActionLine symbol="≈" tone="accent">
+        <ActionLine icon={<Route />} tone="accent">
           <span className="font-mono text-[11.5px] text-ink-faint break-all">
             stream {res.stream.name}
             {res.stream.group_id ? ` · ${res.stream.group_id}` : ''}
@@ -110,7 +110,7 @@ export function CrawlView({
       ) : null}
       {res.items && res.items.length > 0 ? (
         <div>
-          <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+          <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 iii-ui-eyebrow">
             sample · {res.items.length}
           </div>
           {res.items.slice(0, MAX_ITEM_ROWS).map((item, i) => (
@@ -181,7 +181,7 @@ export function CrawlPreview({ input }: { input: unknown }) {
       </MetaRow>
       {seeds.slice(0, 5).map((u, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; seed list is fixed
-        <ActionLine key={`${i}:${u}`} symbol="→" tone="ink">
+        <ActionLine key={`${i}:${u}`} icon={<ArrowRight />} tone="ink">
           <span className="break-all">{u}</span>
         </ActionLine>
       ))}

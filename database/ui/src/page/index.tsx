@@ -42,6 +42,7 @@ import {
   Select,
   Skeleton,
   StatusPanel,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -195,6 +196,7 @@ export function DatabasePage({
   // Narrow drill-in: false shows the tree, true the active panel. Wide mode
   // shows both and ignores it.
   const [drilled, setDrilled] = useState(false)
+  const { confirm, dialog } = useConfirm()
 
   // The SQL panel reports whether it holds a statement worth guarding — a
   // database switch remounts it, and an unsaved statement must not vanish
@@ -424,6 +426,7 @@ export function DatabasePage({
 
   return (
     <PageShell ref={shellRef} className="db-ui-shell">
+      {dialog}
       <PageHeader
         icon={<Database size={16} />}
         title="Database"
@@ -439,13 +442,17 @@ export function DatabasePage({
                   label: db.name,
                   title: db.url,
                 }))}
-                onChange={(next) => {
+                onChange={async (next) => {
                   if (next === activeDb.name) return
                   // The SQL panel is per-database (remounted on switch), so an
                   // unsaved statement would vanish — ask first.
                   if (
                     sqlDirtyRef.current &&
-                    !window.confirm('Discard the unsaved SQL statement?')
+                    !(await confirm({
+                      title: 'Discard the unsaved SQL statement?',
+                      confirmLabel: 'Discard',
+                      tone: 'danger',
+                    }))
                   )
                     return
                   setSelectedDb(next)

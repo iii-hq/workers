@@ -60,6 +60,10 @@ import {
 } from './tabs/WorkersTab/hooks'
 import { WorkerEditor } from './tabs/WorkersTab/WorkerEditor'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 const NARROW_BELOW = 720
 
 const CONFIGURATION_ICONS: Record<string, LucideIcon> = {

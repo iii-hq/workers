@@ -4,9 +4,9 @@ import {
   stepFontSize,
   useTerminalFontSize,
 } from '@iii-workers/terminal-font'
+import { StatusBar, Tooltip } from '@iii-dev/console-ui'
 import { ArrowDown, Minus, Plus, RefreshCw } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import { HoverTip } from './HoverTip'
 import type { TerminalSession } from './terminal-session'
 
 export type { TerminalSession } from './terminal-session'
@@ -110,13 +110,19 @@ export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
   return (
     <div className="shui-terminal">
       {docked ? (
-        <div className="shui-terminal-pane-bar">
+        <StatusBar
+          className="shui-terminal-pane-bar"
+          end={
+            <>
+              <FontSizeControl />
+              {actions}
+            </>
+          }
+        >
           <span className="shui-terminal-pane-cwd" title={cwd}>
             {cwd.split('/').filter(Boolean).slice(-1)[0] ?? cwd}
           </span>
-          <FontSizeControl />
-          {actions}
-        </div>
+        </StatusBar>
       ) : null}
       {!settled ? (
         <div className={`shui-terminal-status ${status}`} role="status">
@@ -147,7 +153,7 @@ export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
         </div>
       )}
       {!atBottom ? (
-        <HoverTip label="Jump to latest output">
+        <Tooltip label="Jump to latest output">
           <button
             type="button"
             className="shui-terminal-jump"
@@ -156,7 +162,7 @@ export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
           >
             <ArrowDown aria-hidden />
           </button>
-        </HoverTip>
+        </Tooltip>
       ) : null}
     </div>
   )

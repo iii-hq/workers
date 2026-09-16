@@ -1,3 +1,4 @@
+import { ArrowRight, Hash } from 'lucide-react'
 import { FilterChip } from '@/components/chat/engine/shared'
 import {
   ActionLine,
@@ -48,13 +49,13 @@ function openChips(input: unknown): React.ReactNode {
         <FilterChip label="as" value={req.impersonate} />
       ) : null}
       {req.solve_cloudflare ? (
-        <Chip className="text-warn border-warn/40">
+        <Chip className="bg-warn-muted text-warn">
           <span>Cloudflare</span>
         </Chip>
       ) : null}
       {req.real_chrome ? <Chip>Real Chrome</Chip> : null}
       {req.headless === false ? (
-        <Chip className="text-warn border-warn/40">
+        <Chip className="bg-warn-muted text-warn">
           <span>Headed</span>
         </Chip>
       ) : null}
@@ -93,7 +94,7 @@ export function SessionOpenView({
         <StatusPill label="session open" variant="accent" />
         {openChips(input)}
       </MetaRow>
-      <ActionLine symbol="#" tone="accent">
+      <ActionLine icon={<Hash />} tone="accent">
         <span className="break-all font-mono">{res.session_id}</span>
       </ActionLine>
     </SectionShell>
@@ -158,7 +159,7 @@ export function SessionFetchView({
           {node}
         </MetaRow>
         {url ? (
-          <ActionLine symbol="→" tone="ink">
+          <ActionLine icon={<ArrowRight />} tone="ink">
             <span className="break-all">{url}</span>
           </ActionLine>
         ) : null}
@@ -185,12 +186,12 @@ export function SessionFetchView({
         />
         {node}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{page.url || url || ''}</span>
       </ActionLine>
       {page.extracted ? (
         <div>
-          <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+          <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 iii-ui-eyebrow">
             extracted · {Object.keys(page.extracted).length}
           </div>
           <JsonHighlight code={JSON.stringify(page.extracted, null, 2)} wrap />
@@ -214,7 +215,7 @@ export function SessionFetchPreview({ input }: { input: unknown }) {
         {node}
       </MetaRow>
       {url ? (
-        <ActionLine symbol="→" tone="ink">
+        <ActionLine icon={<ArrowRight />} tone="ink">
           <span className="break-all">{url}</span>
         </ActionLine>
       ) : null}

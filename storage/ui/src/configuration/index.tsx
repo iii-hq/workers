@@ -10,6 +10,7 @@ import {
   Input,
   type JsonValue,
   StatusPanel,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -856,6 +857,7 @@ export function StorageConfigForm(props: ConfigFormProps) {
   const [nameErrors, setNameErrors] = useState<Record<string, string>>({})
   const domRef = useRef<HTMLDivElement | null>(null)
   const focusKey = props.focusField?.join('/') ?? ''
+  const { confirm, dialog } = useConfirm()
 
   const setRoot = useCallback((node: HTMLDivElement | null) => {
     rootRef(node)
@@ -933,8 +935,13 @@ export function StorageConfigForm(props: ConfigFormProps) {
     setSelection({ kind: 'bucket', name: nextName })
   }
 
-  const removeBucket = (name: string) => {
-    if (!window.confirm(`Remove bucket ${name} from the storage configuration?`)) return
+  const removeBucket = async (name: string) => {
+    const ok = await confirm({
+      title: `Remove bucket ${name} from the storage configuration?`,
+      confirmLabel: 'Remove',
+      tone: 'danger',
+    })
+    if (!ok) return
     const next = { ...buckets }
     delete next[name]
     commitBuckets(next)
@@ -948,6 +955,7 @@ export function StorageConfigForm(props: ConfigFormProps) {
 
   return (
     <div className={`storage-cfg${narrow ? ' narrow' : ''}`} ref={setRoot}>
+      {dialog}
       <div className="storage-cfg-workbench">
         {showNav ? (
           <ConfigNav

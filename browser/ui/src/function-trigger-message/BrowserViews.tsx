@@ -1,4 +1,17 @@
-import { Badge, JsonHighlight } from '@iii-dev/console-ui'
+import {
+  ActionLine,
+  Badge,
+  Chip,
+  EmptyState,
+  JsonHighlight,
+  MetaRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableRow,
+  TableViewport,
+} from '@iii-dev/console-ui'
+import { ArrowRight, DollarSign, Dot, TriangleAlert } from 'lucide-react'
 import { z } from 'zod'
 import {
   type BrowserConsoleEntry,
@@ -9,7 +22,6 @@ import {
 } from '../lib/browser'
 import { cn } from '../lib/cn'
 import { renderWithHighlight } from '../lib/highlight'
-import { ActionLine, Chip, MetaRow, StatusPill } from '../lib/shared'
 import {
   actResultSchema,
   consoleReadSchema,
@@ -47,7 +59,7 @@ function truncate(s: string, max: number): string {
  * the shared grep-style match highlighter. */
 function SnapshotTree({ tree }: { tree: string }) {
   return (
-    <pre className="br-ui-tree">
+    <pre className="br-ui-text br-ui-scroll">
       <code>
         {renderWithHighlight(tree, '\\[ref=[^\\]]*\\]', {
           isRegex: true,
@@ -64,11 +76,11 @@ export function SnapshotView({ output }: { output: unknown }) {
   return (
     <div>
       <MetaRow>
-        <StatusPill label="snapshot" variant="accent" />
+        <Badge variant="accent">snapshot</Badge>
         {res.title ? <Chip>{truncate(res.title, 60)}</Chip> : null}
-        {res.truncated ? <StatusPill label="truncated" variant="warn" /> : null}
+        {res.truncated ? <Badge variant="warn">truncated</Badge> : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
         <span className="br-ui-break">{res.url}</span>
       </ActionLine>
       <SnapshotTree tree={res.tree} />
@@ -84,16 +96,16 @@ export function SessionStartView({ output }: { output: unknown }) {
   return (
     <div>
       <MetaRow>
-        <StatusPill label="session started" variant="accent" />
+        <Badge variant="accent">session started</Badge>
         <Chip>{res.session_id}</Chip>
-        {res.incognito ? <Chip className="br-ui-chip-warn">incognito</Chip> : null}
+        {res.incognito ? <Chip tone="warning">incognito</Chip> : null}
         <Chip>{res.headless ? 'headless' : 'headful'}</Chip>
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
         <span className="br-ui-break">{res.url}</span>
       </ActionLine>
       {res.error ? (
-        <ActionLine symbol="!" tone="warn">
+        <ActionLine icon={<TriangleAlert size={16} aria-hidden />} tone="warn">
           <span className="br-ui-break">page failed to load: {res.error}</span>
         </ActionLine>
       ) : null}
@@ -106,10 +118,7 @@ export function SessionStopView({ output }: { output: unknown }) {
   if (!res) return null
   return (
     <MetaRow>
-      <StatusPill
-        label={res.was_running ? 'stopped' : 'was not running'}
-        variant={res.was_running ? 'accent' : 'default'}
-      />
+      <Badge variant={res.was_running ? 'accent' : 'default'}>{res.was_running ? 'stopped' : 'was not running'}</Badge>
     </MetaRow>
   )
 }
@@ -120,33 +129,30 @@ export function SessionListView({ output }: { output: unknown }) {
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={`${res.sessions.length} ${res.sessions.length === 1 ? 'tab' : 'tabs'}`}
-          variant={res.sessions.length > 0 ? 'accent' : 'default'}
-        />
+        <Badge variant={res.sessions.length > 0 ? 'accent' : 'default'}>{`${res.sessions.length} ${res.sessions.length === 1 ? 'tab' : 'tabs'}`}</Badge>
       </MetaRow>
       {res.sessions.length === 0 ? (
-        <div className="br-ui-empty-line">· no tabs</div>
+        <EmptyState title="No tabs" description="Nothing is open in this browser." />
       ) : (
-        <table className="br-ui-vtable">
-          <tbody>
-            {res.sessions.map((s) => (
-              <tr key={s.session_id}>
-                <td className="br-ui-td br-ui-td-accent br-ui-nowrap">
-                  {s.session_id}
-                </td>
-                <td className="br-ui-td br-ui-break">{s.url}</td>
-                <td className="br-ui-td br-ui-td-dim br-ui-nowrap">
-                  {s.incognito ? 'incognito · ' : ''}
-                  {s.active === false ? 'asleep' : s.headless ? 'headless' : 'headful'}
-                </td>
-                <td className="br-ui-td br-ui-td-dim br-ui-num br-ui-right br-ui-nowrap">
-                  {s.console_entries} logs
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <TableViewport className="br-ui-table">
+          <Table density="compact">
+            <TableBody>
+              {res.sessions.map((s) => (
+                <TableRow key={s.session_id}>
+                  <TableCell className="br-ui-accent br-ui-nowrap">{s.session_id}</TableCell>
+                  <TableCell className="br-ui-break">{s.url}</TableCell>
+                  <TableCell className="br-ui-faint br-ui-nowrap">
+                    {s.incognito ? 'incognito · ' : ''}
+                    {s.active === false ? 'asleep' : s.headless ? 'headless' : 'headful'}
+                  </TableCell>
+                  <TableCell className="br-ui-faint br-ui-num br-ui-right br-ui-nowrap">
+                    {s.console_entries} logs
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableViewport>
       )}
     </div>
   )
@@ -160,14 +166,11 @@ export function NavigateView({ output }: { output: unknown }) {
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={res.ok ? 'loaded' : 'failed'}
-          variant={res.ok ? 'accent' : 'alert'}
-        />
-        {res.timed_out ? <StatusPill label="timed out" variant="warn" /> : null}
+        <Badge variant={res.ok ? 'accent' : 'alert'}>{res.ok ? 'loaded' : 'failed'}</Badge>
+        {res.timed_out ? <Badge variant="warn">timed out</Badge> : null}
         {res.title ? <Chip>{truncate(res.title, 60)}</Chip> : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
         <span className="br-ui-break">{res.url}</span>
       </ActionLine>
     </div>
@@ -195,20 +198,17 @@ export function ActView({
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={res.ok ? 'done' : 'failed'}
-          variant={res.ok ? 'accent' : 'alert'}
-        />
+        <Badge variant={res.ok ? 'accent' : 'alert'}>{res.ok ? 'done' : 'failed'}</Badge>
         {req?.action ? <Chip>{req.action}</Chip> : null}
-        {req?.ref ? <Chip className="br-ui-chip-accent">{req.ref}</Chip> : null}
+        {req?.ref ? <Chip tone="accent">{req.ref}</Chip> : null}
         {req?.key ? <Chip>{req.key}</Chip> : null}
         {req?.x != null && req?.y != null ? (
-          <Chip className="br-ui-chip-num">
+          <Chip className="br-ui-num">
             {Math.round(req.x)},{Math.round(req.y)}
           </Chip>
         ) : null}
       </MetaRow>
-      <ActionLine symbol="·" tone="ink">
+      <ActionLine icon={<Dot size={16} aria-hidden />} tone="ink">
         {res.detail}
       </ActionLine>
     </div>
@@ -230,15 +230,12 @@ export function HistoryView({
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={req?.action ?? 'history'}
-          variant={res.ok ? 'accent' : 'alert'}
-        />
+        <Badge variant={res.ok ? 'accent' : 'alert'}>{req?.action ?? 'history'}</Badge>
         {!res.moved ? (
-          <StatusPill label="no history entry" variant="warn" />
+          <Badge variant="warn">no history entry</Badge>
         ) : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
         <span className="br-ui-break">{res.url}</span>
       </ActionLine>
     </div>
@@ -257,8 +254,8 @@ const readInputSchema = z.object({
 
 export function ConsoleEntryRow({ entry }: { entry: BrowserConsoleEntry }) {
   return (
-    <li className="br-ui-log-row">
-      <span className="br-ui-log-time">{formatTime(entry.timestamp)}</span>
+    <li className="br-ui-row">
+      <span className="br-ui-num br-ui-dim">{formatTime(entry.timestamp)}</span>
       <Badge
         variant={levelBadgeVariant(entry.level)}
         className="br-ui-log-level"
@@ -288,18 +285,18 @@ export function ConsoleReadView({
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={`${res.entries.length} entries`}
-          variant={res.entries.length > 0 ? 'accent' : 'default'}
-        />
+        <Badge variant={res.entries.length > 0 ? 'accent' : 'default'}>{`${res.entries.length} entries`}</Badge>
         {req?.level ? <Chip>{req.level}</Chip> : null}
         {req?.pattern ? <Chip>/{req.pattern}/</Chip> : null}
         {res.dropped > 0 ? (
-          <Chip className="br-ui-chip-warn">{res.dropped} dropped</Chip>
+          <Chip tone="warning">{res.dropped} dropped</Chip>
         ) : null}
       </MetaRow>
       {res.entries.length === 0 ? (
-        <div className="br-ui-empty-line">· no matching console entries</div>
+        <EmptyState
+          title="No console entries"
+          description="Nothing the page logged matches this read."
+        />
       ) : (
         <ul className="br-ui-scroll">
           {res.entries.map((entry) => (
@@ -313,12 +310,12 @@ export function ConsoleReadView({
 
 export function NetworkEntryRow({ entry }: { entry: BrowserNetworkEntry }) {
   return (
-    <li className="br-ui-log-row">
-      <span className={cn('br-ui-net-status', entry.failed && 'is-failed')}>
+    <li className="br-ui-row">
+      <span className={cn('br-ui-net-status br-ui-num', entry.failed ? 'br-ui-alert' : 'br-ui-faint')}>
         {entry.status ?? (entry.failed ? 'err' : '...')}
       </span>
-      <span className="br-ui-net-method">{entry.method}</span>
-      <span className={cn('br-ui-net-url', entry.failed && 'is-failed')}>
+      <span className="br-ui-net-method br-ui-faint">{entry.method}</span>
+      <span className={cn('br-ui-break', entry.failed && 'br-ui-alert')}>
         {entry.url}
         {entry.error ? (
           <span className="br-ui-alert"> · {entry.error}</span>
@@ -341,20 +338,20 @@ export function NetworkReadView({
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={`${res.entries.length} requests`}
-          variant={res.entries.length > 0 ? 'accent' : 'default'}
-        />
+        <Badge variant={res.entries.length > 0 ? 'accent' : 'default'}>{`${res.entries.length} requests`}</Badge>
         {req?.failed_only ? (
-          <Chip className="br-ui-chip-warn">Failed only</Chip>
+          <Chip tone="warning">Failed only</Chip>
         ) : null}
         {req?.pattern ? <Chip>/{req.pattern}/</Chip> : null}
         {res.dropped > 0 ? (
-          <Chip className="br-ui-chip-warn">{res.dropped} dropped</Chip>
+          <Chip tone="warning">{res.dropped} dropped</Chip>
         ) : null}
       </MetaRow>
       {res.entries.length === 0 ? (
-        <div className="br-ui-empty-line">· no matching requests</div>
+        <EmptyState
+          title="No requests"
+          description="Nothing the page requested matches this read."
+        />
       ) : (
         <ul className="br-ui-scroll">
           {res.entries.map((entry) => (
@@ -374,28 +371,23 @@ export function StylesReadView({ output }: { output: unknown }) {
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={`${res.properties.length} properties`}
-          variant="accent"
-        />
-        <Chip className="br-ui-chip-accent">{res.ref}</Chip>
+        <Badge variant="accent">{`${res.properties.length} properties`}</Badge>
+        <Chip tone="accent">{res.ref}</Chip>
       </MetaRow>
-      <div className="br-ui-scroll">
-        <table className="br-ui-vtable">
-          <tbody>
+      <TableViewport className="br-ui-table br-ui-scroll">
+        <Table density="compact">
+          <TableBody>
             {res.properties.map((prop) => (
-              <tr key={prop.name}>
-                <td className="br-ui-td br-ui-td-dim br-ui-break br-ui-td-name">
-                  {prop.name}
-                </td>
-                <td className="br-ui-td br-ui-break">{prop.value}</td>
-              </tr>
+              <TableRow key={prop.name}>
+                <TableCell className="br-ui-faint br-ui-break br-ui-td-name">{prop.name}</TableCell>
+                <TableCell className="br-ui-break">{prop.value}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
+      </TableViewport>
       {res.inline_style ? (
-        <div className="br-ui-inline-style">style="{res.inline_style}"</div>
+        <div className="br-ui-text br-ui-faint">style="{res.inline_style}"</div>
       ) : null}
     </div>
   )
@@ -420,18 +412,15 @@ export function StylesWriteView({
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={res.ok ? 'applied' : 'failed'}
-          variant={res.ok ? 'accent' : 'alert'}
-        />
-        {req?.ref ? <Chip className="br-ui-chip-accent">{req.ref}</Chip> : null}
+        <Badge variant={res.ok ? 'accent' : 'alert'}>{res.ok ? 'applied' : 'failed'}</Badge>
+        {req?.ref ? <Chip tone="accent">{req.ref}</Chip> : null}
       </MetaRow>
       {req?.property ? (
-        <ActionLine symbol="·" tone="ink">
+        <ActionLine icon={<Dot size={16} aria-hidden />} tone="ink">
           {req.property}: {req.value ?? ''}
         </ActionLine>
       ) : null}
-      <div className="br-ui-inline-style">style="{res.inline_style}"</div>
+      <div className="br-ui-text br-ui-faint">style="{res.inline_style}"</div>
     </div>
   )
 }
@@ -456,10 +445,10 @@ export function DomReadView({ output }: { output: unknown }) {
   return (
     <div>
       <MetaRow>
-        <StatusPill label={`${rows.length} nodes`} variant="accent" />
-        {res.truncated ? <StatusPill label="truncated" variant="warn" /> : null}
+        <Badge variant="accent">{`${rows.length} nodes`}</Badge>
+        {res.truncated ? <Badge variant="warn">truncated</Badge> : null}
       </MetaRow>
-      <div className="br-ui-dom">
+      <div className="br-ui-text br-ui-scroll">
         {rows.map(({ node, depth }) => (
           <div
             key={node.ref}
@@ -467,17 +456,17 @@ export function DomReadView({ output }: { output: unknown }) {
             style={{ paddingLeft: depth * 14 }}
           >
             {node.tag === '#text' ? (
-              <span className="br-ui-dom-text">
+              <span className="br-ui-faint">
                 "{truncate(node.text ?? '', 80)}"
               </span>
             ) : (
-              <span className="br-ui-dom-el">
+              <span className="br-ui-ink">
                 {elementLabel(node.tag, node.id, node.classes)}
               </span>
             )}{' '}
-            <span className="br-ui-dom-ref">[{node.ref}]</span>
+            <span className="br-ui-accent">[{node.ref}]</span>
             {node.child_count > node.children.length ? (
-              <span className="br-ui-dom-more">
+              <span className="br-ui-dim">
                 {' '}
                 +{node.child_count - node.children.length} more
               </span>
@@ -506,19 +495,18 @@ export function EvaluateView({
   return (
     <div>
       <MetaRow>
-        <StatusPill
-          label={res.ok ? 'ok' : 'exception'}
-          variant={res.ok ? 'accent' : 'alert'}
-        />
+        <Badge variant={res.ok ? 'accent' : 'alert'}>{res.ok ? 'ok' : 'exception'}</Badge>
       </MetaRow>
       {req?.expression ? (
-        <ActionLine symbol="$" tone="ink">
+        <ActionLine icon={<DollarSign size={16} aria-hidden />} tone="ink">
           <span className="br-ui-break">{truncate(req.expression, 200)}</span>
         </ActionLine>
       ) : null}
       {res.ok ? (
         res.value === undefined ? (
-          <div className="br-ui-empty-line">· undefined</div>
+          <div className="br-ui-json-sm">
+            <JsonHighlight code="undefined" />
+          </div>
         ) : (
           <div className="br-ui-json-sm">
             <JsonHighlight
@@ -527,7 +515,7 @@ export function EvaluateView({
           </div>
         )
       ) : (
-        <div className="br-ui-eval-err">{res.error ?? 'evaluation failed'}</div>
+        <div className="br-ui-text br-ui-alert">{res.error ?? 'evaluation failed'}</div>
       )}
     </div>
   )

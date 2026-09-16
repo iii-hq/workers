@@ -1,3 +1,4 @@
+import { ArrowRight } from 'lucide-react'
 import { FilterChip } from '@/components/chat/engine/shared'
 import {
   ActionLine,
@@ -118,12 +119,12 @@ function OptionChips({
         <FilterChip label="as" value={req.impersonate} />
       ) : null}
       {req.solve_cloudflare ? (
-        <Chip className="text-warn border-warn/40">
+        <Chip className="bg-warn-muted text-warn">
           <span>Cloudflare</span>
         </Chip>
       ) : null}
       {req.headless === false ? (
-        <Chip className="text-warn border-warn/40">
+        <Chip className="bg-warn-muted text-warn">
           <span>Headed</span>
         </Chip>
       ) : null}
@@ -150,7 +151,7 @@ function TargetLines({ urls }: { urls: string[] }) {
     <>
       {urls.slice(0, MAX_TARGET_LINES).map((url, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; rows never reorder and urls may repeat
-        <ActionLine key={`${i}:${url}`} symbol="→" tone="ink">
+        <ActionLine key={`${i}:${url}`} icon={<ArrowRight />} tone="ink">
           <span className="break-all">{url}</span>
         </ActionLine>
       ))}
@@ -191,7 +192,7 @@ function SinglePane({
           <FilterChip label="xhr" value={page.captured_xhr.length} />
         ) : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{page.url || req.url || ''}</span>
       </ActionLine>
       {page.extracted ? <Extracted extracted={page.extracted} /> : null}
@@ -233,7 +234,7 @@ function statusToVariant(
 function Extracted({ extracted }: { extracted: Record<string, unknown> }) {
   return (
     <div>
-      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 iii-ui-eyebrow">
         extracted · {Object.keys(extracted).length}
       </div>
       <JsonHighlight code={JSON.stringify(extracted, null, 2)} wrap />
@@ -251,7 +252,7 @@ function RenderedContent({
   const truncated = content.length > HTML_PREVIEW_CHARS
   return (
     <div>
-      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 iii-ui-eyebrow">
         {format ?? 'content'} · {formatChars(content.length)}
         {truncated ? ' · truncated' : ''}
       </div>
@@ -269,7 +270,7 @@ function HtmlSnippet({ html }: { html: string }) {
   const truncated = html.length > HTML_PREVIEW_CHARS
   return (
     <div>
-      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 iii-ui-eyebrow">
         html · {formatChars(html.length)}
         {truncated ? ' · truncated preview' : ''}
       </div>
@@ -334,7 +335,7 @@ function BulkPane({
       </div>
       {extractedCount > 0 ? (
         <div>
-          <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+          <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 iii-ui-eyebrow">
             extracted · {extractedCount} page{extractedCount === 1 ? '' : 's'}
           </div>
           <JsonHighlight code={JSON.stringify(extractedByUrl, null, 2)} wrap />

@@ -9,10 +9,11 @@
  * selection, `+` opens a tab.
  */
 
+import { IconButton } from '@iii-dev/console-ui'
+import { Globe, HatGlasses, Moon, Plus, X } from 'lucide-react'
 import type { KeyboardEvent, MouseEvent } from 'react'
 import type { BrowserSessionInfo } from '../lib/browser'
 import { cn } from '../lib/cn'
-import { Globe, Incognito, Moon, Plus, X } from '../lib/icons'
 
 interface TabStripProps {
   tabs: BrowserSessionInfo[]
@@ -118,39 +119,38 @@ export function TabStrip({
             >
               <span className="br-ui-tab-icon" aria-hidden>
                 {tab.incognito ? (
-                  <Incognito size={16} />
+                  <HatGlasses size={16} />
                 ) : asleep ? (
-                  <Moon size={14} />
+                  <Moon size={16} />
                 ) : (
-                  <Globe size={15} />
+                  <Globe size={16} />
                 )}
               </span>
               <span className="br-ui-tab-title">{label}</span>
-              <button
-                type="button"
+              <IconButton
+                label={`close ${label}`}
+                tooltip={false}
                 className="br-ui-tab-close"
-                aria-label={`close ${label}`}
                 tabIndex={active ? 0 : -1}
                 onClick={(event) => {
                   event.stopPropagation()
                   onClose(tab.session_id)
                 }}
               >
-                <X size={13} aria-hidden />
-              </button>
+                <X size={16} aria-hidden />
+              </IconButton>
             </div>
           )
         })}
-        <button
-          type="button"
+        <IconButton
+          label={starting ? 'opening a tab' : 'new tab'}
+          tooltip="New tab"
           className="br-ui-tab-new"
           onClick={onNew}
           disabled={starting}
-          aria-label={starting ? 'opening a tab' : 'new tab'}
-          title="New tab"
         >
           <Plus size={16} aria-hidden />
-        </button>
+        </IconButton>
       </div>
     </div>
   )

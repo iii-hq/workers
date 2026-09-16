@@ -60,7 +60,7 @@ export function MarkdownView({
           </span>
         </Chip>
         {truncated ? (
-          <Chip className="text-warn border-warn/40">
+          <Chip className="bg-warn-muted text-warn">
             <span>Truncated</span>
           </Chip>
         ) : null}

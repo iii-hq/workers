@@ -3,9 +3,9 @@
    small badges. It is the page's own control; the console sidebar it sits
    in owns collapse/resize. */
 
+import { Tooltip } from '@iii-dev/console-ui'
 import { FolderTree, GitBranch, History, Search } from 'lucide-react'
 import type { ComponentType } from 'react'
-import { HoverTip } from './HoverTip'
 
 export type SideView = 'files' | 'search' | 'scm' | 'timeline'
 
@@ -41,7 +41,7 @@ export function ActivityBar({
         const count = badges[id]
         const isActive = active === id
         return (
-          <HoverTip key={id} label={`${label} (${key})`}>
+          <Tooltip key={id} label={`${label} (${key})`}>
             <button
               type="button"
               className={`shui-activity-item${isActive ? ' active' : ''}`}
@@ -56,7 +56,7 @@ export function ActivityBar({
                 </span>
               ) : null}
             </button>
-          </HoverTip>
+          </Tooltip>
         )
       })}
     </nav>

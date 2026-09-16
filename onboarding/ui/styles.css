@@ -1,8 +1,9 @@
 /*
  * Onboarding styles. Two halves:
- *   - `.onboarding-spotlight`, GLOBAL on purpose: the box lives in
- *     `document.body` so it can frame any part of the console, not only this
- *     page's pane.
+ *   - `.onboarding-spotlight`: the box lives in `document.body` so it can
+ *     frame any part of the console, not only this page's pane. It stamps
+ *     `data-iii-ui="onboarding"` on itself (spotlight.ts), so its rules are
+ *     scoped like everything else.
  *   - the tour list, scoped to the injected page like every other worker UI.
  *
  * Every colour, radius, shadow and duration is a console design token, so the
@@ -12,7 +13,7 @@
 
 /* ------------------------------------------------------------------ box --- */
 
-.onboarding-spotlight {
+[data-iii-ui='onboarding'].onboarding-spotlight {
   position: fixed;
   top: 0;
   left: 0;
@@ -38,7 +39,7 @@
     opacity var(--motion-duration-control) var(--motion-ease-standard);
 }
 
-.onboarding-spotlight[data-visible='true'] {
+[data-iii-ui='onboarding'].onboarding-spotlight[data-visible='true'] {
   opacity: 1;
   animation: onboarding-breathe 2.4s var(--motion-ease-standard) infinite;
 }
@@ -61,18 +62,14 @@
    plus the `uiClasses` recipes (card, listItem, chip). What follows is only
    what those cannot express. */
 
-/* The console's panel fill reads warm-gray beside this list; the page is
-   asked to be white. Dark theme keeps the console's own near-black panel. */
 [data-iii-ui='onboarding'] .ob-page {
-  background: #fff;
-}
-
-[data-theme='dark'] [data-iii-ui='onboarding'] .ob-page {
   background: var(--color-panel);
 }
 
+/* The current step is a selection: the neutral recipe, never accent. */
 [data-iii-ui='onboarding'] .ob-step[data-state='active'] {
-  border-color: var(--color-accent);
+  border-color: var(--color-edge);
+  background: var(--color-surface-selected);
 }
 
 [data-iii-ui='onboarding'] .ob-step[data-state='pending'] {
@@ -84,7 +81,7 @@
 }
 
 [data-iii-ui='onboarding'] .ob-sub[data-state='waiting'] {
-  border-left: 2px solid var(--color-accent);
+  border-left: 2px solid var(--color-edge);
 }
 
 /* The status dot: complete, current (breathing), or not yet reached. */
@@ -99,6 +96,8 @@
   background: var(--color-ok);
 }
 
+/* The current step is live, not selected: DESIGN.md reserves accent for the
+ * running state and the status dot. lint-allow accent-selection */
 [data-iii-ui='onboarding'] .ob-dot[data-state='active'] {
   background: var(--color-accent);
   animation: onboarding-pulse 1.8s var(--motion-ease-standard) infinite;
@@ -167,13 +166,9 @@
   background: var(--color-ok);
   border-color: var(--color-ok);
   /* `--color-ok` is a deep green in the light theme and a bright mint in the
-     dark one, so the readable ink is not the same colour in both. */
-  color: #fff;
-  animation: onboarding-continue 1.1s var(--motion-ease-standard) 3;
-}
-
-[data-theme='dark'] [data-iii-ui='onboarding'] .ob-continue {
+     dark one; the panel tone is the readable ink on it in both. */
   color: var(--color-panel);
+  animation: onboarding-continue 1.1s var(--motion-ease-standard) 3;
 }
 
 [data-iii-ui='onboarding'] .ob-continue:hover {
@@ -204,7 +199,7 @@
 }
 
 [data-iii-ui='onboarding'] .ob-input:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: 1px;
 }
 
@@ -260,8 +255,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .onboarding-spotlight,
-  .onboarding-spotlight[data-visible='true'],
+  [data-iii-ui='onboarding'].onboarding-spotlight,
+  [data-iii-ui='onboarding'].onboarding-spotlight[data-visible='true'],
   [data-iii-ui='onboarding'] .ob-dot[data-state='active'],
   [data-iii-ui='onboarding'] .ob-pulse,
   [data-iii-ui='onboarding'] .ob-open,

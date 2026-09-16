@@ -370,7 +370,7 @@
 }
 
 [data-iii-ui='compose-ui'] .cu-topo-engine:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: 1px;
 }
 
@@ -520,7 +520,7 @@
 }
 
 [data-iii-ui='compose-ui'] .cu-topo-node:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: 1px;
 }
 

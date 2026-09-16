@@ -1,16 +1,23 @@
 /**
- * Injected call-card view for `directory::search_functions`, mirroring the console's
- * compact candidate results. The console's card chrome is private to the
- * console bundle, so the small presentational pieces are ported here under
- * `discovery-search-*` classes — the accepted injected-UI pattern.
+ * Injected call-card view for `directory::search_functions`: the compact
+ * candidate results, on the shared card chrome.
  */
 
 import {
+  ActionLine,
   Badge,
+  Card,
+  Chip,
+  EmptyState,
+  Eyebrow,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
+  MetaRow,
+  TerminalCommandLine,
 } from '@iii-dev/console-ui'
-import { type ReactNode } from 'react'
+import { ChevronRight, Dot, SquareFunction } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { kv } from '../lib/widgets'
 import {
   type DiscoverCandidateView,
   type DiscoverInstallableView,
@@ -21,34 +28,11 @@ import {
   parseDiscoverResponse,
 } from './search'
 
-function MetaRow({ children }: { children: ReactNode }) {
-  return <div className="discovery-search-meta">{children}</div>
-}
-
-function KvChip({ label, children }: { label: string; children: ReactNode }) {
+function SectionHead({ children, count }: { children: ReactNode; count: number }) {
   return (
-    <span className="discovery-search-chip">
-      <span className="k">{label}</span>
-      <span className="v">{children}</span>
-    </span>
-  )
-}
-
-function ActionLine({
-  symbol,
-  tone,
-  children,
-}: {
-  symbol: string
-  tone: 'accent' | 'ink'
-  children: ReactNode
-}) {
-  return (
-    <div className="discovery-search-action">
-      <span aria-hidden="true" className={`sym tone-${tone}`}>
-        {symbol}
-      </span>
-      <div className="body">{children}</div>
+    <div className="dir-ui-search-head">
+      <Eyebrow>{children}</Eyebrow>
+      <span className="dir-ui-search-count">{count}</span>
     </div>
   )
 }
@@ -56,19 +40,13 @@ function ActionLine({
 /** One compact function candidate: id first, slim description on demand. */
 function CandidateBlock({ candidate }: { candidate: DiscoverCandidateView }) {
   return (
-    <details className="discovery-search-fn">
+    <details className="dir-ui-search-fn">
       <summary>
-        <span aria-hidden="true" className="caret">
-          ▸
-        </span>
-        <span aria-hidden="true" className="sym">
-          ƒ
-        </span>
-        <span className="fn-id">{candidate.function_id}</span>
+        <ChevronRight aria-hidden className="dir-ui-search-caret" />
+        <SquareFunction aria-hidden className="dir-ui-search-sym" />
+        <span className="dir-ui-search-fn-id">{candidate.function_id}</span>
       </summary>
-      {candidate.description.length > 0 ? (
-        <div className="discovery-search-desc">{candidate.description}</div>
-      ) : null}
+      {candidate.description.length > 0 ? <div className="dir-ui-search-desc">{candidate.description}</div> : null}
     </details>
   )
 }
@@ -78,45 +56,28 @@ function CandidateBlock({ candidate }: { candidate: DiscoverCandidateView }) {
 function InstallableSection({ worker }: { worker: DiscoverInstallableView }) {
   return (
     <section>
-      <div className="discovery-search-section-head">
-        <span>
-          registry · {worker.name}
-          {worker.version ? ` @ ${worker.version}` : ''}
-          <span className="discovery-search-install-tag">not installed</span>
-        </span>
-        <span className="count">{worker.functions.length}</span>
-      </div>
-      {worker.description.length > 0 ? (
-        <div className="discovery-search-install-desc">{worker.description}</div>
-      ) : null}
+      <SectionHead count={worker.functions.length}>
+        registry · {worker.name}
+        {worker.version ? ` @ ${worker.version}` : ''}
+        <Chip className="dir-ui-search-tag">not installed</Chip>
+      </SectionHead>
+      {worker.description.length > 0 ? <div className="dir-ui-search-desc">{worker.description}</div> : null}
       {worker.functions.map((fn) => (
-        <div className="discovery-search-install-fn" key={fn.function_id}>
-          <span aria-hidden="true" className="sym">
-            ƒ
-          </span>
-          <span className="fn-id">{fn.function_id}</span>
-          {fn.description.length > 0 ? (
-            <span className="fn-desc">{fn.description}</span>
-          ) : null}
-        </div>
+        <ActionLine key={fn.function_id} icon={<SquareFunction />} tone="ink">
+          <span className="dir-ui-search-fn-id">{fn.function_id}</span>
+          {fn.description.length > 0 ? <span className="dir-ui-search-fn-desc">{fn.description}</span> : null}
+        </ActionLine>
       ))}
-      <div className="discovery-search-install-cmd">
-        <span aria-hidden="true" className="sym">
-          $
-        </span>
-        <code>{`compose::add { "worker": "${worker.name}" }`}</code>
-      </div>
+      <TerminalCommandLine command={`compose::add { "worker": "${worker.name}" }`} copy />
     </section>
   )
 }
 
 function GuidanceDetails({ guidance }: { guidance: string }) {
   return (
-    <details className="discovery-search-guidance">
+    <details className="dir-ui-search-guidance">
       <summary>
-        <span aria-hidden="true" className="caret">
-          ▸
-        </span>
+        <ChevronRight aria-hidden className="dir-ui-search-caret" />
         guidance sent to the model
       </summary>
       <p>{guidance}</p>
@@ -124,53 +85,37 @@ function GuidanceDetails({ guidance }: { guidance: string }) {
   )
 }
 
-export function DiscoverCard({
-  capabilities,
-  view,
-}: {
-  capabilities: string[]
-  view: DiscoverView
-}) {
+export function DiscoverCard({ capabilities, view }: { capabilities: string[]; view: DiscoverView }) {
   const empty = view.workers.length === 0 && view.installable.length === 0
   return (
-    <div className="discovery-search-card">
-      <MetaRow>
-        <Badge className="discovery-search-pill" variant="accent">
-          search
-        </Badge>
-        <KvChip label="workers">{view.workers.length}</KvChip>
-        <KvChip label="functions">{functionCount(view)}</KvChip>
-        {view.installable.length > 0 ? (
-          <KvChip label="installable">{view.installable.length}</KvChip>
-        ) : null}
-        <KvChip label="latency">{`${Math.round(view.latency_ms)}ms`}</KvChip>
+    <Card>
+      <MetaRow
+        items={kv([
+          ['workers', view.workers.length],
+          ['functions', functionCount(view)],
+          ['installable', view.installable.length > 0 && view.installable.length],
+          ['latency', `${Math.round(view.latency_ms)}ms`],
+        ])}
+      >
+        <Badge variant="accent">search</Badge>
       </MetaRow>
       {capabilities.length > 0 ? (
         <section aria-label="capabilities">
-          <div className="discovery-search-section-head">
-            <span>capabilities</span>
-            <span className="count">{capabilities.length}</span>
-          </div>
+          <SectionHead count={capabilities.length}>capabilities</SectionHead>
           {capabilities.map((capability, index) => (
-            <ActionLine key={`${index}:${capability}`} symbol="·" tone="ink">
+            <ActionLine key={`${index}:${capability}`} icon={<Dot />} tone="ink">
               {capability}
             </ActionLine>
           ))}
         </section>
       ) : null}
       {empty ? (
-        <div className="discovery-search-empty">
-          <div>· no functions matched</div>
-          <p>{view.guidance}</p>
-        </div>
+        <EmptyState title="No functions matched" description={view.guidance} />
       ) : (
         <>
           {view.workers.map((worker) => (
             <section key={worker.namespace}>
-              <div className="discovery-search-section-head">
-                <span>worker · {worker.namespace}</span>
-                <span className="count">{worker.functions.length}</span>
-              </div>
+              <SectionHead count={worker.functions.length}>worker · {worker.namespace}</SectionHead>
               {worker.functions.map((candidate) => (
                 <CandidateBlock candidate={candidate} key={candidate.function_id} />
               ))}
@@ -182,7 +127,7 @@ export function DiscoverCard({
           <GuidanceDetails guidance={view.guidance} />
         </>
       )}
-    </div>
+    </Card>
   )
 }
 
@@ -195,12 +140,7 @@ export function createSearchTriggerRenderer(): FunctionTriggerRenderer {
       if (isErrorOutput(message.output)) return null
       const view = parseDiscoverResponse(message.output)
       if (!view) return null
-      return (
-        <DiscoverCard
-          capabilities={discoverCapabilities(message.input)}
-          view={view}
-        />
-      )
+      return <DiscoverCard capabilities={discoverCapabilities(message.input)} view={view} />
     },
   }
 }

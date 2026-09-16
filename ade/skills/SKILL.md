@@ -34,8 +34,9 @@ stack; traces need the engine's OpenTelemetry export.
 ## When to Use
 
 - A worker must ship a console page, renderer, or configuration form — read
-  `ade/injectable-ui` first, then `ade/design-console-ui`, then the
-  design system in `ade/design-system`.
+  `ade/injectable-ui` (the delivery contract) first, then
+  `ade/design-console-ui` (responsive UX and forms), with
+  `ade/design-system` open for every visual rule and number.
 - You changed a worker's UI and must prove it is loadable: read
   `console::ui-manifest` and require an empty `warnings` array.
 - The user should watch something in the console: `console::workspace::open`
@@ -98,13 +99,16 @@ register the content function and the two triggers directly.
 
 ## Skills shipped with this worker
 
-- `ade/injectable-ui` — the authoring contract for worker UI: project
-  layout, `setup(host)` slots, the shared component library, scoped CSS,
-  esbuild externals, Rust and Node registration, hot reload, debugging, and the
-  definition of done.
-- `ade/design-console-ui` — responsive Console UX: pane-width (not
-  viewport) breakpoints, phone drill-in flows, touch and keyboard
-  accessibility, configuration and provider forms, state integrity, and the
-  validation checklist.
+- `ade/injectable-ui` — the delivery contract for worker UI: project
+  layout, `setup(host)` and every slot, the wire contract, Rust and Node
+  registration, the shared build driver and its lint, scoped CSS, the
+  hooks/format/icon packages, hot reload, debugging, and the definition of done.
+- `ade/design-console-ui` — responsive UX and forms: archetypes, pane-width
+  (not viewport) behavior, phone drill-in and bottom sheets, state integrity,
+  configuration and provider forms, and the validation matrix.
 - `ade/design-system` — the iii Schematic design system: tokens, surface
-  ramp, typography, radius, elevation, motion, and the canonical components.
+  ramp, typography, radius, elevation, motion, the canonical components, and
+  the one numbers table the other two skills link to.
+
+The migration of the remaining worker UIs onto the shared package is tracked
+in `docs/plans/2026-09-16-worker-ui-migration.md`.

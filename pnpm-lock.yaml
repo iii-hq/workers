@@ -4,6 +4,36 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@types/react':
+      specifier: ^19.2.14
+      version: 19.2.17
+    '@types/react-dom':
+      specifier: ^19.2.3
+      version: 19.2.3
+    esbuild:
+      specifier: ^0.25.0
+      version: 0.25.12
+    lucide-react:
+      specifier: ^1.16.0
+      version: 1.25.0
+    react:
+      specifier: ^19.2.8
+      version: 19.2.8
+    react-dom:
+      specifier: ^19.2.8
+      version: 19.2.8
+    typescript:
+      specifier: ^6.0.3
+      version: 6.0.3
+    vitest:
+      specifier: ^4.1.10
+      version: 4.1.10
+    zod:
+      specifier: ^4.4.3
+      version: 4.4.3
+
 importers:
 
   .: {}
@@ -18,22 +48,28 @@ importers:
         version: 0.8.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.0
-        version: 19.2.7
+        specifier: 'catalog:'
+        version: 19.2.8
       react-dom:
-        specifier: ^19.2.0
-        version: 19.2.7(react@19.2.7)
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   ade/ui:
@@ -41,19 +77,28 @@ importers:
       '@iii-dev/console-ui':
         specifier: workspace:*
         version: link:../../packages/console-ui
-      lucide-react:
-        specifier: ^1.16.0
-        version: 1.25.0(react@19.2.8)
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   ade/web:
     dependencies:
@@ -206,36 +251,39 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       zod:
-        specifier: ^4.0.0
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
       '@types/react-dom':
-        specifier: 19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.6
-        version: 19.2.7
+        specifier: 'catalog:'
+        version: 19.2.8
       react-dom:
-        specifier: 19.2.7
-        version: 19.2.7(react@19.2.7)
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   canvas/ui:
     dependencies:
       '@excalidraw/excalidraw':
         specifier: ^0.18.1
-        version: 0.18.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        version: 0.18.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@excalidraw/mermaid-to-excalidraw':
         specifier: ^2.2.2
         version: 2.2.2
@@ -246,26 +294,32 @@ importers:
         specifier: ^11.16.1
         version: 11.16.1
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.0
-        version: 19.2.7
+        specifier: 'catalog:'
+        version: 19.2.8
       react-dom:
-        specifier: ^19.2.0
-        version: 19.2.7(react@19.2.7)
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   claude-code/ui:
@@ -284,17 +338,26 @@ importers:
         version: 6.0.0
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.8
+        specifier: 'catalog:'
         version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   code-runner/ui:
     dependencies:
@@ -303,25 +366,28 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
       '@types/react-dom':
-        specifier: ^19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.6
-        version: 19.2.7
+        specifier: 'catalog:'
+        version: 19.2.8
       react-dom:
-        specifier: ^19.2.6
-        version: 19.2.7(react@19.2.7)
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   compose-ui/ui:
@@ -331,16 +397,28 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.10
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   computer/ui:
@@ -349,18 +427,30 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       zod:
-        specifier: ^4.0.0
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   context-manager/ui:
     dependencies:
@@ -369,14 +459,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   cron/ui:
     dependencies:
@@ -385,19 +487,28 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.6
+        specifier: 'catalog:'
         version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   database/ui:
@@ -406,29 +517,32 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       zod:
-        specifier: ^4.0.0
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
       '@types/react-dom':
-        specifier: 19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: 19.2.7
-        version: 19.2.7
+        specifier: 'catalog:'
+        version: 19.2.8
       react-dom:
-        specifier: 19.2.7
-        version: 19.2.7(react@19.2.7)
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   editor/ui:
@@ -438,19 +552,31 @@ importers:
         version: link:../../packages/console-ui
       '@pierre/diffs':
         specifier: ^1.2.7
-        version: 1.2.12(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.7)
+        version: 1.2.12(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   eval/ui:
@@ -460,16 +586,28 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   github/ui:
@@ -478,18 +616,30 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       zod:
-        specifier: ^4.0.0
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   harness/ui:
     dependencies:
@@ -498,17 +648,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
       '@types/react-dom':
-        specifier: ^19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   ide/ui:
     dependencies:
@@ -527,33 +686,33 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
-      lucide-react:
-        specifier: ^1.16.0
-        version: 1.25.0(react@19.2.8)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
       '@types/react-dom':
-        specifier: ^19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.8
+        specifier: 'catalog:'
         version: 19.2.8
       react-dom:
-        specifier: ^19.2.8
+        specifier: 'catalog:'
         version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   iii-directory/ui:
@@ -562,29 +721,32 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
       '@types/react-dom':
-        specifier: ^19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.8
+        specifier: 'catalog:'
         version: 19.2.8
       react-dom:
-        specifier: ^19.2.8
+        specifier: 'catalog:'
         version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   kanban/ui:
@@ -594,14 +756,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   llm-router/ui:
     dependencies:
@@ -610,16 +784,28 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   memory/ui:
@@ -628,18 +814,30 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       zod:
-        specifier: ^4.0.0
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   onboarding/ui:
     dependencies:
@@ -648,17 +846,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.6
+        specifier: 'catalog:'
         version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   packages/agent-terminal-ui:
     dependencies:
@@ -688,8 +895,14 @@ importers:
   packages/console-ui:
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.25.12
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
 
   packages/terminal-font:
     devDependencies:
@@ -710,14 +923,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   pi/ui:
     dependencies:
@@ -735,17 +960,26 @@ importers:
         version: 6.0.0
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.8
+        specifier: 'catalog:'
         version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   provider-openai-codex/ui:
     dependencies:
@@ -754,28 +988,31 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
       '@types/react-dom':
-        specifier: ^19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
       jsdom:
         specifier: ^30.0.1
         version: 30.0.1
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.6
+        specifier: 'catalog:'
         version: 19.2.8
       react-dom:
-        specifier: ^19.2.6
+        specifier: 'catalog:'
         version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   sandbox-code-runner/ui:
@@ -787,29 +1024,32 @@ importers:
         specifier: 0.23.0
         version: 0.23.0
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
       '@types/react-dom':
-        specifier: ^19.2.3
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.6
-        version: 19.2.7
+        specifier: 'catalog:'
+        version: 19.2.8
       react-dom:
-        specifier: ^19.2.6
-        version: 19.2.7(react@19.2.7)
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   security-scan/ui:
@@ -819,14 +1059,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   state/ui:
     dependencies:
@@ -835,14 +1087,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   storage/ui:
     dependencies:
@@ -851,30 +1115,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
-
-  stories/ui:
-    dependencies:
-      '@iii-dev/console-ui':
-        specifier: workspace:*
-        version: link:../../packages/console-ui
-    devDependencies:
-      '@types/react':
-        specifier: ^19.2.14
-        version: 19.2.17
-      esbuild:
-        specifier: ^0.25.0
-        version: 0.25.12
-      typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   tailscale/ui:
     dependencies:
@@ -883,14 +1143,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   voice/ui:
     dependencies:
@@ -899,22 +1171,28 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.8
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   vscode/ui:
@@ -924,14 +1202,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   web/ui:
     dependencies:
@@ -940,14 +1230,26 @@ importers:
         version: link:../../packages/console-ui
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
 
   worktree/ui:
     dependencies:
@@ -955,20 +1257,32 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/react':
-        specifier: ^19.2.14
+        specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
+      lucide-react:
+        specifier: 'catalog:'
+        version: 1.25.0(react@19.2.8)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.8
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
+        specifier: 'catalog:'
+        version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
 packages:
@@ -4838,11 +5152,6 @@ packages:
     resolution: {integrity: sha512-aEZ9qP+/M+58x2qgfSFEWH1BxLyHe5+qkLNJOZQb5iGS017jpbRnoKhNRrXPeA6RfBrZO5wZrT9DMC1UqE1f1w==}
     engines: {node: ^20.9.0 || >=22}
 
-  react-dom@19.2.7:
-    resolution: {integrity: sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ==}
-    peerDependencies:
-      react: ^19.2.7
-
   react-dom@19.2.8:
     resolution: {integrity: sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ==}
     peerDependencies:
@@ -4891,10 +5200,6 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
-
-  react@19.2.7:
-    resolution: {integrity: sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==}
-    engines: {node: '>=0.10.0'}
 
   react@19.2.8:
     resolution: {integrity: sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==}
@@ -5857,14 +6162,14 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@excalidraw/excalidraw@0.18.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@excalidraw/excalidraw@0.18.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@braintree/sanitize-url': 6.0.2
       '@excalidraw/laser-pointer': 1.3.1
       '@excalidraw/mermaid-to-excalidraw': 2.2.2
       '@excalidraw/random-username': 1.1.0
-      '@radix-ui/react-popover': 1.1.6(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-tabs': 1.0.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      '@radix-ui/react-popover': 1.1.6(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@radix-ui/react-tabs': 1.0.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       browser-fs-access: 0.29.1
       canvas-roundrect-polyfill: 0.0.1
       clsx: 1.1.1
@@ -5873,8 +6178,8 @@ snapshots:
       fractional-indexing: 3.2.0
       fuzzy: 0.1.3
       image-blob-reduce: 3.0.1
-      jotai: 2.11.0(@types/react@19.2.17)(react@19.2.7)
-      jotai-scope: 0.7.2(jotai@2.11.0(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)
+      jotai: 2.11.0(@types/react@19.2.17)(react@19.2.8)
+      jotai-scope: 0.7.2(jotai@2.11.0(@types/react@19.2.17)(react@19.2.8))(react@19.2.8)
       lodash.debounce: 4.0.8
       lodash.throttle: 4.1.1
       nanoid: 3.3.3
@@ -5887,11 +6192,11 @@ snapshots:
       png-chunks-extract: 1.0.0
       points-on-curve: 1.0.1
       pwacompat: 2.0.17
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
       roughjs: 4.6.4
       sass: 1.51.0
-      tunnel-rat: 0.1.2(@types/react@19.2.17)(react@19.2.7)
+      tunnel-rat: 0.1.2(@types/react@19.2.17)(react@19.2.8)
     transitivePeerDependencies:
       - '@types/react'
       - '@types/react-dom'
@@ -5920,12 +6225,6 @@ snapshots:
     dependencies:
       '@floating-ui/core': 1.8.0
       '@floating-ui/utils': 0.2.12
-
-  '@floating-ui/react-dom@2.1.9(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@floating-ui/dom': 1.8.0
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
 
   '@floating-ui/react-dom@2.1.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -6415,15 +6714,15 @@ snapshots:
   '@oxc-resolver/binding-win32-x64-msvc@11.24.2':
     optional: true
 
-  '@pierre/diffs@1.2.12(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.7)':
+  '@pierre/diffs@1.2.12(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@pierre/theme': 1.1.0
-      '@pierre/theming': 0.0.2(@pierre/theme@1.1.0)(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.7)(shiki@4.3.1)
+      '@pierre/theming': 0.0.2(@pierre/theme@1.1.0)(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(shiki@4.3.1)
       '@shikijs/transformers': 4.3.1
       diff: 9.0.0
       hast-util-to-html: 9.0.5
       lru_map: 0.4.1
-      react: 19.2.7
+      react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
       shiki: 4.3.1
     transitivePeerDependencies:
@@ -6447,11 +6746,11 @@ snapshots:
 
   '@pierre/theme@2.0.0': {}
 
-  '@pierre/theming@0.0.2(@pierre/theme@1.1.0)(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.7)(shiki@4.3.1)':
+  '@pierre/theming@0.0.2(@pierre/theme@1.1.0)(@shikijs/themes@4.3.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(shiki@4.3.1)':
     optionalDependencies:
       '@pierre/theme': 1.1.0
       '@shikijs/themes': 4.3.1
-      react: 19.2.7
+      react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
       shiki: 4.3.1
 
@@ -6528,15 +6827,6 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-arrow@1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-primitive': 2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-    optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
-
   '@radix-ui/react-arrow@1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@radix-ui/react-primitive': 2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -6546,15 +6836,15 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-collection@1.0.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@radix-ui/react-collection@1.0.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      '@radix-ui/react-compose-refs': 1.0.0(react@19.2.7)
-      '@radix-ui/react-context': 1.0.0(react@19.2.7)
-      '@radix-ui/react-primitive': 1.0.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-slot': 1.0.1(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
+      '@radix-ui/react-compose-refs': 1.0.0(react@19.2.8)
+      '@radix-ui/react-context': 1.0.0(react@19.2.8)
+      '@radix-ui/react-primitive': 1.0.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@radix-ui/react-slot': 1.0.1(react@19.2.8)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
 
   '@radix-ui/react-collection@1.1.12(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -6568,16 +6858,10 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-compose-refs@1.0.0(react@19.2.7)':
+  '@radix-ui/react-compose-refs@1.0.0(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      react: 19.2.7
-
-  '@radix-ui/react-compose-refs@1.1.1(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
+      react: 19.2.8
 
   '@radix-ui/react-compose-refs@1.1.1(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
@@ -6591,16 +6875,10 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
-  '@radix-ui/react-context@1.0.0(react@19.2.7)':
+  '@radix-ui/react-context@1.0.0(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      react: 19.2.7
-
-  '@radix-ui/react-context@1.1.1(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
+      react: 19.2.8
 
   '@radix-ui/react-context@1.1.1(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
@@ -6637,10 +6915,10 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-direction@1.0.0(react@19.2.7)':
+  '@radix-ui/react-direction@1.0.0(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      react: 19.2.7
+      react: 19.2.8
 
   '@radix-ui/react-direction@1.1.2(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
@@ -6657,19 +6935,6 @@ snapshots:
       '@radix-ui/react-use-effect-event': 0.0.3(@types/react@19.2.17)(react@19.2.8)
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
-    optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
-
-  '@radix-ui/react-dismissable-layer@1.1.5(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@radix-ui/primitive': 1.1.1
-      '@radix-ui/react-compose-refs': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-primitive': 2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-use-callback-ref': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-use-escape-keydown': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
     optionalDependencies:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
@@ -6702,12 +6967,6 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-focus-guards@1.1.1(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
-
   '@radix-ui/react-focus-guards@1.1.1(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
       react: 19.2.8
@@ -6731,17 +6990,6 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-focus-scope@1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-compose-refs': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-primitive': 2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-use-callback-ref': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-    optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
-
   '@radix-ui/react-focus-scope@1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@radix-ui/react-compose-refs': 1.1.1(@types/react@19.2.17)(react@19.2.8)
@@ -6753,18 +7001,11 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-id@1.0.0(react@19.2.7)':
+  '@radix-ui/react-id@1.0.0(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      '@radix-ui/react-use-layout-effect': 1.0.0(react@19.2.7)
-      react: 19.2.7
-
-  '@radix-ui/react-id@1.1.0(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-use-layout-effect': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
+      '@radix-ui/react-use-layout-effect': 1.0.0(react@19.2.8)
+      react: 19.2.8
 
   '@radix-ui/react-id@1.1.0(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
@@ -6806,29 +7047,6 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-popover@1.1.6(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@radix-ui/primitive': 1.1.1
-      '@radix-ui/react-compose-refs': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-context': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-dismissable-layer': 1.1.5(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-focus-guards': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-focus-scope': 1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-id': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-popper': 1.2.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-portal': 1.1.4(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-presence': 1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-primitive': 2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-slot': 1.1.2(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-use-controllable-state': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      aria-hidden: 1.2.6
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-      react-remove-scroll: 2.7.2(@types/react@19.2.17)(react@19.2.7)
-    optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
-
   '@radix-ui/react-popover@1.1.6(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@radix-ui/primitive': 1.1.1
@@ -6848,24 +7066,6 @@ snapshots:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
       react-remove-scroll: 2.7.2(@types/react@19.2.17)(react@19.2.8)
-    optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
-
-  '@radix-ui/react-popper@1.2.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@floating-ui/react-dom': 2.1.9(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-arrow': 1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-compose-refs': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-context': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-primitive': 2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-use-callback-ref': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-use-layout-effect': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-use-rect': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-use-size': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/rect': 1.1.0
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
     optionalDependencies:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
@@ -6916,16 +7116,6 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-portal@1.1.4(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-primitive': 2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-use-layout-effect': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-    optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
-
   '@radix-ui/react-portal@1.1.4(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@radix-ui/react-primitive': 2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -6936,23 +7126,13 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-presence@1.0.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@radix-ui/react-presence@1.0.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      '@radix-ui/react-compose-refs': 1.0.0(react@19.2.7)
-      '@radix-ui/react-use-layout-effect': 1.0.0(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-
-  '@radix-ui/react-presence@1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-compose-refs': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      '@radix-ui/react-use-layout-effect': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-    optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
+      '@radix-ui/react-compose-refs': 1.0.0(react@19.2.8)
+      '@radix-ui/react-use-layout-effect': 1.0.0(react@19.2.8)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
 
   '@radix-ui/react-presence@1.1.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -6973,21 +7153,12 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-primitive@1.0.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@radix-ui/react-primitive@1.0.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      '@radix-ui/react-slot': 1.0.1(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-
-  '@radix-ui/react-primitive@2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-slot': 1.1.2(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-    optionalDependencies:
-      '@types/react': 19.2.17
-      '@types/react-dom': 19.2.3(@types/react@19.2.17)
+      '@radix-ui/react-slot': 1.0.1(react@19.2.8)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
 
   '@radix-ui/react-primitive@2.0.2(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -7007,20 +7178,20 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-roving-focus@1.0.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@radix-ui/react-roving-focus@1.0.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
       '@radix-ui/primitive': 1.0.0
-      '@radix-ui/react-collection': 1.0.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-compose-refs': 1.0.0(react@19.2.7)
-      '@radix-ui/react-context': 1.0.0(react@19.2.7)
-      '@radix-ui/react-direction': 1.0.0(react@19.2.7)
-      '@radix-ui/react-id': 1.0.0(react@19.2.7)
-      '@radix-ui/react-primitive': 1.0.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-use-callback-ref': 1.0.0(react@19.2.7)
-      '@radix-ui/react-use-controllable-state': 1.0.0(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
+      '@radix-ui/react-collection': 1.0.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@radix-ui/react-compose-refs': 1.0.0(react@19.2.8)
+      '@radix-ui/react-context': 1.0.0(react@19.2.8)
+      '@radix-ui/react-direction': 1.0.0(react@19.2.8)
+      '@radix-ui/react-id': 1.0.0(react@19.2.8)
+      '@radix-ui/react-primitive': 1.0.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@radix-ui/react-use-callback-ref': 1.0.0(react@19.2.8)
+      '@radix-ui/react-use-controllable-state': 1.0.0(react@19.2.8)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
 
   '@radix-ui/react-roving-focus@1.1.16(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -7071,18 +7242,11 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-slot@1.0.1(react@19.2.7)':
+  '@radix-ui/react-slot@1.0.1(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      '@radix-ui/react-compose-refs': 1.0.0(react@19.2.7)
-      react: 19.2.7
-
-  '@radix-ui/react-slot@1.1.2(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-compose-refs': 1.1.1(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
+      '@radix-ui/react-compose-refs': 1.0.0(react@19.2.8)
+      react: 19.2.8
 
   '@radix-ui/react-slot@1.1.2(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
@@ -7098,19 +7262,19 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
-  '@radix-ui/react-tabs@1.0.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@radix-ui/react-tabs@1.0.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
       '@radix-ui/primitive': 1.0.0
-      '@radix-ui/react-context': 1.0.0(react@19.2.7)
-      '@radix-ui/react-direction': 1.0.0(react@19.2.7)
-      '@radix-ui/react-id': 1.0.0(react@19.2.7)
-      '@radix-ui/react-presence': 1.0.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-primitive': 1.0.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-roving-focus': 1.0.2(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
-      '@radix-ui/react-use-controllable-state': 1.0.0(react@19.2.7)
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
+      '@radix-ui/react-context': 1.0.0(react@19.2.8)
+      '@radix-ui/react-direction': 1.0.0(react@19.2.8)
+      '@radix-ui/react-id': 1.0.0(react@19.2.8)
+      '@radix-ui/react-presence': 1.0.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@radix-ui/react-primitive': 1.0.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@radix-ui/react-roving-focus': 1.0.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@radix-ui/react-use-controllable-state': 1.0.0(react@19.2.8)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
 
   '@radix-ui/react-tabs@1.1.18(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
@@ -7149,16 +7313,10 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.3(@types/react@19.2.17)
 
-  '@radix-ui/react-use-callback-ref@1.0.0(react@19.2.7)':
+  '@radix-ui/react-use-callback-ref@1.0.0(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      react: 19.2.7
-
-  '@radix-ui/react-use-callback-ref@1.1.0(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
+      react: 19.2.8
 
   '@radix-ui/react-use-callback-ref@1.1.0(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
@@ -7172,18 +7330,11 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
-  '@radix-ui/react-use-controllable-state@1.0.0(react@19.2.7)':
+  '@radix-ui/react-use-controllable-state@1.0.0(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      '@radix-ui/react-use-callback-ref': 1.0.0(react@19.2.7)
-      react: 19.2.7
-
-  '@radix-ui/react-use-controllable-state@1.1.0(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-use-callback-ref': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
+      '@radix-ui/react-use-callback-ref': 1.0.0(react@19.2.8)
+      react: 19.2.8
 
   '@radix-ui/react-use-controllable-state@1.1.0(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
@@ -7208,13 +7359,6 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
-  '@radix-ui/react-use-escape-keydown@1.1.0(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-use-callback-ref': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
-
   '@radix-ui/react-use-escape-keydown@1.1.0(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
       '@radix-ui/react-use-callback-ref': 1.1.0(@types/react@19.2.17)(react@19.2.8)
@@ -7228,16 +7372,10 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
-  '@radix-ui/react-use-layout-effect@1.0.0(react@19.2.7)':
+  '@radix-ui/react-use-layout-effect@1.0.0(react@19.2.8)':
     dependencies:
       '@babel/runtime': 7.29.7
-      react: 19.2.7
-
-  '@radix-ui/react-use-layout-effect@1.1.0(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
+      react: 19.2.8
 
   '@radix-ui/react-use-layout-effect@1.1.0(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
@@ -7257,13 +7395,6 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
-  '@radix-ui/react-use-rect@1.1.0(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      '@radix-ui/rect': 1.1.0
-      react: 19.2.7
-    optionalDependencies:
-      '@types/react': 19.2.17
-
   '@radix-ui/react-use-rect@1.1.0(@types/react@19.2.17)(react@19.2.8)':
     dependencies:
       '@radix-ui/rect': 1.1.0
@@ -7275,13 +7406,6 @@ snapshots:
     dependencies:
       '@radix-ui/rect': 1.1.2
       react: 19.2.8
-    optionalDependencies:
-      '@types/react': 19.2.17
-
-  '@radix-ui/react-use-size@1.1.0(@types/react@19.2.17)(react@19.2.7)':
-    dependencies:
-      '@radix-ui/react-use-layout-effect': 1.1.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
     optionalDependencies:
       '@types/react': 19.2.17
 
@@ -7927,7 +8051,7 @@ snapshots:
       obug: 2.1.4
       std-env: 4.2.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
+      vitest: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   '@vitest/expect@3.2.4':
     dependencies:
@@ -8496,7 +8620,6 @@ snapshots:
       '@esbuild/win32-arm64': 0.28.2
       '@esbuild/win32-ia32': 0.28.2
       '@esbuild/win32-x64': 0.28.2
-    optional: true
 
   escalade@3.2.0: {}
 
@@ -8717,15 +8840,15 @@ snapshots:
 
   jiti@2.7.0: {}
 
-  jotai-scope@0.7.2(jotai@2.11.0(@types/react@19.2.17)(react@19.2.7))(react@19.2.7):
+  jotai-scope@0.7.2(jotai@2.11.0(@types/react@19.2.17)(react@19.2.8))(react@19.2.8):
     dependencies:
-      jotai: 2.11.0(@types/react@19.2.17)(react@19.2.7)
-      react: 19.2.7
+      jotai: 2.11.0(@types/react@19.2.17)(react@19.2.8)
+      react: 19.2.8
 
-  jotai@2.11.0(@types/react@19.2.17)(react@19.2.7):
+  jotai@2.11.0(@types/react@19.2.17)(react@19.2.8):
     optionalDependencies:
       '@types/react': 19.2.17
-      react: 19.2.7
+      react: 19.2.8
 
   js-tokens@10.0.0: {}
 
@@ -9545,11 +9668,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  react-dom@19.2.7(react@19.2.7):
-    dependencies:
-      react: 19.2.7
-      scheduler: 0.27.0
-
   react-dom@19.2.8(react@19.2.8):
     dependencies:
       react: 19.2.8
@@ -9579,30 +9697,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  react-remove-scroll-bar@2.3.8(@types/react@19.2.17)(react@19.2.7):
-    dependencies:
-      react: 19.2.7
-      react-style-singleton: 2.2.3(@types/react@19.2.17)(react@19.2.7)
-      tslib: 2.8.1
-    optionalDependencies:
-      '@types/react': 19.2.17
-
   react-remove-scroll-bar@2.3.8(@types/react@19.2.17)(react@19.2.8):
     dependencies:
       react: 19.2.8
       react-style-singleton: 2.2.3(@types/react@19.2.17)(react@19.2.8)
       tslib: 2.8.1
-    optionalDependencies:
-      '@types/react': 19.2.17
-
-  react-remove-scroll@2.7.2(@types/react@19.2.17)(react@19.2.7):
-    dependencies:
-      react: 19.2.7
-      react-remove-scroll-bar: 2.3.8(@types/react@19.2.17)(react@19.2.7)
-      react-style-singleton: 2.2.3(@types/react@19.2.17)(react@19.2.7)
-      tslib: 2.8.1
-      use-callback-ref: 1.3.3(@types/react@19.2.17)(react@19.2.7)
-      use-sidecar: 1.1.3(@types/react@19.2.17)(react@19.2.7)
     optionalDependencies:
       '@types/react': 19.2.17
 
@@ -9617,14 +9716,6 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
-  react-style-singleton@2.2.3(@types/react@19.2.17)(react@19.2.7):
-    dependencies:
-      get-nonce: 1.0.1
-      react: 19.2.7
-      tslib: 2.8.1
-    optionalDependencies:
-      '@types/react': 19.2.17
-
   react-style-singleton@2.2.3(@types/react@19.2.17)(react@19.2.8):
     dependencies:
       get-nonce: 1.0.1
@@ -9632,8 +9723,6 @@ snapshots:
       tslib: 2.8.1
     optionalDependencies:
       '@types/react': 19.2.17
-
-  react@19.2.7: {}
 
   react@19.2.8: {}
 
@@ -9850,7 +9939,7 @@ snapshots:
       '@vitest/expect': 3.2.4
       '@vitest/spy': 3.2.4
       '@webcontainer/env': 1.1.1
-      esbuild: 0.25.12
+      esbuild: 0.28.2
       jsonc-parser: 3.3.1
       open: 10.2.0
       oxc-parser: 0.127.0
@@ -9961,9 +10050,9 @@ snapshots:
       fsevents: 2.3.3
     optional: true
 
-  tunnel-rat@0.1.2(@types/react@19.2.17)(react@19.2.7):
+  tunnel-rat@0.1.2(@types/react@19.2.17)(react@19.2.8):
     dependencies:
-      zustand: 4.5.7(@types/react@19.2.17)(react@19.2.7)
+      zustand: 4.5.7(@types/react@19.2.17)(react@19.2.8)
     transitivePeerDependencies:
       - '@types/react'
       - immer
@@ -10023,24 +10112,9 @@ snapshots:
       escalade: 3.2.0
       picocolors: 1.1.1
 
-  use-callback-ref@1.3.3(@types/react@19.2.17)(react@19.2.7):
-    dependencies:
-      react: 19.2.7
-      tslib: 2.8.1
-    optionalDependencies:
-      '@types/react': 19.2.17
-
   use-callback-ref@1.3.3(@types/react@19.2.17)(react@19.2.8):
     dependencies:
       react: 19.2.8
-      tslib: 2.8.1
-    optionalDependencies:
-      '@types/react': 19.2.17
-
-  use-sidecar@1.1.3(@types/react@19.2.17)(react@19.2.7):
-    dependencies:
-      detect-node-es: 1.1.0
-      react: 19.2.7
       tslib: 2.8.1
     optionalDependencies:
       '@types/react': 19.2.17
@@ -10052,10 +10126,6 @@ snapshots:
       tslib: 2.8.1
     optionalDependencies:
       '@types/react': 19.2.17
-
-  use-sync-external-store@1.6.0(react@19.2.7):
-    dependencies:
-      react: 19.2.7
 
   use-sync-external-store@1.6.0(react@19.2.8):
     dependencies:
@@ -10238,11 +10308,11 @@ snapshots:
 
   zod@4.4.3: {}
 
-  zustand@4.5.7(@types/react@19.2.17)(react@19.2.7):
+  zustand@4.5.7(@types/react@19.2.17)(react@19.2.8):
     dependencies:
-      use-sync-external-store: 1.6.0(react@19.2.7)
+      use-sync-external-store: 1.6.0(react@19.2.8)
     optionalDependencies:
       '@types/react': 19.2.17
-      react: 19.2.7
+      react: 19.2.8
 
   zwitch@2.0.4: {}

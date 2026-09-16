@@ -1,6 +1,7 @@
 import { Copy, Package } from 'lucide-react'
 import { useMemo } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
 
@@ -51,9 +52,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
     <div className="p-5 space-y-3">
       <div className="flex items-center gap-2 px-1">
         <Package className="size-4 text-accent" />
-        <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-          w3c baggage context
-        </span>
+        <span className="iii-ui-eyebrow">w3c baggage context</span>
       </div>
 
       <div className="rounded-md bg-surface divide-y divide-rule-2">
@@ -73,17 +72,15 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
-                  <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-0.5">
-                    {key}
-                  </div>
+                  <div className="iii-ui-eyebrow mb-0.5">{key}</div>
                   <div className="font-mono text-[12px] text-ink break-all">
                     {formatted}
                   </div>
                 </div>
                 {isCopied ? (
-                  <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-accent flex-shrink-0 mt-0.5">
+                  <Eyebrow className="text-accent flex-shrink-0 mt-0.5">
                     copied
-                  </span>
+                  </Eyebrow>
                 ) : (
                   <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
                 )}
@@ -93,7 +90,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
         })}
       </div>
 
-      <div className="font-mono text-[10px] text-ink-ghost text-center pt-2 lowercase tabular-nums">
+      <div className="font-mono text-[11px] text-ink-ghost text-center pt-2 tabular-nums">
         {baggageEntries.length} baggage item
         {baggageEntries.length !== 1 ? 's' : ''}
       </div>

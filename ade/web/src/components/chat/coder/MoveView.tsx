@@ -101,7 +101,7 @@ export function MoveView({ input, output, running, preview }: MoveViewProps) {
                         {spec.overwrite ? (
                           <Chip
                             label="overwrite"
-                            className="border-warn text-warn"
+                            className="bg-warn-muted text-warn"
                           >
                             true
                           </Chip>

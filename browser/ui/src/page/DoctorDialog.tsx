@@ -10,8 +10,16 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
+  EmptyState,
   type Host,
+  Skeleton,
   StatusDot,
+  StatusPanel,
+  Table,
+  TableBody,
+  TableCell,
+  TableRow,
+  TableViewport,
 } from '@iii-dev/console-ui'
 import { useEffect, useState } from 'react'
 import { type BrowserDoctorInfo, readBrowserDoctor } from '../lib/browser'
@@ -45,10 +53,10 @@ export function DoctorDialog({ host, open, onOpenChange }: DoctorDialogProps) {
   }, [open, host])
 
   const fact = (label: string, value: string) => (
-    <div className="br-ui-doctor-fact">
-      <span className="br-ui-doctor-label">{label}</span>
-      <span className="br-ui-doctor-value">{value}</span>
-    </div>
+    <TableRow>
+      <TableCell className="br-ui-faint br-ui-td-name">{label}</TableCell>
+      <TableCell className="br-ui-mono br-ui-break">{value}</TableCell>
+    </TableRow>
   )
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -58,27 +66,28 @@ export function DoctorDialog({ host, open, onOpenChange }: DoctorDialogProps) {
           What the worker would launch and what it allows. Read-only.
         </DialogDescription>
         {error ? (
-          <p className="br-ui-doctor-empty">{error}</p>
+          <StatusPanel variant="alert" headline={error} />
         ) : info ? (
           <div className="br-ui-doctor-body">
-            <div className="br-ui-doctor-facts">
-              {fact(
-                info.engine === 'lightpanda' ? 'Lightpanda' : 'Chromium',
-                info.chromium_version ?? 'unknown',
-              )}
-              {info.chromium_path ? fact('Path', info.chromium_path) : null}
-              {fact(
-                'Headless by default',
-                info.headless_default ? 'yes' : 'no',
-              )}
-              {fact(
-                'Sessions',
-                `${info.active_sessions ?? 0} of ${info.max_sessions ?? 0}`,
-              )}
-              {info.allowed_schemes
-                ? fact('Allowed schemes', info.allowed_schemes.join(', '))
-                : null}
-            </div>
+            <TableViewport>
+              <Table density="compact">
+                <TableBody>
+                  {fact(
+                    info.engine === 'lightpanda' ? 'Lightpanda' : 'Chromium',
+                    info.chromium_version ?? 'unknown',
+                  )}
+                  {info.chromium_path ? fact('Path', info.chromium_path) : null}
+                  {fact('Headless by default', info.headless_default ? 'yes' : 'no')}
+                  {fact(
+                    'Sessions',
+                    `${info.active_sessions ?? 0} of ${info.max_sessions ?? 0}`,
+                  )}
+                  {info.allowed_schemes
+                    ? fact('Allowed schemes', info.allowed_schemes.join(', '))
+                    : null}
+                </TableBody>
+              </Table>
+            </TableViewport>
             <div className="br-ui-doctor-caps">
               <span className="br-ui-doctor-cap">
                 <StatusDot tone={info.attach_enabled ? 'accent' : 'ink'} />
@@ -103,11 +112,18 @@ export function DoctorDialog({ host, open, onOpenChange }: DoctorDialogProps) {
                 ))}
               </ul>
             ) : (
-              <p className="br-ui-doctor-clean">No degraded capabilities.</p>
+              <EmptyState
+                title="No degraded capabilities"
+                description="Everything the worker can offer is available."
+              />
             )}
           </div>
         ) : (
-          <p className="br-ui-doctor-empty">Reading…</p>
+          <div className="br-ui-doctor-body" aria-busy aria-label="Reading…">
+            <Skeleton className="br-ui-skel" />
+            <Skeleton className="br-ui-skel" />
+            <Skeleton className="br-ui-skel" />
+          </div>
         )}
       </DialogContent>
     </Dialog>

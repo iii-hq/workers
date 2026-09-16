@@ -1,15 +1,15 @@
 ---
 name: console-injectable-ui
-description: Build, structure, and validate polished responsive worker UI (React pages, function-trigger and trigger-activity renderers, configuration forms, and stylesheets) injected into the running iii console. Use when adding or changing a worker's console UI, especially when it must match the visual quality of database, console functions/triggers, iii-directory, and state; retain the shared header and visual system; work in narrow/mobile-sized panes; preserve state safely; hot reload; and ship without rebuilding the console.
+description: The authoring and delivery contract for worker UI injected into the running iii console — project layout, setup(host) and every slot, the runtime wire contract, Rust and Node registration, the shared build driver and its lint, scoped CSS, the shared hooks/format/icon packages, the dev loop, debugging, testing layers and the definition of done. Use when adding or changing a worker's console UI. Visual rules and every number live in ade/design-system; responsive UX and configuration forms live in ade/design-console-ui.
 ---
 
 # Injectable console UI
 
-A worker can ship pages, function and trigger-activity renderers, forms, and stylesheets into every console tab
-**at runtime**—no rebuild, no iframe, and hot reload. Treat `database`, console functions/triggers,
-`iii-directory`, and `state` as proven patterns, not visual templates: reuse
-their visual grammar and interaction mechanics while choosing the information
-architecture that best fits the worker.
+A worker ships pages, function and trigger-activity renderers, forms, and
+stylesheets into every console tab **at runtime** — no console rebuild, no
+iframe, hot reload. This skill is the delivery contract. Looks, tokens and
+every number: `ade/design-system` (link to `ade/design-system` › Numbers,
+never restate one). Behavior across widths and forms: `ade/design-console-ui`.
 
 ## How it works
 
@@ -20,635 +20,158 @@ to open tabs. Tabs `import()` scripts and call their default `setup(host)`;
 styles load as scoped `<link>` assets. Re-registering a path hot-reloads it.
 Registration is deployment; disconnect is teardown.
 
-## Add the internal dependencies
-
-This repository versions both sides of the contract together. Do not try to
-install them from a public registry:
-
-1. Add `<worker>/ui` to the root `pnpm-workspace.yaml`.
-2. Add the compile-time UI surface to `<worker>/ui/package.json`:
-
-   ```json
-   {
-     "name": "@iii-workers/mywork-ui",
-     "private": true,
-     "version": "0.0.0",
-     "type": "module",
-     "scripts": { "build": "tsc --noEmit && node build.mjs", "watch": "node build.mjs --watch" },
-     "dependencies": { "@iii-dev/console-ui": "workspace:*" },
-     "devDependencies": { "@types/react": "^19.2.14", "esbuild": "^0.25.0", "typescript": "^5.9.2" }
-   }
-   ```
-
-3. For a Rust worker, link the worker-side registration helper in
-   `<worker>/Cargo.toml`:
-
-   ```toml
-   iii-console-ui = { path = "../crates/console-ui" }
-   ```
-
-`@iii-dev/console-ui` is types-only at build time; the console serves its
-runtime implementation from the active SPA. `iii-console-ui` registers the
-content function, asset triggers, and development watcher. Node workers have
-no worker-side helper and implement the wire contract directly.
-
 ## Project layout
 
 ```text
 mywork/
-  build.rs       # ensure dist assets exist before include_str!
+  build.rs        # ensure dist assets exist before include_str!
   ui/
     page.tsx      # the script asset — default-exports setup(host)
     styles.css    # the style asset — every rule scoped
-    build.mjs     # esbuild, five external specifiers
+    build.mjs     # buildWorkerUi({ scope }) — the shared driver
     package.json  # workspace dependency on @iii-dev/console-ui
-    tsconfig.json
-    src/           # page, renderer, config form, hooks, widgets
+    tsconfig.json # extends the shared worker tsconfig
+    src/          # page, renderers, config form, widgets
   src/
-    ui.rs          # embed and register dist/page.js + dist/styles.css
+    ui.rs         # embed and register dist/page.js + dist/styles.css
 ```
 
-Start from `state/ui/tsconfig.json`, `state/build.rs`, and `state/src/ui.rs`
-for the mechanical files; rename worker/asset paths and keep their tests.
-For UI structure, consult the references below before writing code.
+Both sides of the contract are versioned in this repository; nothing is
+installed from a registry.
+
+1. Add `<worker>/ui` to the root `pnpm-workspace.yaml` `packages` list.
+2. `ui/package.json` (copy `state/ui/package.json`): private, `"type":
+   "module"`, scripts `build: tsc --noEmit && node build.mjs` and `watch:
+   node build.mjs --watch`, `"dependencies": { "@iii-dev/console-ui":
+   "workspace:*" }`, and `@types/react`, `@types/react-dom`, `esbuild`,
+   `lucide-react`, `react`, `react-dom`, `typescript` as `"catalog:"`
+   devDependencies — the workspace `catalog:` in `pnpm-workspace.yaml` pins
+   every toolchain version once.
+3. `ui/tsconfig.json` is `{ "extends": "@iii-dev/console-ui/tsconfig.worker-ui.json", "include": ["page.tsx", "src"] }`.
+4. `ui/build.mjs` is the whole driver call: `import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'`, then `await buildWorkerUi({ scope: 'mywork' })`.
+5. A Rust worker adds `iii-console-ui = { path = "../crates/console-ui" }` to `<worker>/Cargo.toml`.
+
+`@iii-dev/console-ui`'s root is types-only at build time; the console serves
+its runtime from the running SPA. `iii-console-ui` registers the content
+function, the asset triggers, and the development watcher; Node workers
+implement the wire contract directly. Copy `state/build.rs` and
+`state/src/ui.rs`; rename worker and asset paths and keep their tests.
 
 ## Authoring workflow
 
-1. Read `packages/console-ui/index.d.ts`; never guess a component or prop.
-2. Select only the needed slots, then model the primary object, navigation,
-   actions, async states, and state that must survive navigation or reload.
-3. Design wide and narrow flows deliberately; do not squeeze desktop UI.
-4. Build with shared primitives and minimal scoped CSS, then type-check,
-   register, inspect the manifest, and exercise the real console.
+1. Read `packages/console-ui/index.d.ts`, `hooks.d.mts` and `format.d.mts`;
+   never guess a component, hook or prop.
+2. Select only the needed slots; model the primary object, navigation,
+   actions, async states, and what must survive navigation or reload.
+3. Choose one archetype (below); design wide and narrow flows separately.
+4. Build with shared primitives and minimal scoped CSS; build (the driver
+   scopes, checks tokens, lints), register, inspect the manifest, exercise
+   the real console.
 
 ### Living references
 
 | Need | Read | Reuse |
 |---|---|---|
-| Public API | `packages/console-ui/index.d.ts` | Exact exports and props |
+| Public API | `packages/console-ui/index.d.ts`, `hooks.d.mts`, `format.d.mts` | Exact exports and props |
 | Shared page chrome | `ade/web/src/components/ui/PageChrome.tsx` | `PageShell`, `PageHeader`, surface roles |
-| Catalog/detail | `ade/ui/src/catalog/widgets.tsx`, `ade/ui/src/catalog/FunctionsPage.tsx`, `ade/ui/src/catalog/TriggersPage.tsx`, `ade/ui/styles.css` | Grouped rows, persistent hero, identity masthead, facts, tabs, contextual rail |
-| Data workbench | `database/ui/src/page/index.tsx`, `database/ui/src/page/TableDataPanel.tsx`, `database/ui/styles.css` | Mode bar, schema tree, toolbars, data grid, inspector, nested container responses |
-| List/detail editor | `iii-directory/ui/page.tsx`, `iii-directory/ui/src/page/browser.tsx`, `iii-directory/ui/styles.css` | `setup(host)`, container-width drill-in, dirty-draft guards, per-tab state |
-| Multi-level browser | `state/ui/page.tsx`, `state/ui/src/page/browser.tsx`, `state/ui/styles.css` | One-pane-at-a-time narrow flow, live state updates, stale-request guards |
+| Migrated page, strict lint | `browser/ui/page.tsx`, `browser/ui/src/page/`, `browser/ui/styles.css` | Shared hooks/format/icons, `Toolbar`, `Eyebrow`, overlays, `lint: { strict: true }` |
+| Migrated list/detail editor | `iii-directory/ui/page.tsx`, `iii-directory/ui/src/page/`, `iii-directory/ui/styles.css` | `SearchField`, `MetaRow`/`ActionLine`, `Kbd`/`KeyCombo`, dirty-draft guards, per-tab state |
+| Migrated workbench | `ide/ui/page.tsx`, `ide/ui/src/page/`, `ide/ui/build.mjs` | `keyframePrefixes`, `allowUnscopedSelectors` for vendor CSS, `CodeEditor`/`FileDiff`, terminal atoms |
+| Minimal template | `state/ui/page.tsx`, `state/ui/src/page/browser.tsx`, `state/ui/styles.css` | Smallest complete page + renderer + config form |
+| Trigger-activity renderer | `cron/ui/src/trigger-activity/`, `cron/src/ui.rs` | `host.triggerRenderers` and the canonical small settings form |
 | Rust delivery | `state/src/ui.rs`, `state/build.rs` | Embedding, registration, asset tests, build freshness |
 
-Copy delivery plumbing when it matches. Do **not** copy a reference page's
-sidebar count, breakpoints, controls, or visual hierarchy without deriving
-them from the new worker's content.
+Copy delivery plumbing when it matches; never copy a reference's sidebar
+count, thresholds, controls, or visual hierarchy without deriving them from
+the new worker's content. The migration recipe and the order of the remaining
+workers: `docs/plans/2026-09-16-worker-ui-migration.md`.
 
-## Visual quality is part of correctness
+### Archetypes
 
-Choose one dominant archetype before writing JSX. Mixing all four produces a
-generic dashboard with too many panels.
+Choose one dominant archetype before writing JSX; mixing them produces a
+generic dashboard. Shapes, wide/narrow flows and references are in
+`ade/design-console-ui` › Archetypes.
 
-| Archetype | Use for | Required shape |
-|---|---|---|
-| Console catalog | Many searchable objects with rich detail | Grouped list → persistent hero or breadcrumb + identity masthead + tabs; add a contextual rail only for genuinely related information |
-| Database workbench | Several tools operating on one selected resource | Compact mode switcher, collapsible resource tree, one active work surface, local toolbar/status bar, optional inspector |
-| Directory editor | Searchable documents with drafts or preview | List → document identity → edit/preview modes; keep draft state mounted and put save status beside the work |
-| State explorer | Deep but compact hierarchy | Progressive columns on wide panes and one-level-at-a-time drill-in on narrow panes |
-
-### Apply the shared visual grammar
-
-- Build hierarchy with surfaces, not boxes: sidebar, panel, raised toolbar,
-  hover/selected wash. Reserve 1 px edges for structural or tabular
-  separation; avoid borders, shadows, or a card around every section.
-- Elevation is four shared tokens, never a hand-rolled stack:
-  `--shadow-raised` for a card sitting on a panel, `--shadow-floating` for
-  menus, popovers, and sheets, `--shadow-lift` for an instrument surface
-  that must read as lifted off the canvas with a crisp edge (the chat
-  composer), and `--shadow-keycap` for a key cap (the lift turned upside
-  down, so the key reads as set into the surface). Each is a complete,
-  theme-aware `box-shadow` value — write `box-shadow: var(--shadow-lift)`
-  and nothing else: no border, ring, or extra drop beside it, and never a
-  literal shadow color.
-- Use a restrained scale: 4/6/8 px for internal gaps, 12/14/20/24 px for
-  section spacing, and the system 6 px radius. Oversized padding makes these
-  dense operator tools look like marketing pages.
-- Set document/hero titles around 17–18 px at weight 600; body copy around
-  12.5–13 px with 1.55–1.65 line height and a 60–72ch measure; metadata around
-  10–11.5 px. Author interface copy in natural sentence/title case; never use
-  CSS `lowercase` or `uppercase` transforms on tabs, buttons, menus, or forms.
-- Use sans for all interface chrome, labels, actions, explanations, and prose.
-  Reserve mono for machine-produced ids, paths, schemas, values, payloads,
-  code, and tabular data. Never make a whole panel or its controls mono.
-- Repeat one restrained identity glyph in the list row, empty hero, and
-  detail masthead, as console functions/triggers do. Use Lucide icons at the
-  shared 16 px baseline; do not add application icon usages, component
-  defaults, or root SVGs below 16 px, emoji, or a new icon dependency.
-- Make list rows full-width targets with one strong primary line and at most
-  one or two quieter supporting lines. Indicate selection with a surface wash,
-  stronger ink, and an optional 2 px neutral edge—never accent color alone.
-- Build a compact sidebar hierarchy (sessions and their sub-agents, folders,
-  scopes) on the `uiClasses.tree*` recipe rather than a private row: 28 px
-  rows in 13 px/500 sans, one 16 px glyph tinted through `data-color` with
-  the shared glyph tones, 14 px of indent per level set as
-  `--iii-ui-tree-depth` on the row, the disclosure caret right after the
-  label, quiet metadata and a hover-revealed X (Lucide `X`, never a trash
-  can) on the trailing edge. Set `data-narrow` on the tree when the pane is a
-  phone-sized drill-in so rows and controls grow to touch size.
-- Keep page actions in `PageHeader`; put resource actions in the identity
-  masthead and work actions in the nearest toolbar. Show one clear primary
-  action at the point of work; move rare actions into a menu.
-- Use shared line `Tabs` for peer views of the same object. They have a bottom
-  rule, neutral active underline, 600 weight, natural casing, and a semantic
-  16 px icon by default. `SegmentedControl variant="tabs"` uses the same line
-  recipe; reserve `variant="radio"` and its surface track for persisted
-  mutually exclusive choices. Do not fork private boxed tab CSS.
-- Use compact fact sheets or stat tiles only for useful comparisons. Prefer a
-  quiet `--color-surface` group with label/value rows over a grid of large
-  KPI cards.
-- Put loading, empty, error, and success states where content will appear so
-  the page silhouette stays stable. Use `Skeleton`, `EmptyState`, and
-  `StatusPanel`; never present raw error text as the main design.
-- For simple tables, compose the shared `TableViewport`/`TableFrame`/`Table`
-  family. Use natural-case sans headers, horizontal row dividers, comfortable
-  page density or compact chat density, and mono only for technical cells.
-  Make only interactive rows hoverable. Long data grids may add sticky headers,
-  aligned tabular numbers, selection, and an inspector or context rail.
-
-### Reject generic generated UI
-
-Do not ship card soup, gradients, glows, ornamental shadows, giant centered
-headings, excessive badges, random accent colors, repeated descriptions, or
-an empty canvas with controls floating in corners. Do not give navigation,
-metadata, and the primary task equal visual weight. Compare the result beside
-the closest reference at the same width in both themes; its structure may
-differ, but density, typography, surface hierarchy, and control treatment
-must feel native to the same console.
+- Console catalog — many searchable objects with rich detail.
+- Database workbench — several tools on one selected resource.
+- Directory editor — searchable documents with drafts or preview.
+- State explorer — deep but compact hierarchy.
+- Settings flow — one configuration entry, host-owned persistence.
+- Terminal/instrument — one live surface with a toolbar and status bar.
 
 ## 1. The script asset (`ui/page.tsx`)
 
-Ordinary React. Import from `react` and `@iii-dev/console-ui` — both resolve
-at runtime through the console's import map, so they must stay **external**
-in your build. Default-export a `setup(host)` function and make every
-registration through `host` (the loader attributes registrations to your
-script so it can dispose them on reload):
+Ordinary React. `react`, `@iii-dev/console-ui` and `lucide-react` resolve at
+runtime through the console's import map, so they stay **external** (the
+driver does this). Default-export `setup(host)` and make every registration
+through `host`: the loader attributes registrations to the script and
+disposes them on reload. `setup` may return a disposer (`SetupFn` in
+`index.d.ts`); the loader runs it and the registrations LIFO.
 
 ```tsx
-import {
-  type Host,
-  PageHeader,
-  PageMain,
-  type PageRenderProps,
-  PageShell,
-} from '@iii-dev/console-ui'
+import { type Host, PageHeader, PageMain, type PageRenderProps, PageShell } from '@iii-dev/console-ui'
+import { Boxes } from 'lucide-react'
 
-function MyworkPage({
-  host,
-  onRequestClose,
-}: PageRenderProps & { host: Host }) {
+function MyworkPage({ host, onRequestClose }: PageRenderProps & { host: Host }) {
   return (
     <PageShell className="mywork-ui-shell">
-      <PageHeader
-        icon={<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden><circle cx="8" cy="8" r="5" /></svg>}
-        title="Mywork"
-        description={host.path}
-        onClose={onRequestClose}
-      />
-      <PageMain className="mywork-ui-main">
-        {/* Compose the chosen archetype here. */}
-      </PageMain>
+      <PageHeader icon={<Boxes />} title="Mywork" description={host.path} onClose={onRequestClose} />
+      <PageMain className="mywork-ui-main">{/* the chosen archetype */}</PageMain>
     </PageShell>
   )
 }
 
 export default function setup(host: Host) {
   host.pages.register({
-    id: 'mywork-manager',           // page URL: #/ext/mywork-manager
-    title: 'Mywork',                // nav label
-    configurationId: 'mywork',      // host adds the standard settings action
+    id: 'mywork-manager',       // page URL: #/ext/mywork-manager
+    title: 'Mywork',            // nav label
+    configurationId: 'mywork',  // host adds the standard settings action
     render: (props) => <MyworkPage host={host} {...props} />,
   })
-
-  // Register other slots only when their implementations exist.
-  // host.functionTriggers.register(createMyTriggerRenderer(host))
-  // host.triggerRenderers?.register(createMyTriggerActivityRenderer())
-  // host.configForms.register('mywork', MyConfigForm)
-  // host.providerConfigForms?.register('my-provider', MyProviderConfigForm)
 }
 ```
 
-This is a delivery skeleton, not a finished design. Compose one archetype in
-its body before evaluating the UI. Imports from the shared package add zero
-bundle bytes because they resolve to the running console's React tree.
+Imports from the shared package and from `lucide-react` add zero bundle bytes.
 
-### The shared component library
+### Slots
 
-The package exports page chrome; `List`/`ListItem`, `Card`, `CollapsibleCard`, `CardHighlight`, `Panel`, `Chip`,
-`IconButton`, and semantic `Table` parts; line `Tabs` and `SegmentedControl`;
-`Selector` and `Select`; buttons, inputs, dialogs, menus and tooltips;
-status/empty/loading components; Markdown and JSON renderers; the terminal atoms (`AnsiText`,
-`TerminalStream`, `TerminalCommandLine`); `CodeEditor`, `FileDiff`; and
-settings primitives (`SettingsSection`, `SettingsList`, `SettingsRow`,
-`SettingsField`, `RawValueInput`, `SettingsDeck`, `Switch`). It also exports the stable `uiClasses` recipes
-(list, navigation tree, card, panel, chip, table, tabs, field, settings and
-motion) and the canonical `tokens` inventory. Read `packages/console-ui/index.d.ts` for
-the authoritative names and props.
-
-Use `Selector` for searchable single-choice input, including grouped or
-disabled options, async caller-owned filtering, loading/empty/error states,
-validation, and explicitly enabled free-form creation. Use `Select` for a
-small finite non-searchable list. Use the shared `Tooltip` parts, or
-`IconButton` for an icon-only action; do not implement independent hover
-timers, geometry, or portals. Keep a local selector only for a genuinely
-different interaction such as hierarchical drill-in, multi-select, or a
-persistent command palette, and document that exception.
-
-Use `TabsList variant="line"`/`TabsTrigger` or `SegmentedControl
-variant="tabs"` for content navigation. Shared tabs add a semantic icon by
-default; pass an explicit icon only when the default does not express the
-view, or `icon={false}` only when there is a documented space constraint.
-Use `IconButton` for icon-only actions such as Refresh or Configure so the
-16 px glyph retains an accessible name and tooltip.
-
-### Configuration forms: one shared grammar
-
-Every `host.configForms` implementation uses host-owned primitives. Do not
-paint native inputs, selects, switches, buttons, or a private collection deck
-to resemble the Console.
-
-- Structure ordinary settings as `SettingsSection` → `SettingsList` →
-  `SettingsField`/`SettingsRow`.
-- Use `SettingsField` for editable values. Pass every prop supplied by its
-  `renderControl` callback into `Input`, `Select`, `Selector`, `Switch`, or a
-  domain wrapper. It generates the clickable label, description/error ARIA,
-  `data-field`, and standard control width. Use `controlSize="fit"` with
-  `layout="inline"` for intrinsic controls such as `Switch`.
-- Use `SettingsRow` for values/actions that are not a single labelled field.
-- Use `RawValueInput` for `${ENV}` templates and unknown/future scalar values.
-  It may suggest a typed literal, but conversion happens only after the user
-  invokes `onUseLiteral`. A non-string opaque value still belongs in a
-  `SettingsField` with an explicit conversion button so field errors remain
-  associated with the control.
-- Use the shared `Select` for finite choices and `Selector` for searchable
-  choices. Both support `id`, `name`, and `data-field`; a native `<select>`
-  with worker CSS is never the fallback.
-- Worker CSS may arrange controls, constrain width, or apply mono to a
-  machine-readable value. It must not override shared control color, border,
-  radius, height, chevron, focus, disabled, or type styles.
-- Size responsive controls from the pane/container rather than the viewport.
-  Back, section/row actions, and field controls keep at least a 44 px target in
-  a narrow split pane even when the desktop window itself is wide. Put
-  `data-settings-narrow-action` on standalone empty-state actions so they use
-  the same target rule.
-
-For a collection whose item opens a meaningful sub-form, use `SettingsDeck`.
-Its `overview` should compose `Panel` + `List`/`ListItem`; its `detail` contains
-the selected item's settings. `open` selects exactly one level at every width:
-the overview and detail are never squeezed side-by-side or stacked together.
-The deck focuses the pushed heading and restores the originating row on Back.
-Keep selection by a stable domain key and set it to `null` when the item is
-removed. For a host deep link, open the requested item first, focus the exact
-`data-field`, and temporarily disable `autoFocusDetail` so the heading cannot
-steal that specific focus. Encode the host path as
-`focusField.map(String).join('.')`, use that exact dotted value in
-`SettingsField.field`, and consume each serialized request only once after its
-conditional/deck content mounts. If an item can be removed, put
-`data-settings-deck-fallback` on the surviving overview action that should
-receive focus when the originating row disappears.
-
-```tsx
-<SettingsField
-  id="redis-url"
-  field="adapter.config.redis_url"
-  label="Redis URL"
-  description="Connection used for distributed locks."
-  error={errors?.get('/adapter/config/redis_url')}
-  renderControl={(controlProps) => (
-    <Input {...controlProps} value={redisUrl} onChange={setRedisUrl} />
-  )}
-/>
-
-<SettingsDeck
-  open={activeId !== null}
-  title={activeItem?.label ?? 'Connection'}
-  backLabel="Connections"
-  overview={<ConnectionList onOpen={setActiveId} />}
-  detail={activeItem ? <ConnectionSettings item={activeItem} /> : null}
-  onBack={() => setActiveId(null)}
-/>
-```
-
-The host owns dirty tracking, validation, save, reset, and the SaveBar. Back is
-navigation only. Update config objects surgically: preserve unknown siblings,
-unknown enum/adapter payloads, and templates; display defaults without
-materializing them. An opaque root is preserved just like an opaque nested
-block and requires an explicit conversion; never coerce it to `{}` to enter
-the typed form. Database is the canonical resource-deck example and Cron is
-the canonical small settings-form example.
-
-Selection is always neutral in both themes: `--color-surface-selected`,
-`--color-ink`, and optionally `--color-edge`. Reserve `--color-accent` for a
-primary action, form focus, live activity, or semantic domain data.
-
-Use `CardHighlight` or `uiClasses.cardHighlight` only for related content that
-needs emphasis inside an existing card. It is a borderless, shadowless inset
-backed by `--color-card-highlight`; never use it for interaction states,
-status, or as a standalone card.
-
-Use `CollapsibleCard`, `CollapsibleCardTrigger`, and `CollapsibleCardContent`
-for expandable cards. The shared primitive owns accessible state, auto-height
-motion, reduced-motion behavior, and mounted content; workers must not copy a
-private disclosure or height-animation implementation.
-
-**`PageShell` and `PageHeader` are the stable outer contract for full
-pages.** They keep identity, height behavior, close affordance, and header
-styling consistent with the console. Use `PageBody`, `PageSidebar`, and
-`PageMain` when their navigation/workspace model fits; replace the body with
-a custom structure when the domain needs columns, a canvas, or a drill-in
-flow. Do not replace the outer shell and header.
-
-Use `PageSidebar`'s declarative `collapsible`, `resizable`, `storageKey`,
-width bounds, `side`, `narrow`, `narrowBelow`, and `narrowMode` props instead
-of shipping local collapse DOM, drag handlers, width clamps, persistence,
-focus logic, or transitions. The Console host keeps a single stable `aside`,
-leaves children mounted while collapsed, synchronizes instances sharing a
-storage key, and owns motion plus reduced-motion behavior. Pass `narrow` when
-the page's drill-in state already knows the pane is narrow; use `narrowBelow`
-when the shared sidebar may observe its `PageBody` parent.
-
-`narrowMode="inline"` is the default and the required presentation for
-primary navigation. It temporarily makes the sidebar a full-width mobile
-navigation screen, hides collapse/resize affordances, and ignores (without
-overwriting) the saved wide collapsed preference. Use it for catalogs,
-list/detail pages, and hierarchies such as `scopes → keys → value`; preserve
-each level as a distinct list, advance one level when a row is activated, and
-provide a labelled Back action. The page owns that domain route, not private
-sidebar mechanics. Build each level with `List`, optional `ListGroup` /
-`ListGroupLabel`, and `ListItem`; pass its `selected`, `leading`, `label`,
-`description`, and `trailing` data instead of copying row/button CSS. The
-shared row owns full-width card targeting, neutral selection, keyboard
-traversal, focus treatment, and mobile touch height.
-
-Use `narrowMode="drawer"` only for secondary navigation that must overlay an
-unchanged, still-mounted `PageMain`, such as a short section switcher. Do not
-put a primary tree or catalog in the drawer. Neither responsive mode
-overwrites the saved wide preference.
-
-The pieces own the surface hierarchy (header on `--color-panel-raised`
-with a hairline `--color-edge` border, sidebar on `--color-sidebar`, main
-on `--color-panel`) — don't repaint those tokens yourself. No sidebar?
-Put content straight into `PageMain`. Keep `onRequestClose` wired to
-`PageHeader.onClose`. Keep header actions few and essential; at narrow widths,
-move secondary actions into a `DropdownMenu` rather than allowing the header
-to wrap or overflow.
-
-When the page's worker has a configuration entry, set `configurationId` on
-`host.pages.register`. The Console then places one consistent settings action
-in `PageHeader` and opens the worker in the global Settings modal. Do not add a
-second Configure action or mount `WorkerConfigurationDialog`; that component
-exists only as a compatibility bridge for older bundles. This is the stable
-form-family id: keep `configurationId: 'browser'` even when a runtime instance
-uses `III_CONFIG_NAME=browser-team-a`; its `configuration::register` payload
-must carry `metadata: { ui_form: 'browser' }`.
-
-### Responsive structure: pane width, not viewport width
-
-An injected page may occupy a full tab, half of a split tab, or a narrow
-mobile viewport. A viewport media query cannot distinguish those cases.
-Observe the page body's own width (or use CSS container queries for purely
-visual changes) and switch the interaction model at the width where the
-content actually stops working.
-
-When React must mount different narrow views, reuse the callback-ref
-`useContainerNarrow` implementation from `database`, `iii-directory`, or
-`state`: measure synchronously, observe with `ResizeObserver`, disconnect on
-ref changes, and ignore zero-width hidden panes.
-
-Apply these rules:
-
-- Derive the threshold from the content's minimum usable width; do not copy
-  `800` or `850` merely because a reference uses it.
-- Prefer a drill-in sequence on narrow panes: list → detail, or scope → key
-  → value. Render one primary pane at a time and provide a visible,
-  labelled back control.
-- Keep `PageSidebar` in its default inline narrow mode for that sequence. Its
-  full-width presentation is shared; do not recreate mobile rails, sheets,
-  width overrides, or collapse state in worker CSS/JS.
-- Style mobile navigation as one scannable list of full-width rows/cards.
-  Activating a row advances exactly one level; do not flatten parent and child
-  collections into one selector or show a collapsed desktop rail first.
-- Remove modes that require width. For example, collapse split edit/preview
-  to one mode at a time.
-- Make narrow interactive rows at least 44 px tall. Keep labels truncated or
-  wrapped deliberately; never let the whole page scroll horizontally.
-- Put `min-width: 0` and `min-height: 0` on nested flex/grid panes. Give only
-  the content region that needs it `overflow: auto`.
-- Use `panelSide` to mirror side navigation in a wide right-hand pane. Do not
-  mirror reading order or a single-pane narrow flow.
-- Key persisted UI state with `paneId` (fall back to `tabId` on consoles
-  without it); treat `localStorage` as best-effort.
-  Guard dirty drafts before navigation and ignore stale async responses after
-  the selection changes.
-- Keep editors mounted when hiding a preview/editor mode if cursor and scroll
-  continuity matter. Unmount when state must reset between domain objects.
-- Test keyboard focus, back navigation, reduced motion, and touch targets in
-  addition to visual width.
-
-Use the shared Monaco-backed `CodeEditor` for code or long text and
-`FileDiff` for diffs. Put the editor inside an `overflow-auto` pane. Never
-bundle Monaco, CodeMirror, or another editor/diff renderer into the asset.
-
-Terminal-shaped cards (exec output, code runs, build logs) compose the shared
-terminal atoms under the same rule: `TerminalCommandLine` for the `$ command`
-header, `TerminalStream` for the labeled stdout/stderr pane (set `ansi` to
-color it; `tone="err"` for stderr), and `AnsiText` for ANSI SGR text mapped
-onto the design tokens. Never bundle an ANSI parser or carry private
-terminal-rendering copies.
-
-## 2. The style asset (`ui/styles.css`)
-
-Plain CSS, **every rule scoped under your worker's wrapper attribute**:
-
-```css
-[data-iii-ui="mywork"] .mywork-ui-main {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-}
-[data-iii-ui="mywork"] .mywork-ui-browser.narrow .mywork-ui-row {
-  min-height: 44px;
-}
-@keyframes mywork-flash { /* prefix keyframes names — they are global */ }
-```
-
-The console mounts every injected render inside
-`<div data-iii-ui="<first path segment>" style="display:contents">`, so
-scoped rules apply to your UI and nothing else. Use the console's design
-tokens. The main roles are:
-
-Use `--color-bg/sidebar/panel/panel-raised/surface*` for hierarchy,
-`--color-ink/ink-faint/ink-ghost` for text, `--color-alert/warn/ok` and their
-muted variants for status, `--color-glyph-*` for the tint of one 16 px
-identity glyph beside a label (never a fill, border, or text),
-`--color-edge/rule-focus` for structure,
-`--shadow-raised/floating/lift` for elevation, and
-`--font-sans`/`--font-mono`/`--font-code` by semantic role. Accent is not a
-selected-state token.
-
-Dark mode is a variable flip, so token-based styles theme for free. Prefer
-shared components for controls, keep all UI chrome and prose in `--font-sans`,
-and reserve `--font-mono` for identifiers, paths, values, payloads, and data.
-Use `--font-code` only for source code, structured payloads, and editor text.
-Never hardcode theme colors.
-
-What must NOT be in the sheet: unscoped selectors (`:root`, `html`, `body`,
-`*`, bare element names) and `@font-face` — injected CSS is unlayered, so an
-unscoped rule silently beats the console's fully-layered CSS document-wide.
-The console lints every style on fetch (warn-only) and reports findings in
-the manifest's `warnings` array; keep it empty.
-
-Do not use Tailwind utility classes in injected markup: the worker's class
-names are not part of the console's compiled Tailwind output. Use the named
-shared components and `uiClasses` recipes; add scoped worker CSS only for
-domain-specific layout and data visualization. Use `--motion-duration-*` and
-`--motion-ease-*` (or the shared motion recipe classes) for state changes.
-Streaming text, rapidly updating meters, and cursor-following geometry update
-without transitions. Scope custom selectors inside
-`@media (prefers-reduced-motion: reduce)` too; keyframe names remain global
-and must carry the worker prefix. Shared components and recipes already honor
-the Console's global reduced-motion contract.
-
-Shared `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and
-`BottomSheet` portals preserve the worker's `data-iii-ui` scope
-automatically. If custom domain UI portals directly to `document.body`, wrap
-its portal root with `data-iii-ui="<worker>"`.
-
-## 3. The build (`ui/build.mjs`)
-
-esbuild with the five shared specifiers external:
-
-```js
-import esbuild from 'esbuild'
-
-const options = {
-  entryPoints: ['page.tsx', 'styles.css'],
-  bundle: true,
-  format: 'esm',
-  jsx: 'automatic',
-  outdir: 'dist',
-  external: ['react', 'react-dom', 'react-dom/client',
-             'react/jsx-runtime', '@iii-dev/console-ui'],
-  logLevel: 'info',
-}
-
-if (process.argv.includes('--watch')) {
-  const context = await esbuild.context(options)
-  await context.watch()
-} else {
-  await esbuild.build(options)
-}
-```
-
-Everything else gets bundled in; keep output well under the console's 8 MiB
-per-asset cap (a slot component should be tens of KiB). Three footguns:
-
-- **A forgotten `react` external bundles a second React** — hooks resolve
-  against the bundled copy's never-installed dispatcher and fail at runtime
-  as a cryptic "Invalid hook call". (A forgotten `@iii-dev/console-ui`
-  external fails loudly instead: the package's bundleable entry throws with
-  the fix in the message.)
-- **Only those five specifiers exist in the import map.** A transitive
-  dependency importing any other bare react-family specifier
-  (`react-dom/server`, …) fails at `import()` time, not build time.
-- **Never bundle an editor** — use the shared Monaco-backed `CodeEditor`
-  (above).
-
-## 4. Registration (the worker side)
-
-The wire contract is: one content function serving all of the worker's
-assets (dispatch on `path`), one trigger per asset.
-
-### Rust workers — the `iii-console-ui` crate
-
-```rust
-use iii_console_ui::ConsoleUi;
-
-ConsoleUi::new("mywork")
-    .script(
-        "mywork/page.js",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/page.js")),
-    )
-    .style(
-        "mywork/styles.css",
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/styles.css")),
-    )
-    .register(&iii);
-```
-
-This registers `<worker>::ui-content`, one Message-path trigger per asset,
-and the `III_<WORKER>_UI_WATCH` watcher. It rejects invalid paths early.
-Export `ui` from the worker library and call `ui::register(&iii)` after its
-normal functions. Adapt `state/build.rs` so missing/stale UI sources build
-before `include_str!`; preserve unrelated duties of an existing build script.
-
-**Always register triggers through your SDK's Message path, never through
-the engine's durable `register_trigger` function.** Message-path triggers are
-garbage-collected on disconnect and replayed on reconnect.
-
-Node workers implement the same contract directly: register one function
-that maps `{path}` to `{content, content_type?}`, then one Message-path
-`console:script` or `console:style` trigger per asset with
-`config: {path}`.
-
-## Runtime contract and slots
-
-| | |
-|---|---|
-| Trigger types | `console:script` (ESM JS), `console:style` (CSS); never register the tab-only `console:assets` type |
-| Trigger config | `{ "path": string }`, nothing else |
-| Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the type (`.js` / `.css`); **convention: first segment = your worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
-| Content function | input `{ "path": string }` → output `{ "content": string, "content_type"?: string }` (`content_type` defaults from the asset kind) |
-| Size cap | 8 MiB per asset — registrations over it are rejected |
-| Reload | same path + changed content hash replaces the asset; unchanged content is a no-op |
-
-All registration goes through the per-script `host`; every entry is disposed
-automatically on hot reload and worker disconnect. Each `register` also
-returns a remover for manual teardown.
-
-`host.pages.register({id, title, render})` creates `#/ext/<id>` and adds it to
-the nav. Its `render` receives:
-
-- `panelSide`: `'left' | 'right'` — which side of the workspace tab the
-  pane occupies; use it only to keep wide side navigation on the outer edge;
-- `tabId`: the hosting workspace tab's stable id (tabs persist across
-  reloads);
-- `paneId`: the hosting pane's stable id inside that tab — the same page
-  can be open in two columns of one tab, so key persisted UI state and
-  per-instance resources (terminals, live triggers) on it; fall back to
-  `tabId` when absent (older consoles);
-- `onRequestClose`: close the pane hosting your page (a split drops the
-  column; a single pane detaches); wire it to `PageHeader.onClose`;
-- `workingDir`: the active conversation's live working directory, or
-  `null`/absent; use only for filesystem-shaped pages and react to changes.
+Every `register` returns a remover and is disposed automatically on hot
+reload and worker disconnect. Namespaces marked `?` are absent on older
+consoles: feature-detect them.
 
 | Surface | What it is |
 |---|---|
-| `host.functionTriggers` | Custom chat/trace renderers. Match only the worker's function ids and return `null` to fall through. `message.description` is the harness's short activity label. Set renderer `metadata: { display: true }` only for successful rich artifacts that should remain visible while raw details are collapsed; the hint applies to the renderer that returned the winning node. If raw data contains secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
-| `host.triggerRenderers?` | Layered trigger presentation. Match the inner `triggerType`. `tryRender` supplies the source section; optional `tryRenderDetails` and `tryRenderDisplay` replace the expanded Terminal content and compact timeline content; `redactRaw` filters raw registration/fire values. Every slot falls through on `null`. Feature-detect for older consoles. |
-| `host.configForms` | Provide the deliberate UI for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker must register a form. Render purpose-built fields and call `onChange`; the schema validates but never generates UI, and the host retains dirty tracking, save, and reset. Use `SettingsSection`/`SettingsList`/`SettingsField`/`SettingsRow`; use `SettingsDeck` for collection drill-in and `RawValueInput` for opaque/template scalars. Never use a raw JSON textarea or restyled native controls, and honor `focusField`. Pass `{ layout: 'full' }` only when the form is a workbench that owns its internal scrolling; the default `contained` layout keeps the centered host column. |
-| `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the chat model picker. Use it for provider-owned OAuth, device flow, or companion-app login. The host retains the provider slice, schema validation, dirty guard, save/reset, and model refresh; the component receives `{ providerId, schema, value, onChange, errors, configured, available, modelCount }`. Feature-detect for older consoles. Never solicit plaintext API keys here—direct operators to the provider's declared environment variable. |
-| `host.chat?` | Optional chat integrations: session chips, turn summaries and transcript renderers, plus `selectConversation?` for explicit worker-driven navigation and `composerModel?` for the live model selection (including unsaved drafts). Feature-detect the namespace and each newer method. |
-| `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
-| `host.components` / `host.path` | Runtime component record and the current script asset path. |
+| `host.pages` | `register({ id, title, configurationId?, render })` creates `#/ext/<id>` and a nav entry. `render` receives `PageRenderProps` (below). Set `configurationId` when the worker has a configuration entry; the host places the one settings action in `PageHeader`. Never mount `WorkerConfigurationDialog` yourself. |
+| `host.functionTriggers` | Chat/trace renderers. Match only the worker's function ids; return `null` to fall through. `message.description` is the harness's short activity label. `metadata: { display: true }` keeps a successful rich artifact visible while raw details stay collapsed. If raw data can contain secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
+| `host.triggerRenderers?` | Layered trigger presentation; see below. |
+| `host.configForms` | The deliberate form for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker registers one. The host owns dirty tracking, validation, save, reset and the SaveBar; honor `focusField`. `{ layout: 'full' }` only for a workbench that owns its scrolling. Form anatomy and primitives: `ade/design-console-ui` › Configuration forms. |
+| `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the model picker; provider-owned OAuth, device flow or companion login. Never solicit a plaintext API key. Props: `ProviderConfigFormProps`. |
+| `host.chat?` | `registerSessionChip`, `registerTurnSummary?`, `registerComposerAction?`, `registerTranscriptRenderer?`, `compose?`, `openDraft?`, `selectConversation?`, `composerModel?`, `requestWorkingDirectoryChange?`, `requestThinkingLevelChange?`. Feature-detect each method. |
+| `host.panels?` | `open({ pageId, context })` places or reuses a registered page beside chat and delivers `panelContext`. Pass opaque ids; fetch bodies from the worker. |
+| `host.overlays?` | `register({ id, render })` — a floating layer over the workspace (the browser's live preview). Fall back to the page when absent. |
+| `host.palette?` | `registerSource({ id, title, kind, prefix?, minQuery?, search })` adds live rows to the command palette; `open({ query? })`. |
+| `host.commands?` | `register(pageId, commands)` — palette rows for a page that may not be open yet (`run` usually calls `panels.open`). A mounted page contributes keys through `PageRenderProps.commands`. |
+| `host.iii` | The tab's bus client: `trigger(functionId, payload?, { timeoutMs? })`, `on(functionId, handler)`, `registerTrigger({ type, function_id, config })`, `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
+| `host.components`, `host.path`, `host.useTheme`, `host.uiClasses`, `host.workspace?`, `host.screen?` | Runtime component record, the current asset path, theme, class recipes, recent directories, visible-screen lease. |
 
-Live data pattern: a page can register its *own* trigger over `host.iii`
-with a handler id like `iii::<worker>-ui::events::<browserId>` (the `iii::`
-prefix keeps per-event invocations out of the trace feed). The binding is
-GC'd with the tab.
+`PageRenderProps`: `panelSide` (`'left' | 'right'`, only to keep wide side
+navigation on the outer edge); `tabId` and `paneId?` (key persisted UI state
+and per-instance resources on `paneId` — the same page can be open in two
+columns of one tab — falling back to `tabId` on older consoles);
+`onRequestClose?` (wire to `PageHeader.onClose`); `workingDir?` (the active
+conversation's live directory, for filesystem-shaped pages only);
+`panelContext?` and `conversationId?`; `setDirty?` (report unsaved work) and
+`commands?` (palette rows and pane-scoped keys, registered from an effect).
 
-Every injected render is error-bounded; import or setup failures remove the
-extension contribution and appear in the browser console instead of breaking
-the entire console. Scripts still run with full console-origin privileges;
-the wrapper scopes styles but is not a security sandbox.
+Live data: a page registers its own trigger over `host.iii` with a handler id
+like `iii::<worker>-ui::events::<browserId>` (the `iii::` prefix keeps it out
+of the trace feed; the binding is GC'd with the tab) — `useWorkerLive` from
+`@iii-dev/console-ui/hooks` wraps fetch + bindings + visible-tab poll. Every
+injected render is error-bounded: import or setup failures drop the
+extension's contribution and log to the browser console. Scripts run with full
+console-origin privileges; the wrapper scopes styles, it is not a sandbox.
 
-### Give trigger renderers layered ownership
-
-Use the smallest override that communicates the trigger well. The base hook
-keeps the generic lifecycle/delivery UI; optional hooks provide the same
-compact-display and complete-detail freedom as function renderers:
+### Trigger renderers: layered ownership
 
 ```ts
 interface TriggerActivityRenderer {
@@ -662,121 +185,280 @@ interface TriggerActivityRenderer {
 ```
 
 `TriggerActivityMessage.kind` is `registration`, `fired`, or `retirement`;
-the normalized model also carries `triggerType`, opaque `config`, optional
-`label` and `action`, delivery, lifecycle, and optional payload/outcome fields.
-Match `triggerType`, not `engine::register_trigger`, because many sources
-share that registration function. Parse opaque worker config without throwing
-and return `null` per slot to reach the next renderer or host fallback.
+the model carries `triggerType`, opaque `config`, optional `label` and
+`action`, delivery, lifecycle and payload/outcome fields. Match `triggerType`
+(many sources share `engine::register_trigger`), parse config without
+throwing, return `null` per slot to fall through. `tryRender` is the
+source-specific section inside the generic detail view; `tryRenderDetails`
+replaces the whole expanded Terminal tab and must carry the lifecycle and
+delivery facts the host no longer adds; `tryRenderDisplay` is the compact
+timeline content inside the host's disclosure button — non-interactive, one
+line, truncation-safe; `redactRaw` is pure, non-mutating, total, cycle-safe,
+and a throw fails closed. The host owns the click target, expanded state,
+motion, isolation, per-slot fallback and the Raw JSON tab; a once firing and
+its automatic retirement are one activity.
 
-- `tryRender`: source-specific section inside the generic detail view.
-- `tryRenderDetails`: complete expanded Terminal tab. If provided, include
-  the lifecycle and delivery facts operators need; the host no longer adds
-  its generic terminal content beside it.
-- `tryRenderDisplay`: compact timeline content inside the host's disclosure
-  button. Keep it non-interactive, one-line, and truncation-safe.
-- `redactRaw`: pure, non-mutating, total, cycle-safe filtering applied before
-  registration/notification/fire raw panes and copy actions. A throw fails
-  closed to a withheld-value placeholder.
-
-The host always owns the click target, accessible expanded state, animation,
-renderer isolation, per-slot fallback, and the Raw JSON tab. A once firing and
-automatic retirement remain one activity; never create a duplicate unbind
-notice.
-
-For harness registrations, keep identity and event copy distinct:
+For harness registrations, `label` names the binding and `metadata.action`
+describes the future event:
 
 ```json
-{
-  "trigger_type": "on-message",
-  "config": { "scope": "explorer" },
-  "label": "explorer-messages",
-  "metadata": { "action": "new Explorer message received" }
-}
+{ "trigger_type": "on-message", "config": { "scope": "explorer" },
+  "label": "explorer-messages", "metadata": { "action": "new Explorer message received" } }
 ```
 
-`label` names the binding. `metadata.action` describes what a future event
-means, is available as binding data before it fires, and becomes
-`activity.action` on durable fire records. Registration and active-binding
-surfaces identify the binding with `label`; show `action` only when
-`activity.kind === 'fired'`. The default fired row is a status mark plus action,
-falling back to label, state scope/key, then source; clicking opens the detail
-already expanded. Keep action short, standalone, and user-facing. It affects
-presentation only, never routing or authorization.
+Registration and active-binding surfaces show `label`; show `action` only
+when `activity.kind === 'fired'`. Action affects presentation only.
+
+### Shared components, hooks, format, icons
+
+`packages/console-ui/index.d.ts` is the only list of runtime exports: page
+chrome, `List`/`ListItem`, cards, `Panel`, `Chip`/`Badge`, `IconButton`, the
+`Table` family, line `Tabs`/`SegmentedControl`, `Select`/`Selector`, inputs,
+`Dialog`/`ConfirmDialog`/`DropdownMenu`/`Tooltip`/`BottomSheet`, status and
+empty states, `Eyebrow`, `SearchField`, `Toolbar`/`StatusBar`,
+`MetaRow`/`ActionLine`, `Kbd`/`KeyCombo`, `LiveRegion`, Markdown/JSON/code
+renderers, the terminal atoms (`AnsiText`, `TerminalStream`,
+`TerminalCommandLine`), `CodeEditor`, `FileDiff`, `ImageViewer`,
+`ModelPicker`, `DirectoryPicker`, and the settings primitives
+(`SettingsSection`/`SettingsList`/`SettingsRow`/`SettingsField`,
+`RawValueInput`, `SettingsDeck`). `<Tooltip label="…">` is the one-line
+tooltip. Confirmation is `useConfirm()` (render `dialog`, `await confirm({ … })`)
+or `ConfirmDialog` — never `window.confirm`. `uiClasses` holds the stable
+class recipes (`list*`, `tree*`, `card*`, `panel*`, `chip`, `table*`,
+`tabs*`, `field*`, `settings*`, `eyebrow`, `toolbar`/`toolbarEnd`,
+`statusbar`, `spin`, `pulse`) and `tokens` the CSS variable inventory. When
+to use each: `ade/design-system` › Shared components.
+
+Two subpaths **bundle** (React-free code the console itself uses):
+
+- `@iii-dev/console-ui/hooks` — `useContainerNarrow({ below? })` (attach
+  `ref` to the pane root; `narrow` while the pane is below the shared default
+  from `ade/design-system` › Numbers or your `below`; synchronous first
+  measure, resizes observed, zero widths ignored), `usePaneState(key,
+  initial)` (`localStorage`-mirrored, best effort), `useCopyFlash(text, ms?)`,
+  `useWorkerLive({ iii, triggers, fetch, pollMs?, handlerId })`.
+- `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
+  `formatBytes`, `errorMessage`, `errorCode`, `copyText`.
+
+Import these instead of keeping a local copy; the migration plan lists the
+copies still to be replaced.
+
+Icons are `lucide-react`, an external shared with the console: `import { X }
+from 'lucide-react'`. Never hand-write SVG icons (the lint flags them) and
+never add another icon dependency. Sizes: `ade/design-system` › Numbers.
+Never bundle Monaco, CodeMirror, a diff renderer, or an ANSI parser; use
+`CodeEditor`, `FileDiff`, and the terminal atoms.
+
+## 2. The style asset (`ui/styles.css`)
+
+Plain CSS, **every top-level rule scoped under the worker's wrapper
+attribute** — the console mounts each render inside
+`<div data-iii-ui="<first path segment>" style="display:contents">`:
+
+```css
+[data-iii-ui="mywork"] .mywork-ui-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+@keyframes mywork-flash { /* keyframe names are global: prefix them */ }
+```
+
+- Colors, fonts, radius, shadows and motion are tokens: `var(--color-…)`,
+  `var(--font-sans|mono|code)`, `var(--radius-…)`, `var(--shadow-…)`,
+  `var(--motion-duration-…)`/`var(--motion-ease-…)`. `checkTokens` fails the
+  build on a token the console does not define. Which token means what:
+  `ade/design-system` › Tokens.
+- Keyframe names carry the worker prefix (`keyframePrefixes`, default
+  `[scope, "<scope>-ui"]`); spin/pulse are `uiClasses.spin`/`uiClasses.pulse`.
+- Responsive layout is `@container` on the pane (every `PageShell` is a
+  container), never a viewport `@media`; the viewport breakpoint is reserved
+  for the console's phone chrome
+  (`ade/web/src/lib/viewport-breakpoint-conformance.test.ts`).
+- No unscoped selectors (`:root`, `html`, `body`, `*`, bare elements), no
+  `@font-face`: injected CSS is unlayered and would beat the console's
+  layered stylesheet document-wide. `assertScoped` refuses the build; the
+  console's fetch-time lint reports leftovers in the manifest's `warnings`.
+- No Tailwind utility classes in injected markup — worker class names are not
+  in the console's compiled output. Shared components and `uiClasses` first;
+  scoped CSS only for domain layout and data visualization.
+- Scope `@media (prefers-reduced-motion: reduce)` overrides too (shared
+  recipes already honor it); streaming, rapidly updating and pointer-following
+  values update without transitions.
+- Shared `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and
+  `BottomSheet` portals preserve the worker scope. A custom `document.body`
+  portal stamps `data-iii-ui="<worker>"` on its root (and lists it in
+  `allowUnscopedSelectors` if its rules live outside the scope).
+
+## 3. The build (`ui/build.mjs`)
+
+`buildWorkerUi` (`packages/console-ui/build-worker-ui.mjs`, typed in
+`build-worker-ui.d.mts`) is the one esbuild driver:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `scope` | required | The `data-iii-ui` value — first asset path segment, normally the worker name |
+| `entryPoints` | `['page.tsx', 'styles.css']` | Extra scripts each need their own `console:script` trigger and a default `setup` |
+| `outdir`, `root` | `'dist'`, `process.cwd()` | Pass `root: import.meta.dirname` when invoked from elsewhere |
+| `keyframePrefixes` | `[scope, "<scope>-ui"]` | Allowed `@keyframes` name prefixes |
+| `allowUnscopedSelectors` | `[]` | Selector prefixes that are global on purpose (a portal root, vendor CSS such as `.xterm`) |
+| `strictTokens` | `true` | Unknown design token fails the build (`false` warns) |
+| `lint` | `{}` | `false` skips the design-rule lint; `{ strict, disable, allow }` tunes it |
+| `watch`, `minify` | `--watch` flag, `!watch` | Watch rebuilds unminified for readable traces |
+| `plugins`, `extraExternal`, `define` | | Passed to esbuild |
+
+After every build it checks each asset against the 8 MiB cap, runs
+`assertScoped` on every sheet and `checkTokens` on everything; a non-watch
+build then runs `lintWorkerUi` on the source. A failed check exits 1.
+
+Six specifiers stay external because the console's import map serves them:
+`react`, `react-dom`, `react-dom/client`, `react/jsx-runtime`,
+`@iii-dev/console-ui`, `lucide-react`. The driver matches them **exactly**
+(`workerUiExternalsPlugin`) because esbuild's `external` list would also
+externalize `@iii-dev/console-ui/format` and `/hooks`, which must bundle.
+Everything else bundles in. Only those six exist in the import map: a
+dependency importing another bare react-family specifier (`react-dom/server`)
+fails at `import()` time. A custom pipeline (`editor`, `canvas`) imports
+`workerUiExternals`, `assertScoped`, `checkTokens` and, from
+`@iii-dev/console-ui/lint-worker-ui`, `lintWorkerUi`/`formatLint`, and runs
+the same checks; dropping the `react` external there bundles a second React
+("Invalid hook call"), dropping `@iii-dev/console-ui` throws at once with the fix.
+
+### Lint
+
+`lintWorkerUi({ root, scope, strict, disable, allow })` scans `styles.css`,
+`page.tsx` and `src/**` (never `dist/` or tests); errors fail the build,
+warnings print. `strict: true` promotes warnings (`browser`, `iii-directory`,
+`ide`; every migrated worker turns it on); `disable: ['rule']` drops a rule;
+`allow: { rule: ['substring', /re/] }` ignores matching excerpts; a
+`lint-allow <rule>` comment on the finding's line or the one above does the
+same in place — always with a reason.
+
+| Rule | Level | Flags |
+|---|---|---|
+| `no-window-dialogs` | error | `window.confirm/alert/prompt(` — use `useConfirm()`/`ConfirmDialog` |
+| `icon-size` | error | Lucide `size`, `<svg width/height>` or `size-3`/`w-3 h-3` classes below the icon baseline |
+| `accent-selection` | error | `var(--color-accent…)` in a selected/active/current rule (focus excepted) |
+| `no-inline-svg` | warning | `<svg` in a `.tsx` outside `icons.tsx`/`icons/` — import from `lucide-react` |
+| `radius` | warning | `border-radius` other than `0`, the system radius, full rounding, `var(--radius-*)`, `inherit` |
+| `font-family` | warning | anything but `var(--font-…)`/`inherit` |
+| `font-size` | warning | below the UI text floor |
+| `case-transform` | warning | `text-transform`/`textTransform:` — use `Eyebrow`/`uiClasses.eyebrow` |
+| `focus-stroke` | warning | `:focus`/`:focus-visible` outline, box-shadow or border in accent — use `--color-rule-focus` |
+| `shadow` | warning | `box-shadow` that is not `var(--shadow-*)`, `none` or a token inset/hairline |
+| `hex-color` | warning | `#hex`/`rgb()`/`hsl()` literals (custom properties on the scope root are fine) |
+| `motion-literal` | warning | `transition`/`animation` with a literal `ms`/`s` duration |
+| `keyframes-shared` | warning | `@keyframes …spin/pulse/shimmer/fade` — use `uiClasses.spin`/`uiClasses.pulse` |
+| `viewport-media` | warning | `@media (max-width|min-width …)` — use `@container` |
+| `tailwind-in-worker` | warning | `className` strings with several Tailwind utilities |
+
+The baseline, floor and radius the rules check are the values in
+`ade/design-system` › Numbers. CLI: `node
+packages/console-ui/lint-worker-ui.mjs <worker>/ui [--strict] [--json]`;
+`--all` from the repo root prints one row per worker.
+
+## 4. Registration (the worker side)
+
+One content function serving all of the worker's assets (dispatch on
+`path`), one trigger per asset. Rust workers use the `iii-console-ui` crate:
+
+```rust
+use iii_console_ui::ConsoleUi;
+
+ConsoleUi::new("mywork")
+    .script("mywork/page.js", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/page.js")))
+    .style("mywork/styles.css", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/styles.css")))
+    .register(&iii);
+```
+
+This registers `<worker>::ui-content`, one Message-path trigger per asset,
+and the `III_<WORKER>_UI_WATCH` watcher; it panics on a path the console
+would reject. Export `ui` from the worker library and call `ui::register(&iii)`
+after its normal functions; adapt `state/build.rs` so missing or stale UI
+sources build before `include_str!`. Node workers register one function
+mapping `{path}` to `{content, content_type?}`, then one Message-path
+`console:script` or `console:style` trigger per asset with `config: {path}`.
+
+**Always register through the SDK's Message path, never the engine's durable
+`register_trigger`:** Message-path triggers are garbage-collected on
+disconnect and replayed on reconnect.
+
+## Runtime contract
+
+| | |
+|---|---|
+| Trigger types | `console:script` (ESM JS), `console:style` (CSS); never register the tab-only `console:assets` type |
+| Trigger config | `{ "path": string }`, nothing else |
+| Path rules | lowercase `[a-z0-9._-]` segments, no leading slash, no `.`/`..` segments, ≤ 512 chars; extension must match the type (`.js` / `.css`); **convention: first segment = worker name** — it becomes the `data-iii-ui` scope and the only human-readable attribution |
+| Content function | input `{ "path": string }` → output `{ "content": string, "content_type"?: string }` |
+| Size cap | 8 MiB per asset — larger registrations are rejected (the driver fails first) |
+| Reload | same path + changed content hash replaces the asset; unchanged content is a no-op |
 
 ## The dev loop (hot reload)
 
-Rebuild-on-save stays in the build tool; re-registration stays in the worker.
-Serve the new bytes, register a fresh trigger for the same path, then
-unregister the old handle. Register-first avoids a flash; unregistering keeps
-the SDK replay map bounded. The Rust helper does this with a one-second
-poller. Set `III_<WORKER>_UI_WATCH=1` for `ui/dist`:
+Rebuild-on-save stays in the build tool; re-registration stays in the worker
+(new trigger first, then unregister the old handle). The Rust helper polls
+once a second when `III_<WORKER>_UI_WATCH=1` (`ui/dist`) or names a directory:
 
 ```bash
-# terminal 1, from the workers repo root
-pnpm --dir mywork/ui watch
-
-# terminal 2; the default watch path is relative to the worker cwd
-cd mywork && III_MYWORK_UI_WATCH=1 cargo run
+pnpm --dir mywork/ui watch                      # terminal 1, repo root
+cd mywork && III_MYWORK_UI_WATCH=1 cargo run    # terminal 2
 ```
 
-Every open tab hot-swaps the asset in place — scripts re-`import()` +
-re-`setup()` (React state in your slots is lost — dispose + remount), styles
-link-swap with no flash. Unchanged content is hash-deduped end to end.
+Every open tab hot-swaps the asset: scripts re-`import()` + re-`setup()` (slot
+React state is lost), styles link-swap with no flash; unchanged content is
+hash-deduped end to end.
 
 ## Debugging
 
 | Symptom | Cause |
 |---|---|
+| Build exits 1 naming a selector | an unscoped rule, unprefixed `@keyframes` or `@font-face` — `assertScoped` |
+| Build exits 1 on `unknown token` | a `var(--color-…)` the console does not define — check `token-names.mjs`, or declare it on the scope root |
+| Build exits 1 on `design-rule error(s)` | a lint error (or a warning under `strict`) — fix it or `lint-allow` it with a reason |
 | Registration rejected with a path error | path violates the rules table (wrong extension, uppercase, `..`, …) |
-| Registration rejected with a fetch error | your content function threw, returned no string `content`, or timed out |
-| "Invalid hook call" in the tab | your bundle contains a second React — a missing `external` |
-| `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the five shared specifiers |
-| Styles apply on your page but not in a custom portal | Shared portalled components preserve scope automatically; a custom `document.body` portal must carry `data-iii-ui="<worker>"` on its root |
-| Whole console restyled | your sheet has unscoped rules — check `warnings` in the manifest |
+| Registration rejected with a fetch error | the content function threw, returned no string `content`, or timed out |
+| "Invalid hook call" in the tab | a second React in the bundle — a custom build dropped an external |
+| `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the six shared specifiers |
+| Styles apply on the page but not in a custom portal | a custom `document.body` portal must carry `data-iii-ui="<worker>"` on its root |
+| Whole console restyled | unscoped rules reached the console — check `warnings` in the manifest |
 | Registered but absent | inspect `workers[].enabled` and `injectableUi.disabledWorkers` in the manifest |
 
 Inspect `console::ui-manifest` (or `GET <console-host>:3113/ui`),
 `/ui/<path>`, registered triggers, and `[iii-ui]` browser logs in that order.
 The manifest is authoritative; its `warnings` must be empty.
 
-## Testing your worker's UI
+## Testing
 
-Validate all four layers; a successful esbuild run alone is not enough.
+Validate all four layers; a green build alone is not enough.
 
-1. **Static:** run `pnpm --dir <worker>/ui build`; require type-check success,
-   non-empty assets, and no bundled React/editor copy.
-2. **Embedding:** test accepted assets, an ESM export, and the built worker CSS
-   scope (esbuild may omit selector quotes); run targeted Rust tests.
-3. **Delivery:** boot engine + console + worker; require manifest paths,
-   hashes, no warnings, fetchable bytes, and a changed hash after hot reload.
-4. **Real rendering:** exercise the actual console, not only an isolated
-   component harness. Cover at least a phone-sized pane (~320–430 px), a
-   narrow split pane, and a wide pane; left and right split positions; light
-   and dark themes; keyboard-only navigation; reduced motion; long names and
-   payloads; loading, empty, error, success, and live-update states; dirty
-   navigation; and worker reconnect.
+1. **Static:** `pnpm --dir <worker>/ui build` — type-check, scoped and
+   token-checked assets, lint clean (strict where enabled), no bundled
+   React, editor or ANSI parser.
+2. **Embedding:** accepted assets, an ESM export, the built CSS scope
+   (esbuild may omit selector quotes); targeted Rust tests.
+3. **Delivery:** boot engine + console + worker; manifest paths, hashes, no
+   warnings, fetchable bytes, a changed hash after hot reload.
+4. **Real rendering:** the actual console at a phone-sized, a narrow split
+   and a wide pane (`ade/design-system` › Numbers), both split positions,
+   both themes, keyboard only, reduced motion, long content, every async and
+   live-update state, dirty navigation, reconnect — the matrix in
+   `ade/design-console-ui` › Validate. For `host.triggerRenderers` add exact
+   type match, malformed-config fallthrough, every slot and activity kind,
+   non-interactive compact display, complete-detail lifecycle fidelity,
+   action fallback, fail-closed redaction, and disable/disconnect fallback.
 
-For `host.triggerRenderers`, additionally cover exact type match, malformed
-config fallthrough, every implemented slot and activity kind, compact
-non-interactive display, complete-detail lifecycle fidelity, action fallback,
-raw redaction (including thrown-error fail-closed behavior), and worker
-disable/disconnect fallback.
+## Definition of done
 
-The UI is done only when:
-
-- `PageShell` + `PageHeader` are present and the close action works;
-- every configurable page declares `configurationId`, and every configuration
-  entry has a registered, purpose-built `host.configForms` interface;
-- configuration controls come from `@iii-dev/console-ui`; collection details
-  use `SettingsDeck`, preserve unknown/template data, and restore focus on Back;
-- the narrow flow exposes every action without horizontal page overflow;
-- focus is visible, controls have names, and narrow targets are at least 44 px;
-- selected rows, cards, tabs, chips, and segments remain neutral in both themes;
-- content tabs use the shared line recipe, natural casing, and default 16 px
-  icons; application icons are never authored below 16 px;
-- human-facing chrome is sans; mono is limited to machine-readable content;
-- transitions use the shared motion vocabulary and reduced motion is immediate;
+- `PageShell` + `PageHeader` present, close action wired;
+- every configurable page declares `configurationId`; every configuration
+  entry has a purpose-built `host.configForms` form;
+- controls, hooks, formatters and icons come from `@iii-dev/console-ui`, its
+  `/hooks` and `/format` subpaths, and `lucide-react` — no local copies;
+- the narrow flow exposes every action without horizontal overflow; focus is
+  visible, controls have names, targets meet `ade/design-system` › Numbers;
+- selection is neutral in both themes; styles are scoped and token-based;
+- the build passes `strictTokens` and a clean lint (`strict` once migrated);
 - async responses cannot overwrite a newer selection or a dirty draft;
-- all styles are scoped and token-based in both themes;
-- disconnect/reconnect and hot reload leave no duplicate registrations;
-- the manifest has no warnings and the browser console has no `[iii-ui]` errors.
+- reconnect and hot reload leave no duplicate registrations; the manifest has
+  no warnings and the browser console has no `[iii-ui]` errors.

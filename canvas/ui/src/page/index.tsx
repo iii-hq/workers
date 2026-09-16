@@ -22,6 +22,7 @@ import {
   PageShell,
   PageSidebar,
   StatusPanel,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FreeformPane, type FreeformPaneHandle } from '../freeform'
@@ -75,6 +76,7 @@ export function CanvasPage({
   const [dirtyIds, setDirtyIds] = useState<ReadonlySet<string>>(new Set())
   const [creating, setCreating] = useState(false)
   const [sideError, setSideError] = useState<string | null>(null)
+  const { confirm, dialog } = useConfirm()
   const cacheRef = useRef<DraftCache>(new Map())
   const loadSeqRef = useRef(0)
   // The open record, readable from stable callbacks (the freeform surface
@@ -305,11 +307,11 @@ export function CanvasPage({
   }, [host, creating])
 
   const remove = useCallback(
-    (rec: CanvasRecord) => {
+    async (rec: CanvasRecord) => {
       const question = dirtyIds.has(rec.id)
         ? `delete "${rec.name}"? it has unsaved changes.`
         : `delete "${rec.name}"?`
-      if (!window.confirm(question)) return
+      if (!(await confirm({ title: question, confirmLabel: 'Delete', tone: 'danger' }))) return
       setSideError(null)
       deleteCanvas(host, rec.id)
         .then(() => {
@@ -333,7 +335,7 @@ export function CanvasPage({
         })
         .catch((err: unknown) => setSideError(errorMessage(err)))
     },
-    [host, dirtyIds, selectedId],
+    [host, dirtyIds, selectedId, confirm],
   )
 
   /** The freeform surface's save path (`canvas::update` on the open record). */
@@ -397,6 +399,7 @@ export function CanvasPage({
 
   return (
     <PageShell className="canvas-ui">
+      {dialog}
       <PageHeader
         icon={<Shapes />}
         title="Canvas"

@@ -93,16 +93,16 @@ export function FilesystemAccessDialog({
                   >
                     {workingDir}
                   </span>
-                  <span className="block font-mono text-[10px] lowercase text-ink-ghost">
+                  <span className="block font-mono text-[11px] text-ink-ghost">
                     {workspaceScoped
-                      ? 'workspace boundary; change it with the directory picker'
-                      : 'command starting folder, not an access boundary'}
+                      ? 'Workspace boundary; change it with the directory picker'
+                      : 'Command starting folder, not an access boundary'}
                   </span>
                 </div>
               </div>
             ) : (
-              <div className="px-2 py-1.5 font-mono text-[11px] lowercase text-ink-ghost">
-                no working directory set.
+              <div className="px-2 py-1.5 font-mono text-[11px] text-ink-ghost">
+                No working directory set.
               </div>
             )}
           </FolderGroup>
@@ -116,8 +116,8 @@ export function FilesystemAccessDialog({
                 </p>
               ) : null}
               {grants.length === 0 ? (
-                <div className="px-2 py-1.5 font-mono text-[11px] lowercase text-ink-ghost">
-                  nothing granted beyond the workspace.
+                <div className="px-2 py-1.5 font-mono text-[11px] text-ink-ghost">
+                  Nothing granted beyond the workspace.
                 </div>
               ) : (
                 <div className="flex flex-col">
@@ -156,12 +156,12 @@ export function FilesystemAccessDialog({
 
           <FolderGroup title="always allowed (all sessions)">
             {shellRoots === null ? (
-              <div className="px-2 py-1.5 font-mono text-[11px] lowercase text-ink-ghost">
-                loading…
+              <div className="px-2 py-1.5 font-mono text-[11px] text-ink-ghost">
+                Loading…
               </div>
             ) : shellRoots.length === 0 ? (
-              <div className="px-2 py-1.5 font-mono text-[11px] lowercase text-ink-ghost">
-                no permanent roots configured.
+              <div className="px-2 py-1.5 font-mono text-[11px] text-ink-ghost">
+                No permanent roots configured.
               </div>
             ) : (
               <div className="flex flex-col">
@@ -189,9 +189,9 @@ export function FilesystemAccessDialog({
             <a
               href={SHELL_HOST_ROOTS_HASH}
               onClick={() => onOpenChange(false)}
-              className="mt-1 inline-block px-2 font-mono text-[11px] lowercase text-accent hover:underline"
+              className="mt-1 inline-block px-2 font-mono text-[11px] text-accent hover:underline"
             >
-              edit in IDE configuration →
+              Edit in IDE configuration →
             </a>
           </FolderGroup>
         </div>
@@ -209,9 +209,7 @@ function FolderGroup({
 }) {
   return (
     <section>
-      <h3 className="mb-1 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-        {title}
-      </h3>
+      <h3 className="mb-1 iii-ui-eyebrow">{title}</h3>
       <div className="border border-rule-2 bg-bg">{children}</div>
     </section>
   )

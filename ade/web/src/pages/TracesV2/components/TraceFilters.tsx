@@ -189,10 +189,10 @@ function currentTimeRangeIndex(filters: TraceFilterState): number {
 }
 
 const inputClass =
-  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors lowercase'
+  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors'
 
 const selectClass =
-  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors lowercase appearance-none cursor-pointer'
+  'h-8 px-2 rounded-sm font-mono text-[12px] bg-surface border border-transparent text-ink hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors appearance-none cursor-pointer'
 
 // Lightweight popover anchored to a trigger via getBoundingClientRect.
 // Portals into document.body so it isn't clipped by overflow-hidden
@@ -323,7 +323,7 @@ function SearchInput({
         onFocus={() => setSearchFocused(true)}
         onBlur={() => setSearchFocused(false)}
         placeholder="search traces..."
-        className="flex-1 bg-transparent font-mono text-[12px] text-ink placeholder:text-ink-ghost focus:outline-none lowercase min-w-0"
+        className="flex-1 bg-transparent font-mono text-[12px] text-ink placeholder:text-ink-ghost focus:outline-none min-w-0"
       />
       {searchFocused && !searchQuery && <Caret className="h-[12px] w-[5px]" />}
       {searchQuery && (
@@ -364,7 +364,7 @@ export function StatsBlock({
           type="button"
           onClick={held.onShow}
           data-trace-list-held={held.count}
-          className="flex items-center gap-1.5 rounded-l-md px-2.5 py-1 font-mono text-[11px] text-accent lowercase transition-colors hover:bg-surface-hover"
+          className="flex items-center gap-1.5 rounded-l-md px-2.5 py-1 font-mono text-[11px] text-accent transition-colors hover:bg-surface-hover"
           title={
             held.onPage1
               ? `${held.count} new ${held.count === 1 ? 'trace' : 'traces'} waiting — show them at the top`
@@ -388,7 +388,7 @@ export function StatsBlock({
         </button>
       ) : null}
       <div
-        className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase"
+        className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint"
         title={`${stats.pageTraceCount} traces on this page, ${stats.totalTraces} total matching traces`}
       >
         <Hash className="size-4 text-ink-faint" />
@@ -397,7 +397,7 @@ export function StatsBlock({
       </div>
       <div
         className={cn(
-          'flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] lowercase',
+          'flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px]',
           stats.errorCount > 0 ? 'text-alert' : 'text-ink-faint',
         )}
       >
@@ -405,7 +405,7 @@ export function StatsBlock({
         <span className="tabular-nums">{stats.errorCount}</span>
         <span className="text-ink-ghost">Page errors</span>
       </div>
-      <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase">
+      <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint">
         <Timer className="size-4" />
         <span className="text-ink tabular-nums">
           {formatDurationMs(stats.avgDuration)}
@@ -727,7 +727,7 @@ export function TraceFilters({
           type="button"
           onClick={() => setPopoverOpen((v) => !v)}
           className={cn(
-            'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] lowercase transition-colors',
+            'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] transition-colors',
             popoverOpen || advancedFilterCount > 0
               ? 'bg-accent-muted text-ink'
               : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
@@ -738,7 +738,7 @@ export function TraceFilters({
           <SlidersHorizontal className="size-4" />
           <span>More filters</span>
           {advancedFilterCount > 0 && (
-            <span className="px-1 py-0 rounded-xs bg-accent text-accent-fg font-mono text-[10px] tabular-nums leading-none flex items-center min-w-[14px] justify-center">
+            <span className="px-1 py-0 rounded-xs bg-accent text-accent-fg font-mono text-[11px] tabular-nums leading-none flex items-center min-w-[14px] justify-center">
               {advancedFilterCount}
             </span>
           )}
@@ -771,7 +771,7 @@ export function TraceFilters({
               onClick={() =>
                 filter.onRemove ? filter.onRemove() : removeFilter(filter.key)
               }
-              className="flex items-center gap-1 px-2 py-1 rounded-sm bg-surface hover:bg-surface-hover hover:text-ink font-mono text-[11px] text-ink-faint transition-colors group lowercase"
+              className="flex items-center gap-1 px-2 py-1 rounded-sm bg-surface hover:bg-surface-hover hover:text-ink font-mono text-[11px] text-ink-faint transition-colors group"
             >
               <span>{filter.label}</span>
               <X className="size-4 opacity-50 group-hover:opacity-100 transition-all" />
@@ -790,9 +790,7 @@ export function TraceFilters({
       >
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="font-mono text-[11px] text-ink-faint uppercase tracking-[0.06em]">
-              more filters
-            </h3>
+            <h3 className="iii-ui-eyebrow">more filters</h3>
             <button
               type="button"
               onClick={() => setPopoverOpen(false)}
@@ -805,9 +803,7 @@ export function TraceFilters({
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1 col-span-2">
-              <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                status
-              </span>
+              <span className="iii-ui-eyebrow">status</span>
               <ModeToggle<StatusValue>
                 value={statusValue}
                 options={STATUS_OPTIONS}
@@ -818,9 +814,7 @@ export function TraceFilters({
             </div>
 
             <label className="flex flex-col gap-1">
-              <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                time range
-              </span>
+              <span className="iii-ui-eyebrow">time range</span>
               <select
                 className={selectClass}
                 value={currentTimeRangeIndex(filters)}
@@ -837,9 +831,7 @@ export function TraceFilters({
             </label>
 
             <label className="flex flex-col gap-1">
-              <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                sort by
-              </span>
+              <span className="iii-ui-eyebrow">sort by</span>
               <div className="flex gap-2">
                 <select
                   className={cn(selectClass, 'flex-1')}
@@ -869,9 +861,7 @@ export function TraceFilters({
             </label>
 
             <label className="flex flex-col gap-1">
-              <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                worker
-              </span>
+              <span className="iii-ui-eyebrow">worker</span>
               <input
                 type="text"
                 placeholder="e.g. api-*, backend"
@@ -889,9 +879,7 @@ export function TraceFilters({
             </label>
 
             <label className="flex flex-col gap-1">
-              <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                operation
-              </span>
+              <span className="iii-ui-eyebrow">operation</span>
               <input
                 type="text"
                 placeholder="e.g. get *, post /api/*"
@@ -909,9 +897,7 @@ export function TraceFilters({
             </label>
 
             <label className="flex flex-col gap-1 col-span-2">
-              <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                duration (ms)
-              </span>
+              <span className="iii-ui-eyebrow">duration (ms)</span>
               <div className="flex items-center gap-2">
                 <input
                   type="number"
@@ -949,14 +935,10 @@ export function TraceFilters({
           </div>
 
           <div className="pt-2 border-t border-rule-2">
-            <div className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em] mb-2">
-              display
-            </div>
+            <div className="iii-ui-eyebrow mb-2">display</div>
             <div className="grid grid-cols-2 gap-3">
               <label className="flex flex-col gap-1">
-                <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                  label rows by
-                </span>
+                <span className="iii-ui-eyebrow">label rows by</span>
                 <select
                   className={selectClass}
                   value={filters.labelMode ?? 'function'}
@@ -976,9 +958,7 @@ export function TraceFilters({
               </label>
               {filters.labelMode === 'attribute' && (
                 <label className="flex flex-col gap-1">
-                  <span className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em]">
-                    attribute key
-                  </span>
+                  <span className="iii-ui-eyebrow">attribute key</span>
                   <input
                     type="text"
                     placeholder="e.g. iii.tag.message"
@@ -994,7 +974,7 @@ export function TraceFilters({
           </div>
 
           <div className="pt-2 border-t border-rule-2">
-            <div className="font-mono text-[10px] text-ink-faint uppercase tracking-[0.06em] mb-2">
+            <div className="iii-ui-eyebrow mb-2">
               attributes
               {filters.attributes && filters.attributes.length > 0 ? (
                 <span className="ml-1 text-accent tabular-nums normal-case">

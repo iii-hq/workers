@@ -24,9 +24,18 @@ import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
 import { describe, expect, it } from 'vitest'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
+import {
+  BottomSheet,
+  BottomSheetClose,
+  BottomSheetContent,
+  BottomSheetDescription,
+  BottomSheetTitle,
+  BottomSheetTrigger,
+} from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
 import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
@@ -35,7 +44,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
-import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ConfirmDialog, useConfirm } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogClose,
@@ -54,11 +63,15 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { FileDiff } from '@/components/ui/FileDiff'
 import { IconButton } from '@/components/ui/IconButton'
 import { ImageThumbnailButton, ImageViewer } from '@/components/ui/ImageViewer'
 import { Input } from '@/components/ui/Input'
+import { Kbd } from '@/components/ui/Kbd'
+import { KeyCombo } from '@/components/ui/KeyCombo'
 import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
 import {
@@ -69,6 +82,7 @@ import {
   PageSidebar,
 } from '@/components/ui/PageChrome'
 import { RawValueInput } from '@/components/ui/RawValueInput'
+import { SearchField } from '@/components/ui/SearchField'
 import { Select } from '@/components/ui/Select'
 import { Selector } from '@/components/ui/Selector'
 import {
@@ -106,6 +120,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
 import { TerminalStream } from '@/components/ui/TerminalStream'
+import { StatusBar, Toolbar } from '@/components/ui/Toolbar'
 import {
   Tooltip,
   TooltipContent,
@@ -123,11 +138,26 @@ import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConf
  * check's data — its keys must equal the manifest.
  */
 const conformance: {
+  ActionLine: typeof ConsoleUi.ActionLine
   AnnotationLayer: typeof ConsoleUi.AnnotationLayer
   AnnotationList: typeof ConsoleUi.AnnotationList
   AnsiText: typeof ConsoleUi.AnsiText
   Badge: typeof ConsoleUi.Badge
+  BottomSheet: typeof ConsoleUi.BottomSheet
+  BottomSheetClose: typeof ConsoleUi.BottomSheetClose
+  BottomSheetContent: typeof ConsoleUi.BottomSheetContent
+  BottomSheetDescription: typeof ConsoleUi.BottomSheetDescription
+  BottomSheetTitle: typeof ConsoleUi.BottomSheetTitle
+  BottomSheetTrigger: typeof ConsoleUi.BottomSheetTrigger
   Button: typeof ConsoleUi.Button
+  Eyebrow: typeof ConsoleUi.Eyebrow
+  Kbd: typeof ConsoleUi.Kbd
+  KeyCombo: typeof ConsoleUi.KeyCombo
+  LiveRegion: typeof ConsoleUi.LiveRegion
+  MetaRow: typeof ConsoleUi.MetaRow
+  SearchField: typeof ConsoleUi.SearchField
+  StatusBar: typeof ConsoleUi.StatusBar
+  Toolbar: typeof ConsoleUi.Toolbar
   Card: typeof ConsoleUi.Card
   CardBody: typeof ConsoleUi.CardBody
   CardHighlight: typeof ConsoleUi.CardHighlight
@@ -210,11 +240,26 @@ const conformance: {
   DirectoryPicker: typeof ConsoleUi.DirectoryPicker
   Wordmark: typeof ConsoleUi.Wordmark
 } = {
+  ActionLine,
   AnnotationLayer,
   AnnotationList,
   AnsiText,
   Badge,
+  BottomSheet,
+  BottomSheetClose,
+  BottomSheetContent,
+  BottomSheetDescription,
+  BottomSheetTitle,
+  BottomSheetTrigger,
   Button,
+  Eyebrow,
+  Kbd,
+  KeyCombo,
+  LiveRegion,
+  MetaRow,
+  SearchField,
+  StatusBar,
+  Toolbar,
   Card,
   CardBody,
   CardHighlight,
@@ -299,14 +344,40 @@ const conformance: {
 }
 
 const workerBadgeProps: ConsoleUi.BadgeProps = { variant: 'ok' }
+// Runtime hooks ride the api object next to `useTheme`, not the components record.
+const workerUseConfirm: typeof ConsoleUi.useConfirm = useConfirm
+
+/** Names the exact spot that is missing/extra when a promotion is incomplete. */
+function expectSameNames(
+  actual: readonly string[],
+  expected: readonly string[],
+  spot: string,
+) {
+  const missing = expected.filter((n) => !actual.includes(n))
+  const extra = actual.filter((n) => !expected.includes(n))
+  expect(
+    { missing, extra },
+    `${spot} — promoting a component touches: packages/console-ui/component-names.mjs, ` +
+      'the `components` record in ade/web/src/lib/console-api.ts, packages/console-ui/index.d.ts, ' +
+      'the `conformance` map in this test (type + value), then `node ade/web/scripts/generate-vendor-shims.mjs`',
+  ).toEqual({ missing: [], extra: [] })
+}
 
 describe('@iii-dev/console-ui surface', () => {
   it('the curated components record matches the package manifest', () => {
-    expect(Object.keys(components).sort()).toEqual([...componentNames].sort())
+    expectSameNames(
+      Object.keys(components),
+      componentNames,
+      'console-api.ts `components` vs component-names.mjs',
+    )
   })
 
   it('every manifest component is type-conformance-checked above', () => {
-    expect(Object.keys(conformance).sort()).toEqual([...componentNames].sort())
+    expectSameNames(
+      Object.keys(conformance),
+      componentNames,
+      'conformance map vs component-names.mjs',
+    )
   })
 
   it('the record and the named exports are the same objects', () => {
@@ -320,6 +391,10 @@ describe('@iii-dev/console-ui surface', () => {
   it('publishes the positive Badge treatment to worker UIs', () => {
     expect(workerBadgeProps.variant).toBe('ok')
     expect(components.Badge).toBe(Badge)
+  })
+
+  it('publishes useConfirm as a runtime hook', () => {
+    expect(workerUseConfirm).toBe(useConfirm)
   })
 
   it('publishes only tokens declared by the Console theme', () => {

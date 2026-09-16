@@ -15,6 +15,10 @@ import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 interface SessionTriggersProps {
   triggers: SessionTriggerInfo[]
   onUnregister: (subscriptionId: string) => Promise<void> | void
@@ -166,7 +170,7 @@ const rowButtonClass = cn(
 function JsonSection({ label, value }: { label: string; value: unknown }) {
   return (
     <div className="border border-rule-2">
-      <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="border-b border-rule-2 bg-paper-2 px-3 py-1.5 iii-ui-eyebrow">
         {label}
       </div>
       <JsonHighlight code={formatJson(value)} wrap />
@@ -413,7 +417,7 @@ export function SessionTriggers({
                   says "triggers" and the line keeps both counts instead. */}
               <span className="font-medium text-ink">
                 {registeredCount}{' '}
-                <span className="hidden sm:inline">
+                <span className="hidden @lg:inline">
                   trigger{registeredCount === 1 ? '' : 's'}{' '}
                 </span>
                 registered
@@ -499,7 +503,7 @@ export function SessionTriggers({
         }}
       >
         <DialogContent className="max-w-lg">
-          <DialogTitle className="text-[14px] lowercase">
+          <DialogTitle className="text-[14px]">
             <span
               className="mr-2 inline-flex align-baseline text-ink-ghost"
               aria-hidden

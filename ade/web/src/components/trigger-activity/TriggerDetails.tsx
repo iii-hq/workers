@@ -5,6 +5,10 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /*
  * Shared vocabulary for trigger detail surfaces (registration details and
  * fired/retired activity). Every piece follows the function-call card chrome
@@ -14,8 +18,7 @@ import { cn } from '@/lib/utils'
  */
 
 /** The card chrome's `function` / `request` / `response` eyebrow recipe. */
-export const TRIGGER_EYEBROW_CLASS =
-  'font-mono text-[11px] font-medium tracking-[0.06em] text-ink-faint uppercase'
+export const TRIGGER_EYEBROW_CLASS = 'iii-ui-eyebrow'
 
 export function TriggerEyebrow({
   className,

@@ -1,6 +1,7 @@
 import { ChevronRight, Copy, Search } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { redactAttributeEntries } from '../lib/redactAttributes'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
@@ -150,7 +151,7 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
           placeholder="filter attributes..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full pl-9 pr-4 py-2 rounded-sm bg-surface border border-rule-2 font-mono text-[13px] text-ink placeholder-ink-ghost lowercase hover:border-rule focus:outline-none focus:border-rule-focus transition-colors"
+          className="w-full pl-9 pr-4 py-2 rounded-sm bg-surface border border-rule-2 font-mono text-[13px] text-ink placeholder-ink-ghost hover:border-rule focus:outline-none focus:border-rule-focus transition-colors"
         />
       </div>
 
@@ -168,10 +169,8 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
                 <ChevronRight
                   className={`size-4 text-ink-faint transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
                 />
-                <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-                  {group.label}
-                </span>
-                <span className="font-mono text-[10px] text-ink-ghost ml-auto tabular-nums">
+                <span className="iii-ui-eyebrow">{group.label}</span>
+                <span className="font-mono text-[11px] text-ink-ghost ml-auto tabular-nums">
                   {group.entries.length}
                 </span>
               </button>
@@ -208,13 +207,13 @@ export function SpanTagsTab({ span, redact }: SpanTagsTabProps) {
 
       {filteredEntries.length === 0 && searchQuery && (
         <div className="text-center py-6">
-          <p className="font-mono text-[13px] text-ink-faint lowercase">
-            no attributes match &ldquo;{searchQuery}&rdquo;
+          <p className="font-mono text-[13px] text-ink-faint">
+            No attributes match &ldquo;{searchQuery}&rdquo;
           </p>
         </div>
       )}
 
-      <div className="font-mono text-[10px] text-ink-ghost text-center pt-2 lowercase tabular-nums">
+      <div className="font-mono text-[11px] text-ink-ghost text-center pt-2 tabular-nums">
         {filteredEntries.length} of {entries.length} attributes
       </div>
     </div>
@@ -246,9 +245,7 @@ function AttributeRow({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mb-0.5">
-            {attrKey}
-          </div>
+          <div className="iii-ui-eyebrow mb-0.5">{attrKey}</div>
           {isObject ? (
             <pre className="rounded-sm bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
               {formatted}
@@ -260,9 +257,7 @@ function AttributeRow({
           )}
         </div>
         {isCopied ? (
-          <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-accent flex-shrink-0 mt-0.5">
-            copied
-          </span>
+          <Eyebrow className="text-accent flex-shrink-0 mt-0.5">copied</Eyebrow>
         ) : (
           <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
         )}

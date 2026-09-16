@@ -42,6 +42,19 @@ packages:
   - kanban/ui
   - onboarding/ui
 
+# One pin per shared toolchain package; every worker UI and the shared
+# packages reference these as `"catalog:"` so a bump lands in one place.
+catalog:
+  '@types/react': ^19.2.14
+  '@types/react-dom': ^19.2.3
+  esbuild: ^0.25.0
+  lucide-react: ^1.16.0
+  react: ^19.2.8
+  react-dom: ^19.2.8
+  typescript: ^6.0.3
+  vitest: ^4.1.10
+  zod: ^4.4.3
+
 # pnpm ≥11 blocks dependency postinstall scripts by default; esbuild's
 # installs its platform binary. protobufjs (via iii-sdk → @opentelemetry)
 # works without its postinstall — explicitly denied rather than left as an

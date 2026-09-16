@@ -13,8 +13,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@iii-dev/console-ui'
+import { EllipsisVertical, Minus, Plus, RefreshCw } from 'lucide-react'
 import { cn } from '../lib/cn'
-import { Minus, MoreVertical, Plus, RefreshCw } from '../lib/icons'
 
 export interface PageMenuActions {
   newTab: () => void
@@ -56,7 +56,6 @@ export function PageMenu({
     <DropdownMenuItem
       onSelect={() => actions[action]()}
       disabled={options.disabled}
-      className="br-ui-menu-item"
     >
       {label}
     </DropdownMenuItem>
@@ -70,7 +69,7 @@ export function PageMenu({
           title="browser menu"
           aria-label="browser menu"
         >
-          <MoreVertical size={17} aria-hidden />
+          <EllipsisVertical size={16} aria-hidden />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={6} className="br-ui-menu">

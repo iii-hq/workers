@@ -1,6 +1,7 @@
 import { ChevronRight, CircleAlert, ExternalLink, Wrench } from 'lucide-react'
 import { type ReactNode, useId } from 'react'
 import { Chip } from '@/components/ui/Chip'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import {
   Card,
   CardBody,
@@ -8,6 +9,10 @@ import {
   CardHighlight,
 } from '@/components/ui/Surface'
 import { cn } from '@/lib/utils'
+
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 export interface ErrorCardMetadata {
   label: string
@@ -68,15 +73,14 @@ export function ErrorCard({
               {title}
             </div>
             {category ? (
-              <div className="font-mono text-[0.6875rem] font-medium uppercase tracking-wide text-ink-faint/40">
+              <Eyebrow as="div" className="text-ink-faint/40">
                 {category}
-              </div>
+              </Eyebrow>
             ) : null}
             <div className="flex-1" />
             <Chip tone="warning">{badge}</Chip>
             {retryable ? <Chip tone="accent">Retryable</Chip> : null}
           </div>
-
         </div>
       </CardHeader>
 
@@ -93,9 +97,9 @@ export function ErrorCard({
                   key={item.label}
                   className="flex min-w-0 flex-col gap-1 @md:flex-row @md:gap-4"
                 >
-                  <dt className="shrink-0 font-mono text-[0.6875rem] font-medium uppercase tracking-wide text-ink @md:w-28">
+                  <Eyebrow as="dt" className="shrink-0 text-ink @md:w-28">
                     {item.label}
-                  </dt>
+                  </Eyebrow>
                   <dd className="min-w-0 break-words font-mono text-base text-ink-faint sm:text-[0.8125rem]">
                     {item.value}
                   </dd>
@@ -129,7 +133,7 @@ export function ErrorCard({
             className="border-t border-edge"
             aria-label="Partial command output"
           >
-            <div className="bg-surface px-4 py-2 font-mono text-[0.6875rem] font-medium uppercase tracking-wide text-ink-faint sm:px-3">
+            <div className="bg-surface px-4 py-2 iii-ui-eyebrow sm:px-3">
               Partial output
             </div>
             {output}
@@ -145,7 +149,7 @@ export function ErrorCard({
               />
               <ChevronRight
                 aria-hidden
-                className="size-5 shrink-0 stroke-ink-faint transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none sm:size-4"
+                className="size-5 shrink-0 stroke-ink-faint transition-transform duration-[var(--motion-duration-control)] group-open:rotate-90 motion-reduce:transition-none sm:size-4"
               />
               <span>Technical details</span>
             </summary>

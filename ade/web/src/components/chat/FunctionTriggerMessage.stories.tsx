@@ -227,7 +227,7 @@ function FamilyGallery({ fixtures }: { fixtures: readonly FTriggerType[] }) {
     <div className="grid grid-cols-1 @3xl:grid-cols-2 gap-6 @container">
       {fixtures.map((fixture) => (
         <div key={fixture.id} className="border border-rule bg-bg">
-          <div className="bg-panel px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+          <div className="bg-panel px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
             {fixture.functionId}
           </div>
           <div className="p-4">

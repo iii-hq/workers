@@ -1,4 +1,5 @@
 import { Search, X } from 'lucide-react'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { Input } from '@/components/ui/Input'
 import { cn } from '@/lib/utils'
 import type {
@@ -58,10 +59,10 @@ export function WorkersFilters({
           <button
             type="button"
             onClick={onClear}
-            className="inline-flex items-center gap-1 font-mono text-[12px] text-ink-faint hover:text-ink lowercase"
+            className="inline-flex items-center gap-1 font-mono text-[12px] text-ink-faint hover:text-ink"
           >
             <X className="size-4" aria-hidden />
-            clear filters
+            Clear filters
           </button>
         ) : null}
       </div>
@@ -130,9 +131,7 @@ function FilterChipGroup({
 }: FilterChipGroupProps) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-ghost mr-1">
-        {label}
-      </span>
+      <Eyebrow className="mr-1 text-ink-ghost">{label}</Eyebrow>
       {options.map((opt) => {
         const active = selected === opt
         return (
@@ -142,10 +141,10 @@ function FilterChipGroup({
             onClick={() => onSelect(opt)}
             aria-pressed={active}
             className={cn(
-              'font-mono text-[11px] lowercase border px-2 py-0.5 transition-colors',
+              'font-mono text-[11px] rounded-sm px-2 py-0.5 transition-colors',
               active
-                ? 'bg-ink text-bg border-ink'
-                : 'bg-bg text-ink-faint border-rule hover:border-ink hover:text-ink',
+                ? 'bg-ink text-bg'
+                : 'bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink',
             )}
           >
             {labelFor(opt)}

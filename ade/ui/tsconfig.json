@@ -1,14 +1,4 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-    "strict": true,
-    "skipLibCheck": true,
-    "noEmit": true,
-    "types": []
-  },
+  "extends": "@iii-dev/console-ui/tsconfig.worker-ui.json",
   "include": ["config-form.tsx", "src"]
 }

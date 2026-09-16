@@ -6,7 +6,7 @@
    turn's diff of it as a tab; a turn or a single file can be rolled back
    from the worker's pre-image store. */
 
-import { ConfirmDialog, IconButton } from '@iii-dev/console-ui'
+import { ConfirmDialog, EmptyState, IconButton } from '@iii-dev/console-ui'
 import { Bot, ChevronDown, ChevronRight, FolderTree, List, RefreshCw, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { ChangeEntries } from './ChangeEntries'
@@ -127,9 +127,13 @@ export function TimelineTab({
         }
       />
       {!hasSession ? (
-        <div className="shui-side-note">Open this page beside a chat to follow its turns.</div>
+        <div className="shui-side-empty">
+          <EmptyState title="No chat" description="Open this page beside a chat to follow its turns." />
+        </div>
       ) : turns.length === 0 ? (
-        <div className="shui-side-note">No turn has changed files yet.</div>
+        <div className="shui-side-empty">
+          <EmptyState title="No changes yet" description="No turn has changed files yet." />
+        </div>
       ) : (
         <div className="shui-timeline-list">
           {turns.map((turn, index) => {

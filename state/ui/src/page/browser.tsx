@@ -22,6 +22,7 @@ import {
   type PageCommandsApi,
   PageSidebar,
   type PanelContextEvent,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -170,8 +171,9 @@ export function StateBrowser({
   const onDirtyChange = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty
   }, [])
-  const confirmDiscard = () =>
-    !dirtyRef.current || window.confirm('Discard unsaved changes?')
+  const { confirm, dialog } = useConfirm()
+  const confirmDiscard = async () =>
+    !dirtyRef.current || confirm({ title: 'Discard unsaved changes?', confirmLabel: 'Discard', tone: 'danger' })
 
   const loadScopes = useCallback(() => {
     host.iii
@@ -280,24 +282,24 @@ export function StateBrowser({
     }
   })
 
-  const openScope = (next: string) => {
+  const openScope = async (next: string) => {
     if (next === scope && !narrow) return
-    if (!confirmDiscard()) return
+    if (!(await confirmDiscard())) return
     setScope(next)
     setKey(null)
   }
-  const openKey = (next: string) => {
+  const openKey = async (next: string) => {
     if (next === key) return
-    if (!confirmDiscard()) return
+    if (!(await confirmDiscard())) return
     setKey(next)
   }
-  const backToScopes = () => {
-    if (!confirmDiscard()) return
+  const backToScopes = async () => {
+    if (!(await confirmDiscard())) return
     setScope(null)
     setKey(null)
   }
-  const backToKeys = () => {
-    if (!confirmDiscard()) return
+  const backToKeys = async () => {
+    if (!(await confirmDiscard())) return
     setKey(null)
   }
 
@@ -311,6 +313,7 @@ export function StateBrowser({
       className={`state-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
       ref={rootRef}
     >
+      {dialog}
       {showScopes ? (
         <PageSidebar
           label="scopes"

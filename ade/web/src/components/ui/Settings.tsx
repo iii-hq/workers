@@ -185,9 +185,10 @@ export interface SettingsFieldProps
 }
 
 const settingsFieldWidths: Record<SettingsFieldControlSize, string> = {
-  fit: 'w-full sm:w-auto',
-  compact: 'w-full sm:w-32',
-  default: 'w-full sm:w-80',
+  // The row is its own container: stacked under 30rem (ui-recipes.css).
+  fit: 'w-full @[30rem]:w-auto',
+  compact: 'w-full @[30rem]:w-32',
+  default: 'w-full @[30rem]:w-80',
   full: 'w-full',
 }
 

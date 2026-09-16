@@ -1,4 +1,6 @@
-import type { Host } from '@iii-dev/console-ui'
+import { Card, type Host, IconButton } from '@iii-dev/console-ui'
+import { usePaneState } from '@iii-dev/console-ui/hooks'
+import { Maximize, X } from 'lucide-react'
 import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
@@ -13,7 +15,6 @@ import {
 } from '../lib/browser'
 import { cn } from '../lib/cn'
 import { useBrowserEvent } from '../lib/events'
-import { Maximize, X } from '../lib/icons'
 import { shouldOpenBrowserSession } from '../lib/session-open'
 import { useLiveFrames } from '../page/useLiveFrames'
 import {
@@ -65,8 +66,8 @@ import {
 const WIDTH_KEY = 'browser-ui:overlay:width'
 const POSITION_KEY = 'browser-ui:overlay:position'
 const DEFAULT_WIDTH = 220
-/** Matches `--panel-close-dur`: the element unmounts after its exit ran. */
-const CLOSE_MS = 350
+/** Matches `--motion-duration-panel`: the element unmounts after its exit ran. */
+const CLOSE_MS = 220
 /** Longest frame a fling integrates over (a background tab's rAF pause). */
 const MAX_FRAME_MS = 48
 /** Past this far outside the viewport a fling stops and snaps back. */
@@ -88,42 +89,11 @@ function foldedTilt(depth: number): number {
   return (depth % 2 === 1 ? -1 : 1) * (2 + 3 * depth)
 }
 
-function readStored<T>(
-  key: string,
-  parse: (raw: string) => T | null,
-): T | null {
-  try {
-    const raw = window.localStorage.getItem(key)
-    return raw === null ? null : parse(raw)
-  } catch {
-    return null
-  }
-}
-
-function writeStored(key: string, value: string) {
-  try {
-    window.localStorage.setItem(key, value)
-  } catch {
-    /* private mode / quota — persistence is best-effort */
-  }
-}
-
-function readWidth(): number {
-  const stored = readStored(WIDTH_KEY, (raw) => Number(raw))
-  return stored !== null && Number.isFinite(stored) && stored > 0
-    ? stored
-    : DEFAULT_WIDTH
-}
-
-function readPosition(): Point {
-  const stored = readStored(POSITION_KEY, (raw) => {
-    const parsed = JSON.parse(raw) as { x?: unknown; y?: unknown }
-    return typeof parsed?.x === 'number' && typeof parsed?.y === 'number'
-      ? { x: parsed.x, y: parsed.y }
-      : null
-  })
-  return stored ?? { x: 0, y: 0 }
-}
+const isPoint = (v: unknown): v is Point =>
+  typeof v === 'object' &&
+  v !== null &&
+  typeof (v as Point).x === 'number' &&
+  typeof (v as Point).y === 'number'
 
 interface Pinch {
   startDistance: number
@@ -205,10 +175,26 @@ export function BrowserOverlay({ host }: { host: Host }) {
   const [fan, setFan] = useState({ dir: -1, step: 0 })
 
   const rootRef = useRef<HTMLElement>(null)
-  const [width, setWidth] = useState(readWidth)
+  // The settled width and spot persist; the live values change per frame
+  // while a finger or a fling drives the box, so they stay in plain state.
+  const [storedWidth, setStoredWidth] = usePaneState<unknown>(
+    WIDTH_KEY,
+    DEFAULT_WIDTH,
+  )
+  const [width, setWidth] = useState(() =>
+    typeof storedWidth === 'number' && Number.isFinite(storedWidth) && storedWidth > 0
+      ? storedWidth
+      : DEFAULT_WIDTH,
+  )
   const widthRef = useRef(width)
   widthRef.current = width
-  const [position, setPosition] = useState(readPosition)
+  const [storedPosition, setStoredPosition] = usePaneState<unknown>(
+    POSITION_KEY,
+    null,
+  )
+  const [position, setPosition] = useState<Point>(() =>
+    isPoint(storedPosition) ? storedPosition : { x: 0, y: 0 },
+  )
   const positionRef = useRef(position)
   positionRef.current = position
   // Transitions off while a finger or a fling drives the box.
@@ -222,11 +208,14 @@ export function BrowserOverlay({ host }: { host: Host }) {
   // A tap that was part of a drag or a pinch must not act as a click.
   const gesturedRef = useRef(false)
 
-  const settle = useCallback((next: Point) => {
-    setMoving(false)
-    setPosition(next)
-    writeStored(POSITION_KEY, JSON.stringify(next))
-  }, [])
+  const settle = useCallback(
+    (next: Point) => {
+      setMoving(false)
+      setPosition(next)
+      setStoredPosition(next)
+    },
+    [setStoredPosition],
+  )
 
   const stopFling = useCallback(() => {
     if (fling.current !== null) {
@@ -341,11 +330,9 @@ export function BrowserOverlay({ host }: { host: Host }) {
         if (gesture && map.size < 2) {
           pinch.current = null
           setPinching(false)
-          setWidth((current) => {
-            const settled = settleWidth(current, gesture.limits)
-            writeStored(WIDTH_KEY, String(settled))
-            return settled
-          })
+          const settled = settleWidth(widthRef.current, gesture.limits)
+          setWidth(settled)
+          setStoredWidth(settled)
         }
         const d = drag.current
         if (d && d.pointerId === e.pointerId) {
@@ -368,7 +355,7 @@ export function BrowserOverlay({ host }: { host: Host }) {
         window.addEventListener('pointercancel', onEnd)
       }
     },
-    [currentBounds, settle, startFling, stopFling],
+    [currentBounds, settle, setStoredWidth, startFling, stopFling],
   )
 
   // A resized viewport (rotation, a window drag) keeps the box in view.
@@ -438,13 +425,13 @@ export function BrowserOverlay({ host }: { host: Host }) {
       onPointerDown={onPointerDown}
     >
       <div
-        className="br-ui-pip-deck t-panel-slide"
+        className="br-ui-pip-deck br-ui-pip-reveal"
         data-open={open ? 'true' : 'false'}
       >
         {shown.map((sessionId, index) => {
           const depth = shown.length - 1 - index
           return (
-            <Card
+            <PreviewCard
               key={sessionId}
               host={host}
               sessionId={sessionId}
@@ -486,7 +473,7 @@ interface CardProps {
   onHide: () => void
 }
 
-function Card({
+function PreviewCard({
   host,
   sessionId,
   depth,
@@ -514,7 +501,7 @@ function Card({
     ? Math.min(width, (width * MAX_HEIGHT_RATIO * frame.width) / frame.height)
     : width
   return (
-    <div
+    <Card
       className="br-ui-pip-card"
       data-front={isFront ? 'true' : 'false'}
       data-ready={hasFrame ? 'true' : 'false'}
@@ -546,11 +533,8 @@ function Card({
           className="br-ui-pip-controls"
           data-open={expanded ? 'true' : 'false'}
         >
-          <button
-            type="button"
-            className="br-ui-pip-btn"
-            aria-label="Open in browser tab"
-            title="Open in browser tab"
+          <IconButton
+            label="Open in browser tab"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation()
@@ -558,12 +542,9 @@ function Card({
             }}
           >
             <Maximize size={16} aria-hidden />
-          </button>
-          <button
-            type="button"
-            className="br-ui-pip-btn"
-            aria-label="Hide preview"
-            title="Hide preview"
+          </IconButton>
+          <IconButton
+            label="Hide preview"
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation()
@@ -571,9 +552,9 @@ function Card({
             }}
           >
             <X size={16} aria-hidden />
-          </button>
+          </IconButton>
         </div>
       ) : null}
-    </div>
+    </Card>
   )
 }

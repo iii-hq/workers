@@ -10,12 +10,12 @@
  */
 
 import { type Host, PageHeader, type PageRenderProps, PageShell, SegmentedControl } from '@iii-dev/console-ui'
+import { formatBytes } from '@iii-dev/console-ui/format'
+import { FileText } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { formatBytes, formatRelativeTime } from '../lib/format'
-import { MarkdownFileIcon } from '../lib/widgets'
-import { AgentForm, AgentFormSkeleton } from './agent-fields'
+import { ago } from '../lib/format'
+import { AgentForm, AgentFormSkeleton, TokenIcon } from './agent-fields'
 import { type BrowserAdapter, CollectionBrowser } from './browser'
-import { TokenIcon } from './token-icons'
 
 interface SkillRow {
   id: string
@@ -57,7 +57,7 @@ const skillsAdapter: BrowserAdapter = {
       key: s.id,
       title: s.title,
       description: s.description,
-      fine: `${formatBytes(s.bytes)} · ${formatRelativeTime(s.modified_at)}`,
+      fine: `${formatBytes(s.bytes)} · ${ago(s.modified_at)}`,
     }))
   },
   async load(host, id) {
@@ -111,11 +111,11 @@ export const agentsAdapter: BrowserAdapter = {
       key: a.id,
       // The row glyph is the SAME token glyph the avatar picker and the
       // console session tree render — one identity, one pictogram.
-      icon: <TokenIcon token={a.icon || 'agent'} size={20} />,
+      icon: <TokenIcon token={a.icon || 'agent'} />,
       iconTone: a.color ?? 'neutral',
       title: a.name,
       description: a.description,
-      fine: a.builtin ? 'Built-in · edits save a local override' : formatRelativeTime(a.modified_at),
+      fine: a.builtin ? 'Built-in · edits save a local override' : ago(a.modified_at),
       ...(a.builtin ? { noDelete: true } : {}),
     }))
   },
@@ -217,7 +217,7 @@ export function DirectoryPage({
   return (
     <PageShell className="dir-ui-shell">
       <PageHeader
-        icon={<MarkdownFileIcon />}
+        icon={<FileText />}
         title="Directory"
         description="Filesystem-backed skills and agent profiles"
         onClose={onRequestClose}

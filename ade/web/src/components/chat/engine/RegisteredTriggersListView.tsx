@@ -63,14 +63,12 @@ export function RegisteredTriggersListView({
                 >
                   {shortenId(t.id)}
                 </span>
-                <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint border border-rule-2 bg-paper-2 px-1.5 py-0.5">
+                <span className="iii-ui-eyebrow border border-rule-2 bg-paper-2 px-1.5 py-0.5">
                   {t.worker_name}
                 </span>
               </div>
               <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-                  {t.trigger_type}
-                </span>
+                <span className="iii-ui-eyebrow">{t.trigger_type}</span>
                 <span className="font-mono text-[11px] text-ink-faint">→</span>
                 <span className="font-mono text-[12.5px] text-accent break-all">
                   {t.function_id}

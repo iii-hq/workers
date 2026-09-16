@@ -30,6 +30,8 @@ import {
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  Tooltip,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import type { GitStatusEntry } from '@pierre/trees'
 import {
@@ -46,7 +48,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { errorMessage } from '../lib/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { ActivityBar, type SideView } from './ActivityBar'
 import {
   type MissingPaths,
@@ -64,12 +66,12 @@ import { DEFAULT_DIFF_OPTIONS, DiffTab, type DiffOptions, type DiffTabActions, t
 import { EditorTabs } from './EditorTabs'
 import { type EditorCache, EditorPane } from './EditorPane'
 import { refreshCleanEditorCacheEntry } from './editor-cache'
-import { copyText, createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
+import { copyText } from '@iii-dev/console-ui/format'
+import { createEntry, deleteEntry, duplicateFile, duplicateName, renameEntry } from './file-actions'
 import { createObjectUrlRegistry } from './file-bytes'
 import { type ExplorerActions, FilesTab } from './FilesTab'
 import { type GitChange, type GitState, gitChanges } from './git'
 import { gitDiscard } from './git-actions'
-import { HoverTip } from './HoverTip'
 import { EDITOR_FULL_READ_BUDGET } from './large-file'
 import { useWorkspaceChanges } from './live'
 import {
@@ -324,6 +326,7 @@ export function ShellExplorerPage({
   const [timelineNote, setTimelineNote] = useState<string | null>(null)
   const [reverting, setReverting] = useState<string | null>(null)
   const [pendingDiscard, setPendingDiscard] = useState<GitChange | null>(null)
+  const { confirm, dialog: confirmDialog } = useConfirm()
 
   const activeTab = activeTabOf(tabs)
   const tabVisible = !terminalActive
@@ -341,10 +344,14 @@ export function ShellExplorerPage({
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirtyPaths])
 
-  const confirmDiscardAllEdits = useCallback(() => {
+  const confirmDiscardAllEdits = useCallback(async () => {
     if (dirtyPaths.size === 0) return true
-    return window.confirm(`discard unsaved changes in ${dirtyPaths.size} ${dirtyPaths.size === 1 ? 'file' : 'files'}?`)
-  }, [dirtyPaths])
+    return confirm({
+      title: `discard unsaved changes in ${dirtyPaths.size} ${dirtyPaths.size === 1 ? 'file' : 'files'}?`,
+      confirmLabel: 'Discard',
+      tone: 'danger',
+    })
+  }, [dirtyPaths, confirm])
 
   // ── boot: worker info + this workspace tab's persisted state ──
   useEffect(() => {
@@ -601,7 +608,7 @@ export function ShellExplorerPage({
   }, [])
 
   const closeTabIds = useCallback(
-    (ids: readonly string[]) => {
+    async (ids: readonly string[]) => {
       if (ids.length === 0) return
       const closing = new Set(ids)
       const current = tabsRef.current
@@ -611,9 +618,14 @@ export function ShellExplorerPage({
       const dirty = filePaths.filter((path) => dirtyPaths.has(path))
       if (
         dirty.length > 0 &&
-        !window.confirm(
-          dirty.length === 1 ? `discard unsaved changes to ${dirty[0]}?` : `discard unsaved changes in ${dirty.length} files?`,
-        )
+        !(await confirm({
+          title:
+            dirty.length === 1
+              ? `discard unsaved changes to ${dirty[0]}?`
+              : `discard unsaved changes in ${dirty.length} files?`,
+          confirmLabel: 'Discard',
+          tone: 'danger',
+        }))
       ) {
         return
       }
@@ -636,7 +648,7 @@ export function ShellExplorerPage({
       })
       syncHistoryState()
     },
-    [dirtyPaths, dropFileCache, syncHistoryState],
+    [dirtyPaths, dropFileCache, syncHistoryState, confirm],
   )
   const closeTabId = useCallback((id: string) => closeTabIds([id]), [closeTabIds])
 
@@ -865,7 +877,7 @@ export function ShellExplorerPage({
   const revertTurnFiles = useCallback(
     async (turnId: string, paths?: readonly string[]) => {
       if (!conversationId || reverting !== null) return
-      if (!confirmDiscardAllEdits()) return
+      if (!(await confirmDiscardAllEdits())) return
       setReverting(turnId)
       setTimelineNote(null)
       try {
@@ -1136,7 +1148,7 @@ export function ShellExplorerPage({
       void validateRootTarget(
         () => workspaceValidate(host, nextRoot),
         () => rootResolveSeqRef.current === resolveSeq,
-      ).then((result) => {
+      ).then(async (result) => {
         if (result.outcome !== 'validated') {
           onResolved?.(result.outcome, undefined, result.outcome === 'failed' ? result.error : undefined)
           if (result.outcome === 'failed') setRootChangeSettledEpoch((epoch) => epoch + 1)
@@ -1151,7 +1163,7 @@ export function ShellExplorerPage({
         }
         // Validation can take long enough for a draft to begin. Confirm at
         // commit time so the validated transition cannot discard newer work.
-        if (!confirmDiscardAllEdits()) {
+        if (!(await confirmDiscardAllEdits())) {
           onResolved?.('declined')
           setRootChangeSettledEpoch((epoch) => epoch + 1)
           return
@@ -1835,7 +1847,7 @@ export function ShellExplorerPage({
       actions={
         info && root ? (
           <div className="shui-page-actions">
-            <HoverTip label="Go back (Shift+Alt+Left)">
+            <Tooltip label="Go back (Shift+Alt+Left)">
               <button
                 type="button"
                 className="shui-side-tab"
@@ -1845,8 +1857,8 @@ export function ShellExplorerPage({
               >
                 <ArrowLeft aria-hidden className="shui-side-tab-icon" />
               </button>
-            </HoverTip>
-            <HoverTip label="Go forward (Shift+Alt+Right)">
+            </Tooltip>
+            <Tooltip label="Go forward (Shift+Alt+Right)">
               <button
                 type="button"
                 className="shui-side-tab"
@@ -1856,9 +1868,9 @@ export function ShellExplorerPage({
               >
                 <ArrowRight aria-hidden className="shui-side-tab-icon" />
               </button>
-            </HoverTip>
+            </Tooltip>
             {sideTab === 'files' && !collapsed ? (
-              <HoverTip label={showHidden ? 'Hide hidden files (dotfiles)' : 'Show hidden files (dotfiles)'}>
+              <Tooltip label={showHidden ? 'Hide hidden files (dotfiles)' : 'Show hidden files (dotfiles)'}>
                 <button
                   type="button"
                   className={`shui-side-tab${showHidden ? ' active' : ''}`}
@@ -1868,9 +1880,9 @@ export function ShellExplorerPage({
                 >
                   {showHidden ? <Eye aria-hidden className="shui-side-tab-icon" /> : <EyeOff aria-hidden className="shui-side-tab-icon" />}
                 </button>
-              </HoverTip>
+              </Tooltip>
             ) : null}
-            <HoverTip label={terminalOpen ? 'Hide terminal' : 'Open terminal (zsh)'}>
+            <Tooltip label={terminalOpen ? 'Hide terminal' : 'Open terminal (zsh)'}>
               <button
                 type="button"
                 className={`shui-side-tab${terminalOpen ? ' active' : ''}`}
@@ -1880,9 +1892,9 @@ export function ShellExplorerPage({
               >
                 <Terminal aria-hidden className="shui-side-tab-icon" />
               </button>
-            </HoverTip>
+            </Tooltip>
             {narrow ? (
-              <HoverTip label={collapsed ? 'Show the sidebar' : 'Hide the sidebar'}>
+              <Tooltip label={collapsed ? 'Show the sidebar' : 'Hide the sidebar'}>
                 <button
                   type="button"
                   className="shui-collapse-btn"
@@ -1895,7 +1907,7 @@ export function ShellExplorerPage({
                     <PanelLeft aria-hidden className="shui-side-tab-icon" />
                   )}
                 </button>
-              </HoverTip>
+              </Tooltip>
             ) : null}
           </div>
         ) : undefined
@@ -1904,7 +1916,9 @@ export function ShellExplorerPage({
         onRequestClose === undefined
           ? undefined
           : () => {
-              if (confirmDiscardAllEdits()) onRequestClose()
+              void confirmDiscardAllEdits().then((ok) => {
+                if (ok) onRequestClose()
+              })
             }
       }
     />
@@ -2185,6 +2199,7 @@ export function ShellExplorerPage({
                 dock={terminalDock}
                 size={terminalBottomSize}
                 onDockChange={changeTerminalDock}
+                narrow={narrow}
                 onSizeChange={setTerminalBottomSize}
                 onClose={closeTerminal}
               />
@@ -2291,6 +2306,7 @@ export function ShellExplorerPage({
           recent={tabFilePaths(tabs, recentPaths(historyRef.current, 60), 8)}
           onOpenFile={(rel) => openFileTab(rel, { pin: true })}
         />
+        {confirmDialog}
         <ConfirmDialog
           open={pendingDiscard !== null}
           onOpenChange={(open) => {
@@ -2320,6 +2336,7 @@ export function ShellExplorerPage({
             dock={terminalDock}
             size={terminalDock === 'bottom' ? terminalBottomSize : terminalRightSize}
             onDockChange={changeTerminalDock}
+            narrow={narrow}
             onSizeChange={terminalDock === 'bottom' ? setTerminalBottomSize : setTerminalRightSize}
             onClose={closeTerminal}
           />

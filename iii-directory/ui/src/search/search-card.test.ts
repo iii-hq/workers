@@ -3,7 +3,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSearchTriggerRenderer } from './search-card'
 
 vi.mock('@iii-dev/console-ui', () => ({
+  ActionLine: () => null,
   Badge: () => null,
+  Card: () => null,
+  Chip: () => null,
+  EmptyState: () => null,
+  Eyebrow: () => null,
+  MetaRow: () => null,
+  TerminalCommandLine: () => null,
 }))
 
 const output = {

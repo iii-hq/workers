@@ -46,7 +46,7 @@ export function KeyCombo({
           <span
             // biome-ignore lint/suspicious/noArrayIndexKey: position is the identity
             key={`then-${index}`}
-            className="px-0.5 text-[0.65rem] text-ink-ghost"
+            className="px-0.5 text-[11px] text-ink-ghost"
           >
             {THEN}
           </span>
@@ -55,7 +55,7 @@ export function KeyCombo({
           <Fragment key={`${cap}-${index}`}>
             <Kbd className={capClassName}>{cap}</Kbd>
             {!mac && index < caps.length - 1 && caps[index + 1] !== THEN ? (
-              <span aria-hidden className="text-[0.65rem] text-ink-ghost">
+              <span aria-hidden className="text-[11px] text-ink-ghost">
                 +
               </span>
             ) : null}

@@ -21,6 +21,9 @@ function ensureBox(): HTMLDivElement {
   if (box?.isConnected) return box
   box = document.createElement('div')
   box.className = BOX_CLASS
+  // Lives outside the injected subtree, so it carries the scope itself —
+  // the injectable-UI rule for custom portals (styles.css is scope-only).
+  box.setAttribute('data-iii-ui', 'onboarding')
   box.setAttribute('aria-hidden', 'true')
   document.body.appendChild(box)
   return box

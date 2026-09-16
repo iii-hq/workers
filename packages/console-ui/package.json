@@ -21,7 +21,24 @@
     "./ui-classes": {
       "types": "./ui-classes.d.mts",
       "default": "./ui-classes.mjs"
-    }
+    },
+    "./format": {
+      "types": "./format.d.mts",
+      "default": "./format.mjs"
+    },
+    "./hooks": {
+      "types": "./hooks.d.mts",
+      "default": "./hooks.mjs"
+    },
+    "./build-worker-ui": {
+      "types": "./build-worker-ui.d.mts",
+      "default": "./build-worker-ui.mjs"
+    },
+    "./lint-worker-ui": {
+      "types": "./lint-worker-ui.d.mts",
+      "default": "./lint-worker-ui.mjs"
+    },
+    "./tsconfig.worker-ui.json": "./tsconfig.worker-ui.json"
   },
   "files": [
     "index.d.ts",
@@ -31,9 +48,23 @@
     "token-names.mjs",
     "token-names.d.mts",
     "ui-classes.mjs",
-    "ui-classes.d.mts"
+    "ui-classes.d.mts",
+    "format.mjs",
+    "format.d.mts",
+    "hooks.mjs",
+    "hooks.d.mts",
+    "build-worker-ui.mjs",
+    "build-worker-ui.d.mts",
+    "lint-worker-ui.mjs",
+    "lint-worker-ui.d.mts",
+    "tsconfig.worker-ui.json"
   ],
   "devDependencies": {
-    "@types/react": "^19.2.14"
+    "@types/react": "catalog:",
+    "esbuild": "catalog:",
+    "react": "catalog:"
+  },
+  "peerDependencies": {
+    "react": ">=19"
   }
 }

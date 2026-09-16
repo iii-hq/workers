@@ -65,6 +65,7 @@ import {
   useState,
 } from 'react'
 import { Badge } from '@/components/ui/Badge'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { cn } from '@/lib/utils'
 import type { StoredSpan } from '../../api/traces'
 import type { SpanFilterControls } from '../../lib/spanFilters'
@@ -610,6 +611,7 @@ function Timeline({
             {ticks.map((t) => (
               <div
                 key={t}
+                /* diagram micro: ruler tick labels */
                 className="absolute top-1/2 -translate-y-1/2 font-mono text-[10px] text-ink-ghost tabular-nums whitespace-nowrap"
                 style={{ left: x(t) + 4 }}
               >
@@ -811,23 +813,23 @@ export function TimelineStrip({
     >
       <div className="flex shrink-0 items-center justify-between border-b border-rule-2 bg-bg">
         <div className="flex items-center gap-3 px-3 py-2">
-          <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
+          <Eyebrow as="div" size="lg">
             <span className="text-accent">$</span>
             <span className="text-ink ml-2">Traces</span>
-          </div>
+          </Eyebrow>
           {isPaused ? (
             <Badge variant="warn">
               <Pause className="size-4" />
               paused
             </Badge>
           ) : (
-            <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-ghost">
+            <Eyebrow className="flex items-center gap-1.5 text-ink-ghost">
               <span
                 aria-hidden
                 className="inline-block size-1.5 rounded-full bg-accent pulse-dot"
               />
               live
-            </span>
+            </Eyebrow>
           )}
         </div>
 

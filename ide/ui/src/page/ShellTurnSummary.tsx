@@ -1,4 +1,4 @@
-import type { SessionTurnSummaryProps } from '@iii-dev/console-ui'
+import { Eyebrow, type SessionTurnSummaryProps } from '@iii-dev/console-ui'
 import { ChevronDown, Files } from 'lucide-react'
 import { useId, useRef } from 'react'
 import { emitShellReviewFileSelection, useShellReviewSummary } from './review-summary-store'
@@ -74,10 +74,10 @@ export function ShellTurnSummary({ sessionId }: SessionTurnSummaryProps) {
         aria-label="Last Turn changed files"
       >
         <div className="shui-chat-summary-head">
-          <span>Last Turn</span>
-          <span>
+          <Eyebrow>Last turn</Eyebrow>
+          <Eyebrow>
             {summary.files.length} {fileLabel}
-          </span>
+          </Eyebrow>
         </div>
         <div className="shui-chat-summary-files">
           {summary.files.map((file) => (

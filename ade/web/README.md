@@ -206,16 +206,22 @@ If they all render correctly, your backend is contract-clean.
 
 ## Design system
 
-[`../skills/design-system.md`](../skills/design-system.md) is the canonical visual contract and this
-directory's `DESIGN.md` is a synchronized copy for local discovery. Theme and
-motion tokens live in [`src/index.css`](src/index.css); stable list, card,
-card-highlight, collapsible-card, panel, chip, field, segmented-control, and motion recipes live in
+[`../skills/design-system.md`](../skills/design-system.md) is the canonical design system
+(tokens, typography, the numbers table, components, UX patterns); this directory's
+`DESIGN.md` is only a pointer to it. Theme and motion tokens live in
+[`src/index.css`](src/index.css); the public list, tree, card, card-highlight,
+collapsible-card, panel, chip, table, tabs, field, switch, settings, eyebrow, toolbar,
+status-bar and motion recipes live in
 [`src/styles/ui-recipes.css`](src/styles/ui-recipes.css).
 
 Shared behavior belongs in [`src/components/ui`](src/components/ui) and is
 exported to injected workers through `@iii-dev/console-ui`. Prefer the shared
-`Selector`, `Tooltip`, `SegmentedControl`, `List`, `Card`, `CollapsibleCard`, `CardHighlight`,
-`Panel`, `Chip`, and `IconButton` contracts over local copies. Selection is neutral in light and
+`PageShell`/`PageHeader`/`PageSidebar`, `Selector`, `Tooltip`, `SegmentedControl`, `List`,
+`Card`, `CollapsibleCard`, `CardHighlight`, `Panel`, `Chip`, `IconButton`, `Eyebrow`,
+`SearchField`, `Toolbar`/`StatusBar` and `useConfirm` contracts over local copies; the
+bundleable `@iii-dev/console-ui/hooks` (`useContainerNarrow`, `usePaneState`,
+`useCopyFlash`, `useWorkerLive`) and `@iii-dev/console-ui/format` cover the behaviour a
+worker page would otherwise re-implement. Selection is neutral in light and
 dark themes; reserve accent for primary actions, form focus, live activity,
 and semantic domain data. Update the canonical design guide, public
 declarations/manifests, stories, and conformance tests when extending this

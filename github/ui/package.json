@@ -9,11 +9,15 @@
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*",
-    "zod": "^4.0.0"
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/react": "^19.2.14",
-    "esbuild": "^0.25.0",
-    "typescript": "^5.9.2"
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "esbuild": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:"
   }
 }

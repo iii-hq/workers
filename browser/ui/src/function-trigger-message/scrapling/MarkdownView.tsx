@@ -1,4 +1,5 @@
-import { Chip, FilterChip, MetaRow, StatusPill } from '../../lib/shared'
+import { Badge, Chip, EmptyState, MetaRow } from '@iii-dev/console-ui'
+import { FilterChip } from '../../lib/shared'
 import {
   formatChars,
   markdownRequestSchema,
@@ -37,10 +38,10 @@ export function MarkdownView({
     return (
       <div className="br-ui-scrape-section">
         <MetaRow>
-          <StatusPill label="converting…" variant="default" />
+          <Badge variant="default">converting…</Badge>
           {chips}
         </MetaRow>
-        <div className="br-ui-scrape-running">
+        <div className="br-ui-more">
           · converting…
         </div>
       </div>
@@ -53,24 +54,20 @@ export function MarkdownView({
   return (
     <div className="br-ui-scrape-section">
       <MetaRow>
-        <StatusPill label={res.format} variant="accent" />
+        <Badge variant="accent">{res.format}</Badge>
         <Chip>
-          <span className="br-ui-scrape-num">
-            {formatChars(res.content.length)}
-          </span>
+          <span className="br-ui-num">{formatChars(res.content.length)}</span>
         </Chip>
         {truncated ? (
-          <Chip className="br-ui-scrape-warning">
+          <Chip tone="warning">
             <span>truncated</span>
           </Chip>
         ) : null}
       </MetaRow>
       {res.content.length === 0 ? (
-        <div className="br-ui-scrape-empty">
-          · empty
-        </div>
+        <EmptyState title="Empty" description="The conversion produced no text." />
       ) : (
-        <pre className="br-ui-scrape-pre">
+        <pre className="br-ui-text">
           <code>
             {res.content.slice(0, MAX_PREVIEW_CHARS)}
             {truncated ? '…' : ''}

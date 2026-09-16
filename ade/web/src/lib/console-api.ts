@@ -14,9 +14,18 @@ import tokenNames from '@iii-dev/console-ui/token-names'
 import sharedUiClasses from '@iii-dev/console-ui/ui-classes'
 import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
+import { ActionLine, MetaRow } from '@/components/ui/ActivityMetadata'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
+import {
+  BottomSheet,
+  BottomSheetClose,
+  BottomSheetContent,
+  BottomSheetDescription,
+  BottomSheetTitle,
+  BottomSheetTrigger,
+} from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
 import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
@@ -25,7 +34,7 @@ import {
   CollapsibleCardContent,
   CollapsibleCardTrigger,
 } from '@/components/ui/CollapsibleCard'
-import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ConfirmDialog, useConfirm } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogClose,
@@ -44,11 +53,15 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { FileDiff } from '@/components/ui/FileDiff'
 import { IconButton } from '@/components/ui/IconButton'
 import { ImageThumbnailButton, ImageViewer } from '@/components/ui/ImageViewer'
 import { Input } from '@/components/ui/Input'
+import { Kbd } from '@/components/ui/Kbd'
+import { KeyCombo } from '@/components/ui/KeyCombo'
 import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
 import { SegmentedControl } from '@/components/ui/ModeToggle'
 import {
@@ -59,6 +72,7 @@ import {
   PageSidebar,
 } from '@/components/ui/PageChrome'
 import { RawValueInput } from '@/components/ui/RawValueInput'
+import { SearchField } from '@/components/ui/SearchField'
 import { Select } from '@/components/ui/Select'
 import { Selector } from '@/components/ui/Selector'
 import {
@@ -96,6 +110,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
 import { TerminalStream } from '@/components/ui/TerminalStream'
+import { StatusBar, Toolbar } from '@/components/ui/Toolbar'
 import {
   Tooltip,
   TooltipContent,
@@ -116,11 +131,26 @@ import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
  * component-names manifest (the shim's export list).
  */
 export const components: ConsoleApi['components'] = {
+  ActionLine,
   AnnotationLayer,
   AnnotationList,
   AnsiText,
   Badge,
+  BottomSheet,
+  BottomSheetClose,
+  BottomSheetContent,
+  BottomSheetDescription,
+  BottomSheetTitle,
+  BottomSheetTrigger,
   Button,
+  Eyebrow,
+  Kbd,
+  KeyCombo,
+  LiveRegion,
+  MetaRow,
+  SearchField,
+  StatusBar,
+  Toolbar,
   Card,
   CardBody,
   CardHighlight,
@@ -236,6 +266,7 @@ export function buildConsoleApi(client: IiiClient): ConsoleApi {
     iii: Object.freeze(iii),
     components: Object.freeze({ ...components }),
     useTheme: useThemeValue,
+    useConfirm,
     tokens: Object.freeze([...tokens]),
     uiClasses,
   })

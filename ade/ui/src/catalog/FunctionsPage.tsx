@@ -38,6 +38,7 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  SearchField,
 } from '@iii-dev/console-ui'
 import {
   type MutableRefObject,
@@ -84,7 +85,6 @@ import {
   IdentityHead,
   LiveDot,
   Note,
-  SearchField,
   SideCount,
   useGroupToggle,
 } from './widgets'
@@ -271,10 +271,13 @@ export function FunctionsPage({
       sideTop={
         <div className="console-catalog-search-row">
           <SearchField
+            ref={searchInputRef}
+            name="catalog-search"
+            className="console-catalog-search"
             value={search}
             onChange={setSearch}
             placeholder="search functions…"
-            inputRef={searchInputRef}
+            aria-label="search functions"
           />
           <Button
             variant="pill"

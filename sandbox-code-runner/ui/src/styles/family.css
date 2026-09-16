@@ -25,7 +25,7 @@
 
 /* --- terminal header ---------------------------------------------------- */
 [data-iii-ui="sandbox-code-runner"] .cr-fam-term-head {
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   border-bottom: 1px solid var(--color-edge);
   padding: 8px 12px;
   display: flex;
@@ -75,7 +75,7 @@
   margin-left: auto;
 }
 [data-iii-ui="sandbox-code-runner"] .cr-fam-chips-row {
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   border-bottom: 1px solid var(--color-edge);
   padding: 8px 12px;
   display: flex;
@@ -96,7 +96,7 @@
   align-items: center;
   gap: 5px;
   border: 1px solid var(--color-edge);
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   padding: 1px 6px;
   font-size: 11px;
   color: var(--color-ink);
@@ -194,7 +194,7 @@
 [data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-open {
   border: 1px solid var(--color-edge);
   border-left: none;
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   color: var(--color-ink-faint);
   font-family: inherit;
   font-size: 10px;
@@ -212,7 +212,7 @@
 [data-iii-ui="sandbox-code-runner"] .cr-fam-sbx-open:focus-visible,
 [data-iii-ui="sandbox-code-runner"] .cr-fam-toggle:focus-visible,
 [data-iii-ui="sandbox-code-runner"] .cr-fam-src-toggle:focus-visible {
-  outline: 1px solid var(--color-accent);
+  outline: 1px solid var(--color-rule-focus);
   outline-offset: 1px;
 }
 
@@ -292,7 +292,7 @@
 }
 [data-iii-ui="sandbox-code-runner"] .cr-fam-src-toggle {
   width: 100%;
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   border: none;
   border-bottom: 1px solid var(--color-edge);
   padding: 5px 12px;
@@ -329,7 +329,7 @@
 
 /* --- footer ------------------------------------------------------------- */
 [data-iii-ui="sandbox-code-runner"] .cr-fam-foot {
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   border-top: 1px solid var(--color-edge);
   padding: 6px 12px;
   display: flex;
@@ -386,7 +386,7 @@
 }
 [data-iii-ui="sandbox-code-runner"] .cr-fam-env {
   border: 1px solid var(--color-edge);
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   padding: 1px 6px;
   font-size: 11px;
   color: var(--color-ink-faint);
@@ -406,7 +406,7 @@
   color: var(--color-ink);
 }
 [data-iii-ui="sandbox-code-runner"] .cr-fam-table th {
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   border-bottom: 1px solid var(--color-edge);
   padding: 5px 8px;
   font-weight: 400;
@@ -434,7 +434,7 @@
   padding-right: 0;
 }
 [data-iii-ui="sandbox-code-runner"] .cr-fam-table tr.total {
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
 }
 [data-iii-ui="sandbox-code-runner"] .cr-fam-table tr.total td {
   border-bottom: none;
@@ -476,7 +476,7 @@
 }
 [data-iii-ui="sandbox-code-runner"] .cr-fam-code-chip {
   border: 1px solid var(--color-edge);
-  background: var(--color-raised);
+  background: var(--color-panel-raised);
   padding: 1px 6px;
   font-size: 12px;
   color: var(--color-ink);
@@ -510,7 +510,7 @@
 }
 [data-iii-ui="sandbox-code-runner"] .cr-fam-hl {
   color: var(--color-accent);
-  background: var(--color-hover);
+  background: var(--color-surface-hover);
 }
 
 /* --- error cards ---------------------------------------------------------- */

@@ -12,11 +12,13 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
+  EmptyState,
   type Host,
+  List,
+  ListItem,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useState } from 'react'
-import { downloadFile, errorMessage } from '../lib/browser'
-import { formatMtime } from '../lib/format'
+import { downloadFile, errorMessage, formatAgo } from '../lib/browser'
 import {
   type AnnotationSet,
   annotationFileName,
@@ -150,31 +152,31 @@ export function SavedSetsDialog({
           Sets saved from a session; anyone on this engine sees the same list.
         </DialogDescription>
         {sets.length === 0 ? (
-          <p className="br-ui-sets-empty">
-            {status ?? 'Nothing saved yet. Save a set while annotating.'}
-          </p>
+          <EmptyState
+            title={status ?? 'Nothing saved yet'}
+            description="Save a set while annotating and it appears here for everyone on this engine."
+          />
         ) : (
           <div className="br-ui-sets-body">
-            <ul className="br-ui-sets-list" aria-label="saved sets">
+            <List className="br-ui-sets-list" aria-label="saved sets">
               {sets.map((s) => (
-                <li key={s.key}>
-                  <button
-                    type="button"
-                    className="br-ui-sets-row"
-                    aria-pressed={s.key === selectedKey}
-                    onClick={() => setSelectedKey(s.key)}
-                    title={s.subject}
-                  >
-                    <span className="br-ui-sets-subject">{s.subject}</span>
-                    <span className="br-ui-sets-meta">
+                <ListItem
+                  key={s.key}
+                  selected={s.key === selectedKey}
+                  aria-pressed={s.key === selectedKey}
+                  onClick={() => setSelectedKey(s.key)}
+                  title={s.subject}
+                  label={<span className="br-ui-mono">{s.subject}</span>}
+                  description={
+                    <span className="br-ui-mono br-ui-num">
                       {s.count} {s.count === 1 ? 'mark' : 'marks'}
                       <span aria-hidden> · </span>
-                      {formatMtime(Math.floor(s.capturedAt / 1000))}
+                      {formatAgo(s.capturedAt)}
                     </span>
-                  </button>
-                </li>
+                  }
+                />
               ))}
-            </ul>
+            </List>
             <div className="br-ui-sets-preview">
               {preview && selectedSet ? (
                 <>
@@ -204,9 +206,10 @@ export function SavedSetsDialog({
                   ) : null}
                 </>
               ) : (
-                <p className="br-ui-sets-empty">
-                  {status ?? 'Pick a set to preview it.'}
-                </p>
+                <EmptyState
+                  title={status ?? 'Pick a set'}
+                  description="Select a saved set to preview it with its marks painted on."
+                />
               )}
             </div>
           </div>

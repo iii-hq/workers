@@ -21,7 +21,7 @@ const MAX_SIMILAR_ITEMS = 20
  *  element identities. */
 function AdaptiveChip({ domain }: { domain?: string }) {
   return (
-    <Chip className="text-accent border-accent/40">
+    <Chip className="bg-accent-muted text-accent">
       <span>Adaptive</span>
       {domain ? (
         <span className="ml-1 normal-case text-ink">{domain}</span>

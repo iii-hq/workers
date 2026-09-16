@@ -4,7 +4,9 @@ import { AgentFormSkeleton } from './agent-fields'
 // @ts-expect-error Vite exposes source files imported with the raw query.
 import agentFieldsSource from './agent-fields.tsx?raw'
 
-vi.mock('@iii-dev/console-ui', () => ({}))
+vi.mock('@iii-dev/console-ui', () => ({
+  Skeleton: (props: Record<string, unknown>) => <span {...props} />,
+}))
 
 function classesIn(node: ReactNode): string[] {
   if (Array.isArray(node)) return node.flatMap(classesIn)

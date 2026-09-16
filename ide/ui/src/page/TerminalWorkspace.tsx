@@ -1,10 +1,10 @@
+import { Toolbar, Tooltip, useConfirm } from '@iii-dev/console-ui'
 import { Columns2, Pencil, Plus, Rows2, X } from 'lucide-react'
 import {
   type Dispatch,
   forwardRef,
   type ReactNode,
   type KeyboardEvent,
-  type PointerEvent,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -12,7 +12,6 @@ import {
   useRef,
   useState,
 } from 'react'
-import { HoverTip } from './HoverTip'
 import { TerminalPane } from './TerminalPane'
 import {
   countTerminalPanes,
@@ -37,6 +36,7 @@ import {
   type TerminalSession,
   useTerminalSession,
 } from './terminal-session'
+import { useSplitDrag } from './use-split-drag'
 import {
   createTerminalConnectionCoordinator,
   type TerminalConnectionCoordinator,
@@ -71,12 +71,6 @@ interface LayoutContext {
   closePane: (paneId: string) => Promise<void>
   removePane: (paneId: string) => void
   connectionCoordinator: (paneId: string) => TerminalConnectionCoordinator
-}
-
-interface SplitDragState {
-  start: number
-  ratio: number
-  size: number
 }
 
 let generatedId = 0
@@ -170,7 +164,7 @@ function TerminalPaneSlot({
         docked={context.tabPaneCount > 1}
         actions={
           <>
-            <HoverTip label="Split right">
+            <Tooltip label="Split right">
               <button
                 type="button"
                 className="shui-terminal-action"
@@ -180,8 +174,8 @@ function TerminalPaneSlot({
               >
                 <Columns2 aria-hidden />
               </button>
-            </HoverTip>
-            <HoverTip label="Split down">
+            </Tooltip>
+            <Tooltip label="Split down">
               <button
                 type="button"
                 className="shui-terminal-action"
@@ -191,8 +185,8 @@ function TerminalPaneSlot({
               >
                 <Rows2 aria-hidden />
               </button>
-            </HoverTip>
-            <HoverTip
+            </Tooltip>
+            <Tooltip
               label={
                 session.status === 'disconnected'
                   ? 'Remove terminal pane'
@@ -218,7 +212,7 @@ function TerminalPaneSlot({
               >
                 <X aria-hidden />
               </button>
-            </HoverTip>
+            </Tooltip>
           </>
         }
       />
@@ -234,51 +228,22 @@ function TerminalSplit({
   context: LayoutContext
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const dragRef = useRef<SplitDragState | null>(null)
   const horizontal = node.direction === 'horizontal'
 
   const resize = (ratio: number) => {
     context.dispatch({ type: 'split-resized', splitId: node.id, ratio })
   }
 
-  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    const size = horizontal ? rect?.width : rect?.height
-    if (!size) return
-    dragRef.current = {
-      start: horizontal ? event.clientX : event.clientY,
-      ratio: node.ratio,
-      size,
-    }
-    event.currentTarget.setPointerCapture(event.pointerId)
-    event.preventDefault()
-  }
-
-  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current
-    if (!drag) return
-    const current = horizontal ? event.clientX : event.clientY
-    resize(drag.ratio + (current - drag.start) / drag.size)
-  }
-
-  const onPointerUp = (event: PointerEvent<HTMLDivElement>) => {
-    dragRef.current = null
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-  }
-
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const decrease =
-      (horizontal && event.key === 'ArrowLeft') ||
-      (!horizontal && event.key === 'ArrowUp')
-    const increase =
-      (horizontal && event.key === 'ArrowRight') ||
-      (!horizontal && event.key === 'ArrowDown')
-    if (!decrease && !increase) return
-    event.preventDefault()
-    resize(node.ratio + (increase ? 0.05 : -0.05))
-  }
+  const resizer = useSplitDrag<{ ratio: number; size: number }>({
+    horizontal,
+    begin: () => {
+      const rect = containerRef.current?.getBoundingClientRect()
+      const size = horizontal ? rect?.width : rect?.height
+      return size ? { ratio: node.ratio, size } : null
+    },
+    move: (origin, delta) => resize(origin.ratio + delta / origin.size),
+    step: (direction) => resize(node.ratio + direction * 0.05),
+  })
 
   return (
     <div
@@ -302,12 +267,7 @@ function TerminalSplit({
         aria-valuemin={20}
         aria-valuemax={80}
         aria-valuenow={Math.round(node.ratio * 100)}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onLostPointerCapture={onPointerUp}
-        onKeyDown={onKeyDown}
+        {...resizer}
       />
       <div className="shui-terminal-split-child">
         <TerminalLayoutView node={node.second} context={context} />
@@ -359,6 +319,7 @@ export const TerminalWorkspace = forwardRef<
   const [editingTabId, setEditingTabId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const { confirm, dialog } = useConfirm()
   const selectedTab = activeTab(state)
   const totalPaneCount = Object.keys(state.panes).length
 
@@ -472,9 +433,10 @@ export const TerminalWorkspace = forwardRef<
       if (!tab) return
       const paneIds = paneIdsInLayout(tab.layout)
       if (
-        !window.confirm(
-          `Close "${tab.title}" and ${paneIds.length} terminal session${paneIds.length === 1 ? '' : 's'}?`,
-        )
+        !(await confirm({
+          title: `Close "${tab.title}" and ${paneIds.length} terminal session${paneIds.length === 1 ? '' : 's'}?`,
+          confirmLabel: 'Close',
+        }))
       ) {
         return
       }
@@ -496,7 +458,7 @@ export const TerminalWorkspace = forwardRef<
       }
       if (warnings.length > 0) setError(warnings.join('; '))
     },
-    [closePty, dispatch, state.tabs],
+    [closePty, dispatch, state.tabs, confirm],
   )
 
   const closeDisconnected = useCallback(async () => {
@@ -609,7 +571,8 @@ export const TerminalWorkspace = forwardRef<
 
   return (
     <div className="shui-terminal-workspace">
-      <div className="shui-terminal-tabs">
+      {dialog}
+      <Toolbar className="shui-terminal-tabs" aria-label="Terminals" end={actions}>
         <div
           className="shui-terminal-tab-strip"
           role="tablist"
@@ -669,7 +632,7 @@ export const TerminalWorkspace = forwardRef<
             </div>
           )
         })}
-        <HoverTip label="New terminal">
+        <Tooltip label="New terminal">
           <button
             type="button"
             className="shui-terminal-tab-new"
@@ -679,12 +642,9 @@ export const TerminalWorkspace = forwardRef<
           >
             <Plus aria-hidden />
           </button>
-        </HoverTip>
+        </Tooltip>
         </div>
-        {actions ? (
-          <div className="shui-terminal-bar-actions">{actions}</div>
-        ) : null}
-      </div>
+      </Toolbar>
       {error ? (
         <div className="shui-terminal-workspace-error">{error}</div>
       ) : null}

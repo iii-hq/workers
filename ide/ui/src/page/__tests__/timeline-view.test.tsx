@@ -10,6 +10,12 @@ vi.mock('@iii-dev/console-ui', () => ({
   IconButton: ({ label, children, ...rest }: { label: string; children: ReactNode }) =>
     <button aria-label={label} {...rest}>{children}</button>,
   ConfirmDialog: () => null,
+  EmptyState: ({ title, description }: { title: string; description: string }) => (
+    <div>
+      <strong>{title}</strong>
+      <p>{description}</p>
+    </div>
+  ),
 }))
 
 const key = 'iii::ide::timeline-view-mode'

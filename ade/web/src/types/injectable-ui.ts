@@ -11,6 +11,7 @@
  */
 
 import type { UiClasses } from '@iii-dev/console-ui/ui-classes'
+import type { useConfirm } from '@/components/ui/ConfirmDialog'
 import type { IIIConnectionState, RegisterTriggerInput } from '@/lib/iii-client'
 import type { FunctionTriggerMessage } from '@/types/chat'
 
@@ -54,6 +55,8 @@ export interface ConsoleApi {
   components: Record<string, React.ComponentType<any>>
   /** `'light' | 'dark'`, reactive (backed by `html[data-theme]`). */
   useTheme(): 'light' | 'dark'
+  /** `window.confirm` over `ConfirmDialog`: `{ confirm, dialog }`. */
+  useConfirm: typeof useConfirm
   /** Design-token names, for documentation/tooling; styling just uses `var(--color-*)`. */
   tokens: readonly string[]
   /** Stable namespaced CSS recipes for shared visual patterns. */
@@ -633,6 +636,8 @@ declare global {
       ReactDOM: unknown
       ReactDOMClient: unknown
       JsxRuntime: unknown
+      /** The `lucide-react` namespace, served as /vendor/lucide-react.js. */
+      Lucide: unknown
       api: ConsoleApi | null
     }
   }

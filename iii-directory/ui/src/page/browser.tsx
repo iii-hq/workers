@@ -12,34 +12,48 @@
  * entry when the editor isn't dirty (an unsaved draft is never clobbered;
  * a banner offers the reload instead).
  *
- * Layout adapts to the width the browser HAS (a ResizeObserver on its own
- * root, not a viewport media query — the console can host it in panes of
- * any size). Under NARROW_BELOW px it becomes a drill-in flow: the list
- * fills the width, opening an entry swaps the list for the document with
- * a ← back button, and split mode is unavailable (edit/preview only).
+ * Layout adapts to the width the browser HAS (`useContainerNarrow`, not a
+ * viewport media query — the console can host it in panes of any size).
+ * Under NARROW_BELOW px it becomes a drill-in flow: the list fills the
+ * width, opening an entry swaps the list for the document with a ← back
+ * button, and split mode is unavailable (edit/preview only).
  *
  * The editor pane stays MOUNTED across mode switches (hidden in preview
  * mode) so Monaco keeps cursor and scroll position; the split divider is
  * draggable and its ratio, like the view mode, persists per tab+collection
- * in localStorage.
+ * (`usePaneState`).
  */
 
 import {
   Button,
   CodeEditor,
-  ConfirmDialog,
+  EmptyState,
+  Eyebrow,
   type Host,
+  IconButton,
   Input,
+  Kbd,
+  KeyCombo,
+  List,
+  ListItem,
   MarkdownPreview,
   type PageCommandsApi,
   PageSidebar,
+  SearchField,
   SegmentedControl,
-  uiClasses,
+  Skeleton,
+  StatusBar,
+  StatusDot,
+  StatusPanel,
+  useConfirm,
 } from '@iii-dev/console-ui'
+import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
+import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { ChevronLeft, FileText, Plus } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { BackButton, MarkdownFileIcon, PlusIcon, SearchIcon, XIcon } from '../lib/widgets'
-import { draftAction, parseStoredDraft } from './draft-storage'
+import { draftAction, parseStoredDraft, type StoredDraft } from './draft-storage'
 import {
   frontmatterBody,
   frontmatterFieldIsSimpleBoolean,
@@ -193,83 +207,14 @@ interface Loaded {
   content: string
 }
 
-function readStored(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
-
-function writeStored(key: string, value: string) {
-  try {
-    window.localStorage.setItem(key, value)
-  } catch {
-    /* private mode / quota — persistence is best-effort */
-  }
-}
-
-function removeStored(key: string) {
-  try {
-    window.localStorage.removeItem(key)
-  } catch {
-    /* private mode / quota — persistence is best-effort */
-  }
-}
-
 const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
-
-// Human text for a rejection of any shape. Worker calls reject with
-// `{ code, message, stacktrace }` objects; `String(e)` on those renders
-// "[object Object]" (the tech-leader Save-failed banner bug).
-function errorText(e: unknown): string {
-  if (e instanceof Error) return e.message
-  if (typeof e === 'string') return e
-  if (e && typeof e === 'object') {
-    const o = e as { message?: unknown; error?: { message?: unknown } }
-    if (typeof o.message === 'string') return o.message
-    if (o.error && typeof o.error.message === 'string') return o.error.message
-    try {
-      return JSON.stringify(e)
-    } catch {
-      return String(e)
-    }
-  }
-  return String(e)
-}
-
-/** Observe the browser root's own width. Returns a callback ref to put
- * on the root plus whether it is currently narrower than `threshold` —
- * container-driven, so the same page adapts inside any pane the console
- * gives it. Measures synchronously on mount to avoid a wide-mode flash;
- * zero widths (display:none — the inactive collection) are ignored so a
- * hidden browser keeps its last real layout. */
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const refCb = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-  return [refCb, narrow]
-}
 
 /** Tab-scoped subscription to one of the worker's on-change trigger
  * types. The handler id carries the `iii::` prefix so per-event
  * invocations stay span-suppressed and out of the trace feed; the
- * binding is GC'd with the tab and unregistered on unmount. */
+ * binding is GC'd with the tab and unregistered on unmount. (Not
+ * `useWorkerLive`: the handler needs the event itself to apply the
+ * dirty-draft guard and the optimistic list edits, not a refetched cache.) */
 function useOnChange(host: Host, triggerType: string, onEvent: () => void) {
   const onEventRef = useRef(onEvent)
   onEventRef.current = onEvent
@@ -289,6 +234,17 @@ function useOnChange(host: Host, triggerType: string, onEvent: () => void) {
       offHandler()
     }
   }, [host, triggerType])
+}
+
+function SkeletonLines({ widths, className }: { widths: string[]; className?: string }) {
+  return (
+    <div className={className} aria-hidden>
+      {widths.map((width, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: static placeholder lines
+        <Skeleton key={i} style={{ width }} />
+      ))}
+    </div>
+  )
 }
 
 export function CollectionBrowser({
@@ -322,34 +278,33 @@ export function CollectionBrowser({
   const [listError, setListError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const searchRef = useRef<HTMLInputElement | null>(null)
+  // The console's pane focus lands on `[data-autofocus]`; only the visible
+  // collection may claim it (both stay mounted).
+  const attachSearch = useCallback(
+    (el: HTMLInputElement | null) => {
+      searchRef.current = el
+      el?.toggleAttribute('data-autofocus', active)
+    },
+    [active],
+  )
   const fieldId = useId()
 
   /* Restore unsaved work from the last unmount (tab switch). A creating
      draft is self-contained; a selected-entry draft still needs the disk
      baseline, loaded by the mount effect below. */
-  const [restored] = useState(() => parseStoredDraft(readStored(`${storageKey}:draft`)))
+  const [storedDraft, setStoredDraft] = usePaneState<StoredDraft | null>(`${storageKey}:draft`, null)
+  const [restored] = useState(() => parseStoredDraft(storedDraft))
   const [selected, setSelected] = useState<string | null>(restored && !restored.creating ? restored.key : null)
   const [creating, setCreating] = useState(restored?.creating ?? false)
   const [loaded, setLoaded] = useState<Loaded | null>(restored?.creating ? { key: '', content: '' } : null)
   const [draft, setDraft] = useState(restored?.content ?? '')
   const [loadError, setLoadError] = useState<string | null>(null)
 
-  const [mode, setModeState] = useState<EditorMode>(() => {
-    const v = readStored(`${storageKey}:mode`)
-    return v === 'edit' || v === 'split' || v === 'preview' ? v : 'split'
-  })
-  const setMode = useCallback(
-    (m: EditorMode) => {
-      setModeState(m)
-      writeStored(`${storageKey}:mode`, m)
-    },
-    [storageKey],
-  )
+  const [storedMode, setMode] = usePaneState<EditorMode>(`${storageKey}:mode`, 'split')
+  const mode: EditorMode = storedMode in EDITOR_MODE_LABELS ? storedMode : 'split'
 
-  const [split, setSplit] = useState(() => {
-    const v = Number.parseFloat(readStored(`${storageKey}:split`) ?? '')
-    return Number.isFinite(v) ? clampRatio(v) : 0.5
-  })
+  const [storedSplit, setSplit] = usePaneState<number>(`${storageKey}:split`, 0.5)
+  const split = Number.isFinite(storedSplit) ? clampRatio(storedSplit) : 0.5
   const [dragging, setDragging] = useState(false)
 
   const [saving, setSaving] = useState(false)
@@ -361,7 +316,7 @@ export function CollectionBrowser({
   const flashTimer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(flashTimer.current), [])
 
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const { ref: rootRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
   const bodyRef = useRef<HTMLDivElement | null>(null)
 
   const row = rows?.find((item) => item.key === (loaded?.key || selected))
@@ -381,7 +336,7 @@ export function CollectionBrowser({
         setRows(next)
         setListError(null)
       })
-      .catch((e) => setListError(errorText(e)))
+      .catch((e) => setListError(errorMessage(e)))
   }, [host, adapter])
 
   useEffect(() => {
@@ -393,25 +348,25 @@ export function CollectionBrowser({
   // A dirty draft asks in the console's own dialog, never window.confirm:
   // the native box blocks the whole tab and cannot say what is at stake
   // when the draft is a new, unnamed entry.
-  const [pendingConfirm, setPendingConfirm] = useState<{
-    title: string
-    description: string
-    confirmLabel: string
-    proceed: () => void
-  } | null>(null)
-  const guardDirty = useCallback((proceed: () => void) => {
-    if (!dirtyRef.current) {
-      proceed()
-      return
-    }
-    const label = selectedRef.current ?? 'this new entry'
-    setPendingConfirm({
-      title: 'Discard unsaved changes?',
-      description: `The unsaved changes to ${label} will be lost.`,
-      confirmLabel: 'Discard',
-      proceed,
-    })
-  }, [])
+  const { confirm, dialog } = useConfirm()
+  const guardDirty = useCallback(
+    (proceed: () => void) => {
+      if (!dirtyRef.current) {
+        proceed()
+        return
+      }
+      const label = selectedRef.current ?? 'this new entry'
+      void confirm({
+        title: 'Discard unsaved changes?',
+        description: `The unsaved changes to ${label} will be lost.`,
+        confirmLabel: 'Discard',
+        tone: 'danger',
+      }).then((ok) => {
+        if (ok) proceed()
+      })
+    },
+    [confirm],
+  )
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   const creatingRef = useRef(creating)
@@ -431,12 +386,12 @@ export function CollectionBrowser({
         setLoaded({ key, content })
       })
       .catch((e) => {
-        if (selectedRef.current === key) setLoadError(errorText(e))
+        if (selectedRef.current === key) setLoadError(errorMessage(e))
       })
   }, [])
 
-  /* Mirror unsaved work to storage on every change, so a tab switch (which
-     unmounts this page) can restore it. See `draftAction` for the cases. */
+  /* Mirror unsaved work to pane state on every change, so a tab switch
+     (which unmounts this page) can restore it. See `draftAction`. */
   useEffect(() => {
     const action = draftAction({
       creating,
@@ -444,19 +399,16 @@ export function CollectionBrowser({
       draft,
       loadedContent: loaded?.content ?? null,
     })
-    if (action.kind === 'write') {
-      writeStored(`${storageKey}:draft`, JSON.stringify(action.draft))
-    } else if (action.kind === 'clear') {
-      removeStored(`${storageKey}:draft`)
-    }
-  }, [creating, selected, draft, loaded, storageKey])
+    if (action.kind === 'write') setStoredDraft(action.draft)
+    else if (action.kind === 'clear') setStoredDraft(null)
+  }, [creating, selected, draft, loaded, setStoredDraft])
 
   const open = useCallback(
     (key: string, opts?: { reload?: boolean }) => {
       // Discard confirmed (or a reload): the persisted draft dies now, not
       // when the load lands — an unmount in between must not resurrect it.
       const proceed = () => {
-        removeStored(`${storageKey}:draft`)
+        setStoredDraft(null)
         setSelected(key)
         setCreating(false)
         setLoaded(null)
@@ -476,7 +428,7 @@ export function CollectionBrowser({
             setDraft(content)
           })
           .catch((e) => {
-            if (selectedRef.current === key) setLoadError(errorText(e))
+            if (selectedRef.current === key) setLoadError(errorMessage(e))
           })
       }
       if (opts?.reload) {
@@ -488,7 +440,7 @@ export function CollectionBrowser({
       if (key === selectedRef.current) return
       guardDirty(proceed)
     },
-    [host, adapter, storageKey, guardDirty],
+    [host, adapter, setStoredDraft, guardDirty],
   )
 
   /** Blank editor for a new entry. Most collections count their scaffold as
@@ -496,7 +448,7 @@ export function CollectionBrowser({
   const startCreate = useCallback(() => {
     guardDirty(() => {
       const template = adapter.newTemplate ?? NEW_TEMPLATE
-      removeStored(`${storageKey}:draft`)
+      setStoredDraft(null)
       setCreating(true)
       setSelected(null)
       setLoaded({
@@ -509,7 +461,7 @@ export function CollectionBrowser({
       setDeleteError(null)
       setStaleOnDisk(false)
     })
-  }, [storageKey, guardDirty, adapter])
+  }, [setStoredDraft, guardDirty, adapter])
 
   const appliedOpenRef = useRef(0)
   useEffect(() => {
@@ -592,7 +544,7 @@ export function CollectionBrowser({
           flashTimer.current = window.setTimeout(() => setSavedFlash(false), 2400)
         })
         .catch((e) => {
-          if (creatingRef.current) setSaveError(errorText(e))
+          if (creatingRef.current) setSaveError(errorMessage(e))
         })
         .finally(() => setSaving(false))
       return
@@ -617,7 +569,7 @@ export function CollectionBrowser({
         flashTimer.current = window.setTimeout(() => setSavedFlash(false), 2400)
       })
       .catch((e) => {
-        if (selectedRef.current === key) setSaveError(errorText(e))
+        if (selectedRef.current === key) setSaveError(errorMessage(e))
       })
       .finally(() => setSaving(false))
   }, [host, adapter, loaded, draft, saving, deleting, creating, readOnly, refreshList])
@@ -646,7 +598,7 @@ export function CollectionBrowser({
           setStaleOnDisk(false)
         })
         .catch((error) => {
-          if (selectedRef.current === key) setDeleteError(errorText(error))
+          if (selectedRef.current === key) setDeleteError(errorMessage(error))
         })
         .finally(() => setDeleting(false))
     },
@@ -658,13 +610,15 @@ export function CollectionBrowser({
     if (!adapter.remove || !loaded || creating || saving || deleting) return
     const key = loaded.key
     const dirtyNote = dirty ? ' Your unsaved changes will also be lost.' : ''
-    setPendingConfirm({
+    void confirm({
       title: `Delete ${adapter.noun} “${key}”?`,
       description: `This removes its file and cannot be undone.${dirtyNote}`,
       confirmLabel: 'Delete',
-      proceed: () => removeNow(key),
+      tone: 'danger',
+    }).then((ok) => {
+      if (ok) removeNow(key)
     })
-  }, [adapter, loaded, creating, saving, deleting, readOnly, row?.noDelete, dirty, removeNow])
+  }, [adapter, loaded, creating, saving, deleting, readOnly, row?.noDelete, dirty, removeNow, confirm])
 
   const onWorkspaceKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
@@ -685,7 +639,7 @@ export function CollectionBrowser({
   // Narrow-mode drill-out: back to the list, guarding an unsaved draft.
   const goBack = () => {
     guardDirty(() => {
-      removeStored(`${storageKey}:draft`)
+      setStoredDraft(null)
       setSelected(null)
       setCreating(false)
       setLoaded(null)
@@ -736,7 +690,6 @@ export function CollectionBrowser({
     if (rect.width <= 0) return
     setSplit(clampRatio((clientX - rect.left) / rect.width))
   }
-  const persistSplit = useCallback((value: number) => writeStored(`${storageKey}:split`, String(value)), [storageKey])
   const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -752,24 +705,15 @@ export function CollectionBrowser({
     draggingRef.current = false
     setDragging(false)
     e.currentTarget.releasePointerCapture(e.pointerId)
-    setSplit((v) => {
-      persistSplit(v)
-      return v
-    })
   }
   const onDividerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const step = e.key === 'ArrowLeft' ? -0.05 : e.key === 'ArrowRight' ? 0.05 : null
     if (step !== null) {
       e.preventDefault()
-      setSplit((v) => {
-        const next = clampRatio(v + step)
-        persistSplit(next)
-        return next
-      })
+      setSplit((v) => clampRatio(v + step))
     } else if (e.key === 'Enter') {
       e.preventDefault()
       setSplit(0.5)
-      persistSplit(0.5)
     }
   }
 
@@ -795,6 +739,7 @@ export function CollectionBrowser({
   const docKey = loaded?.key ?? selected
   const docSegments = docKey ? docKey.split('/') : []
   const docName = creating ? `New ${adapter.noun}` : (docSegments[docSegments.length - 1] ?? '')
+  const nounPlural = `${adapter.noun[0].toUpperCase()}${adapter.noun.slice(1)}s`
 
   const modeOptions: EditorMode[] = narrow ? ['edit', 'preview'] : ['edit', 'split', 'preview']
 
@@ -829,6 +774,12 @@ export function CollectionBrowser({
 
   const saveStatus = saving ? 'Saving…' : savedFlash ? '✓ Saved' : dirty ? 'Unsaved' : ''
 
+  const backButton = (
+    <IconButton label={`back to ${adapter.noun} list`} onClick={goBack}>
+      <ChevronLeft />
+    </IconButton>
+  )
+
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay ('/' jumps to the filter) around real controls
     <div
@@ -836,19 +787,7 @@ export function CollectionBrowser({
       ref={rootRef}
       onKeyDown={onRootKeyDown}
     >
-      <ConfirmDialog
-        open={pendingConfirm !== null}
-        onOpenChange={(next) => {
-          if (!next) setPendingConfirm(null)
-        }}
-        title={pendingConfirm?.title ?? ''}
-        description={pendingConfirm?.description}
-        confirmLabel={pendingConfirm?.confirmLabel}
-        onConfirm={() => {
-          pendingConfirm?.proceed()
-          setPendingConfirm(null)
-        }}
-      />
+      {dialog}
       {showSide ? (
         <PageSidebar
           label={`${adapter.noun} list`}
@@ -861,15 +800,9 @@ export function CollectionBrowser({
           header={nav}
           collapsedActions={
             adapter.create ? (
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={startCreate}
-                aria-label={`new ${adapter.noun}`}
-                title={`new ${adapter.noun}`}
-              >
-                <PlusIcon className="dir-ui-new-icon" />
-              </Button>
+              <IconButton label={`new ${adapter.noun}`} onClick={startCreate}>
+                <Plus />
+              </IconButton>
             ) : undefined
           }
         >
@@ -884,42 +817,18 @@ export function CollectionBrowser({
                 title={`new ${adapter.noun}`}
               >
                 <span className="dir-ui-new-mark">
-                  <PlusIcon className="dir-ui-new-icon" />
+                  <Plus />
                 </span>
                 <span>New {adapter.noun}</span>
               </Button>
             ) : null}
-            <div className="dir-ui-search">
-              <SearchIcon className="dir-ui-search-icon" />
-              <Input
-                ref={searchRef}
-                value={search}
-                onChange={setSearch}
-                placeholder={`filter ${adapter.noun}s…`}
-                aria-label={`filter ${adapter.noun}s`}
-                className="dir-ui-search-input"
-                data-autofocus={active ? '' : undefined}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape' && search) {
-                    e.stopPropagation()
-                    setSearch('')
-                  }
-                }}
-              />
-              {search ? (
-                <button
-                  type="button"
-                  className="dir-ui-search-clear"
-                  aria-label="clear filter"
-                  onClick={() => {
-                    setSearch('')
-                    searchRef.current?.focus()
-                  }}
-                >
-                  <XIcon className="dir-ui-x-icon" />
-                </button>
-              ) : null}
-            </div>
+            <SearchField
+              ref={attachSearch}
+              value={search}
+              onChange={setSearch}
+              placeholder={`filter ${adapter.noun}s…`}
+              aria-label={`filter ${adapter.noun}s`}
+            />
             {rows !== null && !listError ? (
               <div className="dir-ui-count" aria-live="polite">
                 {needle
@@ -931,66 +840,68 @@ export function CollectionBrowser({
 
           <div className="dir-ui-side-scroll">
             {listError ? (
-              <div className="dir-ui-error-panel">
-                <p>
-                  The {adapter.noun} list could not be loaded.
-                  <span className="detail">{listError}</span>
-                </p>
+              <div className="dir-ui-error">
+                <StatusPanel
+                  variant="alert"
+                  headline={`The ${adapter.noun} list could not be loaded.`}
+                  detail={listError}
+                />
                 <Button variant="ghost" size="sm" onClick={refreshList}>
                   Retry
                 </Button>
               </div>
             ) : rows === null ? (
-              <div className="dir-ui-side-skel" aria-hidden>
+              <div className="dir-ui-skel" aria-hidden>
                 {[0, 1, 2, 3].map((i) => (
-                  <div key={i} className="dir-ui-skel-row">
-                    <span className="bar w60" />
-                    <span className="bar w90" />
-                    <span className="bar w40" />
-                  </div>
+                  <SkeletonLines key={i} className="dir-ui-skel-row" widths={['60%', '90%', '40%']} />
                 ))}
               </div>
             ) : visible.length === 0 ? (
               <div className="dir-ui-side-empty">
                 {needle ? (
-                  <>
-                    <p>
-                      No {adapter.noun}s match “{search.trim()}”.
-                    </p>
-                    <Button variant="ghost" size="sm" onClick={() => setSearch('')}>
-                      Clear filter
-                    </Button>
-                  </>
+                  <EmptyState
+                    title={`No ${adapter.noun}s match`}
+                    description={`Nothing here matches “${search.trim()}”.`}
+                    action={{ label: 'Clear filter', onClick: () => setSearch('') }}
+                  />
                 ) : (
-                  <p>No {adapter.noun}s yet.</p>
+                  <EmptyState title={`No ${adapter.noun}s yet`} description={`Nothing in the ${adapter.crumbRoot} folder.`} />
                 )}
               </div>
             ) : (
-              <ul className="dir-ui-nav-list">
+              <List>
                 {visible.map((r) => {
                   const isTitled = r.title !== '' && r.title !== r.key
+                  const current = r.key === selected
                   return (
-                    <li key={r.key}>
-                      <button
-                        type="button"
-                        className={`dir-ui-nav-row${r.icon ? ' with-icon' : ''}${r.key === selected ? ' active' : ''}`}
-                        aria-current={r.key === selected ? 'true' : undefined}
-                        onClick={() => open(r.key)}
-                      >
-                        {r.icon ? (
+                    <ListItem
+                      key={r.key}
+                      className={`dir-ui-nav-row${current ? ' active' : ''}`}
+                      aria-current={current ? 'true' : undefined}
+                      onClick={() => open(r.key)}
+                      leading={
+                        r.icon ? (
                           <span className="dir-ui-nav-ico" data-color={r.iconTone} aria-hidden>
                             {r.icon}
                           </span>
-                        ) : null}
-                        <span className={`name${isTitled ? '' : ' mono'}`}>{isTitled ? r.title : r.key}</span>
-                        {isTitled || adapter.prominentListItems ? <span className="id">{r.key}</span> : null}
-                        {r.description ? <span className="desc">{r.description}</span> : null}
-                        <span className="fine">{r.fine}</span>
-                      </button>
-                    </li>
+                        ) : undefined
+                      }
+                      label={<span className={isTitled ? undefined : 'dir-ui-mono'}>{isTitled ? r.title : r.key}</span>}
+                      description={
+                        adapter.prominentListItems ? (
+                          r.description || r.key
+                        ) : (
+                          <>
+                            {isTitled ? <span className="dir-ui-nav-id">{r.key}</span> : null}
+                            {r.description ? <span className="dir-ui-nav-desc">{r.description}</span> : null}
+                            <span className="dir-ui-nav-fine">{r.fine}</span>
+                          </>
+                        )
+                      }
+                    />
                   )
                 })}
-              </ul>
+              </List>
             )}
           </div>
         </PageSidebar>
@@ -1000,22 +911,20 @@ export function CollectionBrowser({
         <section className="dir-ui-doc" onKeyDown={onWorkspaceKeyDown} aria-label={`${adapter.noun} workspace`}>
           {selected === null && !creating ? (
             <div className="dir-ui-hero">
-              <MarkdownFileIcon className="dir-ui-hero-icon" />
-              <h2 className="dir-ui-hero-title">{adapter.emptyTitle}</h2>
-              <p className="dir-ui-hero-body">{adapter.emptyBody}</p>
+              <EmptyState icon={FileText} title={adapter.emptyTitle} description={adapter.emptyBody} />
               <p className="dir-ui-hero-hint">
-                <kbd>/</kbd> filters the list · <kbd>⌘S</kbd> saves
+                <Kbd>/</Kbd> filters the list · <KeyCombo binding="Mod+S" /> saves
               </p>
             </div>
           ) : (
             <>
               {!adapter.customFormOwnsWorkspaceHeader ? (
                 <header className="dir-ui-doc-head">
-                  {narrow ? <BackButton onClick={goBack} label={`back to ${adapter.noun} list`} /> : null}
+                  {narrow ? backButton : null}
                   <div className="dir-ui-doc-identity">
                     <span className="dir-ui-doc-name" title={docKey ?? ''}>
-                      <span className="txt">{docName}</span>
-                      {dirty ? <span className="dir-ui-dirty-dot" title="unsaved changes" aria-hidden /> : null}
+                      <span className="dir-ui-doc-name-text">{docName}</span>
+                      {dirty ? <StatusDot tone="accent" title="unsaved changes" /> : null}
                     </span>
                     {!narrow ? (
                       <span className="dir-ui-doc-crumb">{[adapter.crumbRoot, ...docSegments].join(' / ')}</span>
@@ -1064,28 +973,16 @@ export function CollectionBrowser({
                 <div className="dir-ui-af-save-panel">
                   {narrow ? (
                     <div className="dir-ui-doc-mobile-back">
-                      <BackButton onClick={goBack} label={`back to ${adapter.noun} list`} />
-                      <span>{adapter.noun}s</span>
+                      {backButton}
+                      <span>{nounPlural}</span>
                     </div>
                   ) : null}
                   {dirty && !readOnly ? (
                     <div className="dir-ui-af-save-actions">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="dir-ui-af-revert"
-                        disabled={saving || deleting}
-                        onClick={revert}
-                      >
+                      <Button variant="ghost" size="sm" disabled={saving || deleting} onClick={revert}>
                         Revert
                       </Button>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        className="dir-ui-af-save"
-                        disabled={saving || deleting}
-                        onClick={save}
-                      >
+                      <Button variant="primary" size="sm" disabled={saving || deleting} onClick={save}>
                         {saving ? 'Saving…' : 'Save'}
                       </Button>
                     </div>
@@ -1094,54 +991,62 @@ export function CollectionBrowser({
               ) : null}
 
               {staleOnDisk ? (
-                <div className="dir-ui-banner warn" role="status">
-                  <span>This {adapter.noun} changed on disk while you were editing.</span>
-                  <button
-                    type="button"
-                    className="dir-ui-linkish"
-                    onClick={() => docKey && open(docKey, { reload: true })}
-                  >
-                    reload (discards your draft)
-                  </button>
+                <div className="dir-ui-banner" role="status">
+                  <StatusPanel
+                    variant="warn"
+                    headline={`This ${adapter.noun} changed on disk while you were editing.`}
+                    detail={
+                      <Button variant="ghost" size="sm" onClick={() => docKey && open(docKey, { reload: true })}>
+                        Reload (discards your draft)
+                      </Button>
+                    }
+                  />
                 </div>
               ) : null}
 
               {saveError ? (
-                <div className="dir-ui-banner alert" role="alert">
-                  <span>
-                    Save failed.
-                    <span className="detail">{saveError}</span>
-                  </span>
-                  <button type="button" className="dir-ui-linkish" onClick={save}>
-                    Retry
-                  </button>
-                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setSaveError(null)}>
-                    dismiss
-                  </button>
+                <div className="dir-ui-banner" role="alert">
+                  <StatusPanel
+                    variant="alert"
+                    headline="Save failed."
+                    detail={
+                      <>
+                        <span className="dir-ui-banner-detail">{saveError}</span>
+                        <Button variant="ghost" size="sm" onClick={save}>
+                          Retry
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setSaveError(null)}>
+                          Dismiss
+                        </Button>
+                      </>
+                    }
+                  />
                 </div>
               ) : null}
 
               {deleteError ? (
-                <div className="dir-ui-banner alert" role="alert">
-                  <span>
-                    Delete failed.
-                    <span className="detail">{deleteError}</span>
-                  </span>
-                  <button type="button" className="dir-ui-linkish" onClick={remove}>
-                    Retry
-                  </button>
-                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setDeleteError(null)}>
-                    dismiss
-                  </button>
+                <div className="dir-ui-banner" role="alert">
+                  <StatusPanel
+                    variant="alert"
+                    headline="Delete failed."
+                    detail={
+                      <>
+                        <span className="dir-ui-banner-detail">{deleteError}</span>
+                        <Button variant="ghost" size="sm" onClick={remove}>
+                          Retry
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setDeleteError(null)}>
+                          Dismiss
+                        </Button>
+                      </>
+                    }
+                  />
                 </div>
               ) : null}
 
               {loadError ? (
-                <div className="dir-ui-error-panel grow">
-                  <p>
-                    {docKey} could not be loaded.
-                    <span className="detail">{loadError}</span>
-                  </p>
+                <div className="dir-ui-error grow">
+                  <StatusPanel variant="alert" headline={`${docKey} could not be loaded.`} detail={loadError} />
                   <Button variant="ghost" size="sm" onClick={() => docKey && open(docKey, { reload: true })}>
                     Retry
                   </Button>
@@ -1150,13 +1055,7 @@ export function CollectionBrowser({
                 adapter.customLoading ? (
                   adapter.customLoading()
                 ) : (
-                  <div className="dir-ui-doc-loading" aria-hidden>
-                    <span className="bar w40" />
-                    <span className="bar w90" />
-                    <span className="bar w75" />
-                    <span className="bar w85" />
-                    <span className="bar w30" />
-                  </div>
+                  <SkeletonLines className="dir-ui-doc-loading" widths={['40%', '90%', '75%', '85%', '30%']} />
                 )
               ) : (
                 <>
@@ -1188,14 +1087,14 @@ export function CollectionBrowser({
                       ) : (
                         <div className="dir-ui-edit-fields">
                           <label className="dir-ui-edit-field" htmlFor={`${fieldId}-name`}>
-                            <span className="dir-ui-edit-label">
+                            <Eyebrow className="dir-ui-edit-label">
                               name
                               {adapter.separateId && creating ? (
                                 <span className="dir-ui-edit-hint">
                                   {slugify(nameValue) ? `→ ${slugify(nameValue)}.md` : 'the id derives from the name'}
                                 </span>
                               ) : null}
-                            </span>
+                            </Eyebrow>
                             <Input
                               id={`${fieldId}-name`}
                               value={nameValue}
@@ -1204,11 +1103,10 @@ export function CollectionBrowser({
                               required={adapter.nameRequired}
                               spellCheck={false}
                               readOnly={readOnly}
-                              className="dir-ui-edit-input"
                             />
                           </label>
                           <label className="dir-ui-edit-field" htmlFor={`${fieldId}-description`}>
-                            <span className="dir-ui-edit-label">Description</span>
+                            <Eyebrow className="dir-ui-edit-label">Description</Eyebrow>
                             <textarea
                               id={`${fieldId}-description`}
                               value={descriptionValue}
@@ -1264,8 +1162,8 @@ export function CollectionBrowser({
                       {!adapter.customFormOwnsContent ? (
                         <>
                           <div className="dir-ui-source-head" aria-hidden>
-                            <span>{adapter.sourceLabel ?? 'Content'}</span>
-                            <span>Markdown</span>
+                            <Eyebrow>{adapter.sourceLabel ?? 'Content'}</Eyebrow>
+                            <Eyebrow>Markdown</Eyebrow>
                           </div>
                           <CodeEditor
                             value={editorSource}
@@ -1294,10 +1192,7 @@ export function CollectionBrowser({
                         onPointerMove={onDividerPointerMove}
                         onPointerUp={endDividerDrag}
                         onPointerCancel={endDividerDrag}
-                        onDoubleClick={() => {
-                          setSplit(0.5)
-                          persistSplit(0.5)
-                        }}
+                        onDoubleClick={() => setSplit(0.5)}
                         onKeyDown={onDividerKeyDown}
                       />
                     ) : null}
@@ -1312,15 +1207,16 @@ export function CollectionBrowser({
                       </div>
                     ) : null}
                   </div>
-                  <footer className="dir-ui-statusbar">
-                    <span className="fact">Markdown</span>
-                    <span className="fact">
+                  <StatusBar
+                    className="dir-ui-statusbar"
+                    end={<span>{readOnly ? 'read only' : dirty ? '⌘S saves' : 'all changes saved'}</span>}
+                  >
+                    <span>Markdown</span>
+                    <span>
                       {draftLines} line{draftLines === 1 ? '' : 's'}
                     </span>
-                    <span className="fact">{formatKb(draftBytes)}</span>
-                    <span className="spacer" />
-                    <span className="fact">{readOnly ? 'read only' : dirty ? '⌘S saves' : 'all changes saved'}</span>
-                  </footer>
+                    <span>{formatBytes(draftBytes)}</span>
+                  </StatusBar>
                 </>
               )}
             </>
@@ -1344,9 +1240,4 @@ export function resolveBrowserPaneVisibility({
     showSide: !narrow || (selected === null && !creating),
     showDoc: !narrow || selected !== null || creating,
   }
-}
-
-function formatKb(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  return `${(bytes / 1024).toFixed(1)} KB`
 }

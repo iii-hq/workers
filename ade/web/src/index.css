@@ -607,6 +607,7 @@
   }
 }
 
+/* viewport: phone chrome — panels only sit side by side on desktop */
 @media (min-width: 640px) and (prefers-reduced-motion: no-preference) {
   .workspace-panel-enter-left,
   .workspace-panel-enter-right {
@@ -948,6 +949,7 @@
    mobile the blurred composer is a one-line field, like a text input: the
    toolbar folds away with the extra lines, and focusing it grows the
    writing surface (and its buttons) back. */
+/* viewport: phone chrome — the one-line phone composer */
 @media (max-width: 639px) {
   /* Blurred: exactly one line (top padding + line-height), no bottom
      padding, so the next line never peeks in. The measured content height
@@ -1002,6 +1004,7 @@
   }
 }
 
+/* viewport: phone chrome — 16px editor text on phones, 14px on desktop */
 @media (min-width: 640px) {
   .composer-editor,
   .composer-placeholder {

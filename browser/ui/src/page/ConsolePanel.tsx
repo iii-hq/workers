@@ -1,4 +1,13 @@
-import { type Host, Input } from '@iii-dev/console-ui'
+import {
+  Button,
+  EmptyState,
+  type Host,
+  SearchField,
+  Select,
+  StatusDot,
+  StatusPanel,
+  Toolbar,
+} from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import {
   BROWSER_CONSOLE_EVENT_TRIGGER,
@@ -48,8 +57,8 @@ function ConsoleLiveRow({ entry }: { entry: BrowserConsoleEntry }) {
     entry.level === 'error' || entry.level === 'exception' ? 'error' : entry.level === 'warning' ? 'warning' : 'info'
   return (
     <li className={cn('br-ui-devtools-row', `is-${tone}`)}>
-      <span className="br-ui-devtools-marker" aria-hidden />
-      <span className="br-ui-log-time">{formatTime(entry.timestamp)}</span>
+      <StatusDot tone={tone === 'error' ? 'alert' : tone === 'warning' ? 'warn' : 'accent'} />
+      <span className="br-ui-num br-ui-dim">{formatTime(entry.timestamp)}</span>
       <span className="br-ui-devtools-level">[{entry.level}]</span>
       <span className="br-ui-devtools-message">{entry.text}</span>
       <span className="br-ui-devtools-source">{entry.source ?? '—'}</span>
@@ -126,49 +135,56 @@ export function ConsolePanel({ host, sessionId, enabled }: ConsolePanelProps) {
 
   return (
     <div className="br-ui-panel">
-      <div className="br-ui-panel-head">
-        <span className="br-ui-devtools-context">{sessionId}</span>
-        <span className="br-ui-devtools-separator" aria-hidden />
-        <Input
+      <Toolbar
+        aria-label="console filters"
+        end={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setEntries([])
+              setDropped(0)
+            }}
+          >
+            Clear
+          </Button>
+        }
+      >
+        <span className="br-ui-panel-context">{sessionId}</span>
+        <SearchField
           name="console-filter"
           value={pattern}
           onChange={setPattern}
-          preserveCase
           placeholder="filter (regex)"
           aria-label="filter console entries"
           className="br-ui-filter-input"
         />
-        <select
-          className="br-ui-level-select"
+        <Select<ConsoleLevel>
           value={level}
-          onChange={(event) => setLevel(event.target.value as ConsoleLevel)}
+          onChange={setLevel}
+          options={CONSOLE_LEVELS.map((option) => ({
+            value: option,
+            label: option === 'all' ? 'all levels' : option,
+          }))}
           aria-label="console level"
-        >
-          {CONSOLE_LEVELS.map((option) => (
-            <option key={option} value={option}>
-              {option === 'all' ? 'all levels' : option}
-            </option>
-          ))}
-        </select>
+          className="br-ui-level-select"
+        />
         <span className="br-ui-panel-count">
           {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
         </span>
         {dropped > 0 ? <span className="br-ui-panel-note">{dropped} older entries dropped from the buffer</span> : null}
-        <button
-          type="button"
-          className="br-ui-devtools-action"
-          onClick={() => {
-            setEntries([])
-            setDropped(0)
-          }}
-        >
-          Clear
-        </button>
-      </div>
+      </Toolbar>
       {error ? (
-        <p className="br-ui-panel-err">{error}</p>
+        <div className="br-ui-panel-body">
+          <StatusPanel variant="alert" headline="Console read failed" detail={error} />
+        </div>
       ) : entries.length === 0 ? (
-        <p className="br-ui-panel-empty">No console entries yet.</p>
+        <div className="br-ui-panel-body">
+          <EmptyState
+            title="No console entries yet"
+            description="Messages the page logs appear here as they happen."
+          />
+        </div>
       ) : (
         // Column-reverse with the newest entry first in the DOM pins the
         // scroll position to the bottom, terminal-style.

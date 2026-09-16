@@ -1,3 +1,4 @@
+import { SquareFunction } from 'lucide-react'
 import { useState } from 'react'
 import {
   ActionLine,
@@ -37,7 +38,7 @@ export function FunctionInfoView({
           <StatusPill label="loading…" variant="default" />
           {reqLabel ? (
             <Chip>
-              <span className="text-ink-faint uppercase tracking-[0.06em]">
+              <span className="iii-ui-eyebrow">
                 {req?.function_ids ? 'batch' : 'function'}
               </span>
               <span className="ml-1 text-ink break-all">{reqLabel}</span>
@@ -57,9 +58,7 @@ export function FunctionInfoView({
         <MetaRow>
           <StatusPill label="functions" variant="accent" />
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              batch
-            </span>
+            <span className="iii-ui-eyebrow">batch</span>
             <span className="ml-1 text-ink tabular-nums">{details.length}</span>
           </Chip>
         </MetaRow>
@@ -89,22 +88,18 @@ function FunctionDetailBlock({
         <MetaRow>
           <StatusPill label="function" variant="accent" />
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              worker
-            </span>
+            <span className="iii-ui-eyebrow">worker</span>
             <span className="ml-1 text-ink">{detail.worker_name}</span>
           </Chip>
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              triggers
-            </span>
+            <span className="iii-ui-eyebrow">triggers</span>
             <span className="ml-1 text-ink tabular-nums">
               {detail.registered_triggers.length}
             </span>
           </Chip>
         </MetaRow>
       ) : null}
-      <ActionLine symbol="ƒ" tone="accent">
+      <ActionLine icon={<SquareFunction />} tone="accent">
         <span className="font-mono text-[13px] text-accent break-all">
           {detail.function_id}
         </span>
@@ -147,7 +142,7 @@ function RegisteredTriggers({
   }
   return (
     <div className="border-b border-rule-2">
-      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 iii-ui-eyebrow">
         registered triggers · {triggers.length}
       </div>
       <ul className="divide-y divide-rule-2">
@@ -160,9 +155,7 @@ function RegisteredTriggers({
               >
                 {shortenId(t.id)}
               </span>
-              <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-                {t.trigger_type}
-              </span>
+              <span className="iii-ui-eyebrow">{t.trigger_type}</span>
             </div>
             <TriggerConfig config={t.config} />
           </li>
@@ -212,7 +205,7 @@ export function SchemaSection({
   const [open, setOpen] = useState(false)
   if (schema === undefined || schema === null) {
     return (
-      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 iii-ui-eyebrow">
         {label} · none
       </div>
     )
@@ -228,7 +221,7 @@ export function SchemaSection({
         aria-expanded={open}
         disabled={pretty == null}
       >
-        <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+        <span className="iii-ui-eyebrow">
           {label}
           {isAny ? (
             <span className="ml-1.5 text-ink-faint normal-case tracking-normal">
@@ -240,7 +233,7 @@ export function SchemaSection({
           <span
             aria-hidden
             className={cn(
-              'text-ink-ghost transition-transform duration-150 inline-block text-[10px]',
+              'text-ink-ghost transition-transform duration-[var(--motion-duration-control)] inline-block text-[11px]',
               open && 'rotate-90',
             )}
           >

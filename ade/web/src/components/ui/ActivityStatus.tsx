@@ -3,6 +3,10 @@ import type * as React from 'react'
 import { Badge, type BadgeVariant } from '@/components/ui/Badge'
 import { cn } from '@/lib/utils'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export type ActivityStatusTone =
   | 'positive'
   | 'neutral'

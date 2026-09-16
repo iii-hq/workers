@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, Copy, FileText } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Cell } from '@/components/ui/Cell'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { cn } from '@/lib/utils'
 import { fetchOtelLogs, type OtelLog } from '../api/otel-logs'
@@ -47,19 +48,19 @@ const SEVERITY_STYLES: Record<SeverityTone, SeverityStyle> = {
   error: {
     label: 'ERROR',
     text: 'text-alert',
-    rail: 'border-l-2 border-l-alert',
+    rail: 'bg-alert-muted',
     cardBg: 'bg-alert/5',
   },
   warn: {
     label: 'WARN',
     text: 'text-warn',
-    rail: 'border-l-2 border-l-warn',
+    rail: 'bg-warn-muted',
     cardBg: 'bg-warn/5',
   },
   info: {
     label: 'INFO',
     text: 'text-ink',
-    rail: 'border-l-2 border-l-ink',
+    rail: 'bg-surface',
     cardBg: 'bg-bg',
   },
   debug: {
@@ -143,9 +144,7 @@ function JsonValue({ value }: { value: unknown }) {
         ) : (
           <ChevronRight className="size-4" />
         )}
-        <span className="lowercase">
-          {expanded ? 'collapse' : `${lineCount} lines`}
-        </span>
+        <span>{expanded ? 'Collapse' : `${lineCount} lines`}</span>
       </button>
       {expanded ? (
         <pre className="mt-1.5 px-3 py-2 rounded-sm bg-bg font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre-wrap break-all">
@@ -172,9 +171,7 @@ function CopyableValue({ label, value }: { label: string; value: string }) {
     >
       <span className="truncate">{value}</span>
       {isCopied ? (
-        <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
-          copied
-        </span>
+        <Eyebrow className="text-accent flex-shrink-0">copied</Eyebrow>
       ) : (
         <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
       )}
@@ -228,7 +225,7 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
           </p>
           <span
             className={cn(
-              'font-mono text-[10px] font-medium uppercase tracking-[0.06em] flex-shrink-0',
+              'font-mono text-[11px] font-medium flex-shrink-0',
               severity.text,
             )}
           >
@@ -236,7 +233,7 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
           </span>
         </div>
 
-        <div className="flex items-center gap-2 font-mono text-[10px] text-ink-faint mb-0.5 tabular-nums">
+        <div className="flex items-center gap-2 font-mono text-[11px] text-ink-faint mb-0.5 tabular-nums">
           <span className="text-ink-faint">{formatTimestamp(logMs)}</span>
           {index > 0 && (
             <span className="text-ink-ghost">{formatRelative(offsetMs)}</span>
@@ -246,7 +243,7 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
               <span aria-hidden className="text-ink-ghost">
                 ·
               </span>
-              <span className="px-1 py-0.5 rounded-xs bg-surface text-ink-faint lowercase">
+              <span className="px-1 py-0.5 rounded-xs bg-surface text-ink-faint">
                 {log.service_name}
               </span>
             </>
@@ -256,10 +253,8 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
         {metaAttrs.length > 0 && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2.5 pt-2.5 border-t border-rule-2">
             {metaAttrs.map(([key, value]) => (
-              <div key={key} className="flex items-center gap-1.5 text-[10px]">
-                <span className="text-ink-ghost font-mono lowercase">
-                  {key}
-                </span>
+              <div key={key} className="flex items-center gap-1.5 text-[11px]">
+                <span className="text-ink-ghost font-mono">{key}</span>
                 <CopyableValue label={key} value={String(value)} />
               </div>
             ))}
@@ -270,7 +265,7 @@ function LogCard({ log, index, firstLogMs }: LogCardProps) {
           <div className="mt-2.5 pt-2.5 border-t border-rule-2 flex flex-col gap-2">
             {dataAttrs.map(([key, value]) => (
               <div key={key}>
-                <span className="font-mono text-[10px] text-ink-ghost lowercase">
+                <span className="font-mono text-[11px] text-ink-ghost">
                   {key}
                 </span>
                 <div className="mt-0.5">
@@ -342,9 +337,9 @@ export function SpanOtelLogsTab({ span }: SpanOtelLogsTabProps) {
               aria-hidden
               className="w-4 h-4 text-ink-faint shrink-0 mt-0.5"
             />
-            <p className="font-mono text-[12px] text-ink-faint lowercase">
-              no log entries correlated with this span. logs appear once the
-              engine ships otel log records carrying this trace_id and span_id.
+            <p className="font-mono text-[12px] text-ink-faint">
+              No log entries correlated with this span. Logs appear once the
+              engine ships OTel log records carrying this trace_id and span_id.
             </p>
           </div>
         </Cell>
@@ -357,21 +352,21 @@ export function SpanOtelLogsTab({ span }: SpanOtelLogsTabProps) {
   return (
     <div className="p-4 flex flex-col gap-2.5">
       <div className="flex items-center justify-between px-1">
-        <span className="font-mono text-[11px] text-ink-faint tabular-nums lowercase">
+        <span className="font-mono text-[11px] text-ink-faint tabular-nums">
           {logs.length} log{logs.length !== 1 ? 's' : ''} correlated
         </span>
-        <div className="flex items-center gap-3 font-mono text-[10px] tabular-nums">
+        <div className="flex items-center gap-3 font-mono text-[11px] tabular-nums">
           {errorCount > 0 && (
-            <span className="flex items-center gap-1 text-alert uppercase tracking-[0.06em]">
+            <Eyebrow className="flex items-center gap-1 text-alert">
               <span aria-hidden className="w-1.5 h-1.5 bg-alert" />
               {errorCount} errors
-            </span>
+            </Eyebrow>
           )}
           {warnCount > 0 && (
-            <span className="flex items-center gap-1 text-warn uppercase tracking-[0.06em]">
+            <Eyebrow className="flex items-center gap-1 text-warn">
               <span aria-hidden className="w-1.5 h-1.5 bg-warn" />
               {warnCount} warnings
-            </span>
+            </Eyebrow>
           )}
         </div>
       </div>

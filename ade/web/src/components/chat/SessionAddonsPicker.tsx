@@ -18,6 +18,10 @@ import {
   toggleSkillSelection,
 } from './system-prompt-selection'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /**
  * Multi-select for the welcome screen's model-invocable skill IDs. A sibling
  * of `SystemPromptPicker`, not a generalization —

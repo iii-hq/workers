@@ -1,17 +1,3 @@
-import esbuild from 'esbuild'
+import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
 
-await esbuild.build({
-  entryPoints: ['page.tsx', 'styles.css'],
-  bundle: true,
-  format: 'esm',
-  jsx: 'automatic',
-  outdir: 'dist',
-  external: [
-    'react',
-    'react-dom',
-    'react-dom/client',
-    'react/jsx-runtime',
-    '@iii-dev/console-ui',
-  ],
-  logLevel: 'info',
-})
+await buildWorkerUi({ scope: 'provider-openai-codex' })

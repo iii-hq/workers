@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArrowRight,
   BrainCircuit,
   CircleAlert,
   CircleDashed,
@@ -23,6 +24,7 @@ import {
   type ActivityStatusMotion,
   type ActivityStatusTone,
 } from '@/components/ui/ActivityStatus'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { OpenDetailsAffordance } from '@/components/ui/OpenDetailsAffordance'
 import { useRelativeClock } from '@/hooks/use-relative-clock'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
@@ -54,6 +56,10 @@ import {
   type SubagentActivityKind,
   type SubagentActivitySignal,
 } from './subagent-activity'
+
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 interface SpawnViewProps {
   input: unknown
@@ -453,15 +459,8 @@ export function SpawnPreview({ input }: { input: unknown }) {
 
 function KvChip({ k, v, warn }: { k: string; v: ReactNode; warn?: boolean }) {
   return (
-    <Chip className={cn(warn && 'border-warn/40')}>
-      <span
-        className={cn(
-          'uppercase tracking-[0.06em]',
-          warn ? 'text-warn' : 'text-ink-faint',
-        )}
-      >
-        {k}
-      </span>
+    <Chip className={cn(warn && 'bg-warn-muted')}>
+      <Eyebrow className={warn ? 'text-warn' : undefined}>{k}</Eyebrow>
       <span className="ml-1 text-ink break-all">{v}</span>
     </Chip>
   )
@@ -528,7 +527,7 @@ function SessionLink({ sessionId }: { sessionId: string }) {
 
 function PaneHeader({ children }: { children: ReactNode }) {
   return (
-    <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
+    <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 iii-ui-eyebrow">
       {children}
     </div>
   )
@@ -564,18 +563,14 @@ function ResultPane({ output }: { output: unknown }) {
     return (
       <>
         <PaneHeader>Spawned child</PaneHeader>
-        <ActionLine symbol="→" tone="ink">
-          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mr-2">
-            session
-          </span>
+        <ActionLine icon={<ArrowRight />} tone="ink">
+          <span className="iii-ui-eyebrow mr-2">session</span>
           <span className="font-mono text-[12px]">
             <SessionLink sessionId={direct.data.child_session_id} />
           </span>
         </ActionLine>
-        <ActionLine symbol="→" tone="ink">
-          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint mr-2">
-            turn
-          </span>
+        <ActionLine icon={<ArrowRight />} tone="ink">
+          <span className="iii-ui-eyebrow mr-2">turn</span>
           <span className="font-mono text-[12px]">
             {direct.data.child_turn_id}
           </span>

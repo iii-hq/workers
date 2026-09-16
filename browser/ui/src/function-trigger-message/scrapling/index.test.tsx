@@ -7,13 +7,38 @@ import { describe, expect, it, vi } from 'vitest'
 import setup from '../../../page'
 import { createScraplingRenderer } from './index'
 
-vi.mock('@iii-dev/console-ui', () => ({
-  Badge: () => null,
-  Button: () => null,
-  Input: () => null,
-  JsonHighlight: () => null,
-  StatusDot: () => null,
-}))
+// The shared components are the running console's at runtime; here the
+// structural ones pass children through so the rendered text is inspectable.
+vi.mock('@iii-dev/console-ui', () => {
+  const passthrough = ({
+    children,
+    className,
+  }: {
+    children?: React.ReactNode
+    className?: string
+  }) => <div className={className}>{children}</div>
+  return {
+    ActionLine: passthrough,
+    Badge: passthrough,
+    Button: passthrough,
+    Card: passthrough,
+    Chip: passthrough,
+    EmptyState: () => null,
+    IconButton: passthrough,
+    Input: () => null,
+    JsonHighlight: () => null,
+    MetaRow: passthrough,
+    Skeleton: () => null,
+    StatusDot: () => null,
+    StatusPanel: () => null,
+    Table: passthrough,
+    TableBody: passthrough,
+    TableCell: passthrough,
+    TableRow: passthrough,
+    TableViewport: passthrough,
+    Toolbar: passthrough,
+  }
+})
 
 const host = {} as Host
 

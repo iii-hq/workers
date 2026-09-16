@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import * as Lucide from 'lucide-react'
 import * as React from 'react'
 import { StrictMode } from 'react'
 import * as JsxRuntime from 'react/jsx-runtime'
@@ -35,6 +36,9 @@ const bootGlobal: NonNullable<Window['__III_CONSOLE__']> = {
   ReactDOM,
   ReactDOMClient,
   JsxRuntime,
+  // The whole icon set, so `lucide-react` can stay external in worker
+  // builds too (/vendor/lucide-react.js).
+  Lucide,
   api: null,
 }
 window.__III_CONSOLE__ = bootGlobal

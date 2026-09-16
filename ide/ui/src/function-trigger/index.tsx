@@ -38,22 +38,8 @@ import {
   parseShellErrorDisplay,
   unwrapEnvelope,
 } from './parsers'
+import { FunctionIdLabel } from './shared'
 import { ShellStatusView } from './StatusView'
-
-/** Renders outside the script's scope wrapper (the card header), so it
-    uses inline token styles instead of scoped classes. */
-function ShellFunctionIdLabel({ functionId }: { functionId: string }) {
-  if (!functionId.startsWith('shell::')) {
-    return <span style={{ color: 'var(--color-ink)' }}>{functionId}</span>
-  }
-  const tail = functionId.slice('shell::'.length)
-  return (
-    <>
-      <span style={{ color: 'var(--color-ink-faint)' }}>shell::</span>
-      <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>{tail}</span>
-    </>
-  )
-}
 
 function render(message: FunctionTriggerMessage): React.ReactNode | null {
   if (!isShellFunction(message.functionId)) return null
@@ -137,6 +123,6 @@ export function createShellTriggerRenderer(): FunctionTriggerRenderer {
     /** Alias kept deliberately; running state lives inside `render`. */
     tryRenderRunning: render,
     tryRenderPreview,
-    FunctionIdLabel: ShellFunctionIdLabel,
+    FunctionIdLabel: FunctionIdLabel,
   }
 }

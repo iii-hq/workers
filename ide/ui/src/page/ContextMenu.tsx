@@ -11,6 +11,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  Kbd,
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useState } from 'react'
@@ -101,7 +102,7 @@ function ContextMenuSurface({ state, onClose }: { state: ContextMenuState; onClo
                 {item.icon}
               </span>
               <span className="menu-label">{item.label}</span>
-              {item.shortcut ? <kbd className="menu-shortcut">{item.shortcut}</kbd> : null}
+              {item.shortcut ? <Kbd className="menu-shortcut">{item.shortcut}</Kbd> : null}
             </DropdownMenuItem>
           )
         })}

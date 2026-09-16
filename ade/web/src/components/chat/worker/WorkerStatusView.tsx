@@ -1,9 +1,12 @@
+import { ChevronRight, SquareFunction } from 'lucide-react'
 import {
   ActionLine,
   Chip,
   MetaRow,
   StatusPill,
 } from '@/components/chat/sandbox/shared'
+import { eyebrowClassName } from '@/components/ui/Eyebrow'
+import { cn } from '@/lib/utils'
 import {
   safeParseRequest,
   safeParseResponse,
@@ -98,7 +101,7 @@ export function WorkerStatusView({
 
 function TitleRow({ name }: { name: string }) {
   return (
-    <ActionLine symbol="ƒ" tone="accent">
+    <ActionLine icon={<SquareFunction />} tone="accent">
       <span className="font-mono text-[13px] text-accent break-all">
         {name}
       </span>
@@ -110,7 +113,7 @@ function TitleRow({ name }: { name: string }) {
  * ActionLine, never tuck it away. */
 function HintRow({ hint }: { hint: string }) {
   return (
-    <ActionLine symbol="›" tone="ink">
+    <ActionLine icon={<ChevronRight />} tone="ink">
       <span className="font-mono text-[12.5px] text-ink break-words">
         {hint}
       </span>
@@ -121,7 +124,7 @@ function HintRow({ hint }: { hint: string }) {
 function LogsDirRow({ path }: { path: string }) {
   return (
     <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 font-mono text-[11px] text-ink-faint break-all">
-      <span className="text-[10px] mr-1">Logs</span>
+      <span className="text-[11px] mr-1">Logs</span>
       {path}
     </div>
   )
@@ -143,11 +146,7 @@ function LogPane({
   return (
     <div className="border-b border-rule-2">
       <div className="px-3 pt-2 pb-1 bg-paper-2 border-b border-rule-2">
-        <span
-          className={`font-mono text-[10px] uppercase tracking-[0.06em] ${labelTone}`}
-        >
-          {label}
-        </span>
+        <span className={cn(eyebrowClassName, labelTone)}>{label}</span>
       </div>
       {lines.length === 0 ? (
         <GhostRow label={`no ${label}`} />
@@ -182,9 +181,7 @@ function TypeChip({ workerType }: { workerType: string }) {
 function VersionChip({ version }: { version: string }) {
   return (
     <Chip>
-      <span className="text-ink-faint uppercase tracking-[0.06em]">
-        version
-      </span>
+      <span className="iii-ui-eyebrow">version</span>
       <span className="ml-1 text-ink tabular-nums">{version}</span>
     </Chip>
   )
@@ -202,7 +199,7 @@ function PidChip({ pid }: { pid: number }) {
 function InstalledChip({ installed }: { installed: boolean }) {
   return (
     <Chip>
-      <span className="uppercase tracking-[0.06em] text-ink-faint">
+      <span className="iii-ui-eyebrow">
         {installed ? 'installed' : 'not installed'}
       </span>
     </Chip>
