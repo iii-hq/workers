@@ -1022,7 +1022,10 @@ impl FsBackend for HostFsBackend {
         let entries = join
             .await
             .map_err(|e| FsError::new("S216", format!("ls task join failed: {e}")))??;
-        Ok(LsResponse { entries })
+        Ok(LsResponse {
+            entries,
+            ..Default::default()
+        })
     }
 
     async fn stat(&self, req: StatArgs) -> FsCallResult<StatResponse> {
