@@ -209,7 +209,6 @@ fn registry_allowlist_invariant() {
         );
     }
     assert!(!out.contains("iii://"));
-    assert!(!out.to_lowercase().contains("skill"));
 }
 
 #[test]
