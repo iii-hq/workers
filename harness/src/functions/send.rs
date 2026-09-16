@@ -116,6 +116,10 @@ pub struct SessionInit {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Session kind stored on creation: `user` (default), `automation` or
+    /// `e2e`. Opaque to the harness; validated by session-manager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -341,16 +345,16 @@ async fn start_with_delivery_lock(
     tag_send_span_with_message(&message);
 
     // Resolve the session (ensure if id given, else create).
-    let (title, metadata) = req
+    let (title, metadata, kind) = req
         .session
         .as_ref()
-        .map(|s| (s.title.clone(), s.metadata.clone()))
-        .unwrap_or((None, None));
+        .map(|s| (s.title.clone(), s.metadata.clone(), s.kind.clone()))
+        .unwrap_or((None, None, None));
     let metadata = session_metadata_with_agent(metadata, agent.as_ref());
     let session_id = match &req.session_id {
         Some(id) => {
             let ensured = session
-                .ensure(id, title.as_deref(), metadata.as_ref())
+                .ensure(id, title.as_deref(), metadata.as_ref(), kind.as_deref())
                 .await?;
             // Console materialises its draft before calling harness::send, so
             // ensure cannot apply the authoritative Directory snapshot on
@@ -365,7 +369,11 @@ async fn start_with_delivery_lock(
             }
             id.clone()
         }
-        None => session.create(title.as_deref(), metadata.as_ref()).await?,
+        None => {
+            session
+                .create(title.as_deref(), metadata.as_ref(), kind.as_deref())
+                .await?
+        }
     };
     tag_failed_send_with_session(
         &session_id,

@@ -202,6 +202,13 @@
       "SessionInit": {
         "description": "Session create/ensure options applied when this send creates the session.",
         "properties": {
+          "kind": {
+            "description": "Session kind stored on creation: `user` (default), `automation` or `e2e`. Opaque to the harness; validated by session-manager.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "metadata": true,
           "title": {
             "type": [

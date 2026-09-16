@@ -44,6 +44,11 @@ struct LoadedSessionMeta {
     session_id: String,
     #[serde(default)]
     metadata: Option<serde_json::Map<String, Value>>,
+    /// `user` / `automation` / `e2e`; absent on sessions written before
+    /// session-manager carried a kind. Opaque here — the harness only
+    /// carries it from a parent onto the children it creates.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -153,6 +158,25 @@ impl SessionClient {
         Ok(Some(parsed.meta.metadata.unwrap_or_default()))
     }
 
+    /// The stored kind of an existing session (`user` / `automation` /
+    /// `e2e`) — `None` when the session is unknown or predates the field.
+    /// One `session::get`; the value is passed straight back to
+    /// session-manager, never interpreted here.
+    pub async fn kind_of(&self, session_id: &str) -> Result<Option<String>, HarnessError> {
+        let response = self
+            .call("session::get", json!({ "session_id": session_id }))
+            .await?;
+        if response.is_null() {
+            return Ok(None);
+        }
+        let parsed: GetSessionResponse = serde_json::from_value(response).map_err(|error| {
+            HarnessError::Dependency(format!(
+                "session::get returned malformed metadata for {session_id}: {error}"
+            ))
+        })?;
+        Ok(parsed.meta.kind)
+    }
+
     /// Load every durable session whose metadata points at `parent_session_id`.
     /// Pagination is strict: a repeated cursor is treated as incomplete
     /// evidence instead of looping or silently truncating the tree.
@@ -224,14 +248,9 @@ impl SessionClient {
         session_id: &str,
         title: Option<&str>,
         metadata: Option<&Value>,
+        kind: Option<&str>,
     ) -> Result<EnsureSessionOutcome, HarnessError> {
-        let mut payload = json!({ "session_id": session_id });
-        if let Some(t) = title {
-            payload["title"] = json!(t);
-        }
-        if let Some(m) = metadata {
-            payload["metadata"] = m.clone();
-        }
+        let payload = init_payload(json!({ "session_id": session_id }), title, metadata, kind);
         let resp = self.call("session::ensure", payload).await?;
         parse_ensure_response(session_id, resp)
     }
@@ -241,14 +260,9 @@ impl SessionClient {
         &self,
         title: Option<&str>,
         metadata: Option<&Value>,
+        kind: Option<&str>,
     ) -> Result<String, HarnessError> {
-        let mut payload = json!({});
-        if let Some(t) = title {
-            payload["title"] = json!(t);
-        }
-        if let Some(m) = metadata {
-            payload["metadata"] = m.clone();
-        }
+        let payload = init_payload(json!({}), title, metadata, kind);
         let resp = self.call("session::create", payload).await?;
         resp.get("session_id")
             .and_then(Value::as_str)
@@ -547,6 +561,29 @@ impl SessionClient {
     }
 }
 
+/// The creation-time fields shared by `session::create` and `session::ensure`
+/// (both apply them only when they actually create the session). Absent
+/// options are OMITTED, never sent as null: session-manager's defaults —
+/// notably `kind: "user"` — must stand, and on `ensure` a null would still be
+/// a caller-supplied value the day the contract stops ignoring reuse.
+fn init_payload(
+    mut payload: Value,
+    title: Option<&str>,
+    metadata: Option<&Value>,
+    kind: Option<&str>,
+) -> Value {
+    if let Some(t) = title {
+        payload["title"] = json!(t);
+    }
+    if let Some(m) = metadata {
+        payload["metadata"] = m.clone();
+    }
+    if let Some(k) = kind {
+        payload["kind"] = json!(k);
+    }
+    payload
+}
+
 /// The `session::append` request for a bookkeeping entry. The record MUST ride
 /// the dedicated `custom` field: `session::append` only creates a
 /// `kind: "custom"` entry from it — a `role: "custom"` message wrapper is
@@ -602,6 +639,42 @@ mod tests {
             "custom records must not be message-wrapped (stored as kind: message, \
              returned with custom: None, invisible to the read-back)"
         );
+    }
+
+    // Prevents: the session kind being dropped between harness::send and
+    // session-manager (an e2e/automation run filed as a human chat), or a
+    // caller that names no kind having one invented for it.
+    #[test]
+    fn init_payload_carries_the_kind_and_omits_what_was_not_asked_for() {
+        let metadata = json!({ "parent_session_id": "s_parent" });
+        let ensure = init_payload(
+            json!({ "session_id": "s_1" }),
+            Some("child"),
+            Some(&metadata),
+            Some("e2e"),
+        );
+        assert_eq!(ensure["session_id"], "s_1");
+        assert_eq!(ensure["title"], "child");
+        assert_eq!(ensure["metadata"], metadata);
+        assert_eq!(ensure["kind"], "e2e");
+
+        let bare = init_payload(json!({}), None, None, None);
+        assert_eq!(bare, json!({}));
+    }
+
+    // Prevents: a spawn under a pre-`kind` parent (no field on the stored
+    // meta) failing the child's creation instead of taking the default.
+    #[test]
+    fn session_get_response_reads_kind_and_tolerates_its_absence() {
+        let with_kind: GetSessionResponse = serde_json::from_value(json!({
+            "meta": { "session_id": "s_1", "kind": "e2e" }
+        }))
+        .unwrap();
+        assert_eq!(with_kind.meta.kind.as_deref(), Some("e2e"));
+
+        let legacy: GetSessionResponse =
+            serde_json::from_value(json!({ "meta": { "session_id": "s_1" } })).unwrap();
+        assert_eq!(legacy.meta.kind, None);
     }
 
     #[test]
