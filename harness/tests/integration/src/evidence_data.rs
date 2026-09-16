@@ -15,6 +15,10 @@ pub struct RunEvidence {
     pub send_response: Option<Value>,
     /// Final `harness::status` report (JSON null when the session is unknown).
     pub status: Value,
+    /// Final `harness::metrics` report for the session's tree (JSON null when
+    /// the call failed). `complete` is the watchdog's own terminality
+    /// verdict — what an external runner polls to decide a run is over.
+    pub metrics: Value,
     /// All transcript `MessageItem`s across pages, in order.
     pub transcript: Vec<Value>,
     pub generations_consumed: u64,
@@ -339,6 +343,7 @@ mod tests {
                 "pending_function_calls": [],
                 "children": []
             }),
+            metrics: Value::Null,
             transcript: Vec::new(),
             generations_consumed: 1,
             generations_total: 1,

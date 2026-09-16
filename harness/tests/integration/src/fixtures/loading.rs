@@ -79,6 +79,12 @@ pub enum ScenarioIntervention {
 #[derive(Debug, Clone)]
 pub struct ProbeAction {
     pub after_turns: usize,
+    /// Count PARKED completions (`terminal: false` — the session still owns
+    /// an armed wake) toward `after_turns` as well as terminal ones. The
+    /// park-then-external-write shape needs it: the writer must run only
+    /// after the arming turn has parked, and a parked turn never becomes
+    /// terminal on its own.
+    pub count_parked: bool,
     /// Additionally wait until the controlled function served this many
     /// invocations (probe-side, whole-run) before firing. The only ordering
     /// signal an UNTRACKED session can emit: e.g. fire the next action only

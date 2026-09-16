@@ -43,6 +43,12 @@ impl ScenarioRunner<'_> {
         )?;
         self.write_artifact(
             &prepared.scenario.id,
+            "metrics.json",
+            &active.final_metrics,
+            phase,
+        )?;
+        self.write_artifact(
+            &prepared.scenario.id,
             "control.json",
             &active.control,
             phase,
@@ -105,6 +111,7 @@ impl ScenarioRunner<'_> {
             turn_id: active.turn_id.clone(),
             send_response,
             status: active.final_status.clone(),
+            metrics: active.final_metrics.clone(),
             transcript: active.transcript.clone(),
             generations_consumed: services.router().generations_consumed(),
             generations_total: services.router().total_generations(),

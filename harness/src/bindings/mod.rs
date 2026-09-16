@@ -17,6 +17,7 @@
 pub(crate) mod compose;
 pub mod expiry;
 pub mod gc;
+pub mod state_wake;
 mod store;
 
 pub use store::{

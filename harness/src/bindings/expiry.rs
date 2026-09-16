@@ -8,6 +8,11 @@
 //! * a lineage session unregisters it out from under the parked owner
 //!   (`engine::unregister_trigger` from a child cleaning up the run).
 //!
+//! The same sweep also re-checks every still-armed one-shot keyed state
+//! binding against its key's current value ([`super::state_wake`]): a write
+//! that landed in the provider's activation window is delivered with at most
+//! one sweep interval of delay instead of never.
+//!
 //! Both end in [`notify_wake_lost`]: a `[notification]` message into the
 //! session the wake would have delivered to, plus the same durable
 //! `trigger_fired` record every other delivery outcome writes — so the
@@ -24,6 +29,7 @@ use serde_json::{json, Value};
 
 use super::Binding;
 use crate::deps::Deps;
+use crate::functions::send::LockHeld;
 use crate::subscriptions::fired;
 use crate::types::message::AgentMessage;
 
@@ -71,6 +77,15 @@ pub async fn sweep(deps: &Deps) -> usize {
         super::compose::schedule(deps, binding);
     }
     let now = AgentMessage::now_ms();
+    // A one-shot keyed state binding still armed here may be waiting on a
+    // key that was written inside the provider's activation window, or
+    // behind a registration-time read that failed (`state_wake` module doc).
+    // Re-check every sweep: a read per armed binding is cheap, a null read is
+    // free of side effects, and the delivery hop's claim keeps a racing live
+    // fire exactly-once. Exhausted bindings belong to the retirement below.
+    for binding in bindings.iter().filter(|b| !b.is_exhausted(now)) {
+        super::state_wake::catch_up(deps, binding).await;
+    }
     let mut retired = 0usize;
     for binding in bindings.into_iter().filter(|b| b.is_exhausted(now)) {
         // Delete FIRST, but only while the record still equals the listed
@@ -127,6 +142,17 @@ pub enum WakeLost<'a> {
 /// down, re-arm) and a `trigger_fired` record in the owner's timeline. Both
 /// best-effort; the binding is already retired either way.
 pub async fn notify_wake_lost(deps: &Deps, binding: &Binding, cause: WakeLost<'_>) {
+    notify_wake_lost_holding(deps, binding, cause, LockHeld::default()).await;
+}
+
+/// [`notify_wake_lost`] from a caller that may already hold the destination
+/// session's turn lock (the delivery hop, invoked inline by a registration).
+pub async fn notify_wake_lost_holding(
+    deps: &Deps,
+    binding: &Binding,
+    cause: WakeLost<'_>,
+    held: LockHeld<'_>,
+) {
     let session_id = wake_session(binding);
     let message = AgentMessage::user_text(wake_lost_text(binding, &cause));
     // One expiry per binding ever (the delete claimed it), so the entry ids
@@ -134,12 +160,13 @@ pub async fn notify_wake_lost(deps: &Deps, binding: &Binding, cause: WakeLost<'_
     // real fire's `e_fire_*`/`e_trigfired_*` pair (session-manager dedups on
     // entry ids).
     let wake_entry_id = format!("e_expire_{}", binding.id);
-    if let Err(e) = crate::functions::send::inject(
+    if let Err(e) = crate::functions::send::inject_holding(
         deps,
         session_id,
         message,
         Some(&wake_entry_id),
         Some(&json!({ "notification": true, "binding": binding.id })),
+        held,
     )
     .await
     {
@@ -166,9 +193,15 @@ pub async fn notify_wake_lost(deps: &Deps, binding: &Binding, cause: WakeLost<'_
 /// wake path deliberately delegates to `notify_wake_lost`, which already
 /// emits exactly one notification and one retirement record.
 pub async fn report_expired_retirement(deps: &Deps, binding: &Binding) {
+    report_expired_retirement_holding(deps, binding, LockHeld::default()).await;
+}
+
+/// [`report_expired_retirement`] from a caller that may already hold the
+/// wake's destination session lock.
+pub async fn report_expired_retirement_holding(deps: &Deps, binding: &Binding, held: LockHeld<'_>) {
     match expired_retirement_mode(binding) {
         ExpiredRetirementMode::NotifyAndRecord => {
-            notify_wake_lost(deps, binding, WakeLost::Expired).await;
+            notify_wake_lost_holding(deps, binding, WakeLost::Expired, held).await;
         }
         ExpiredRetirementMode::RecordOnly => {
             let note = format!(
