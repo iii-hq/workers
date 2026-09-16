@@ -36,11 +36,11 @@ use crate::config::{
     origin_label, origin_policy_config_key_for, origin_policy_for, BrowserEngine, SharedConfig,
     WorkerConfig,
 };
-use crate::functions::doctor;
 use crate::events::{
     Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, FrameEventPayload,
     NavigatedEvent, PickedElement, PickedEvent, SessionStoppedEvent, SessionUpdatedEvent,
 };
+use crate::functions::doctor;
 
 /// Truncation caps for values that end up in ring buffers and event
 /// payloads — a page can log megabytes; the model reads a summary.
@@ -1545,7 +1545,8 @@ impl Sessions {
                     Some(headful) => !headful,
                     None => cfg.headless,
                 };
-                let (browser, handler) = launch_chromium(&cfg, headless, &self.profile_dir()).await?;
+                let (browser, handler) =
+                    launch_chromium(&cfg, headless, &self.profile_dir()).await?;
                 (browser, handler, None, headless)
             }
             BrowserEngine::Lightpanda => {
@@ -2478,7 +2479,10 @@ fn reap_orphan_lightpanda(profile: &std::path::Path) {
     if !command.contains("lightpanda") || !command.contains(&*profile.to_string_lossy()) {
         return;
     }
-    tracing::warn!(pid, "reaping an orphaned lightpanda serve from a previous run");
+    tracing::warn!(
+        pid,
+        "reaping an orphaned lightpanda serve from a previous run"
+    );
     // SAFETY: plain libc call on a pid we just verified runs lightpanda on
     // our own profile directory.
     unsafe {

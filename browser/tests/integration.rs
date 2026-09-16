@@ -848,7 +848,10 @@ async fn lightpanda_engine_drives_the_dom_surface() {
             timeout_ms: Some(10_000),
         })
         .await;
-    assert!(screencast.is_err(), "screencast unexpectedly started: {screencast:?}");
+    assert!(
+        screencast.is_err(),
+        "screencast unexpectedly started: {screencast:?}"
+    );
 
     let doctor = call("browser::doctor", json!({}), 10_000).await;
     assert_eq!(doctor["browser_running"], true, "{doctor}");

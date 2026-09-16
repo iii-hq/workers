@@ -130,8 +130,7 @@ pub fn missing_executable_issue(cfg: &WorkerConfig) -> DoctorIssue {
                 .to_string(),
         },
         BrowserEngine::Lightpanda => DoctorIssue {
-            what: configured
-                .unwrap_or_else(|| "no `lightpanda` binary found on PATH".to_string()),
+            what: configured.unwrap_or_else(|| "no `lightpanda` binary found on PATH".to_string()),
             enable_how: "install it with `brew install lightpanda-io/browser/lightpanda` or \
                          download the nightly binary from \
                          https://github.com/lightpanda-io/browser/releases/tag/nightly and \

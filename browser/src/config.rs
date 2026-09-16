@@ -494,8 +494,8 @@ mod tests {
         let c = WorkerConfig::from_json(&serde_json::json!({ "engine": "lightpanda" })).unwrap();
         assert_eq!(c.engine, BrowserEngine::Lightpanda);
         assert_eq!(c.to_json()["engine"], "lightpanda");
-        let error = WorkerConfig::from_json(&serde_json::json!({ "engine": "firefox" }))
-            .unwrap_err();
+        let error =
+            WorkerConfig::from_json(&serde_json::json!({ "engine": "firefox" })).unwrap_err();
         assert!(error.contains("unknown variant `firefox`"), "{error}");
     }
 
