@@ -110,7 +110,9 @@ export function DropdownMenuSeparator({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Separator>) {
   return (
     <DropdownMenuPrimitive.Separator
-      className={cn('-mx-1 my-1 h-px bg-edge', className)}
+      /* Softer than the panel edge: a 5% ink hairline is enough to part two
+         blocks inside a raised surface without reading as a rule. */
+      className={cn('-mx-1 my-1 h-px bg-ink/5', className)}
       {...props}
     />
   )
