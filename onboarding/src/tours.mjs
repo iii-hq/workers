@@ -11,6 +11,12 @@
  *   - `ask` (optional): a prompt the step's button puts in the chat composer
  *     and sends, so the operator talks to the agent instead of copying text
  *     out of the tour.
+ *   - `agent` (optional): an agent profile the step's prompt goes to, in a
+ *     chat of its own rather than the one the tour started in. The worker
+ *     sends it (`onboarding::steps::ask`), so the profile is resolved against
+ *     the directory at the moment the button is pressed — by id, then by
+ *     name, then the bundled fallback — and every later step naming an agent
+ *     lands in the same session.
  *   - `on_closed` (optional): a console screen the step suggests closing, and
  *     the body and anchor to show once it is gone. The page watches the
  *     console's own configuration entry — the workspace layout lives there,
@@ -25,8 +31,9 @@
 /**
  * @typedef {{ type: string, config: Record<string, unknown>, label: string, hint?: string, prompt?: string }} Condition
  * @typedef {{ text: string, label: string }} Ask
+ * @typedef {{ id: string, name: string }} Agent
  * @typedef {{ screen: string, body: string, anchors?: string[] }} OnClosed
- * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string, ask?: Ask, on_closed?: OnClosed }} Step
+ * @typedef {{ id: string, title: string, body: string, anchors?: string[], condition?: Condition, screen?: string, ask?: Ask, agent?: Agent, on_closed?: OnClosed }} Step
  * @typedef {{ id: string, title: string, description: string, steps: Step[] }} Tour
  */
 
@@ -35,6 +42,14 @@
  * steps below wait on.
  */
 const STATE_SCOPE = 'onboarding'
+
+/**
+ * The profile the build half of the tour runs under. Named by id AND by
+ * display name: the profiles are files in a folder an operator can rename at
+ * any time, so the worker takes whichever still matches and falls back to a
+ * bundled profile when neither does.
+ */
+const TECH_LEAD = { id: 'tech-lead', name: 'Tech Lead' }
 
 /**
  * A step the AGENT finishes, not the operator.
@@ -138,12 +153,13 @@ export const TOURS = [
       }),
       agentStep({
         id: "extensibility",
+        agent: TECH_LEAD,
         ask: {
-          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes). Open the page for me when it is done.",
+          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Delegate the work to subagents and review what they hand back. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes). Open the page for me when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Great! Now let's use that database worker. Ask the agent to create a simple CRUD app like a TODO list and to create console injectable UI for it as well and to open it for you when it's done. Since we're going to build and open our very own worker we can make room by closing the Traces panel (optional).",
+        body: "Great! Now let's use that database worker. This one is a build, so it goes to the Tech Lead in a chat of its own — a second agent profile, with its own prompt and its own subagents to hand the work to. The rest of the tour carries on in that chat. Since we're going to build and open our very own worker we can make room by closing the Traces panel (optional).",
         // The close is an invitation, not a requirement: the step closes
         // when the agent reports done. When the operator does take it, the
         // page swaps in this note so dropping the panel is never a dead end.
@@ -157,6 +173,7 @@ export const TOURS = [
       }),
       agentStep({
         id: "reactivity",
+        agent: TECH_LEAD,
         ask: {
           text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off by the user, not you the agent.",
           label: "Ask the agent",
@@ -174,6 +191,7 @@ export const TOURS = [
       },
       {
         id: "clean-up",
+        agent: TECH_LEAD,
         ask: {
           text: "Remove the onboarding worker from this project, then close the onboarding pane.",
           label: "Ask the agent",

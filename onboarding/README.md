@@ -19,6 +19,7 @@ Three parts:
 - `onboarding::progress::get` — the status of every step per tour, with the trigger evidence that closed it, plus the next tour to offer.
 - `onboarding::steps::complete` — mark one step complete. Pass `fired` when a trigger closed it; its type and payload are kept as evidence. The first time a step closes, it is also announced on the `onboarding:steps:complete` topic (see Events).
 - `onboarding::steps::reset` — forget one tour and start it again.
+- `onboarding::steps::ask` — send one step's prompt to the agent profile that step names, in a chat of its own (see Agent steps).
 - `onboarding::subscribe` — add an email address to the iii product-update list (the last step's signup box; the POST happens here, never in the browser).
 
 Progress is written with `state::update` and its ordered atomic ops, never
@@ -120,6 +121,28 @@ links to Discord, GitHub, X and LinkedIn, and a link to the docs. After it,
 "Clean up" asks the agent to remove this worker and close the pane — the same
 composition move as adding one, run backwards. It carries no condition: the
 worker that would report the step done is the worker being removed.
+
+### Agent steps
+
+From the Extensibility step onward the tour is a build, and the build runs
+under its own agent profile: the `tech-lead` one, with the subagents it
+hands work to. An identity can only be given to a session as that session is
+CREATED — `harness::send` refuses `options.agent` on an existing one — so the
+handover is a new chat rather than a change of clothes in the old one. Steps
+1–6 stay in the chat the tour started in; step 7 opens the second chat, and
+every later step with a prompt steers that same session.
+
+The page cannot make that send: `host.chat.compose` hands text to whichever
+conversation is mounted, with no way to name another. So a step carrying an
+`agent` calls `onboarding::steps::ask` instead, and the worker sends. The
+session id is kept in state under `chat:<subject>:<tour>`; a stored session
+the harness no longer has simply opens a new one.
+
+The profile is resolved at the moment of the send, by id, then by display
+name, then `iii-minimal` — the profiles are files in a folder an operator can
+rename or delete between one step and the next, and a tour that stopped to
+report a missing identity would be a worse tour than one that carried on
+under the bundled profile. The fallback is silent by design.
 
 The Observability step takes two clicks. The first places the traces panel
 beside the tour; the button then becomes a green, briefly pulsing `Continue`,

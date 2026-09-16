@@ -169,3 +169,23 @@ test('findStep numbers steps from 1 in tour order', () => {
   assert.equal(findStep('no-such-tour', 'message'), undefined)
   assert.equal(findStep(TOURS[0].id, 'no-such-step'), undefined)
 })
+
+/**
+ * The tour hands over to the Tech Lead at the build, and never hands back:
+ * every step from there on goes to the same chat, and every step before it
+ * stays in the one the tour started in.
+ */
+test('the build half of console-basics runs under one agent profile', () => {
+  const steps = getTour('console-basics').steps
+  const handover = steps.findIndex((step) => step.id === 'extensibility')
+  assert.ok(handover > 0, 'extensibility is no longer a step')
+
+  for (const step of steps.slice(0, handover)) {
+    assert.equal(step.agent, undefined, `${step.id}: sends before the handover`)
+  }
+  for (const step of steps.slice(handover)) {
+    // A step with nothing to ask has nowhere to send it.
+    if (!step.ask) continue
+    assert.deepEqual(step.agent, { id: 'tech-lead', name: 'Tech Lead' }, `${step.id}: not sent to the Tech Lead`)
+  }
+})

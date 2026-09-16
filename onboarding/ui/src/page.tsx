@@ -64,6 +64,9 @@ interface Step {
   screen?: string
   /** A prompt the step hands to the chat composer and sends. */
   ask?: { text: string; label: string }
+  /** An agent profile the step's prompt goes to, in a chat of its own. The
+      worker does that send; the page only places the chat it names. */
+  agent?: { id: string; name: string }
   /** A screen the step suggests closing, with what to show once it is gone. */
   on_closed?: { screen: string; body: string; anchors?: string[] }
 }
@@ -226,7 +229,39 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
    */
   const ask = useCallback(
     (step: Step) => {
-      if (!step.ask) return
+      if (!step.ask || !tour) return
+      // A step that names an agent profile is not this chat's to send: an
+      // identity can only be given to a session as it is created, so the
+      // worker opens one under that profile and steers it on every later
+      // step. The page places the chat beside the tour and nothing else.
+      if (step.agent) {
+        // The fallback model, used only when the profile names none: the one
+        // the operator is already talking to, rather than a default this page
+        // would have to guess at.
+        const model = host.chat?.composerModel?.(conversationId)
+        void host.iii
+          .trigger<{ session_id: string }>('onboarding::steps::ask', {
+            tour_id: tour.id,
+            step_id: step.id,
+            ...(model ? { model } : {}),
+          })
+          .then(({ session_id }) => {
+            // Best effort: the turn is running either way, and an older
+            // console that refuses the placement still has the chat in its
+            // sidebar.
+            void host.iii
+              .trigger('console::workspace::open', {
+                screen: 'chat',
+                session_id,
+                relative_to: 'ext:onboarding',
+                direction: 'left',
+              })
+              .catch(() => {})
+            if (!step.condition) complete(step.id)
+          })
+          .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+        return
+      }
       if (!host.chat?.compose) {
         setError('This console is too old to send a prompt for you. Type it in the chat instead.')
         return
@@ -244,7 +279,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
       host.chat.compose({ text: step.ask.text, submit: true })
       if (!step.condition) complete(step.id)
     },
-    [complete, conversationId, host],
+    [complete, conversationId, host, tour],
   )
 
   // Every step that is still open for business gets its condition bound, so a
