@@ -199,6 +199,7 @@ impl SessionService {
             description: req.description.unwrap_or_default(),
             status: SessionStatus::Idle,
             status_reason: None,
+            kind: req.kind.unwrap_or_default(),
             metadata: req.metadata,
             forked_from: None,
             draft: None,
@@ -244,6 +245,7 @@ impl SessionService {
             description: req.description.unwrap_or_default(),
             status: SessionStatus::Idle,
             status_reason: None,
+            kind: req.kind.unwrap_or_default(),
             metadata: req.metadata,
             forked_from: None,
             draft: None,
@@ -279,6 +281,9 @@ impl SessionService {
         let mut metas = self.store.list_metas().await?;
         if let Some(status) = req.status {
             metas.retain(|m| m.status == status);
+        }
+        if let Some(kinds) = &req.kinds {
+            metas.retain(|m| kinds.contains(&m.kind));
         }
         if let Some(want) = &req.metadata {
             metas.retain(|m| metadata_matches(want, m.metadata.as_ref()));
@@ -1392,6 +1397,8 @@ impl SessionService {
             description: source.description.clone(),
             status: SessionStatus::Idle,
             status_reason: None,
+            // A fork of an automation/e2e run is still that kind of run.
+            kind: source.kind,
             // Tenancy propagates: the fork belongs to the same owner.
             metadata: source.metadata.clone(),
             forked_from: Some(req.session_id.clone()),

@@ -441,6 +441,19 @@ pub enum SessionStatus {
     Error,
 }
 
+/// Who a session is for. `user` (the default) is a human-facing chat — what the
+/// console lists by default; `automation` is a machine-driven run; `e2e` is a
+/// session created by an end-to-end suite (harness-e2e). Consumers filter on it
+/// (`session::list` `kinds`); the store never changes behaviour on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    #[default]
+    User,
+    Automation,
+    E2e,
+}
+
 /// A session's metadata record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionMeta {
@@ -451,6 +464,11 @@ pub struct SessionMeta {
     /// Short lifecycle detail retained on `working`, `done`, and `error`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<String>,
+    /// Who the session is for (`user` by default, `automation`, `e2e`). Fixed
+    /// at creation — `session::set-meta` never changes it. Records written
+    /// before this field existed read back as `user`.
+    #[serde(default)]
+    pub kind: SessionKind,
     /// App-defined; the tenancy hook (e.g. `{ "owner": "u_1" }`) that
     /// `session::list` and every trigger config can filter on.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -655,6 +673,7 @@ mod tests {
             description: String::new(),
             status: SessionStatus::Idle,
             status_reason: None,
+            kind: SessionKind::User,
             metadata: None,
             forked_from: None,
             draft: None,
@@ -669,5 +688,43 @@ mod tests {
         assert!(v.get("metadata").is_none());
         assert!(v.get("forked_from").is_none());
         assert!(v.get("draft").is_none());
+        // Always on the wire: consumers switch on it without an `?? "user"`.
+        assert_eq!(v["kind"], "user");
+    }
+
+    #[test]
+    fn session_kind_wire_strings_round_trip() {
+        for (kind, wire) in [
+            (SessionKind::User, "user"),
+            (SessionKind::Automation, "automation"),
+            // `e2e`, not `e2_e`: consumers (harness-e2e) hardcode this string.
+            (SessionKind::E2e, "e2e"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(wire));
+            assert_eq!(
+                serde_json::from_value::<SessionKind>(json!(wire)).unwrap(),
+                kind
+            );
+        }
+        assert_eq!(SessionKind::default(), SessionKind::User);
+        assert!(serde_json::from_value::<SessionKind>(json!("robot")).is_err());
+    }
+
+    #[test]
+    fn legacy_meta_without_kind_reads_as_user() {
+        // JSONL meta records written before `kind` existed must still load —
+        // a hard deserialize error here would strand whole sessions.
+        let meta: SessionMeta = serde_json::from_value(json!({
+            "session_id": "s1",
+            "title": "t",
+            "description": "d",
+            "status": "idle",
+            "created_at": 1,
+            "updated_at": 1,
+            "message_count": 0
+        }))
+        .unwrap();
+        assert_eq!(meta.kind, SessionKind::User);
+        assert_eq!(serde_json::to_value(&meta).unwrap()["kind"], "user");
     }
 }

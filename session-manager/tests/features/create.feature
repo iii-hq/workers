@@ -23,9 +23,35 @@ Feature: session::create — create a session at status idle
     And the response field "meta.message_count" is 0
     And the response field "meta.created_at" is 1000000
     And the response field "meta.updated_at" is 1000000
+    And the response field "meta.kind" is "user"
     And the response has no field "meta.metadata"
     And the response has no field "meta.forked_from"
     And the response has no field "meta.status_reason"
+
+  # Prevents: machine-made sessions being indistinguishable from human
+  # chats — a caller that asks for a kind and gets "user" back would file
+  # an e2e run in the console's human inbox.
+  Scenario: an explicit kind is persisted on the session
+    When I call "session::create" with:
+      """
+      { "kind": "e2e" }
+      """
+    Then the call succeeds
+    And the response field "meta.kind" is "e2e"
+    When I call "session::get" with:
+      """
+      { "session_id": "s_001" }
+      """
+    Then the response field "meta.kind" is "e2e"
+
+  # Prevents: a typo'd kind being coerced to the default instead of
+  # failing — the session would silently land in the wrong bucket.
+  Scenario: an unknown kind is rejected
+    When I call "session::create" with:
+      """
+      { "kind": "robot" }
+      """
+    Then the call fails with code "invalid request"
 
   # Prevents: dropping caller-supplied title/description/metadata on the
   # floor — metadata is the tenancy hook every filter relies on.

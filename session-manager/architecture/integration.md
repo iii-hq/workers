@@ -93,9 +93,13 @@ type SessionEntry =                       // what get_message returns
   | { kind: "custom";  id: string; parent_id: string | null; timestamp: number;
       revision: number; origin?: Record<string, unknown>; custom_type: string; data: unknown };
 
+type SessionKind = "user" | "automation" | "e2e";
+
 type SessionMeta = {
   session_id: string; title: string; description: string;
   status: SessionStatus; status_reason?: string;
+  kind: SessionKind;                      // who the session is for; fixed at creation
+                                          // ("user" for records written before it existed)
   metadata?: Record<string, unknown>;     // app-defined; THE tenancy hook
   forked_from?: string;                   // set on sessions created by fork
   draft?: string;                         // unsent composer input (set-draft only)
@@ -122,24 +126,27 @@ session-manager` / `get function info`); the shapes below are the contract.
 
 ```typescript
 // session::create — new session at status "idle". Fires session::created.
-{ title?, description?, metadata? } -> { session_id, meta: SessionMeta }
+{ title?, description?, metadata?, kind? } -> { session_id, meta: SessionMeta }
+//   kind: "user" (default) | "automation" | "e2e"; unknown values are rejected
 
 // session::ensure — idempotently ensure a caller-chosen id exists.
 // Creates (and fires session::created) only when missing; otherwise a pure
-// read: created=false, title/description/metadata are NOT applied.
-{ session_id, title?, description?, metadata? } -> { session_id, meta, created: boolean }
+// read: created=false, title/description/metadata/kind are NOT applied.
+{ session_id, title?, description?, metadata?, kind? } -> { session_id, meta, created: boolean }
 
 // session::get — null when unknown.
 { session_id } -> { meta } | null
 
 // session::list — pagination + filters.
-{ limit?, cursor?, status?, metadata?, order? } -> { sessions: SessionMeta[], next_cursor? }
+{ limit?, cursor?, status?, metadata?, order?, kinds? } -> { sessions: SessionMeta[], next_cursor? }
 //   order: "created_asc" | "created_desc" | "updated_desc" (default)
 //   metadata: subset-equality against SessionMeta.metadata (every given key must match)
+//   kinds: SessionKind[]; omit for every kind, [] matches nothing
 
 // session::set-meta — supplied fields replace; metadata replaces WHOLESALE.
 // Fires session::meta-updated (all-fields-absent request is a silent no-op).
-// Never touches SessionMeta.draft (that is session::set-draft's field).
+// Never touches SessionMeta.draft (that is session::set-draft's field) nor
+// SessionMeta.kind (fixed at creation).
 { session_id, title?, description?, metadata? } -> { meta }
 
 // session::set-draft — text and attachment ids; park (or clear) the session's unsent composer input,
@@ -259,7 +266,7 @@ events keep appending at the tail as before.
 ```typescript
 // session::fork — copy-on-fork: copies the root -> entry_id path (custom
 // entries included) into a NEW session with fresh entry ids, structure
-// preserved, revisions reset to 0, source metadata copied, forked_from set,
+// preserved, revisions reset to 0, source metadata and kind copied, forked_from set,
 // active leaf = the copy of entry_id. Fully independent afterwards. Fires
 // session::created (with forked_from). title defaults to the source's.
 { session_id, entry_id, title? } -> { session_id, meta }

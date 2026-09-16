@@ -175,7 +175,7 @@ mod tests {
 
     use crate::events::{EventDeliverer, EventKind, TriggerSets};
     use crate::store::FsStore;
-    use crate::types::{AgentMessage, SessionStatus};
+    use crate::types::{AgentMessage, SessionKind, SessionStatus};
 
     /// Records the (trigger_type, payload) of every delivery for assertions.
     struct RecordingDeliverer {
@@ -213,6 +213,7 @@ mod tests {
             description: "d".to_string(),
             status: SessionStatus::Idle,
             status_reason: None,
+            kind: SessionKind::User,
             metadata: None,
             forked_from: None,
             draft: None,
