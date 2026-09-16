@@ -159,7 +159,7 @@ export const TOURS = [
           label: "Ask the agent",
         },
         title: "Extensibility",
-        body: "Great! Now let's use that database worker. This one is a build, so it goes to the Tech Lead in a chat of its own — a second agent profile, with its own prompt and its own subagents to hand the work to. The rest of the tour carries on in that chat. Since we're going to build and open our very own worker we can make room by closing the Traces panel (optional).",
+        body: "Great! Now let's use that database worker. This one is a build, so we'll give it to the Tech Lead profile in a new chat of its own. The Tech Lead, like all agent profiles, comes with its own prompt and its own subagents to hand the work to.\n\nSince we're going to build and open our very own worker we can make room by closing the Traces panel (optional).",
         // The close is an invitation, not a requirement: the step closes
         // when the agent reports done. When the operator does take it, the
         // page swaps in this note so dropping the panel is never a dead end.

@@ -46,6 +46,9 @@ const TOUR_THINKING_LEVEL = 'minimal'
  */
 const OPEN_TIMEOUT_MS = 8_000
 
+/** How long the box stays on what a step's `on_closed` note points at. */
+const HINT_SPOTLIGHT_MS = 5_000
+
 /** Console class recipes, with a literal fallback for an older build that
     does not publish them. */
 const ui = uiClasses ?? {
@@ -255,8 +258,15 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                 session_id,
                 relative_to: 'ext:onboarding',
                 direction: 'left',
+                activate: true,
               })
               .catch(() => {})
+            // The pane is placed; this is what moves the operator INTO it.
+            // The tour has just handed the work to another identity, and a
+            // chat that has to be found in the sidebar first reads as a
+            // prompt that went nowhere. Feature-detected: an older console
+            // still has the conversation, one click away.
+            host.chat?.selectConversation?.(session_id)
             if (!step.condition) complete(step.id)
           })
           .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
@@ -356,12 +366,24 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   /**
    * The box frames whatever step is open, and leaves with the page. A step
    * whose `on_closed` screen is gone points at what brings it back instead
-   * of at the empty space where it used to be.
+   * of at the empty space where it used to be — for a few seconds, and then
+   * the box goes back to the step. That hint answers one question ("where did
+   * the panel go?"), and a box that stays lit long after it is answered is
+   * just something on the screen the operator cannot turn off.
    */
+  const hinting = Boolean(openStep?.on_closed && closed === openStep.on_closed.screen)
+  const [hintDone, setHintDone] = useState(false)
+  useEffect(() => {
+    if (!hinting) {
+      setHintDone(false)
+      return
+    }
+    setHintDone(false)
+    const timer = setTimeout(() => setHintDone(true), HINT_SPOTLIGHT_MS)
+    return () => clearTimeout(timer)
+  }, [hinting])
   const framed =
-    openStep?.on_closed && closed === openStep.on_closed.screen
-      ? (openStep.on_closed.anchors ?? null)
-      : (openStep?.anchors ?? null)
+    hinting && !hintDone ? (openStep?.on_closed?.anchors ?? null) : (openStep?.anchors ?? null)
   useEffect(() => {
     showSpotlight(framed)
     return hideSpotlight
@@ -444,7 +466,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
               </button>
               {isOpen ? (
                 <div className="ob-open flex flex-col gap-3 px-4 pb-4 pl-11">
-                  <p className="m-0 text-base leading-relaxed text-ink text-pretty">{step.body}</p>
+                  <p className="m-0 whitespace-pre-line text-base leading-relaxed text-ink text-pretty">{step.body}</p>
                   {step.condition?.prompt && state !== 'complete' ? (
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
