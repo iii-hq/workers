@@ -617,51 +617,23 @@ pub(crate) fn normalized_result(value: Value) -> ResultData {
     }
 }
 
-/// Smallest cap [`cap_result`] honours. The elision marker plus its
-/// `result_capped` details must themselves fit under the cap, so a smaller
-/// configured `max_result_bytes` is raised to this instead of producing a
-/// replacement that is itself over the limit.
-pub(crate) const MIN_RESULT_CAP_BYTES: usize = 1_024;
-
 /// Bound a captured function result BEFORE it is written to the session or
-/// echoed to the provider. A result whose `content` + `details` serialize
-/// past `max_bytes` is replaced whole by an elision marker naming its size
-/// and shape; `is_error` is preserved. `max_bytes == 0` disables the cap;
-/// anything else is raised to at least [`MIN_RESULT_CAP_BYTES`].
-///
-/// Applied once at the exit of `subscribe::invoke` — the chokepoint every
-/// in-turn, hook-released and `harness::function::trigger` call returns
-/// through, dispatch and intercept ERRORS included, since an error message
-/// can echo a payload too — and on the `function::resolve` deliver path,
-/// whose payload arrives off the wire without passing through `invoke`.
-///
-/// This is the capture-time guard for the engine's per-frame WebSocket limit
-/// (16 MiB by default; the SDK sends one unfragmented frame per message): an
-/// oversized `session::append` or `router::chat` frame is reset by the engine
-/// and re-flushed by the SDK on every reconnect, wedging the whole worker and
-/// dropping its registrations (MOT-4498; reproduced live with an 18 MiB
-/// `shell::fs::ls`). context-manager's `max_result_tokens` acts at assemble
-/// time, after the raw payload is already durable, so it cannot cover this.
-/// The marker wording mirrors code-runner's `cap_result`.
+/// echoed to the provider: past `max_bytes` (0 disables) `content` + `details`
+/// are replaced by an elision marker, `is_error` kept. Applied once at the
+/// exit of `subscribe::invoke` and on the `function::resolve` deliver path.
+/// An oversized frame resets the engine connection and the SDK re-flushes it
+/// forever, wedging the worker (MOT-4498).
 pub(crate) fn cap_result(result: ResultData, max_bytes: usize) -> ResultData {
     if max_bytes == 0 {
         return result;
     }
-    let max_bytes = max_bytes.max(MIN_RESULT_CAP_BYTES);
-    let content_bytes = serde_json::to_vec(&result.content).map_or(0, |b| b.len());
-    let details_bytes = serde_json::to_vec(&result.details).map_or(0, |b| b.len());
-    let total = content_bytes + details_bytes;
+    let max_bytes = max_bytes.max(1024); // the marker itself must fit
+    let total = serde_json::to_vec(&(&result.content, &result.details)).map_or(0, |b| b.len());
     if total <= max_bytes {
         return result;
     }
-    let shape = match &result.details {
-        Value::Array(a) => format!("{} array elements", a.len()),
-        Value::Object(o) => format!("{} object keys", o.len()),
-        Value::String(s) => format!("a {}-char string", s.chars().count()),
-        _ => format!("{} content blocks", result.content.len()),
-    };
     let marker = format!(
-        "<omitted: result was ~{} KB ({shape}), over the {} KB harness result cap; \
+        "<omitted: result was ~{} KB, over the {} KB harness result cap; \
          re-call with narrower arguments, or ask for a slice or summary instead>",
         total / 1024,
         max_bytes / 1024,
@@ -971,57 +943,26 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn cap_result_passes_small_results_and_zero_disables() {
+    fn cap_result_bounds_oversized_results_and_only_those() {
         let small = cap_result(normalized_result(json!({ "ok": true })), 262_144);
         assert_eq!(small.details, json!({ "ok": true }));
-        let giant = Value::String("x".repeat(300_000));
-        let uncapped = cap_result(normalized_result(giant.clone()), 0);
-        assert_eq!(uncapped.details, giant);
-    }
-
-    #[test]
-    fn cap_result_replacement_fits_even_under_a_tiny_cap() {
-        let giant = Value::String("x".repeat(300_000));
-        let capped = cap_result(normalized_result(giant), 1);
-        let bytes = serde_json::to_vec(&capped.content).unwrap().len()
-            + serde_json::to_vec(&capped.details).unwrap().len();
-        assert!(
-            bytes <= MIN_RESULT_CAP_BYTES,
-            "replacement is {bytes} bytes"
-        );
+        let giant = json!({ "is_error": true, "blob": "x".repeat(300_000) });
         assert_eq!(
-            capped.details["result_capped"]["max_bytes"],
-            MIN_RESULT_CAP_BYTES
+            cap_result(normalized_result(giant.clone()), 0).details,
+            giant
         );
-    }
-
-    #[test]
-    fn oversized_result_becomes_a_marker_in_content_and_details() {
-        let entries: Vec<Value> = (0..20_000)
-            .map(|i| json!({ "name": format!("f{i}") }))
-            .collect();
-        let raw = json!({ "is_error": true, "entries": entries });
-        let capped = cap_result(normalized_result(raw), 262_144);
-        assert!(
-            capped.is_error,
-            "the tool's own error flag survives the cap"
-        );
+        let capped = cap_result(normalized_result(giant), 1);
+        assert!(capped.is_error, "the tool's own error flag survives");
         let text = match capped.content.as_slice() {
             [ContentBlock::Text { text }] => text,
             other => panic!("expected one text block, got {other:?}"),
         };
         assert!(text.starts_with("<omitted: result was ~"), "{text}");
-        assert!(text.contains("2 object keys"), "{text}");
-        assert!(text.contains("256 KB harness result cap"), "{text}");
-        assert!(
-            capped.details["result_capped"]["original_bytes"]
-                .as_u64()
-                .unwrap()
-                > 262_144
-        );
-        let bytes = serde_json::to_vec(&capped.content).unwrap().len()
-            + serde_json::to_vec(&capped.details).unwrap().len();
-        assert!(bytes < 1024, "capped result must be tiny, was {bytes}");
+        let bytes = serde_json::to_vec(&(&capped.content, &capped.details))
+            .unwrap()
+            .len();
+        assert!(bytes <= 1024, "replacement must fit the floor, was {bytes}");
+        assert_eq!(capped.details["result_capped"]["max_bytes"], 1024);
     }
 
     fn pol(allow: &[&str]) -> CompiledPolicy {

@@ -48,15 +48,9 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_transient_resumes")]
     pub max_transient_resumes: u32,
 
-    /// Serialized byte cap on a captured function result (`content` +
-    /// `details` together). A result over this is replaced at capture time —
-    /// before it is written to the session or echoed to the provider — with
-    /// an elision marker naming its size and shape. Guards the engine's
-    /// per-frame WebSocket limit (16 MiB, the axum/tungstenite default; the
-    /// SDK sends each message as one unfragmented frame), which an oversized
-    /// `session::append` echo trips into a permanent reconnect loop that also
-    /// drops every `harness::*` registration (MOT-4498). 0 disables; any
-    /// other value below 1 KiB is raised to 1 KiB so the marker itself fits.
+    /// Capture-time byte cap on a function result (`content` + `details`);
+    /// over it, an elision marker replaces the result. 0 disables, values
+    /// under 1 KiB are raised to 1 KiB (MOT-4498).
     #[serde(default = "default_max_result_bytes")]
     pub max_result_bytes: usize,
 
@@ -240,14 +234,10 @@ fn default_max_transient_resumes() -> u32 {
     // (observed live 2026-07-21, session dcmcp-scan-p6w4-c-aq).
     3
 }
-/// Default for [`WorkerConfig::max_result_bytes`].
+/// Default for [`WorkerConfig::max_result_bytes`]: 256 KiB, the same ceiling
+/// `database` uses for its history (MOT-4372); the 16 MiB frame limit is the
+/// hard wall, the cap is also session hygiene.
 fn default_max_result_bytes() -> usize {
-    // 256 KiB: the same ceiling `database` uses for its state-backed history
-    // (MOT-4372). Far below the 16 MiB frame limit on purpose — the cap is
-    // also session hygiene: every later `session::messages` read and
-    // `context::assemble` request re-carries the durable entry, and
-    // context-manager's `max_result_tokens` (~80 KB) would trim anything
-    // larger before the model saw it anyway.
     262_144
 }
 fn default_idem_ttl_secs() -> u64 {
