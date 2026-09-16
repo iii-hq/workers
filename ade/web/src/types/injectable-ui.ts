@@ -479,6 +479,21 @@ export interface ComposerActionRegistration {
 }
 
 /**
+ * A floating surface the console renders above the workspace whatever page
+ * or tab is showing — a live thumbnail, a recording indicator. The
+ * component positions itself (`position: fixed`) and opts back into
+ * pointer events (the layer itself lets clicks through); it renders for as
+ * long as the script is loaded, so it decides on its own when to show
+ * something and when to render nothing. Duplicate `id`: last registration
+ * wins.
+ */
+export interface OverlayRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType
+}
+
+/**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
@@ -520,6 +535,10 @@ export interface Host {
   panels: {
     /** Place/reuse a registered page and deliver its worker-defined context. */
     open(request: PanelOpenRequest): void
+  }
+  overlays: {
+    /** A floating surface above the workspace, alive as long as the script. */
+    register(overlay: OverlayRegistration): () => void
   }
   configForms: {
     register(

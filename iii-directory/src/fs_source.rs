@@ -473,6 +473,9 @@ pub struct FsAgent {
     /// is served (`directory::agents::*`), never at scan time: an unknown
     /// parent is a per-profile warning there, not a load failure here.
     pub extends: Option<String>,
+    /// `hidden: true` keeps the profile out of the chat's new-session
+    /// gallery; it stays listed here and runnable by id / `extends`.
+    pub hidden: bool,
     /// Empty for a profile bundled with the worker (`builtin`): the body
     /// lives in the binary, and there is no file to stat, edit in place, or
     /// delete.
@@ -507,6 +510,8 @@ pub struct AgentFrontmatter {
     /// `reasoning_effort` fall back to the parent when omitted here.
     #[serde(default)]
     pub extends: Option<String>,
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// The harness `SubagentIcon` closed token set — `harness::spawn`
@@ -740,6 +745,7 @@ pub(crate) fn agent_from_frontmatter(
         icon: trimmed(fm.icon),
         color: trimmed(fm.color),
         extends: trimmed(fm.extends),
+        hidden: fm.hidden,
         abs_path,
         builtin,
     }

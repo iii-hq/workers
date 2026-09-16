@@ -1,12 +1,13 @@
 import type { Host } from '@iii-dev/console-ui'
-import { ExternalLink } from '../lib/icons'
 import { useState } from 'react'
+import { startBrowserSession } from '../lib/browser'
+import { ExternalLink } from '../lib/icons'
+import { openBrowserPane } from '../overlay/overlay-store'
 
 /**
  * "Open in browser" on a scrape result, the way the shell offers "View
- * file": one click starts an interactive session at the URL, and the
- * session-started binding pulls the browser page into the workspace with
- * that session selected.
+ * file": one click starts an interactive session at the URL and opens the
+ * browser page on it — the click is the decision, so no preview overlay.
  */
 export function OpenInBrowser({ host, url }: { host: Host; url: string }) {
   const [state, setState] = useState<'idle' | 'opening' | 'failed'>('idle')
@@ -23,9 +24,11 @@ export function OpenInBrowser({ host, url }: { host: Host; url: string }) {
       }
       onClick={() => {
         setState('opening')
-        host.iii
-          .trigger('browser::sessions::start', { url })
-          .then(() => setState('idle'))
+        startBrowserSession(host.iii, { url })
+          .then((started) => {
+            setState('idle')
+            if (started) openBrowserPane(host, started.session_id)
+          })
           .catch(() => setState('failed'))
       }}
     >

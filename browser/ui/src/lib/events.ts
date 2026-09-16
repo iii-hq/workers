@@ -87,34 +87,32 @@ export function useBrowserLifecycleEvents(
   return { bound }
 }
 
-export interface UseBrowserSessionEventOptions {
+export interface UseBrowserEventOptions {
   host: Host
   enabled: boolean
-  /** Trigger type to bind (e.g. `browser::console-event`). */
+  /** Trigger type to bind (e.g. `browser::session-started`). */
   triggerType: string
-  /** Session the binding filters to (worker-side `session_id` filter). */
-  sessionId: string | null
   /** Base id for this binding's browser-local handler. */
   fnId: string
+  /** Session to filter to (worker-side `session_id` filter); omit for every session. */
+  sessionId?: string | null
   onEvent: (payload: unknown) => void
 }
 
 /**
- * One session-filtered binding to a browser trigger type (console-event,
- * network-event, or picked). Rebinds when the session changes and
- * unregisters on unmount.
+ * One binding to a browser trigger type, optionally filtered to a session.
+ * Rebinds when the session changes and unregisters on unmount.
  */
-export function useBrowserSessionEvent(
-  opts: UseBrowserSessionEventOptions,
-): void {
-  const { host, enabled, triggerType, sessionId, fnId } = opts
+export function useBrowserEvent(opts: UseBrowserEventOptions): void {
+  const { host, enabled, triggerType, fnId } = opts
+  const sessionId = opts.sessionId ?? null
   const onEventRef = useRef(opts.onEvent)
   onEventRef.current = opts.onEvent
 
   const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
 
   useEffect(() => {
-    if (!enabled || !sessionId) return
+    if (!enabled) return
     const offs: Array<() => void> = []
     const localFnId = `${fnId}::${instanceId}`
     try {
@@ -127,7 +125,7 @@ export function useBrowserSessionEvent(
         host.iii.registerTrigger({
           type: triggerType,
           function_id: `${localFnId}::${host.iii.browserId}`,
-          config: { session_id: sessionId },
+          config: sessionId ? { session_id: sessionId } : {},
         }),
       )
     } catch {
@@ -138,4 +136,19 @@ export function useBrowserSessionEvent(
       for (const off of offs) off()
     }
   }, [host, enabled, triggerType, sessionId, fnId, instanceId])
+}
+
+export interface UseBrowserSessionEventOptions extends UseBrowserEventOptions {
+  /** Session the binding filters to (worker-side `session_id` filter). */
+  sessionId: string | null
+}
+
+/**
+ * One session-filtered binding to a browser trigger type (console-event,
+ * network-event, or picked). Nothing is bound without a session.
+ */
+export function useBrowserSessionEvent(
+  opts: UseBrowserSessionEventOptions,
+): void {
+  useBrowserEvent({ ...opts, enabled: opts.enabled && !!opts.sessionId })
 }

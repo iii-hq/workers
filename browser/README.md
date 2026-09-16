@@ -89,16 +89,46 @@ iii trigger compose::add worker=browser
 
 `iii trigger compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose
-project. The worker drives a Chromium/Chrome already installed on the
-machine; point `executable` at a specific binary if auto-detection picks the
-wrong one.
+project. By default the worker drives a Chromium/Chrome already installed on
+the machine; point `executable` at a specific binary if auto-detection picks
+the wrong one.
 
-To watch sessions live, pick elements into chat, and follow the agent's
-browsing from a UI, add the [console](https://github.com/iii-hq/workers/tree/main/ade) worker as well:
+### Engines
+
+Interactive sessions run on one of two engines, both driven over the Chrome
+DevTools Protocol, so the `browser::*` functions are the same code path:
+
+| `engine` | What it needs | What you get |
+|---|---|---|
+| `chromium` (default) | Chrome, Chromium, or Edge installed | Everything: live view, real screenshots, pick mode, styles, downloads, `headless: false` |
+| `lightpanda` | The [Lightpanda](https://lightpanda.io) binary (`lightpanda` on PATH, or `executable`) | DOM + JavaScript without rendering: navigate, snapshot, act, evaluate/execute, console and network capture, cookies, history, dom::read |
+
+Lightpanda is a headless browser written in Zig (V8 for JavaScript, its own
+DOM, libcurl for HTTP) that drops the rendering engine on purpose: a single
+binary, sub-100 ms start, around a tenth of Chrome's memory. The worker
+spawns `lightpanda serve` on a loopback port the first time a tab needs a
+page and ends it when the last live tab sleeps, the same lifecycle as the
+Chromium process; cookies persist through `data_dir/lightpanda/cookies.json`
+(written when the process exits). Element geometry is synthetic but
+consistent, so clicking by `ref` works, and the accessibility tree names
+controls from their contents.
+
+What it cannot do, because nothing is laid out or painted: there is no
+screencast, so the console's live viewport and the corner preview stay on a
+single `browser::screenshot` frame (Lightpanda renders that as a text-only
+PNG); pick mode (`Overlay`), `browser::styles::read` (`CSS`), `clear-data`'s
+per-origin storage wipe, and recording are unavailable; `file://` pages are
+refused ("UnsupportedProtocol"); `headful: true` and
+`browser::sessions::attach` are Chromium only. `browser::doctor` reports the
+configured engine and the binary it resolved.
 
 ```bash
-iii trigger compose::add worker=ade
+brew install lightpanda-io/browser/lightpanda
+# or the nightly binary: https://github.com/lightpanda-io/browser/releases/tag/nightly
 ```
+
+Then set `engine: lightpanda` in the browser configuration (Settings →
+browser → Launch).
 
 ## Quickstart
 
@@ -379,16 +409,17 @@ means "Rust still agrees with Python":
 ## Configuration
 
 Stored in the `configuration` worker under the `browser` key. `data_dir` is
-read at startup; `executable`, `headless`, and the viewport apply the next
-time the Chromium process launches (the first live tab after boot, or after
-every tab went to sleep). Scrapling settings live in an isolated nested
+read at startup; `engine`, `executable`, `headless`, and the viewport apply
+the next time the browser process launches (the first live tab after boot,
+or after every tab went to sleep). Scrapling settings live in an isolated nested
 block: bulk/default policy can be read per call, while the session cap, idle
 timeout, and adaptive database path are snapshotted at worker startup.
 Restart after changing a startup-snapshotted value.
 
 ```yaml
 browser:
-  executable: ''            # empty = auto-detect Chrome/Chromium/Edge
+  engine: chromium          # chromium | lightpanda (see Engines above)
+  executable: ''            # empty = auto-detect Chrome/Chromium/Edge, or `lightpanda` on PATH
   data_dir: ./data/browser  # profile/ (cookies, logins), downloads/, tabs.json; startup setting
   headless: true            # false shows a real window locally
   max_sessions: 4           # tabs with a page open at once; the LRU unwatched tab sleeps past it

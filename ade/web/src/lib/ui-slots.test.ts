@@ -7,17 +7,20 @@
 import { describe, expect, it } from 'vitest'
 import type {
   RegisteredConfigForm,
+  RegisteredOverlay,
   RegisteredProviderConfigForm,
   RegisteredSessionChip,
   RegisteredTriggerActivityRenderer,
 } from './ui-slots'
 import {
   getExtConfigForm,
+  getExtOverlays,
   getExtProviderConfigForm,
   getExtSessionChips,
   getExtTriggerActivityRenderers,
   isExtConfigFormPending,
   registerExtConfigForm,
+  registerExtOverlay,
   registerExtProviderConfigForm,
   registerExtSessionChip,
   registerExtTriggerActivityRenderer,
@@ -53,6 +56,28 @@ describe('session chip slot', () => {
     offA()
     offA()
     expect(getExtSessionChips()).toEqual([])
+  })
+})
+
+describe('overlay slot', () => {
+  const overlay = (id: string, path: string): RegisteredOverlay => ({
+    id,
+    path,
+    scope: path.split('/')[0],
+    render: () => null,
+  })
+
+  it('dedupes by id with the last registration winning, and restores on unregister', () => {
+    const offA = registerExtOverlay(overlay('browser-live', 'browser/page.js'))
+    const offB = registerExtOverlay(overlay('browser-live', 'other/page.js'))
+    expect(getExtOverlays().map((o) => o.path)).toEqual(['other/page.js'])
+
+    offB()
+    expect(getExtOverlays().map((o) => o.path)).toEqual(['browser/page.js'])
+
+    offA()
+    offA()
+    expect(getExtOverlays()).toEqual([])
   })
 })
 

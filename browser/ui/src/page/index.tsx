@@ -32,6 +32,7 @@ import {
 import { cn } from '../lib/cn'
 import { Globe, Incognito, Plus } from '../lib/icons'
 import { GlobeIcon, useContainerNarrow } from '../lib/widgets'
+import { dismissBrowserOverlay } from '../overlay/overlay-store'
 import { SavedSetsDialog } from './SavedSetsDialog'
 import { type SessionActions, SessionView } from './SessionView'
 import { TabStrip } from './TabStrip'
@@ -125,6 +126,8 @@ export function BrowserPage({
         setStartError(null)
         refresh()
         if (started) {
+          // Opened here on purpose: the page shows it, no preview needed.
+          dismissBrowserOverlay(started.session_id)
           pendingIdRef.current = started.session_id
           setSelectedId(started.session_id)
         }

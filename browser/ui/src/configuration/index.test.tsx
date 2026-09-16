@@ -123,6 +123,7 @@ describe('BrowserConfigEditor schema parity', () => {
     ].join('')
 
     for (const field of [
+      'engine',
       'executable',
       'data_dir',
       'headless',

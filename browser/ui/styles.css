@@ -2892,3 +2892,219 @@
   opacity: 0.6;
   cursor: default;
 }
+
+/* ── live preview overlay (host.overlays): picture-in-picture thumbnails ──
+ * Corner thumbnails of the tabs agents opened. Motion comes from
+ * transitions.dev: `t-panel-slide` reveals the deck (translate + fade +
+ * cross-blur); the group carries the card-resize width tween (01) and the
+ * position tween that snaps a dragged or flung box back into the viewport
+ * (one element, one transition list); the cards tween between their
+ * folded and fanned-out spots with the open/close asymmetry. While a
+ * finger or a fling drives the box the transitions are off. Folded, the
+ * cards behind are tilted a few degrees each way so their corners show;
+ * fanned out they spread sideways like a hand of cards, rotating a little
+ * more per step along a shallow arc that bends away from the anchored
+ * edge (up on pointer layouts, down on touch). Touch layouts get the
+ * top-right corner (under the mobile header) and a downward reveal;
+ * pointer layouts the bottom-right and upward. */
+[data-iii-ui="browser"] .br-ui-pip {
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --resize-dur: 300ms;
+  --resize-ease: var(--ease-smooth-out);
+  --panel-open-dur: 400ms;
+  --panel-close-dur: 350ms;
+  --panel-translate-y: -24px;
+  --panel-blur: 2px;
+  --panel-ease: var(--ease-smooth-out);
+  /* which way the arc bends and where the fanned cards pivot: away from
+   * the anchored edge (+1 down on touch, -1 up with a pointer) */
+  --pip-peek: 1;
+  --pip-fan-origin: top center;
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 72px);
+  right: 12px;
+  z-index: 1;
+  pointer-events: auto;
+  max-width: calc(100vw - 24px);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    width var(--resize-dur) var(--resize-ease),
+    transform var(--duration-fast) var(--ease-smooth-out);
+  will-change: width, transform;
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui="browser"] .br-ui-pip {
+    --panel-translate-y: 24px;
+    --pip-peek: -1;
+    --pip-fan-origin: bottom center;
+    top: auto;
+    right: 16px;
+    bottom: 16px;
+  }
+}
+[data-iii-ui="browser"] .br-ui-pip.is-pinching,
+[data-iii-ui="browser"] .br-ui-pip.is-moving {
+  transition: none;
+}
+/* cards hug the anchored (right) edge: a portrait one is narrower than
+ * the deck, since its height is capped and its aspect ratio kept */
+[data-iii-ui="browser"] .br-ui-pip-deck {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+}
+[data-iii-ui="browser"] .br-ui-pip-card {
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--color-panel);
+  box-shadow: 0 0 0 1px var(--color-edge), var(--shadow-floating);
+  transform-origin: center;
+  /* folded: each card behind is tilted its own way and a touch smaller,
+   * so its corners show around the front card */
+  transform: rotate(var(--tilt)) scale(calc(1 - var(--depth) * 0.03));
+  opacity: calc(1 - var(--depth) * 0.12);
+  transition:
+    transform var(--duration-quick) var(--ease-smooth-out),
+    transform-origin var(--duration-quick) var(--ease-smooth-out),
+    opacity var(--duration-quick) var(--ease-smooth-out);
+  animation: br-ui-pip-card-in var(--duration-fast) var(--ease-smooth-out);
+  will-change: transform;
+}
+[data-iii-ui="browser"] .br-ui-pip-card[data-front="true"] {
+  position: relative;
+}
+/* fanned out: a hand of cards spreading sideways (`--fan-dir`, a step of
+ * `--fan-step` per card), each one turned a little more and lifted along
+ * a shallow arc, all fully in view */
+[data-iii-ui="browser"] .br-ui-pip[data-expanded="true"] .br-ui-pip-card {
+  transform-origin: var(--pip-fan-origin);
+  transform: translate(
+      calc(var(--depth) * var(--fan-dir) * var(--fan-step)),
+      calc(var(--depth) * var(--depth) * var(--pip-peek) * 3px)
+    )
+    rotate(calc(var(--depth) * var(--fan-dir) * 7deg));
+  opacity: 1;
+  transition-duration: var(--duration-fast);
+}
+@keyframes br-ui-pip-card-in {
+  from {
+    opacity: 0;
+  }
+}
+[data-iii-ui="browser"] .br-ui-pip-surface {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  cursor: grab;
+}
+[data-iii-ui="browser"] .br-ui-pip.is-moving .br-ui-pip-surface {
+  cursor: grabbing;
+}
+[data-iii-ui="browser"] .br-ui-pip-surface img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-smooth-out);
+}
+[data-iii-ui="browser"] .br-ui-pip-card[data-ready="true"] .br-ui-pip-surface img {
+  opacity: 1;
+}
+[data-iii-ui="browser"] .br-ui-pip-controls {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-panel-raised) 90%, transparent);
+  box-shadow: 0 0 0 1px var(--color-edge), var(--shadow-floating);
+  opacity: 0;
+  transform: scale(0.96);
+  pointer-events: none;
+  transition:
+    opacity var(--duration-quick) var(--ease-smooth-out),
+    transform var(--duration-quick) var(--ease-smooth-out);
+}
+[data-iii-ui="browser"] .br-ui-pip-controls[data-open="true"] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth-out),
+    transform var(--duration-fast) var(--ease-smooth-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui="browser"] .br-ui-pip-card[data-front="true"]:hover .br-ui-pip-controls {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+[data-iii-ui="browser"] .br-ui-pip-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  outline: none;
+  background: transparent;
+  color: var(--color-ink);
+  cursor: pointer;
+}
+[data-iii-ui="browser"] .br-ui-pip-btn:hover {
+  background: var(--color-surface-hover);
+}
+
+/* transitions.dev — panel reveal (07) */
+[data-iii-ui="browser"] .t-panel-slide {
+  transform: translateY(var(--panel-translate-y));
+  opacity: 0;
+  filter: blur(var(--panel-blur));
+  pointer-events: none;
+  transition:
+    transform var(--panel-close-dur) var(--panel-ease),
+    opacity   var(--panel-close-dur) var(--panel-ease),
+    filter    var(--panel-close-dur) var(--panel-ease);
+  will-change: transform, opacity, filter;
+}
+[data-iii-ui="browser"] .t-panel-slide[data-open="true"] {
+  transform: translateY(0);
+  opacity: 1;
+  filter: blur(0);
+  pointer-events: auto;
+  transition:
+    transform var(--panel-open-dur) var(--panel-ease),
+    opacity   var(--panel-open-dur) var(--panel-ease),
+    filter    var(--panel-open-dur) var(--panel-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="browser"] .br-ui-pip,
+  [data-iii-ui="browser"] .br-ui-pip-card,
+  [data-iii-ui="browser"] .br-ui-pip-surface img,
+  [data-iii-ui="browser"] .br-ui-pip-controls,
+  [data-iii-ui="browser"] .t-panel-slide {
+    transition: none !important;
+    animation: none !important;
+  }
+}

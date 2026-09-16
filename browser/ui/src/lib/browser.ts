@@ -78,6 +78,7 @@ const doctorIssueSchema = z.object({
 })
 const doctorSchema = z.object({
   ok: z.boolean().optional(),
+  engine: z.string().optional(),
   chromium_path: z.string().nullable().optional(),
   chromium_version: z.string().nullable().optional(),
   headless_default: z.boolean().optional(),
@@ -615,18 +616,24 @@ export type BrowserFrame = z.infer<typeof frameSchema>
 export async function startBrowserScreencast(
   iii: ExtensionIii,
   sessionId: string,
+  /** A corner thumbnail: streams, but never blocks a pane's auto-fit. */
+  preview = false,
 ): Promise<void> {
   await iii.trigger(BROWSER_SCREENCAST_START_FUNCTION_ID, {
     session_id: sessionId,
+    ...(preview ? { preview: true } : {}),
   })
 }
 
 export async function stopBrowserScreencast(
   iii: ExtensionIii,
   sessionId: string,
+  /** A corner thumbnail: streams, but never blocks a pane's auto-fit. */
+  preview = false,
 ): Promise<void> {
   await iii.trigger(BROWSER_SCREENCAST_STOP_FUNCTION_ID, {
     session_id: sessionId,
+    ...(preview ? { preview: true } : {}),
   })
 }
 

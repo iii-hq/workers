@@ -1,6 +1,6 @@
 /**
  * Browser diagnostics: what `browser::doctor` reports about the worker's
- * environment — which Chromium it launches, session capacity, what's allowed,
+ * environment — which engine binary it launches, session capacity, what's allowed,
  * and any degraded capability with how to enable it. Read-only; opening it
  * never starts a browser.
  */
@@ -62,7 +62,10 @@ export function DoctorDialog({ host, open, onOpenChange }: DoctorDialogProps) {
         ) : info ? (
           <div className="br-ui-doctor-body">
             <div className="br-ui-doctor-facts">
-              {fact('Chromium', info.chromium_version ?? 'unknown')}
+              {fact(
+                info.engine === 'lightpanda' ? 'Lightpanda' : 'Chromium',
+                info.chromium_version ?? 'unknown',
+              )}
               {info.chromium_path ? fact('Path', info.chromium_path) : null}
               {fact(
                 'Headless by default',

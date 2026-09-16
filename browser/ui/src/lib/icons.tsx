@@ -108,6 +108,18 @@ export function X(props: IconProps) {
   )
 }
 
+/** lucide `maximize-2`: expand the live preview into the browser page. */
+export function Maximize(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M15 3h6v6" />
+      <path d="m21 3-7 7" />
+      <path d="m3 21 7-7" />
+      <path d="M9 21H3v-6" />
+    </Svg>
+  )
+}
+
 /** lucide `external-link`: open the page in your own browser. */
 export function ExternalLink(props: IconProps) {
   return (

@@ -64,11 +64,68 @@ fn chromium_present() -> bool {
         || which::which("chromium-browser").is_ok()
 }
 
-async fn boot() -> Option<Harness> {
-    let iii_bin = which::which("iii").ok()?;
-    if !chromium_present() {
-        return None;
+/// Which engine a lane boots the worker on. `Lightpanda` needs the binary
+/// on PATH or `BROWSER_TEST_LIGHTPANDA=<path>`; the lane self-skips
+/// otherwise.
+#[derive(Clone, Copy, PartialEq)]
+enum Lane {
+    Chromium,
+    Lightpanda,
+}
+
+fn lightpanda_binary() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("BROWSER_TEST_LIGHTPANDA") {
+        let path = PathBuf::from(path);
+        return path.is_file().then_some(path);
     }
+    which::which("lightpanda").ok()
+}
+
+/// A loopback HTTP server answering every request with `html`, for engines
+/// that refuse `file://` (Lightpanda). Lives as long as the test process.
+fn serve_html(html: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+                html.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://{addr}/")
+}
+
+async fn boot() -> Option<Harness> {
+    boot_lane(Lane::Chromium).await
+}
+
+async fn boot_lane(lane: Lane) -> Option<Harness> {
+    let iii_bin = which::which("iii").ok()?;
+    // The worker seeds its configuration from `--config` when no
+    // configuration worker is around (the case here): the Lightpanda lane
+    // points `engine`/`executable` at the binary through it.
+    let seed = match lane {
+        Lane::Chromium => {
+            if !chromium_present() {
+                return None;
+            }
+            None
+        }
+        Lane::Lightpanda => {
+            let bin = lightpanda_binary()?;
+            Some(format!(
+                "browser:\n  engine: lightpanda\n  executable: {}\n",
+                serde_json::to_string(&bin.to_string_lossy()).ok()?
+            ))
+        }
+    };
 
     let port = TcpListener::bind("127.0.0.1:0")
         .ok()?
@@ -91,22 +148,28 @@ async fn boot() -> Option<Harness> {
     )
     .ok()?;
 
+    // The worker keeps its profile and tab list under `data_dir`, relative
+    // to the compose dir: give each run a fresh one so tests never share a
+    // Chromium profile or inherit another run's tabs. The engine runs from
+    // it too: its builtin configuration store writes `./config/<id>.yaml`
+    // under its own cwd, and a value one lane registers (the Lightpanda seed)
+    // would otherwise outlive the run in the package dir and be handed to
+    // every later boot ahead of that boot's own seed.
+    let data_dir = std::env::temp_dir().join(format!(
+        "browser-integration-data-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::create_dir_all(&data_dir).ok()?;
+
     let mut iii = Command::new(&iii_bin)
         .args(["--config", config_path.to_str()?, "--no-update-check"])
+        .current_dir(&data_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
 
     sleep(Duration::from_millis(800)).await;
-
-    // The worker keeps its profile and tab list under `data_dir`, relative
-    // to the compose dir: give each run a fresh one so tests never share a
-    // Chromium profile or inherit another run's tabs.
-    let data_dir = std::env::temp_dir().join(format!(
-        "browser-integration-data-{}",
-        uuid::Uuid::new_v4().simple()
-    ));
     // `BROWSER_TEST_WORKER_LOG=<file>` captures the worker's debug log for
     // a failing run; by default it stays quiet.
     let worker_log = std::env::var_os("BROWSER_TEST_WORKER_LOG")
@@ -116,6 +179,11 @@ async fn boot() -> Option<Harness> {
         .arg("--url")
         .arg(&engine_ws)
         .env("III_COMPOSE_DIR", &data_dir);
+    if let Some(seed) = seed {
+        let seed_path = data_dir.join("browser-seed.yaml");
+        std::fs::write(&seed_path, seed).ok()?;
+        worker_cmd.arg("--config").arg(&seed_path);
+    }
     match worker_log {
         // tracing writes to stdout; keep stderr too for panics.
         Some(file) => {
@@ -646,5 +714,156 @@ async fn live_frames_keep_flowing_across_tabs() {
         .await;
     }
     let _ = std::fs::remove_dir_all(pages_dir);
+    client.shutdown_async().await;
+}
+
+/// The Lightpanda engine lane: the DOM half of the `browser::*` surface
+/// over `lightpanda serve` — a tab opens on a local http page, reads back
+/// as a snapshot with named controls, clicks by ref, runs JS, captures its
+/// console, screenshots (a text-only PNG), and the doctor names the engine.
+/// The screencast is not there and says so. Skips unless the binary is on
+/// PATH or `BROWSER_TEST_LIGHTPANDA` points at it.
+#[tokio::test]
+async fn lightpanda_engine_drives_the_dom_surface() {
+    let Some(h) = boot_lane(Lane::Lightpanda).await else {
+        eprintln!("skipping: `iii` or lightpanda not available");
+        return;
+    };
+
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+
+    let call = |function_id: &str, payload: serde_json::Value, timeout_ms: u64| {
+        let client = &client;
+        let function_id = function_id.to_string();
+        async move {
+            timeout(
+                Duration::from_secs(30),
+                client.trigger(TriggerRequest {
+                    function_id,
+                    payload,
+                    action: None,
+                    timeout_ms: Some(timeout_ms),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+
+    let doctor = call("browser::doctor", json!({}), 10_000).await;
+    assert_eq!(doctor["engine"], "lightpanda", "{doctor}");
+    assert_eq!(doctor["ok"], true, "{doctor}");
+    assert_eq!(doctor["browser_running"], false, "{doctor}");
+
+    let url = serve_html(
+        "<!doctype html><title>Lightpanda lane</title><h1 id=\"t\">hello from lightpanda</h1>\
+         <button id=\"b\" onclick=\"document.title='clicked'\">go</button>\
+         <script>console.error('lightpanda-marker')</script>",
+    );
+    let started = call("browser::sessions::start", json!({ "url": url }), 25_000).await;
+    let session_id = started["session_id"]
+        .as_str()
+        .expect("session_id in start response")
+        .to_string();
+    assert!(started["error"].is_null(), "{started}");
+    assert_eq!(started["headless"], true, "{started}");
+
+    let evaluated = call(
+        "browser::evaluate",
+        json!({ "session_id": session_id, "expression": "document.title" }),
+        15_000,
+    )
+    .await;
+    assert_eq!(evaluated["value"], "Lightpanda lane", "{evaluated}");
+
+    let snapshot = call(
+        "browser::snapshot",
+        json!({ "session_id": session_id }),
+        15_000,
+    )
+    .await;
+    let tree = snapshot["tree"].as_str().expect("tree");
+    assert!(tree.contains("hello from lightpanda"), "{tree}");
+
+    // act by ref: Lightpanda names the button from its contents
+    let button_ref = tree
+        .lines()
+        .find(|line| line.trim_start().starts_with("- button \"go\""))
+        .and_then(|line| line.split("[ref=").nth(1))
+        .and_then(|rest| rest.split(']').next())
+        .expect("named button ref in snapshot")
+        .to_string();
+    let acted = call(
+        "browser::act",
+        json!({ "session_id": session_id, "action": "click", "ref": button_ref }),
+        15_000,
+    )
+    .await;
+    assert_eq!(acted["ok"], true, "{acted}");
+    let title = call(
+        "browser::evaluate",
+        json!({ "session_id": session_id, "expression": "document.title" }),
+        15_000,
+    )
+    .await;
+    assert_eq!(title["value"], "clicked", "{title}");
+
+    let console = call(
+        "browser::console::read",
+        json!({ "session_id": session_id, "pattern": "lightpanda-marker" }),
+        10_000,
+    )
+    .await;
+    assert!(
+        console["entries"]
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|e| e["level"] == "error")),
+        "console did not capture the marker: {console}"
+    );
+
+    // Lightpanda has no rasterizer: jpeg is refused, so the worker asks for
+    // the text-only png instead of failing the call.
+    let shot = call(
+        "browser::screenshot",
+        json!({ "session_id": session_id }),
+        20_000,
+    )
+    .await;
+    assert!(
+        shot["content"]
+            .as_array()
+            .is_some_and(|blocks| !blocks.is_empty()),
+        "{shot}"
+    );
+    assert_eq!(shot["content"][0]["mime"], "image/png", "{shot}");
+
+    // and no screencast at all: the live view falls back to screenshots
+    let screencast = client
+        .trigger(TriggerRequest {
+            function_id: "browser::screencast::start".into(),
+            payload: json!({ "session_id": session_id }),
+            action: None,
+            timeout_ms: Some(10_000),
+        })
+        .await;
+    assert!(screencast.is_err(), "screencast unexpectedly started: {screencast:?}");
+
+    let doctor = call("browser::doctor", json!({}), 10_000).await;
+    assert_eq!(doctor["browser_running"], true, "{doctor}");
+
+    let stopped = call(
+        "browser::sessions::stop",
+        json!({ "session_id": session_id }),
+        15_000,
+    )
+    .await;
+    assert_eq!(stopped["was_running"], true, "{stopped}");
+    // The last live tab closing ends the lightpanda process.
+    sleep(Duration::from_millis(500)).await;
+    let doctor = call("browser::doctor", json!({}), 10_000).await;
+    assert_eq!(doctor["browser_running"], false, "{doctor}");
+
     client.shutdown_async().await;
 }

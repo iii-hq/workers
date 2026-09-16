@@ -14,7 +14,7 @@ implementation. The `state` worker is the broad delivery reference; the
 | Console-side registry + trigger types | `workers/ade/src/ui_assets.rs` |
 | HTTP serving (`/ui`, `/ui/*`, `/vendor/*`) | `workers/ade/src/server.rs` |
 | Browser loader (import / link-swap / dispose) | `workers/ade/web/src/lib/ui-loader.tsx` |
-| Slot registries (pages, renderers, forms) | `workers/ade/web/src/lib/ui-slots.ts` |
+| Slot registries (pages, renderers, forms, overlays) | `workers/ade/web/src/lib/ui-slots.ts` |
 | The `@iii-dev/console-ui` runtime surface | `workers/ade/web/src/lib/console-api.ts` |
 | The `@iii-dev/console-ui` package (types + component manifest) | `workers/packages/console-ui/` |
 | The `iii-console-ui` crate (Rust worker-side registration) | `workers/crates/console-ui/` |
@@ -1051,6 +1051,20 @@ sized to match the attach button; hand text back through
 Duplicate ids: last registration wins. Feature-detect on older consoles:
 `host.chat?.registerComposerAction`, and fall back to a session chip when it
 is absent.
+
+### `host.overlays.register({ id, render })`
+
+A floating surface rendered above the workspace whatever page or tab is
+showing — a live thumbnail of what an agent is browsing, a recording
+indicator. The layer covers the shell but lets pointer events through, so
+the component positions itself (`position: fixed`, inside the shell's
+stacking context) and sets `pointer-events: auto` on what it draws. It
+renders for as long as the script is loaded and decides on its own when to
+show something and when to render nothing; subscribe to your worker's
+triggers over `host.iii` for that. Overlays sit above panes and below every
+popup. Duplicate ids: last registration wins. Feature-detect on older
+consoles: `host.overlays?.register`. The browser worker's live preview
+(`browser/ui/src/overlay/`) is the reference.
 
 ### `host.chat` conversation helpers
 

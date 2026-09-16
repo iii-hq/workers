@@ -22,6 +22,9 @@ import { useBrowserSessionEvent } from '../lib/events'
  * and tab switch (idempotent).
  */
 
+/** Screenshot cadence when the engine has no screencast. */
+const SCREENSHOT_POLL_MS = 1500
+
 export interface LiveFrame {
   dataUrl: string
   /** Page-viewport size the image maps to (input coordinate space). */
@@ -47,6 +50,9 @@ export function useLiveFrames(
    * woke, the browser data was cleared): the new page has no screencast
    * until we start one again. */
   wakeToken = 0,
+  /** A corner thumbnail rather than a pane: it must not stop the page's
+   * viewport from fitting its pane (the worker arbitrates fits per pane). */
+  preview = false,
 ): LiveViewState {
   const [frame, setFrame] = useState<LiveFrame | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -70,23 +76,27 @@ export function useLiveFrames(
 
     // Retain the start so teardown can wait for it to settle before stopping;
     // otherwise a late start could reactivate the screencast after cleanup.
-    const started = startBrowserScreencast(host.iii, sessionId)
+    const started = startBrowserScreencast(host.iii, sessionId, preview)
 
     void (async () => {
       try {
         await started
       } catch {
-        // Older worker without the screencast surface: one screenshot so the
-        // viewport is not blank.
-        const shot = await takeBrowserScreenshot(host.iii, sessionId).catch(
-          () => null,
-        )
-        if (!cancelled && shot?.dataUrl) {
-          setFrame({
-            dataUrl: shot.dataUrl,
-            width: shot.width,
-            height: shot.height,
-          })
+        // No screencast (older worker, or an engine without one such as
+        // Lightpanda): poll screenshots so navigations still show up.
+        while (!cancelled) {
+          const shot = await takeBrowserScreenshot(host.iii, sessionId).catch(
+            () => null,
+          )
+          if (cancelled) return
+          if (shot?.dataUrl) {
+            setFrame({
+              dataUrl: shot.dataUrl,
+              width: shot.width,
+              height: shot.height,
+            })
+          }
+          await new Promise((r) => setTimeout(r, SCREENSHOT_POLL_MS))
         }
         return
       }
@@ -112,7 +122,7 @@ export function useLiveFrames(
       // overtaken by an in-flight start reactivating the screencast.
       void started
         .catch(() => {})
-        .then(() => stopBrowserScreencast(host.iii, sessionId))
+        .then(() => stopBrowserScreencast(host.iii, sessionId, preview))
         .catch(() => {})
     }
   }, [host, enabled, sessionId, wakeToken])

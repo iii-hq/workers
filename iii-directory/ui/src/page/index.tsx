@@ -95,7 +95,7 @@ export const agentsAdapter: BrowserAdapter = {
   nameRequired: true,
   newTemplate: '---\nname: \ndescription: ""\n---\n\n',
   newTemplateStartsClean: true,
-  extraManagedKeys: ['logo', 'skills', 'functions', 'model', 'reasoning_effort', 'icon', 'color', 'extends'],
+  extraManagedKeys: ['logo', 'skills', 'functions', 'model', 'reasoning_effort', 'icon', 'color', 'extends', 'hidden'],
   customForm: (ctx) => <AgentForm {...ctx} />,
   customLoading: () => <AgentFormSkeleton />,
   customFormOwnsContent: true,
@@ -112,6 +112,7 @@ export const agentsAdapter: BrowserAdapter = {
       // The row glyph is the SAME token glyph the avatar picker and the
       // console session tree render — one identity, one pictogram.
       icon: <TokenIcon token={a.icon || 'agent'} size={20} />,
+      iconTone: a.color ?? 'neutral',
       title: a.name,
       description: a.description,
       fine: a.builtin ? 'Built-in · edits save a local override' : formatRelativeTime(a.modified_at),

@@ -111,6 +111,9 @@ pub struct AgentEntry {
     pub color: Option<String>,
     /// Parent profile id (`extends:`), as declared; `null` = none.
     pub extends: Option<String>,
+    /// Hidden from the chat's new-session gallery (still selectable by id).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     /// Bundled with the worker, no file behind it: editing it creates the
     /// local file (which then shadows this entry); there is nothing to
     /// delete.
@@ -188,6 +191,9 @@ pub struct AgentGetOutput {
     pub color: Option<String>,
     /// Parent profile id (`extends:`), as declared; `null` = none.
     pub extends: Option<String>,
+    /// Hidden from the chat's new-session gallery (still selectable by id).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     /// Bundled with the worker, no file behind it (see `list`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub builtin: bool,
@@ -304,7 +310,7 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
         })
         .description(
             "List agent profiles (id, name, description, logo, icon, color, model, \
-             reasoning_effort, skill_count, function_count, extends, modified_at) from \
+             reasoning_effort, skill_count, function_count, extends, hidden, modified_at) from \
              the agents folder plus the bundled ones (`builtin: true`). Inherited fields \
              resolve through `extends`; skill_count null means no preloaded skills, \
              function_count counts the preloaded functions (contracts injected into new sessions).",
@@ -723,6 +729,7 @@ pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
                 description: a.description.clone(),
                 logo: a.logo.clone(),
                 extends: a.extends.clone(),
+                hidden: a.hidden,
                 builtin: a.builtin,
                 inheritance_error,
             }
@@ -778,6 +785,7 @@ pub fn get_agent(
         icon: agent.icon.clone(),
         color: agent.color.clone(),
         extends: agent.extends.clone(),
+        hidden: agent.hidden,
         builtin: agent.builtin,
         inheritance_error,
         raw,
@@ -1143,6 +1151,33 @@ mod tests {
         assert!(got.extends.is_none());
         assert!(!got.builtin);
         assert!(got.inheritance_error.is_none());
+    }
+
+    #[test]
+    fn hidden_frontmatter_round_trips_and_defaults_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(dir.path());
+        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+        std::fs::write(
+            dir.path().join("agents/ghost.md"),
+            "---\nname: Ghost\nhidden: true\n---\nBoo.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("agents/seen.md"),
+            "---\nname: Seen\n---\nHi.\n",
+        )
+        .unwrap();
+        let out = list_agents(&cfg);
+        let by_id = |id: &str| out.agents.iter().find(|a| a.id == id).unwrap();
+        assert!(by_id("ghost").hidden);
+        assert!(!by_id("seen").hidden);
+        assert!(serde_json::to_string(by_id("ghost"))
+            .unwrap()
+            .contains("\"hidden\":true"));
+        assert!(!serde_json::to_string(by_id("seen"))
+            .unwrap()
+            .contains("hidden"));
     }
 
     #[test]

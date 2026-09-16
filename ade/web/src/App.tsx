@@ -12,6 +12,7 @@ import {
   useState,
 } from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
+import { ExtOverlays } from '@/components/ExtOverlays'
 import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
@@ -533,6 +534,7 @@ export function App({
           onMobilePanelIndexChange={setMobilePanelIndex}
           onRequestClosePane={requestClosePane}
         />
+        <ExtOverlays />
         <ConfirmDialog
           open={discardPrompt !== null}
           onOpenChange={(open) => {

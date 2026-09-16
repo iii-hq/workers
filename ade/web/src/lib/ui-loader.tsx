@@ -27,10 +27,12 @@ import { registerPaletteSource } from '@/lib/palette/providers'
 import { PaneConfigurationProvider } from '@/lib/pane-configuration'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { acquireScreenWakeLock } from '@/lib/screen-wake-lock'
+import { requestThinkingLevelChange } from '@/lib/thinking-level-request'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
   registerExtComposerAction,
   registerExtConfigForm,
+  registerExtOverlay,
   registerExtPage,
   registerExtProviderConfigForm,
   registerExtRenderer,
@@ -39,7 +41,6 @@ import {
   registerExtTriggerActivityRenderer,
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
-import { requestThinkingLevelChange } from '@/lib/thinking-level-request'
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
 import type {
   ComposerActionProps,
@@ -217,6 +218,23 @@ function makeHost(
     panels: {
       open(request) {
         requestPanelOpen(request)
+      },
+    },
+    overlays: {
+      register(overlay) {
+        const Overlay = overlay.render
+        return track(
+          registerExtOverlay({
+            ...overlay,
+            scope,
+            path,
+            render: () => (
+              <ScopedExtension scope={scope} path={path}>
+                <Overlay />
+              </ScopedExtension>
+            ),
+          }),
+        )
       },
     },
     configForms: {

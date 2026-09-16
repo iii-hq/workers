@@ -1,4 +1,4 @@
-import { Button, type Host, Input, type ModelOption, ModelPicker, Select } from '@iii-dev/console-ui'
+import { Button, type Host, Input, type ModelOption, ModelPicker, Select, Switch } from '@iii-dev/console-ui'
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PencilIcon, SearchIcon, XIcon } from '../lib/widgets'
@@ -1051,6 +1051,7 @@ export function AgentForm(ctx: FormContext) {
   const reasoningEffort = readFrontmatterField(draft, ['reasoning_effort']).value.trim() || 'default'
   const icon = readFrontmatterField(draft, ['icon']).value.trim()
   const color = readFrontmatterField(draft, ['color']).value.trim()
+  const hidden = readFrontmatterField(draft, ['hidden']).value.trim() === 'true'
   const skillCatalog = useCatalog(host, fetchSkills)
   const functionCatalog = useCatalog(host, fetchFunctions)
   const modelCatalog = useCatalog(host, fetchModels)
@@ -1092,6 +1093,9 @@ export function AgentForm(ctx: FormContext) {
     }
     const withLogo = setFrontmatterField(draft, 'logo', preset.emoji)
     editDraft(setFrontmatterField(withLogo, 'icon', preset.token, true))
+  }
+  const setHidden = (next: boolean) => {
+    editDraft(next ? setFrontmatterField(draft, 'hidden', 'true', true) : withoutFrontmatterFields(draft, ['hidden']))
   }
   const setAvatarColor = (next: AgentColor) => {
     editDraft(setFrontmatterField(draft, 'color', next, true))
@@ -1256,6 +1260,21 @@ export function AgentForm(ctx: FormContext) {
             {inheritanceError ? (
               <p className="dir-ui-af-file-hint dir-ui-af-inheritance-error">{inheritanceError}</p>
             ) : null}
+
+            <div className="dir-ui-af-model-row">
+              <div className="dir-ui-af-model-label">
+                <span>Hidden</span>
+                <span>Keep out of the new-session gallery; still usable as a parent.</span>
+              </div>
+              <div className="dir-ui-af-model-control">
+                <Switch
+                  aria-label="Hide from the new-session gallery"
+                  checked={hidden}
+                  disabled={readOnly}
+                  onChange={(event) => setHidden(event.currentTarget.checked)}
+                />
+              </div>
+            </div>
 
             <CollapsibleSection
               title="System prompt"

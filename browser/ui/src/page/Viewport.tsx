@@ -404,6 +404,15 @@ export function Viewport({
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onKeyDown={handleKeyDown}
+      onPaste={(e) => {
+        // Cmd/Ctrl+V is left to the browser (chords never forward), so the
+        // clipboard arrives here as a paste event: forward it as typed text.
+        if (annotating) return
+        const text = e.clipboardData.getData('text/plain')
+        if (!text) return
+        e.preventDefault()
+        onTextInput(text)
+      }}
       className={cn('br-ui-vp', annotating && 'is-annotating')}
     >
       {frame && annotation && ConsoleUi.AnnotationLayer ? (

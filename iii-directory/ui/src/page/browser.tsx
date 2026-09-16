@@ -58,6 +58,8 @@ export interface BrowserRow {
   key: string
   /** Optional leading glyph (agents: the tree-icon token). */
   icon?: ReactNode
+  /** Agent color token, rendered as `data-color` on the glyph box. */
+  iconTone?: string
   title: string
   description: string
   /** Fine-print line (size · modified). */
@@ -976,7 +978,7 @@ export function CollectionBrowser({
                         onClick={() => open(r.key)}
                       >
                         {r.icon ? (
-                          <span className="dir-ui-nav-ico" aria-hidden>
+                          <span className="dir-ui-nav-ico" data-color={r.iconTone} aria-hidden>
                             {r.icon}
                           </span>
                         ) : null}

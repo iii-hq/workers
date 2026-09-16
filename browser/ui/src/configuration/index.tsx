@@ -36,6 +36,7 @@ type OriginDecision = 'allow' | 'deny'
 const CONFIG_NARROW_BELOW = 660
 const LEGACY_WRAPPER = 'browser'
 const BROWSER_OWNED_TOP_LEVEL_FIELDS = [
+  'engine',
   'executable',
   'data_dir',
   'headless',
@@ -61,6 +62,7 @@ const BROWSER_OWNED_TOP_LEVEL_FIELDS = [
   'max_bulk_concurrency',
 ] as const
 const DEFAULTS = {
+  engine: 'chromium',
   executable: '',
   data_dir: './data/browser',
   headless: true,
@@ -99,6 +101,7 @@ const DEFAULTS = {
 } as const
 
 const FIELD_SECTION: Record<string, SectionId> = {
+  engine: 'launch',
   executable: 'launch',
   data_dir: 'launch',
   headless: 'launch',
@@ -1099,16 +1102,36 @@ export function BrowserConfigEditor({
         {selection === 'launch' ? (
           <>
             <ConfigSection
-              title="Chromium process"
-              description="Leave the executable empty to use an auto-detected browser. Both are startup settings."
+              title="Browser process"
+              description="The engine and its binary apply the next time the browser process launches; the data directory is a startup setting."
             >
               <SettingsList className="br-cfg-section-list">
+                <SelectField
+                  field="engine"
+                  label="Engine"
+                  value={stringValue(value.engine) || DEFAULTS.engine}
+                  options={[
+                    { value: 'chromium', label: 'Chromium — a system Chrome, Chromium, or Edge' },
+                    { value: 'lightpanda', label: 'Lightpanda — headless DOM + JavaScript engine, no browser install, no rendering' },
+                  ]}
+                  hint="Both speak the DevTools protocol. Lightpanda is a single binary that starts instantly on a fraction of Chrome's memory, but it does not lay out or paint pages: no live view (one text-only screenshot instead), no pick mode, no computed styles, no file:// pages."
+                  error={fieldError(errors, 'engine')}
+                  onChange={(next) => setString('engine', next)}
+                />
                 <TextField
                   field="executable"
-                  label="Browser executable"
+                  label={
+                    stringValue(value.engine) === 'lightpanda'
+                      ? 'Lightpanda executable'
+                      : 'Browser executable'
+                  }
                   value={stringValue(value.executable)}
-                  placeholder="Auto-detect Chrome, Chromium, or Edge"
-                  hint="Use an absolute path only when auto-detection cannot find the intended browser."
+                  placeholder={
+                    stringValue(value.engine) === 'lightpanda'
+                      ? 'Auto-detect `lightpanda` on PATH'
+                      : 'Auto-detect Chrome, Chromium, or Edge'
+                  }
+                  hint="Use an absolute path only when auto-detection cannot find the intended binary."
                   error={fieldError(errors, 'executable')}
                   onChange={(next) => setString('executable', next)}
                 />

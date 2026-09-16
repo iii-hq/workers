@@ -1,9 +1,9 @@
 //! Config for the browser worker. Numeric caps are HARD ceilings — a caller
 //! may ask for less per call, never more. Buffer sizes, timeouts, and the
-//! scheme allowlist are read per call, so they hot-reload. `executable`,
-//! `headless`, and the viewport are read when the shared Chromium process
-//! launches (the first live tab after boot or after every tab went to
-//! sleep); `data_dir` is a startup setting.
+//! scheme allowlist are read per call, so they hot-reload. `engine`,
+//! `executable`, `headless`, and the viewport are read when the shared
+//! browser process launches (the first live tab after boot or after every
+//! tab went to sleep); `data_dir` is a startup setting.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -13,6 +13,33 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub type SharedConfig = Arc<ArcSwap<WorkerConfig>>;
+
+/// Which browser engine the worker drives for interactive sessions. Both
+/// speak the Chrome DevTools Protocol, so every `browser::*` function works
+/// the same; what differs is what has to be installed and how it launches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserEngine {
+    /// A system Chrome/Chromium/Edge, launched with a persistent profile.
+    #[default]
+    Chromium,
+    /// [Lightpanda](https://lightpanda.io): a single binary written in Zig
+    /// (DOM + V8, no rendering), no browser install, a fraction of Chrome's
+    /// memory. Always headless; `lightpanda serve` is spawned on a loopback
+    /// port and driven over CDP. No live view or real screenshots: it has no
+    /// layout or paint, so screencast, pick mode, and computed styles are
+    /// unavailable, and `file://` pages cannot be opened.
+    Lightpanda,
+}
+
+impl BrowserEngine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BrowserEngine::Chromium => "chromium",
+            BrowserEngine::Lightpanda => "lightpanda",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -219,8 +246,15 @@ pub fn origin_label(raw_url: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WorkerConfig {
-    /// Absolute path to a Chromium/Chrome executable. Empty string
-    /// auto-detects a system install (Chrome, Chromium, Edge).
+    /// Browser engine for interactive sessions: `chromium` (default, a
+    /// system Chrome/Chromium/Edge) or `lightpanda` (the standalone
+    /// Lightpanda binary, always headless, no rendering). Applies the next
+    /// time the browser process launches.
+    pub engine: BrowserEngine,
+    /// Absolute path to the engine's executable — a Chromium/Chrome binary,
+    /// or the `lightpanda` binary when `engine` is `lightpanda`. Empty
+    /// string auto-detects: a system install (Chrome, Chromium, Edge) or
+    /// `lightpanda` on PATH.
     pub executable: String,
     /// Where the browser keeps its state, like a browser's profile folder:
     /// `profile/` (cookies, localStorage, logins — shared by every regular
@@ -298,6 +332,7 @@ pub struct WorkerConfig {
 impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
+            engine: BrowserEngine::Chromium,
             executable: String::new(),
             data_dir: "./data/browser".to_string(),
             headless: true,
@@ -386,6 +421,7 @@ mod tests {
     #[test]
     fn defaults_match_spec() {
         let c = WorkerConfig::default();
+        assert_eq!(c.engine, BrowserEngine::Chromium);
         assert_eq!(c.executable, "");
         assert_eq!(c.data_dir, "./data/browser");
         assert!(c.headless);
@@ -451,6 +487,16 @@ mod tests {
         let c = WorkerConfig::from_json(&v).unwrap();
         assert_eq!(c.max_sessions, 8);
         assert_eq!(c.console_buffer, 500);
+    }
+
+    #[test]
+    fn engine_parses_lowercase_and_rejects_unknown() {
+        let c = WorkerConfig::from_json(&serde_json::json!({ "engine": "lightpanda" })).unwrap();
+        assert_eq!(c.engine, BrowserEngine::Lightpanda);
+        assert_eq!(c.to_json()["engine"], "lightpanda");
+        let error = WorkerConfig::from_json(&serde_json::json!({ "engine": "firefox" }))
+            .unwrap_err();
+        assert!(error.contains("unknown variant `firefox`"), "{error}");
     }
 
     #[test]
@@ -732,6 +778,7 @@ mod tests {
     fn schema_lists_fields() {
         let s = WorkerConfig::json_schema();
         let props = &s["properties"];
+        assert!(props.get("engine").is_some());
         assert!(props.get("executable").is_some());
         assert!(props.get("headless").is_some());
         assert!(props.get("allowed_schemes").is_some());

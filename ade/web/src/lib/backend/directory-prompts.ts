@@ -123,6 +123,8 @@ export interface AgentEntry {
   model: string | null
   reasoning_effort?: string | null
   skill_count: number | null
+  /** Hidden from the new-session gallery; absent on older Directory workers. */
+  hidden?: boolean
   modified_at: string
 }
 

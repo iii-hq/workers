@@ -12,6 +12,7 @@ import type {
   ConfigFormLayout,
   ConfigFormProps,
   FunctionTriggerRenderer,
+  OverlayRegistration,
   PageRegistration,
   ProviderConfigFormProps,
   SessionChipRegistration,
@@ -70,6 +71,11 @@ export interface RegisteredSessionTurnSummary
 }
 
 export interface RegisteredComposerAction extends ComposerActionRegistration {
+  scope: string
+  path: string
+}
+
+export interface RegisteredOverlay extends OverlayRegistration {
   scope: string
   path: string
 }
@@ -145,6 +151,7 @@ const providerConfigFormsStore = createStore<RegisteredProviderConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
 const sessionTurnSummariesStore = createStore<RegisteredSessionTurnSummary>()
 const composerActionsStore = createStore<RegisteredComposerAction>()
+const overlaysStore = createStore<RegisteredOverlay>()
 const uiAssetsStatusStore = createValueStore<UiAssetsStatus>('unavailable')
 
 /**
@@ -249,6 +256,18 @@ export function registerExtComposerAction(
   return composerActionsStore.add(entry)
 }
 
+/** Duplicate overlay id: last registration wins in the overlay layer. */
+export function registerExtOverlay(entry: RegisteredOverlay): () => void {
+  const duplicate = overlaysStore.get().find((o) => o.id === entry.id)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate overlay id '${entry.id}' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return overlaysStore.add(entry)
+}
+
 export function getExtPages(): readonly RegisteredPage[] {
   return pagesStore.get()
 }
@@ -264,6 +283,28 @@ export function getExtPage(id: string): RegisteredPage | undefined {
     if (pages[i].id === id) return pages[i]
   }
   return undefined
+}
+
+function dedupeOverlays(
+  overlays: readonly RegisteredOverlay[],
+): readonly RegisteredOverlay[] {
+  const byId = new Map<string, RegisteredOverlay>()
+  for (const overlay of overlays) byId.set(overlay.id, overlay)
+  return [...byId.values()]
+}
+
+/** Floating overlays deduplicated by id; last registration wins. */
+export function getExtOverlays(): readonly RegisteredOverlay[] {
+  return dedupeOverlays(overlaysStore.get())
+}
+
+export function useExtOverlays(): readonly RegisteredOverlay[] {
+  const overlays = useSyncExternalStore(
+    overlaysStore.subscribe,
+    overlaysStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => dedupeOverlays(overlays), [overlays])
 }
 
 /** The injected form override for one configuration id (last wins). */

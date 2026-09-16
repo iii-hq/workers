@@ -890,10 +890,12 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session.touch();
                 let cfg = sx.config.load_full();
 
+                // Lightpanda has no rasterizer and refuses jpeg outright;
+                // its text-only png is the picture there is.
                 let png = matches!(
                     req.format.as_deref().map(str::trim),
                     Some("png") | Some("PNG")
-                );
+                ) || cfg.engine == crate::config::BrowserEngine::Lightpanda;
                 let mut params =
                     ScreenshotParams::builder().full_page(req.full_page.unwrap_or(false));
                 params = if png {
@@ -1528,11 +1530,12 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let cfg = sx.config.load_full();
                 let mut issues = Vec::new();
 
-                let chromium_path = doctor::detect_chromium(&cfg);
+                let chromium_path = doctor::detect_executable(&cfg);
                 let chromium_version = match &chromium_path {
                     Some(path) => {
                         let path = path.clone();
-                        tokio::task::spawn_blocking(move || doctor::chromium_version(&path))
+                        let engine = cfg.engine;
+                        tokio::task::spawn_blocking(move || doctor::engine_version(engine, &path))
                             .await
                             .ok()
                             .flatten()
@@ -1540,16 +1543,7 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     None => None,
                 };
                 if chromium_path.is_none() {
-                    issues.push(doctor::DoctorIssue {
-                        what: if cfg.executable.is_empty() {
-                            "no Chromium/Chrome install found".to_string()
-                        } else {
-                            format!("configured executable '{}' does not exist", cfg.executable)
-                        },
-                        enable_how: "install Google Chrome or Chromium, or point the worker \
-                                     config `executable` at a browser binary"
-                            .to_string(),
-                    });
+                    issues.push(doctor::missing_executable_issue(&cfg));
                 }
 
                 let active_sessions = sx.live_count() as u64;
@@ -1577,6 +1571,7 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 
                 Ok::<_, Error>(doctor::DoctorOutput {
                     ok: chromium_path.is_some() && active_sessions < cfg.max_sessions,
+                    engine: cfg.engine.as_str().to_string(),
                     chromium_path: chromium_path.map(|p| p.display().to_string()),
                     chromium_version,
                     headless_default: cfg.headless,
@@ -2093,14 +2088,15 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session.touch();
                 let mut width = resize::clamp(req.width);
                 let mut height = resize::clamp(req.height);
-                // A pane auto-fit with several viewers grows the shared
+                // A pane auto-fit with several pane viewers grows the shared
                 // viewport but never shrinks it: the largest pane wins and the
                 // smaller ones letterbox-scale, so one small viewer can't
-                // shrink a session another viewer needs bigger. A lone viewer
-                // (or an explicit device resize) sizes it freely.
+                // shrink a session another viewer needs bigger. A lone pane
+                // (corner previews and recordings don't count) or an explicit
+                // device resize sizes it freely.
                 if req.fit.unwrap_or(false)
                     && session
-                        .screencast_consumers
+                        .pane_viewers
                         .load(std::sync::atomic::Ordering::Relaxed)
                         > 1
                 {
@@ -2904,6 +2900,11 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 // Sessions::acquire_screencast, which uses every_nth_frame(1)
                 // and caps the push rate by time in the pump).
                 sx.acquire_screencast(&session).await.map_err(handler_err)?;
+                if !req.preview.unwrap_or(false) {
+                    session
+                        .pane_viewers
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 // A human is now watching: show the session-status badge.
                 let mode = if session.read_only {
                     "read-only"
@@ -2933,6 +2934,13 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     // Release this console viewer; the CDP screencast stops
                     // only if no other consumer (e.g. a recording) remains.
                     sx.release_screencast(&session).await;
+                    if !req.preview.unwrap_or(false) {
+                        let _ = session.pane_viewers.fetch_update(
+                            std::sync::atomic::Ordering::Relaxed,
+                            std::sync::atomic::Ordering::Relaxed,
+                            |n| n.checked_sub(1),
+                        );
+                    }
                     // The viewer's overlays go regardless; they belong to the
                     // watching human, not to a recording consumer.
                     let _ = session.page.evaluate(overlays::remove_badge_script()).await;

@@ -236,7 +236,7 @@ function SessionSetupControls({
   const selectedAgentId =
     agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
   const catalog = useAgentCatalog(agentEntries)
-  const agents = catalog.entries ?? []
+  const agents = (catalog.entries ?? []).filter((entry) => !entry.hidden)
 
   return (
     <section aria-label="session setup" className="w-full max-w-[40rem]">

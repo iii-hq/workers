@@ -726,7 +726,7 @@ mod tests {
     async fn private_browser_backend_opens_lists_and_closes() {
         let executable = std::env::var_os("SCRAPLING_CHROMIUM_EXECUTABLE")
             .map(std::path::PathBuf::from)
-            .or_else(|| crate::functions::doctor::detect_chromium(&WorkerConfig::default()));
+            .or_else(|| crate::functions::doctor::detect_executable(&WorkerConfig::default()));
         let Some(executable) = executable.filter(|executable| {
             crate::functions::doctor::chromium_version(executable).is_some_and(|version| {
                 version.split_whitespace().any(|part| {
