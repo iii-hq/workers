@@ -340,8 +340,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
     const timer = setTimeout(() => setHintDone(true), HINT_SPOTLIGHT_MS)
     return () => clearTimeout(timer)
   }, [hinting])
-  const framed =
-    hinting && !hintDone ? (openStep?.on_closed?.anchors ?? null) : (openStep?.anchors ?? null)
+  const framed = hinting && !hintDone ? (openStep?.on_closed?.anchors ?? null) : (openStep?.anchors ?? null)
   useEffect(() => {
     showSpotlight(framed)
     return hideSpotlight
