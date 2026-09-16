@@ -27,6 +27,7 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
+/** Mount a real Lexical composer with a selected draft and a submit spy. */
 async function renderComposer(disabled = false) {
   const onSubmit = vi.fn()
   let editor!: LexicalEditor
@@ -58,6 +59,7 @@ async function renderComposer(disabled = false) {
   return { editor, editable, onSubmit }
 }
 
+/** Dispatch a cancelable Enter keydown and flush the resulting editor updates. */
 async function pressEnter(editable: HTMLElement, modifiers: KeyboardEventInit) {
   const event = new KeyboardEvent('keydown', {
     key: 'Enter',
