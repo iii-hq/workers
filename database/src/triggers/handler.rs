@@ -129,19 +129,30 @@ impl RowChangedHandler {
                 })?;
             }
             Some(Pool::Sqlite(sq)) => {
-                let sql = super::sqlite_watch::install_sql(table).map_err(config_error)?;
                 let conn = sq.acquire().await.map_err(|e| {
                     config_error(format!("db `{}`: acquiring connection: {e}", cfg.db))
                 })?;
+                let table_owned = table.to_string();
                 let table_for_err = table.to_string();
-                tokio::task::spawn_blocking(move || conn.with(|c| c.execute_batch(&sql)))
-                    .await
-                    .map_err(|e| config_error(format!("sqlite DDL join: {e}")))?
-                    .map_err(|e| {
-                        config_error(format!(
-                            "installing native capture triggers on `{table_for_err}`: {e}"
-                        ))
-                    })?;
+                // Changelog shape first (an older changelog lacks the `key`
+                // column the new triggers write), then the table's primary
+                // key, then the triggers — one blocking hop for all three.
+                tokio::task::spawn_blocking(move || {
+                    conn.with(|c| -> Result<(), String> {
+                        super::sqlite_watch::ensure_changelog(c).map_err(|e| e.to_string())?;
+                        let pk = super::sqlite_watch::pk_columns(c, &table_owned)
+                            .map_err(|e| e.to_string())?;
+                        let sql = super::sqlite_watch::install_sql(&table_owned, &pk)?;
+                        c.execute_batch(&sql).map_err(|e| e.to_string())
+                    })
+                })
+                .await
+                .map_err(|e| config_error(format!("sqlite DDL join: {e}")))?
+                .map_err(|e| {
+                    config_error(format!(
+                        "installing native capture triggers on `{table_for_err}`: {e}"
+                    ))
+                })?;
             }
             Some(Pool::Mysql(my)) => {
                 // Binlog capture installs nothing — but a binding on a server
@@ -177,6 +188,29 @@ impl RowChangedHandler {
                 super::mysql_binlog::binlog_position(&mut conn)
                     .await
                     .map_err(|e| config_error(format!("db `{}`: {e}", cfg.db)))?;
+                // Row identity needs column names and key flags in the
+                // binlog's table maps, which only `binlog_row_metadata=FULL`
+                // provides (the 8.x default is MINIMAL). Warn, don't refuse:
+                // existing bindings keep working across the upgrade and the
+                // events simply stay count-only until the operator flips it.
+                // `.ok().flatten()` also covers MariaDB, which lacks the variable.
+                let meta: Option<String> = conn
+                    .query_first("SELECT @@binlog_row_metadata")
+                    .await
+                    .ok()
+                    .flatten();
+                if !meta
+                    .as_deref()
+                    .is_some_and(|m| m.eq_ignore_ascii_case("FULL"))
+                {
+                    tracing::warn!(
+                        db = %cfg.db,
+                        table = %table,
+                        "binlog_row_metadata is not FULL; row-changed events on this database \
+                         carry no primary-key values (SET GLOBAL binlog_row_metadata = 'FULL', \
+                         or binlog_row_metadata=FULL in my.cnf)"
+                    );
+                }
             }
             None => {
                 // Every driver supports native capture, so reaching this arm

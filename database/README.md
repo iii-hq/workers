@@ -184,7 +184,7 @@ const { rows } = await iii.trigger({
 | Function | Purpose |
 |---|---|
 | `database::query` | Read SQL. Returns `{ rows, row_count, columns }`. |
-| `database::execute` | Write SQL. Returns `{ affected_rows, last_insert_id, returned_rows }`.<br>**`last_insert_id` semantics:** SQLite/MySQL surface the engine's `last_insert_rowid()` / `LAST_INSERT_ID()` (only populated for INSERT). Postgres has no equivalent — `last_insert_id` is set from the **first column of the first RETURNING row**, so put your PK first: `RETURNING id, name`, not `RETURNING name, id`. |
+| `database::execute` | Write SQL. Returns `{ affected_rows, last_insert_id, returned_rows }`.<br>**`returned_rows`** come from a `RETURNING` clause written into the SQL (SQLite, Postgres — MySQL has none): `INSERT INTO t (n) VALUES (?) RETURNING id`. The `returning: [...]` option never adds the clause; SQLite rejects it without one, Postgres and MySQL ignore it.<br>**`last_insert_id` semantics:** SQLite/MySQL surface the engine's `last_insert_rowid()` / `LAST_INSERT_ID()` (only populated for INSERT). Postgres has no equivalent — `last_insert_id` is set from the **first column of the first RETURNING row** of an INSERT, so put your PK first: `RETURNING id, name`, not `RETURNING name, id`. |
 | `database::executeBatch` | Convenience form of `transaction`: statements may be bare SQL strings or `{ sql, params }` objects (use `params` for dynamic values instead of inlining them). Same envelope and semantics as `transaction` — atomic, rolls back on first failure, reports `failed_index`, supports `isolation`. |
 | `database::prepareStatement` | Pin a connection and return `{ handle: { id, expires_at } }`. |
 | `database::runStatement` | Run a prepared SQL statement by handle. (No `timeout_ms` — uses the pinned connection's session lifetime; configure via `ttl_seconds` on `prepareStatement`.) |
@@ -235,45 +235,82 @@ Stored in the [`state`](https://github.com/iii-hq/workers/tree/main/state) worke
 
 ### `database::row-changed`
 
-Fires after this worker commits a row change. Driver-agnostic — no logical
-replication, no per-database setup, identical on SQLite, Postgres and MySQL.
+Fires after a row change commits. Two capture modes, chosen per database in
+the worker config (`capture:`):
+
+- **`statements`** (default) — reports mutations made *through this worker*
+  (`execute`, `executeBatch`, `transaction`, and the interactive transaction
+  surface) by classifying the SQL. A write applied by psql, another worker, or
+  a database-side trigger is invisible to it. No database setup; identical on
+  SQLite, Postgres and MySQL.
+- **`native`** — reports committed writes from *any* client. Postgres: per-table
+  triggers + LISTEN/NOTIFY (the role needs TRIGGER on the table). File-backed
+  SQLite: triggers feeding a changelog table, drained on filesystem wake-up.
+  MySQL: the binlog replication stream (`REPLICATION SLAVE, REPLICATION CLIENT`
+  grants, `binlog_row_metadata=FULL` for row identity). Bindings must name a
+  `table`.
 
 ```yaml
 triggers:
   - type: database::row-changed
     config:
       db: primary        # required
-      table: orders      # optional; case- and schema-insensitive
+      table: orders      # optional on statements, required on native; case- and schema-insensitive
       ops: [insert]      # optional; insert / update / delete / other
 ```
 
-Event: `{ db, table, op, affected_rows, returning?, at }`, where `op` is
-`insert` / `update` / `delete` / `other`.
+Event: `{ db, table, op, affected_rows, returning?, truncated?, at }`, where
+`op` is `insert` / `update` / `delete` / `other`. The full schema is on the
+trigger type (`engine::triggers::info`).
 
-**This is not change data capture.** It reports mutations made *through this
-worker* — `execute`, `executeBatch`, `transaction`, and the interactive
-transaction surface. A write applied by psql, another worker, or a
-database-side trigger is invisible to it. That covers the case it exists for
-(the worker is the only writer, and something needs to know when rows land)
-and nothing more.
+**Which rows changed — `returning`.** The event never invents row data:
 
-Four things worth knowing:
+- On `statements` it is the writer's own `RETURNING` projection, verbatim. A
+  listener that needs to know *which* row changed depends on the writer having
+  written `RETURNING <primary key>` into its SQL — the `returning` option on
+  `execute` does not add the clause. Without it the event carries only
+  `affected_rows`. `UPDATE` reports the new values, `DELETE` the removed row.
+  MySQL has no `RETURNING`, so statements-mode events there never carry rows.
+- On `native` it is the primary-key columns of each changed row (every column
+  of a composite key; `UPDATE` reports the new key), so a listener gets row
+  identity without the writer's cooperation. Capped at 100 rows per event —
+  `truncated: true` says the rest were dropped, `affected_rows` stays exact.
+  Absent for a table without a primary key. Values are encoded as
+  `database::query` returns the same column (Postgres `bigint` as a string,
+  for example).
+- When not to bind: if the writer is you and already holds the new values in
+  `execute`'s `returned_rows`, there is nothing to wait for.
+
+Worth knowing:
 
 - **Announced on commit, never before.** Statements inside an interactive
   transaction are buffered until `commitTransaction`; a rollback — including
   the timeout watcher's — drops the buffer. Atomic batches announce their
-  statements in order only after the whole batch commits.
+  statements in order only after the whole batch commits. Native capture is
+  commit-gated by the database itself.
 - **Delivery is best-effort.** Dispatch happens after commit and is not durable
   or atomic with the database write. There is no replay, retry, or exactly-once
   guarantee; a crash between commit and dispatch can lose an event. Subscriber
-  failures are logged and never fail the write.
-- **`table` can be null.** The table is read off the SQL. A CTE-wrapped write
-  (`WITH … INSERT`) still fires, with `table: null`, rather than being dropped;
-  a binding that named a table simply does not match it. Omit `table` to match
-  every write, including these.
-- **`runStatement` does not fire.** The prepared-run path returns rows, not an
-  affected-row count, and an event that invented one would be lying. Use
-  `execute` when you need the change announced.
+  failures are logged and never fail the write. A harness wake notification
+  renders the event as a ~600-character summary; the full payload is in the
+  fire record.
+- **`table` can be null on `statements`.** The table is read off the SQL. A
+  CTE-wrapped write (`WITH … INSERT`) still fires, with `table: null`, rather
+  than being dropped; a binding that named a table simply does not match it.
+  Omit `table` to match every write, including these. The classifier reads
+  keywords rather than parsing, so any `WITH` statement whose text contains
+  `INSERT`/`UPDATE`/`DELETE`/`MERGE` — even inside a string literal — fires
+  the same way.
+- **`runStatement` does not fire on `statements`.** The prepared-run path
+  returns rows, not an affected-row count, and an event that invented one would
+  be lying. Use `execute` when you need the change announced. On a `native`
+  database the database itself reports the write, whichever path it took.
+- **Native caveats.** Postgres additionally trims keys to fit NOTIFY's
+  8000-byte payload. SQLite's triggers call `json_object`, so every process
+  writing the file needs libsqlite ≥ 3.38 (JSON built in) — an older client
+  fails its own INSERT with `no such function`. MySQL carries keys only under
+  `binlog_row_metadata=FULL`; on the `MINIMAL` default the events are
+  count-only and registration warns.
 
 ## Errors
 
@@ -296,7 +333,8 @@ A few operations are no-ops on certain drivers. They emit a `tracing::warn!` rat
 
 | Operation | SQLite | Postgres | MySQL |
 |---|---|---|---|
-| `execute` with `returning: [...]` | ✓ | ✓ | warn-once + ignore |
+| `execute` / `transactionExecute` with a `RETURNING` clause in the SQL | ✓ rows returned | ✓ rows returned | no RETURNING in MySQL |
+| `execute` `returning: [...]` option (never adds the clause) | rejected without a clause (`RETURNING_MISMATCH`) | accepted, no effect (warn) | accepted, no effect (warn) |
 | `transaction` `isolation: read_committed` / `repeatable_read` | warn + use serializable | ✓ | ✓ |
 | `transaction` `isolation: serializable` | ✓ (`BEGIN IMMEDIATE`) | ✓ | ✓ |
 

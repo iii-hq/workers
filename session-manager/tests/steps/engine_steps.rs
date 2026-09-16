@@ -343,7 +343,7 @@ async fn latest_meta_record(
     let records = main_store_records(world, &session_id);
     let meta = records
         .iter()
-        .rfind(|r| r["type"] == "meta")
+        .rfind(|r| r["type"] == "meta" || r["type"] == "append")
         .unwrap_or_else(|| panic!("no meta record in session file: {records:#?}"));
     let actual = lookup_path(&meta["meta"], &path)
         .unwrap_or_else(|| panic!("meta record has no field `{path}`: {meta}"));
@@ -371,7 +371,9 @@ async fn latest_entry_record(
     let records = main_store_records(world, &session_id);
     let entry = records
         .iter()
-        .rfind(|r| r["type"] == "entry" && r["entry"]["id"] == entry_id.as_str())
+        .rfind(|r| {
+            (r["type"] == "entry" || r["type"] == "append") && r["entry"]["id"] == entry_id.as_str()
+        })
         .unwrap_or_else(|| panic!("no record for entry {entry_id}: {records:#?}"));
     let actual = lookup_path(&entry["entry"], &path)
         .unwrap_or_else(|| panic!("entry record has no field `{path}`: {entry}"));
@@ -390,11 +392,12 @@ async fn latest_leaf_record(world: &mut SessionWorld, session_id: String, expect
     let records = main_store_records(world, &session_id);
     let leaf = records
         .iter()
-        .rfind(|r| r["type"] == "leaf")
+        .rfind(|r| r["type"] == "leaf" || r["type"] == "append")
         .unwrap_or_else(|| panic!("no leaf record in session file: {records:#?}"));
-    assert_eq!(
-        leaf["entry_id"],
-        Value::String(expected),
-        "latest leaf mismatch"
-    );
+    let actual = if leaf["type"] == "append" {
+        &leaf["entry"]["id"]
+    } else {
+        &leaf["entry_id"]
+    };
+    assert_eq!(actual, &Value::String(expected), "latest leaf mismatch");
 }

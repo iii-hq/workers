@@ -5,6 +5,10 @@ import { useEffect, useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
+import {
+  type ConversationSource,
+  conversationSources,
+} from '@/lib/conversation-import'
 import type { Conversation, SubagentColor } from '@/types/chat'
 
 interface ConversationRowProps {
@@ -151,6 +155,15 @@ export function ConversationRow({
         />
       ) : (
         <span className={uiClasses.treeItemLabel}>{conversation.title}</span>
+      )}
+      {typeof conversation.sessionMetadata?.external_source === 'string' && (
+        <span className="shrink-0 text-[10px] text-ink-faint">
+          {
+            conversationSources[
+              conversation.sessionMetadata.external_source as ConversationSource
+            ]
+          }
+        </span>
       )}
       {hasChildren ? (
         <button

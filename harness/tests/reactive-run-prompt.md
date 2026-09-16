@@ -119,8 +119,9 @@ WRITE — only after the watch is armed:
    INSERT INTO <sql prefix>_orders (id, writer, amount, created_at)
    VALUES (?, 'writer-w', ?, CURRENT_TIMESTAMP) RETURNING id, writer, amount
    — and ALSO pass the option returning: ["id", "writer", "amount"]. The
-   RETURNING clause lives IN THE SQL; the option alone does not add it, and
-   the worker refuses the contradiction. These rows are what the aggregator
+   RETURNING clause lives IN THE SQL; the option alone does not add it. On
+   SQLite the option is refused only when the SQL returns no rows, so pass
+   both (Postgres and MySQL ignore the option). These rows are what the aggregator
    keys its idempotency on; an insert without them is invisible to the claim. Then mark itself done:
    INSERT INTO <sql prefix>_writers (writer, done_at) VALUES ('writer-w',
    CURRENT_TIMESTAMP). No delays, no reads, no retries over time — but a

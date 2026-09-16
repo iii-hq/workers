@@ -11,9 +11,16 @@
 //!   transaction has not happened until the commit does, so interactive
 //!   transactions buffer here and flush on commit; a rollback drops the buffer.
 //!   Announcing a row that then rolls back is worse than announcing nothing.
-//! * **Only what this worker wrote.** This is not change data capture. A
-//!   mutation applied by psql, another worker, or a trigger inside the database
-//!   is invisible here, by construction.
+//! * **Only what this worker wrote — on a `capture: statements` database.** The
+//!   classification path is not change data capture: a mutation applied by
+//!   psql, another worker, or a trigger inside the database is invisible to it.
+//!   `capture: native` databases hear every client instead (`native.rs`,
+//!   `sqlite_watch.rs`, `mysql_binlog.rs`) and hand their events to
+//!   [`RowChangeBus::emit_event`] already shaped.
+//!
+//! The event never invents row data. On the statements path `returning` is the
+//! writer's own `RETURNING` projection, forwarded verbatim; on the native path
+//! it is the primary-key columns of the changed rows, capped at [`KEY_CAP`].
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,6 +35,13 @@ use super::sql::{self, Op};
 /// The trigger type this worker registers.
 pub const ROW_CHANGED_TYPE: &str = "database::row-changed";
 
+/// How many changed-row keys one `capture: native` event carries at most.
+/// Shared by all three native producers so a listener sees one contract.
+/// Sized for the postgres NOTIFY payload limit (8000 bytes): a hundred
+/// single-column integer keys is ~2 KB, a hundred two-column uuid keys ~6 KB;
+/// the postgres trigger additionally halves the count until the payload fits.
+pub(crate) const KEY_CAP: usize = 100;
+
 /// Per-binding config: which database, and optionally which table.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -37,7 +51,9 @@ pub struct RowChangedConfig {
     // its owner never asked about.
     pub db: String,
     /// Table filter. Matched case-insensitively and ignoring a schema
-    /// qualifier. Omit to hear every table in the database.
+    /// qualifier. Optional on a `capture: statements` database (omit to hear
+    /// every table); required on a `capture: native` one, where per-table
+    /// database triggers are what make other clients' writes visible.
     #[serde(default)]
     pub table: Option<String>,
     /// Operation filter. Omit to hear every operation.
@@ -50,14 +66,27 @@ pub struct RowChangedConfig {
 pub struct RowChangedEvent {
     pub db: String,
     /// `null` when the statement was recognisably a write but its table could
-    /// not be read out of the SQL (a CTE-wrapped write, for example).
+    /// not be read out of the SQL (a CTE-wrapped write, for example). Always
+    /// set on a `capture: native` database.
     pub table: Option<String>,
     pub op: Op,
+    /// Rows the statement changed. Exact even when `returning` is capped.
     pub affected_rows: u64,
-    /// The `RETURNING` rows, when the caller asked for them. Absent otherwise —
-    /// this trigger reports that a change happened, not the new row.
+    /// Which rows changed, when that is known. On a `capture: statements`
+    /// database this is the writer's own `RETURNING` projection — whatever
+    /// columns the writer's SQL named, nothing more — so it is absent when
+    /// the writer's SQL had no `RETURNING` clause. On a `capture: native`
+    /// database it is the primary-key columns of each changed row (UPDATE
+    /// reports the new key), capped at 100 rows per event; absent for a
+    /// table without a primary key. Values are encoded like `database::query`
+    /// returns them for the same column.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub returning: Option<Vec<serde_json::Map<String, Value>>>,
+    /// True when `returning` holds fewer keys than `affected_rows` because the
+    /// per-event cap dropped the rest (native capture only). Omitted when
+    /// false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
     /// Epoch millis at emit time.
     pub at: i64,
 }
@@ -261,6 +290,7 @@ impl RowChangeBus {
             op: mutation.op,
             affected_rows,
             returning: returning.map(|r| r.to_vec()).filter(|r| !r.is_empty()),
+            truncated: false,
             at: now_ms(),
         };
         self.fan_out(event).await;
@@ -290,6 +320,7 @@ impl RowChangeBus {
                 op: p.op,
                 affected_rows: p.affected_rows,
                 returning: p.returning,
+                truncated: false,
                 at: now_ms(),
             })
             .await;
@@ -469,10 +500,46 @@ mod tests {
             op: Op::Other,
             affected_rows: 1,
             returning: None,
+            truncated: false,
             at: 0,
         })
         .unwrap();
         assert_eq!(value["table"], serde_json::Value::Null);
+    }
+
+    /// The wire shape a listener sees today must not change for events that
+    /// carry no row identity: no `returning` key, no `truncated` key. The
+    /// flag appears only when it is true.
+    #[test]
+    fn events_without_keys_omit_returning_and_truncated() {
+        let plain = serde_json::to_value(RowChangedEvent {
+            db: "primary".into(),
+            table: Some("orders".into()),
+            op: Op::Update,
+            affected_rows: 3,
+            returning: None,
+            truncated: false,
+            at: 0,
+        })
+        .unwrap();
+        assert!(plain.get("returning").is_none(), "{plain}");
+        assert!(plain.get("truncated").is_none(), "{plain}");
+
+        let capped = serde_json::to_value(RowChangedEvent {
+            db: "primary".into(),
+            table: Some("orders".into()),
+            op: Op::Insert,
+            affected_rows: 150,
+            returning: Some(vec![serde_json::json!({ "id": 1 })
+                .as_object()
+                .unwrap()
+                .clone()]),
+            truncated: true,
+            at: 0,
+        })
+        .unwrap();
+        assert_eq!(capped["truncated"], serde_json::json!(true));
+        assert_eq!(capped["returning"][0]["id"], 1);
     }
 
     #[test]

@@ -2122,3 +2122,63 @@ it('drops a queued completion when authoritative metadata has restarted', () => 
     ),
   ).toBe(false)
 })
+
+describe('generic read-only conversation', () => {
+  it('preserves source metadata on rename and refuses workspace/model edits', () => {
+    const imported = mergeConversationMeta(undefined, {
+      session_id: 'imported',
+      title: 'Source title',
+      description: '',
+      status: 'idle',
+      created_at: 1,
+      updated_at: 2,
+      message_count: 1,
+      metadata: {
+        read_only: true,
+        external_source: 'codex',
+        external_session_id: 'source-id',
+        source_cwd: '/original',
+      },
+    })
+    expect(imported.workingDir).toBeNull()
+    expect(
+      applyConversationMetadataPatch(imported, { workingDir: '/different' }),
+    ).toBe(imported)
+    expect(
+      applyConversationMetadataPatch(imported, { model: 'provider::model' }),
+    ).toBe(imported)
+    const renamed = applyConversationMetadataPatch(imported, {
+      title: 'Local title',
+      titleManual: true,
+    })
+    expect(renamed.title).toBe('Local title')
+    expect(metadataFor(renamed)).toMatchObject(imported.sessionMetadata ?? {})
+  })
+})
+
+it('keeps imported provenance separate while allowing normal session edits', () => {
+  const imported = mergeConversationMeta(
+    undefined,
+    sessionMeta({
+      metadata: {
+        external_source: 'claude-code',
+        external_session_id: 'source',
+        source_cwd: '/source',
+      },
+      message_count: 3,
+    }),
+  )
+  expect(imported.model).toBeNull()
+  expect(imported.workingDir).toBeNull()
+  const configured = applyConversationMetadataPatch(imported, {
+    model: 'ade::chosen',
+    workingDir: '/ade',
+  })
+  expect(configured.model).toBe('ade::chosen')
+  expect(configured.workingDir).toBe('/ade')
+  expect(metadataFor(configured)).toMatchObject({
+    external_source: 'claude-code',
+    source_cwd: '/source',
+    fs_scope: { root: '/ade' },
+  })
+})

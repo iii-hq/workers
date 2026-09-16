@@ -11,6 +11,8 @@ import { CONCURRENCY_CASES } from './cases-concurrency.ts'
 import { TX_CONTROL_BYPASS_CASES } from './cases-tx-control-bypass.ts'
 import { ROW_CHANGED_CASES } from './cases-row-changed.ts'
 import { NATIVE_CAPTURE_CASES } from './cases-native-capture.ts'
+import { CATALOG_CASES } from './cases-catalog.ts'
+import { PG_ROUTING_CASES } from './cases-pg-routing.ts'
 import { HISTORY_CASES } from './cases-history.ts'
 
 interface CaseResult {
@@ -146,6 +148,13 @@ export class Runner {
           record(await this.runCase(driver, c))
         }
 
+        // Catalog surface: every database::* function gets a minimal real
+        // call, and the guard keeps the registered surface in step with it.
+        for (const c of CATALOG_CASES) {
+          if (!matchesDriver(driver, c)) continue
+          record(await this.runCase(driver, c))
+        }
+
         // Boundary, protocol, transaction-edge, interactive-tx, and
         // concurrency cases. Each test is self-contained (creates and drops
         // its own scratch tables) so order doesn't matter.
@@ -157,6 +166,7 @@ export class Runner {
           ...CONCURRENCY_CASES,
           ...ROW_CHANGED_CASES,
           ...NATIVE_CAPTURE_CASES,
+          ...PG_ROUTING_CASES,
           ...HISTORY_CASES,
         ]) {
           if (!matchesDriver(driver, c)) continue

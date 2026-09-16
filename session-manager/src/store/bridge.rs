@@ -17,7 +17,7 @@ use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 
-use super::{SessionStore, StoreError};
+use super::{CommitAppendResult, SessionStore, StoreError};
 use crate::functions::store_protocol;
 use crate::types::{AttachmentMeta, SessionEntry, SessionMeta};
 
@@ -116,6 +116,25 @@ impl SessionStore for BridgeStore {
         )
         .await
         .map(|_| ())
+    }
+
+    async fn commit_append(
+        &self,
+        session_id: &str,
+        entry: &SessionEntry,
+        parent_explicit: bool,
+    ) -> Result<CommitAppendResult, StoreError> {
+        let value = self
+            .call(
+                store_protocol::COMMIT_APPEND,
+                json!({
+                    "session_id": session_id,
+                    "entry": entry,
+                    "parent_explicit": parent_explicit
+                }),
+            )
+            .await?;
+        Self::parse(store_protocol::COMMIT_APPEND, value)
     }
 
     async fn list_entries(&self, session_id: &str) -> Result<Vec<SessionEntry>, StoreError> {

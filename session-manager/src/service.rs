@@ -500,7 +500,8 @@ impl SessionService {
 
     pub async fn append(&self, req: AppendRequest) -> ServiceResult<AppendResponse> {
         let _guard = self.lock_session(&req.session_id).await;
-        let mut meta = self.meta_or_not_found(&req.session_id).await?;
+        self.meta_or_not_found(&req.session_id).await?;
+        let parent_explicit = req.parent_id.is_some();
 
         enum Body {
             Message(Box<AgentMessage>),
@@ -516,80 +517,91 @@ impl SessionService {
             }
         };
 
-        // Idempotent on entry_id: appending an id that already exists is
-        // a no-op — the existing entry is returned and no event fires.
-        if let Some(entry_id) = &req.entry_id {
-            if let Some(existing) = self.store.get_entry(&req.session_id, entry_id).await? {
-                return Ok((
-                    AppendResponse {
-                        entry_id: existing.id().to_string(),
-                        parent_id: existing.parent_id().map(str::to_string),
-                        timestamp: existing.timestamp(),
+        let existing = match &req.entry_id {
+            Some(entry_id) => self.store.get_entry(&req.session_id, entry_id).await?,
+            None => None,
+        };
+        let entry = match existing {
+            Some(entry) => entry,
+            None => {
+                let parent_id = match &req.parent_id {
+                    Some(parent) => {
+                        if self
+                            .store
+                            .get_entry(&req.session_id, parent)
+                            .await?
+                            .is_none()
+                        {
+                            return Err(SessionError::ParentNotFound(format!(
+                                "parent entry {parent} does not exist in session {}",
+                                req.session_id
+                            )));
+                        }
+                        Some(parent.clone())
+                    }
+                    None => self.store.get_active_leaf(&req.session_id).await?,
+                };
+                let entry_id = req.entry_id.unwrap_or_else(|| self.ids.entry_id());
+                let now = self.clock.now_ms();
+                match body {
+                    Body::Message(message) => SessionEntry::Message {
+                        id: entry_id,
+                        parent_id,
+                        timestamp: now,
+                        revision: 0,
+                        origin: req.origin.clone(),
+                        message,
                     },
-                    vec![],
-                ));
-            }
-        }
-
-        let parent_id = match &req.parent_id {
-            Some(parent) => {
-                if self
-                    .store
-                    .get_entry(&req.session_id, parent)
-                    .await?
-                    .is_none()
-                {
-                    return Err(SessionError::ParentNotFound(format!(
-                        "parent entry {parent} does not exist in session {}",
-                        req.session_id
-                    )));
+                    Body::Custom(custom) => SessionEntry::Custom {
+                        id: entry_id,
+                        parent_id,
+                        timestamp: now,
+                        revision: 0,
+                        origin: req.origin.clone(),
+                        custom_type: custom.custom_type,
+                        data: custom.data,
+                    },
                 }
-                Some(parent.clone())
             }
-            None => self.store.get_active_leaf(&req.session_id).await?,
         };
 
-        let entry_id = req.entry_id.unwrap_or_else(|| self.ids.entry_id());
-        let now = self.clock.now_ms();
-        let is_message = matches!(body, Body::Message(_));
-        let (entry, event_message, event_custom) = match body {
-            Body::Message(message) => (
-                SessionEntry::Message {
-                    id: entry_id.clone(),
-                    parent_id: parent_id.clone(),
-                    timestamp: now,
-                    revision: 0,
-                    origin: req.origin.clone(),
-                    message: message.clone(),
-                },
-                Some(*message),
-                None,
-            ),
-            Body::Custom(custom) => (
-                SessionEntry::Custom {
-                    id: entry_id.clone(),
-                    parent_id: parent_id.clone(),
-                    timestamp: now,
-                    revision: 0,
-                    origin: req.origin.clone(),
-                    custom_type: custom.custom_type.clone(),
-                    data: custom.data.clone(),
-                },
-                None,
-                Some(custom),
-            ),
-        };
-
-        self.store.put_entry(&req.session_id, &entry).await?;
-        // Appending always moves the active leaf to the new entry.
-        self.store
-            .set_active_leaf(&req.session_id, &entry_id)
+        let committed = self
+            .store
+            .commit_append(&req.session_id, &entry, parent_explicit)
             .await?;
-        if is_message {
-            meta.message_count += 1;
+        let meta = committed.meta;
+        let entry = committed.entry;
+        let entry_id = entry.id().to_string();
+        let parent_id = entry.parent_id().map(str::to_string);
+        let now = entry.timestamp();
+        if !committed.committed {
+            return Ok((
+                AppendResponse {
+                    entry_id,
+                    parent_id,
+                    timestamp: now,
+                },
+                vec![],
+            ));
         }
-        meta.updated_at = now;
-        self.store.put_meta(&meta).await?;
+        let (event_message, event_custom, origin) = match &entry {
+            SessionEntry::Message {
+                message, origin, ..
+            } => (Some((**message).clone()), None, origin.clone()),
+            SessionEntry::Custom {
+                custom_type,
+                data,
+                origin,
+                ..
+            } => (
+                None,
+                Some(CustomPayload {
+                    custom_type: custom_type.clone(),
+                    data: data.clone(),
+                }),
+                origin.clone(),
+            ),
+        };
 
         let event = EmittableEvent {
             event: SessionEvent::MessageAdded(MessageAddedEvent {
@@ -598,7 +610,7 @@ impl SessionService {
                 parent_id: parent_id.clone(),
                 message: event_message,
                 custom: event_custom,
-                origin: req.origin,
+                origin,
                 timestamp: now,
             }),
             session_metadata: meta.metadata.clone(),

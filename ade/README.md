@@ -121,6 +121,19 @@ A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives 
 - **Session ID** — copyable, deep-links every conversation into the trace explorer via `iii.session.id`
 - **Persistence** — conversations, active id, last model, sidebar state — all in `localStorage`
 
+### Import local conversations
+
+Use **Import conversations** in the chat sidebar to discover, preview, and select histories on the machine running ADE. Codex uses `CODEX_HOME` (default `~/.codex`); Claude Code uses `CLAUDE_CONFIG_DIR` (default `~/.claude`). A container needs read access to these directories. The browser's local filesystem is not scanned.
+
+- Every import creates a new, independent, editable ADE session. Importing the same source again creates another copy. There is no subsequent synchronization with the original.
+- Copies include user and assistant text, the commands the agent ran with their recorded output, original message timestamps, and available model metadata. Reasoning, attachments, and subagent histories are omitted. Source files are never changed.
+- Commands become the console's own function rows: Codex `CommandExecution`, `FileChange`, `McpToolCall`, and `WebSearch` items, and Claude Code `tool_use`/`tool_result` blocks, are stored as `function_call` blocks with matching `function_result` entries. They keep the source's tool names (`exec`, `apply_patch`, `Bash`, `Read`, …) and never re-run.
+- Choose an ADE model and working directory to continue through the normal composer. The original project path is provenance only and grants no filesystem access. Rename, compact, and delete work normally.
+- Native readers support Codex 0.154.0 completed-item events and Claude Code's main conversation branch (checked against Claude Agent SDK 0.3.173). Older Codex histories without completed-item events and rewound Codex histories are unsupported; discovery reports skipped histories.
+- Discovery is paginated and reads files incrementally. Preview shows the last 50 messages; import copies the full history.
+
+Deploy the matching ADE and Harness changes so a session with imported history and no prior turn requires its initial ADE model and working directory. Sessions that explicitly carry `read_only: true` remain protected.
+
 ### Traces
 
 Full-fledged OpenTelemetry explorer over `engine::traces::*` and `engine::logs::list`. Lives in [`web/src/pages/TracesV2/`](web/src/pages/TracesV2).

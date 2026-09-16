@@ -613,6 +613,8 @@ export function applyConversationMetadataPatch(
   patch: ConversationMetadataEdits,
   now = Date.now(),
 ): Conversation {
+  if (c.sessionMetadata?.read_only === true && !Object.hasOwn(patch, 'title'))
+    return c
   const normalized: ConversationMetadataEdits = Object.hasOwn(patch, 'skills')
     ? { ...patch, skills: patch.skills?.length ? patch.skills : undefined }
     : patch
@@ -2437,7 +2439,12 @@ export function useConversations(
 
   const writeMeta = useCallback(
     (conv: Conversation) => {
-      if (!serverEnabled || conv.draft) return
+      if (
+        !serverEnabled ||
+        conv.draft ||
+        conv.sessionMetadata?.read_only === true
+      )
+        return
       void setSessionMeta({
         session_id: conv.id,
         metadata: metadataForWrite(conv),
@@ -2540,6 +2547,11 @@ export function useConversations(
 
   const setWorkingDir = useCallback(
     (id: string, dir: string | null) => {
+      if (
+        conversationsRef.current.find((c) => c.id === id)?.sessionMetadata
+          ?.read_only === true
+      )
+        return
       patchConversation(id, (c) =>
         applyConversationMetadataPatch(c, { workingDir: dir }),
       )
@@ -2569,7 +2581,11 @@ export function useConversations(
 
   const appendMessage = useCallback(
     (id: string, message: Message) =>
-      patchConversation(id, (c) => appendMessageToConversation(c, message)),
+      patchConversation(id, (c) =>
+        c.sessionMetadata?.read_only === true
+          ? c
+          : appendMessageToConversation(c, message),
+      ),
     [patchConversation],
   )
 
@@ -2587,11 +2603,15 @@ export function useConversations(
 
   const compactConversation = useCallback(
     (id: string, marker: Message) =>
-      patchConversation(id, (c) => ({
-        ...c,
-        messages: [marker],
-        updatedAt: Date.now(),
-      })),
+      patchConversation(id, (c) =>
+        c.sessionMetadata?.read_only === true
+          ? c
+          : {
+              ...c,
+              messages: [marker],
+              updatedAt: Date.now(),
+            },
+      ),
     [patchConversation],
   )
 

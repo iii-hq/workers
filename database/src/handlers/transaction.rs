@@ -23,6 +23,9 @@ pub struct TxReq {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TxStmtReq {
+    /// One statement. A `RETURNING` clause in the SQL (SQLite, Postgres)
+    /// puts the rows in this step's `results[].rows` and on the
+    /// `database::row-changed` event fired for it after commit.
     #[serde(alias = "query")]
     pub sql: String,
     #[serde(default, deserialize_with = "crate::handlers::lenient_params")]

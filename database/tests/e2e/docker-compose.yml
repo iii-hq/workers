@@ -17,6 +17,10 @@ services:
 
   mysql:
     image: mysql:8.4
+    # Native capture reads primary keys off the binlog's table maps, which
+    # only carry column names and key flags under FULL row metadata (the
+    # server default is MINIMAL → count-only events).
+    command: ["mysqld", "--binlog-row-metadata=FULL"]
     environment:
       MYSQL_ROOT_PASSWORD: iii
       MYSQL_DATABASE: iii_test

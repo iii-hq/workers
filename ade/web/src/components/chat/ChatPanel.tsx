@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react'
+import { Download, Plus } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
@@ -9,6 +9,7 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 import { ChatView } from './ChatView'
+import { ImportConversationsDialog } from './ImportConversationsDialog'
 
 export type ChatPanelDensity = 'route' | 'dock'
 
@@ -71,6 +72,7 @@ export function ChatPanel({
     connectionState,
     missingConversationIds,
   } = useConversationsCtx()
+  const [importOpen, setImportOpen] = useState(false)
   const pinned = conversationId !== undefined
   const displayedConversation = pinned
     ? (conversations.find(
@@ -165,6 +167,11 @@ export function ChatPanel({
         panelSide === 'right' ? ' flex-row-reverse' : ''
       }`}
     >
+      <ImportConversationsDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        onImported={handleSelect}
+      />
       {showList ? (
         <PageSidebar
           label="Conversations"
@@ -177,16 +184,24 @@ export function ChatPanel({
           resizable
           narrow={narrow}
           header={
-            <Button
-              type="button"
-              variant="primary"
-              size="md"
-              className="h-12 flex-1 justify-center px-3 font-sans text-base normal-case sm:h-9 sm:justify-start sm:text-sm"
-              onClick={handleCreate}
-            >
-              <Plus className="size-4 shrink-0" aria-hidden />
-              New chat
-            </Button>
+            <>
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                className="h-12 flex-1 justify-center px-3 font-sans text-base normal-case sm:h-9 sm:justify-start sm:text-sm"
+                onClick={handleCreate}
+              >
+                <Plus className="size-4 shrink-0" aria-hidden />
+                New chat
+              </Button>
+              <IconButton
+                label="Import conversations"
+                onClick={() => setImportOpen(true)}
+              >
+                <Download aria-hidden />
+              </IconButton>
+            </>
           }
           collapsedActions={
             <IconButton
