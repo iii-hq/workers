@@ -274,6 +274,20 @@ const CHAT_TIMEOUT_MS = 30_000
 /** Always present (`builtin: true`), so the fallback cannot itself go missing. */
 const FALLBACK_AGENT = 'iii-minimal'
 
+/**
+ * The reasoning effort the tour runs at, the same one the page asks the
+ * console for on the first step. Every step hands the agent a short, concrete
+ * task and then waits on it; deliberation over instructions that are already
+ * explicit is time the operator spends watching a spinner.
+ *
+ * Sent on the turn itself, not written to the session: the console keeps its
+ * own level per conversation and sends it with every turn it starts, so this
+ * covers the turns the tour starts and the console covers the operator's.
+ * A profile naming its own `reasoning_effort` outranks this, which is the
+ * profile author's call to make.
+ */
+const THINKING_LEVEL = 'minimal'
+
 /** One session per subject and tour: every step naming an agent joins the
     chat the first one opened. */
 const chatKey = (subject, tourId) => `chat:${subject}:${tourId}`
@@ -320,7 +334,11 @@ iii.registerFunction(
       // A stored session the harness no longer has is not an error the
       // operator can do anything with: the step wants a chat under this
       // profile, so a refused steer opens a new one below.
-      const steered = await harnessSend({ session_id: existing, message: step.ask.text }).catch(() => null)
+      const steered = await harnessSend({
+        session_id: existing,
+        message: step.ask.text,
+        options: { thinking_level: THINKING_LEVEL },
+      }).catch(() => null)
       if (steered) return { session_id: existing, agent: stored.agent ?? null, created: false }
     }
     const agent = await resolveAgent(step.agent)
@@ -332,7 +350,7 @@ iii.registerFunction(
     const started = await harnessSend({
       message: step.ask.text,
       ...(input.model ? { model: input.model } : {}),
-      options: { agent },
+      options: { agent, thinking_level: THINKING_LEVEL },
     })
     await stateUpdate(key, [{ type: 'merge', value: { session_id: started.session_id, agent, at: Date.now() } }])
     return { session_id: started.session_id, agent, created: true }

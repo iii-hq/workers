@@ -49,6 +49,20 @@ const OPEN_TIMEOUT_MS = 8_000
 /** How long the box stays on what a step's `on_closed` note points at. */
 const HINT_SPOTLIGHT_MS = 5_000
 
+/** Attempts to hand a just-opened conversation the tour's reasoning effort,
+    and the gap between them: the console mounts it a moment after it is
+    selected, and refuses the level until it has. */
+const THINKING_LEVEL_TRIES = 10
+const THINKING_LEVEL_RETRY_MS = 300
+
+function askForThinkingLevel(host: Host, sessionId: string, left = THINKING_LEVEL_TRIES): void {
+  const took = host.chat?.requestThinkingLevelChange?.({ sessionId, level: TOUR_THINKING_LEVEL })
+  // A console too old to be asked returns nothing and never will; one that
+  // has not mounted the conversation yet returns false and shortly will.
+  if (took || !host.chat?.requestThinkingLevelChange || left <= 1) return
+  setTimeout(() => askForThinkingLevel(host, sessionId, left - 1), THINKING_LEVEL_RETRY_MS)
+}
+
 /** Console class recipes, with a literal fallback for an older build that
     does not publish them. */
 const ui = uiClasses ?? {
@@ -256,6 +270,12 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
             // would put the same conversation on screen twice.
             if (host.chat?.selectConversation) {
               host.chat.selectConversation(session_id)
+              // The worker already sent this turn at the tour's effort. This
+              // is the console's own record for the new conversation, so the
+              // operator's own messages in it run there too — and it is
+              // refused until the conversation is MOUNTED, which the select
+              // above only starts, hence the retry.
+              askForThinkingLevel(host, session_id)
             } else {
               // An older console cannot be asked; it gets a pinned pane of
               // its own instead, which is the same conversation either way.
