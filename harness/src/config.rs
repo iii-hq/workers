@@ -48,6 +48,17 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_transient_resumes")]
     pub max_transient_resumes: u32,
 
+    /// Serialized byte cap on a captured function result (`content` +
+    /// `details` together). A result over this is replaced at capture time —
+    /// before it is written to the session or echoed to the provider — with
+    /// an elision marker naming its size and shape. Guards the engine's
+    /// per-frame WebSocket limit (16 MiB, the axum/tungstenite default; the
+    /// SDK sends each message as one unfragmented frame), which an oversized
+    /// `session::append` echo trips into a permanent reconnect loop that also
+    /// drops every `harness::*` registration (MOT-4498). 0 disables.
+    #[serde(default = "default_max_result_bytes")]
+    pub max_result_bytes: usize,
+
     /// TTL for `harness_idem` webhook-dedupe rows. Seconds.
     #[serde(default = "default_idem_ttl_secs")]
     pub idem_ttl_secs: u64,
@@ -228,6 +239,15 @@ fn default_max_transient_resumes() -> u32 {
     // (observed live 2026-07-21, session dcmcp-scan-p6w4-c-aq).
     3
 }
+fn default_max_result_bytes() -> usize {
+    // 256 KiB: the same ceiling `database` uses for its state-backed history
+    // (MOT-4372). Far below the 16 MiB frame limit on purpose — the cap is
+    // also session hygiene: every later `session::messages` read and
+    // `context::assemble` request re-carries the durable entry, and
+    // context-manager's `max_result_tokens` (~80 KB) would trim anything
+    // larger before the model saw it anyway.
+    262_144
+}
 fn default_idem_ttl_secs() -> u64 {
     86_400
 }
@@ -301,6 +321,7 @@ impl Default for WorkerConfig {
             max_children: default_max_children(),
             max_validation_retries: default_max_validation_retries(),
             max_transient_resumes: default_max_transient_resumes(),
+            max_result_bytes: default_max_result_bytes(),
             idem_ttl_secs: default_idem_ttl_secs(),
             session_timeout_ms: default_session_timeout_ms(),
             context_timeout_ms: default_context_timeout_ms(),
@@ -327,6 +348,7 @@ mod tests {
         assert_eq!(cfg.max_depth, 3);
         assert_eq!(cfg.max_children, 8);
         assert_eq!(cfg.max_transient_resumes, 3);
+        assert_eq!(cfg.max_result_bytes, 262_144);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
         assert_eq!(cfg.projects_file_path, "data/harness-projects.json");
     }

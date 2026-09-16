@@ -198,6 +198,7 @@ default_pending_timeout_ms: 1800000  # legacy parked-call (hold / pre-deploy chi
 max_depth: 3                     # sub-agent depth budget
 max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
+max_result_bytes: 262144         # function-result byte cap at capture; oversized results become an elision marker (0 = off)
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```

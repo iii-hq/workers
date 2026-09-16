@@ -57,16 +57,26 @@ pub async fn resolve(
         "deliver" => {
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
             let entry_id = ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+            // The resolver's payload comes straight off the wire and bypasses
+            // `normalized_result`, so it gets the same capture-time cap.
+            let delivered = crate::trigger::cap_result(
+                crate::trigger::ResultData {
+                    content: req
+                        .content
+                        .clone()
+                        .unwrap_or_else(|| vec![ContentBlock::text("")]),
+                    is_error: req.is_error.unwrap_or(false),
+                    details: req.details.clone().unwrap_or(Value::Null),
+                },
+                cfg.max_result_bytes,
+            );
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
                 function_id,
-                content: req
-                    .content
-                    .clone()
-                    .unwrap_or_else(|| vec![ContentBlock::text("")]),
-                details: req.details.clone().unwrap_or(Value::Null),
-                is_error: req.is_error.unwrap_or(false),
+                content: delivered.content,
+                details: delivered.details,
+                is_error: delivered.is_error,
                 timestamp: AgentMessage::now_ms(),
             });
             // Idempotent on the deterministic entry id.

@@ -247,6 +247,7 @@ pub async fn invoke(
     ) {
         return intercept_send(deps, request, session_id).await;
     }
+    let max_result_bytes = deps.cfg().await.max_result_bytes;
     match function_id {
         REGISTER_TRIGGER_ID => {
             intercept_register(deps, arguments, session_id, caller, policy).await
@@ -257,7 +258,7 @@ pub async fn invoke(
             // In-turn controls always target their caller. External console
             // calls bypass this chokepoint and continue supplying session_id.
             let args = with_caller_session_id(arguments, session_id);
-            trigger::invoke_target(engine, policy, function_id, &args).await
+            trigger::invoke_target(engine, policy, function_id, &args, max_result_bytes).await
         }
         internal if internal.starts_with("harness::state::") => trigger::denied_result(internal),
         // Claiming a private state namespace is a control-plane act this
@@ -268,7 +269,7 @@ pub async fn invoke(
         // (the `harness::state::*` accessors are denied above), so the risk
         // is denial of service, not exfiltration; deny it anyway.
         crate::state::CLAIM_NAMESPACE_ID => trigger::denied_result(function_id),
-        _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
+        _ => trigger::invoke_target(engine, policy, function_id, arguments, max_result_bytes).await,
     }
 }
 
@@ -291,9 +292,10 @@ async fn intercept_send(
     request: crate::functions::send::SendRequest,
     caller_session_id: &str,
 ) -> ResultData {
+    let max_result_bytes = deps.cfg().await.max_result_bytes;
     match crate::functions::send::handle_from_invoke(deps, request, caller_session_id, true).await {
         Ok(response) => match serde_json::to_value(response) {
-            Ok(value) => trigger::normalized_result(value),
+            Ok(value) => trigger::normalized_result(value, max_result_bytes),
             Err(error) => trigger::invocation_error_result(
                 None,
                 format!("{}: {error}", crate::functions::SEND_ID),

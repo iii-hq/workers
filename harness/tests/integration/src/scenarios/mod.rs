@@ -17,6 +17,7 @@ mod function_contract_reuse;
 mod idempotency_key_collision;
 mod leaf_denied_control_plane;
 mod multi_turn_traces;
+mod oversized_function_result;
 mod provider_family_errors;
 mod provider_startup_timeout;
 mod queued_message_edit_unqueue;
@@ -62,6 +63,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         idempotency_key_collision::scenario(),
         leaf_denied_control_plane::scenario(),
         multi_turn_traces::scenario(),
+        oversized_function_result::scenario(),
         provider_startup_timeout::scenario(),
         standing_wake_delivery::scenario(),
         state_worker_sidecar::scenario(),
@@ -86,7 +88,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 31);
+        assert_eq!(fixtures.len(), 32);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
