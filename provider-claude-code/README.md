@@ -93,6 +93,10 @@ cargo run -- --url ws://127.0.0.1:49134
 ```
 
 The prompt-cache anchors can be disabled with `PROVIDER_CLAUDE_CODE_CACHE=0`.
+When the router forwards `system_sections`, the identity block is followed by
+one text block per section and the marker lands on the block flagged
+`cache_boundary` (the frozen agent-profile prefix) instead of the last block,
+so the per-session tail no longer invalidates the shared entry.
 
 ## Tests
 

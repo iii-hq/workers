@@ -3,12 +3,13 @@
 use crate::config::{AnthropicConfig, AuthMode};
 use crate::thinking::ThinkingConfig;
 use crate::wire::cache::{
-    apply_messages_cache_anchor, apply_tools_cache_control, build_system_field,
+    apply_messages_cache_anchor, apply_tools_cache_control, build_system_blocks, build_system_field,
 };
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
+use llm_router::types::router::PromptSection;
 use serde_json::{json, Value};
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -17,6 +18,10 @@ pub struct BodyArgs {
     pub model: String,
     pub max_tokens: u64,
     pub system_prompt: String,
+    /// Ordered sections behind `system_prompt`; when present (and non-empty)
+    /// they replace the flat string on the wire so the cache boundary lands
+    /// between blocks.
+    pub system_sections: Option<Vec<PromptSection>>,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentFunction>,
     pub thinking: Option<ThinkingConfig>,
@@ -62,7 +67,11 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
         "tools": wire_tools,
         "stream": true,
     });
-    if let Some(system) = build_system_field(&args.system_prompt, args.cache_enabled) {
+    let system = match args.system_sections.as_deref() {
+        Some(sections) if !sections.is_empty() => build_system_blocks(sections, args.cache_enabled),
+        _ => build_system_field(&args.system_prompt, args.cache_enabled),
+    };
+    if let Some(system) = system {
         body["system"] = system;
     }
     if let Some(t) = &args.thinking {
@@ -105,6 +114,7 @@ mod tests {
             model: "claude-sonnet-4-6".into(),
             max_tokens: 4096,
             system_prompt: "be brief".into(),
+            system_sections: None,
             messages: vec![AgentMessage::User(UserMessage {
                 role: UserRoleTag::User,
                 content: vec![ContentBlock::Text { text: "hi".into() }],
@@ -144,6 +154,27 @@ mod tests {
         let mut a = args();
         a.system_prompt = String::new();
         assert!(build_body(&a, &mut Vec::new()).get("system").is_none());
+    }
+
+    #[test]
+    fn sections_render_one_block_each() {
+        let mut a = args();
+        a.system_sections = Some(vec![
+            PromptSection {
+                text: "stable".into(),
+                cache_boundary: true,
+            },
+            PromptSection {
+                text: "dynamic".into(),
+                cache_boundary: false,
+            },
+        ]);
+        let body = build_body(&a, &mut Vec::new());
+        assert_eq!(body["system"][0]["text"], "stable");
+        assert_eq!(body["system"][1]["text"], "dynamic");
+        // an empty section list falls back to the flat string
+        a.system_sections = Some(vec![]);
+        assert_eq!(build_body(&a, &mut Vec::new())["system"], "be brief");
     }
 
     #[test]

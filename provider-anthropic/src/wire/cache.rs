@@ -2,6 +2,7 @@
 //! the tools array tail, and the last *stable* assistant turn in messages
 //! (one whose tool_uses all have downstream tool_results — an unstable
 //! anchor would be invalidated next turn).
+use llm_router::types::router::PromptSection;
 use serde_json::{json, Value};
 
 /// Below this many chars a prefix isn't worth a cache write.
@@ -32,6 +33,28 @@ pub fn build_system_field(prompt: &str, enabled: bool) -> Option<Value> {
         ]));
     }
     Some(Value::String(prompt.to_string()))
+}
+
+/// Sectioned system prompt → wire `system` array: one text block per non-empty
+/// section, `cache_control` on a boundary block once the cumulative text up to
+/// it clears the minimum — so the frozen profile prefix caches on its own and
+/// the per-session tail after it does not invalidate it. None when every
+/// section is empty (omit the field).
+pub fn build_system_blocks(sections: &[PromptSection], enabled: bool) -> Option<Value> {
+    let mut blocks = Vec::new();
+    let mut cumulative = 0usize;
+    let mut marked = 0usize;
+    for section in sections.iter().filter(|s| !s.text.is_empty()) {
+        cumulative += section.text.len();
+        let mut block = json!({ "type": "text", "text": section.text });
+        // ponytail: cap 2 so the tools and messages anchors keep the total <= 4
+        if enabled && section.cache_boundary && cumulative >= CACHE_MIN_CHARS && marked < 2 {
+            block["cache_control"] = ephemeral();
+            marked += 1;
+        }
+        blocks.push(block);
+    }
+    (!blocks.is_empty()).then_some(Value::Array(blocks))
 }
 
 /// Mark the last tool when the serialized tools array clears the minimum.
@@ -129,6 +152,46 @@ fn has_downstream_tool_result(later: &[Value], id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_blocks_mark_boundary_at_cumulative_threshold() {
+        let section = |text: &str, boundary: bool| PromptSection {
+            text: text.into(),
+            cache_boundary: boundary,
+        };
+        assert!(build_system_blocks(&[section("", true)], true).is_none());
+        // below the minimum: one block per section, no marker
+        let v =
+            build_system_blocks(&[section("stable", true), section("dyn", false)], true).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 2);
+        assert!(v[0].get("cache_control").is_none());
+        // boundary block past the minimum: marker on it, the tail stays bare
+        let long = "x".repeat(CACHE_MIN_CHARS);
+        let v = build_system_blocks(&[section(&long, true), section("dyn", false)], true).unwrap();
+        assert_eq!(v[0]["cache_control"]["type"], "ephemeral");
+        assert!(v[1].get("cache_control").is_none());
+        assert_eq!(v[1]["text"], "dyn");
+        // disabled: no marker no matter the size
+        let v = build_system_blocks(&[section(&long, true)], false).unwrap();
+        assert!(v[0].get("cache_control").is_none());
+        // three boundaries: at most two markers
+        let v = build_system_blocks(
+            &[
+                section(&long, true),
+                section(&long, true),
+                section(&long, true),
+            ],
+            true,
+        )
+        .unwrap();
+        let marked = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b.get("cache_control").is_some())
+            .count();
+        assert_eq!(marked, 2);
+    }
 
     #[test]
     fn system_field_forms() {

@@ -55,7 +55,12 @@ costs nothing, and needs no network).
   as `usage.reasoning`. Luna requests with function tools on the legacy path
   force `reasoning_effort: none`, matching that endpoint's compatibility rule.
 - **Prompt caching:** automatic on OpenAI's side — no request markers.
-  `prompt_tokens_details.cached_tokens` lands on `usage.cache_read`.
+  `prompt_cache_key` routes requests that share a prefix to one cache shard:
+  a caller's `provider_options.openai.prompt_cache_key` wins, else the
+  router's `cache_intent.surface_digest` (the frozen agent-profile prefix, so
+  independent sessions on one profile share a shard), else a key derived from
+  the session id. `prompt_tokens_details.cached_tokens` lands on
+  `usage.cache_read`.
 - **Curated snapshot:** `src/curated.rs` carries windows / output ceilings /
   capability flags / pricing (USD per MTok). Update it against models.dev
   when OpenAI ships new models — discovery only supplies bare ids.

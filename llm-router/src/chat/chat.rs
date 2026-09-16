@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
 use crate::types::model::SpeechModality;
-use crate::types::router::{ChatResponse, ErrorShape};
+use crate::types::router::{ChatResponse, ErrorShape, PromptCacheIntent, PromptSection};
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::channel::StreamChannelRef;
 use iii_sdk::errors::Error;
@@ -57,6 +57,10 @@ pub struct ChatCall {
     pub provider: Option<String>,
     #[serde(default)]
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub system_sections: Option<Vec<PromptSection>>,
+    #[serde(default)]
+    pub cache_intent: Option<PromptCacheIntent>,
     pub messages: Value, // forwarded verbatim; validated to be an array
     #[serde(default)]
     pub tools: Option<Value>,
@@ -373,6 +377,18 @@ impl ChatPipeline {
             let (provider, model) = (provider.map(str::to_owned), model.to_owned());
             call.provider = provider;
             call.model = model;
+        }
+        if let Err(message) = normalize_prompt_sections(&mut call) {
+            return Err(fail_with_terminal(
+                sink.as_ref(),
+                None,
+                &call.model,
+                "",
+                RouterCode::InvalidRequest,
+                message,
+                pre_stream_error_kind(RouterCode::InvalidRequest),
+                None,
+            ));
         }
         let call = call; // frozen: nothing below mutates the normalized pair
 
@@ -956,6 +972,34 @@ impl ChatPipeline {
     }
 }
 
+/// The flat prompt a sectioned request stands for.
+pub fn join_sections(sections: &[PromptSection]) -> String {
+    sections
+        .iter()
+        .map(|section| section.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Reconcile the structured and legacy prompt forms. Sections-only flattens
+/// into `system_prompt` (every provider reads the string; only cache-aware
+/// ones read the sections); both present must agree byte for byte. Legacy-only
+/// is untouched, and nothing is synthesized when neither is present.
+fn normalize_prompt_sections(call: &mut ChatCall) -> Result<(), String> {
+    let Some(sections) = call.system_sections.as_deref() else {
+        return Ok(());
+    };
+    let joined = join_sections(sections);
+    match call.system_prompt.as_deref() {
+        None => call.system_prompt = Some(joined),
+        Some(prompt) if prompt != joined => {
+            return Err("system_sections joined with \"\\n\\n\" must equal system_prompt".into());
+        }
+        Some(_) => {}
+    }
+    Ok(())
+}
+
 fn rand_unit() -> f64 {
     // uuid-derived cheap jitter: avoids pulling the rand crate for one knob
     (Uuid::new_v4().as_u128() % 1000) as f64 / 1000.0
@@ -999,6 +1043,20 @@ fn build_stream_input(
         &mut input,
         "system_prompt",
         call.system_prompt.clone().map(Value::String),
+    );
+    insert_present(
+        &mut input,
+        "system_sections",
+        call.system_sections
+            .as_ref()
+            .and_then(|sections| serde_json::to_value(sections).ok()),
+    );
+    insert_present(
+        &mut input,
+        "cache_intent",
+        call.cache_intent
+            .as_ref()
+            .and_then(|intent| serde_json::to_value(intent).ok()),
     );
     insert_present(&mut input, "tools", call.tools.clone());
     insert_present(&mut input, "response_format", call.response_format.clone());
@@ -1411,6 +1469,8 @@ mod tests {
         let obj = attempt1.as_object().unwrap();
         for absent in [
             "system_prompt",
+            "system_sections",
+            "cache_intent",
             "tools",
             "response_format",
             "thinking_level",
@@ -1462,5 +1522,68 @@ mod tests {
         assert_eq!(input["thinking_level"], json!("high"));
         assert_eq!(input["session_id"], json!("s_1"));
         assert_eq!(input["provider_options"], json!({ "beta": true }));
+    }
+
+    #[test]
+    fn stream_input_forwards_system_sections_and_cache_intent() {
+        let call: ChatCall = serde_json::from_value(json!({
+            "model": "claude-test",
+            "messages": [],
+            "system_prompt": "stable\n\ndynamic",
+            "system_sections": [
+                { "text": "stable", "cache_boundary": true },
+                { "text": "dynamic" }
+            ],
+            "cache_intent": { "surface_digest": "sha256:abc" },
+        }))
+        .unwrap();
+        let writer_ref = json!({ "channel_id": "c", "access_key": "k", "direction": "write" });
+        let input = build_stream_input(&call, "anthropic", writer_ref, None, None, "req-3");
+        assert_eq!(input["system_prompt"], json!("stable\n\ndynamic"));
+        assert_eq!(
+            input["system_sections"],
+            json!([
+                { "text": "stable", "cache_boundary": true },
+                { "text": "dynamic", "cache_boundary": false }
+            ])
+        );
+        assert_eq!(
+            input["cache_intent"],
+            json!({ "surface_digest": "sha256:abc" })
+        );
+    }
+
+    /// Sections-only flattens into the legacy string; both forms present must
+    /// agree; legacy-only and neither are left alone.
+    #[test]
+    fn prompt_sections_normalize_or_reject() {
+        let call = |body: Value| -> ChatCall { serde_json::from_value(body).unwrap() };
+        let mut only_sections = call(json!({
+            "model": "m", "messages": [],
+            "system_sections": [{ "text": "a", "cache_boundary": true }, { "text": "b" }],
+        }));
+        assert!(normalize_prompt_sections(&mut only_sections).is_ok());
+        assert_eq!(only_sections.system_prompt.as_deref(), Some("a\n\nb"));
+
+        let mut agreeing = call(json!({
+            "model": "m", "messages": [], "system_prompt": "a\n\nb",
+            "system_sections": [{ "text": "a" }, { "text": "b" }],
+        }));
+        assert!(normalize_prompt_sections(&mut agreeing).is_ok());
+
+        let mut lying = call(json!({
+            "model": "m", "messages": [], "system_prompt": "a\n\nc",
+            "system_sections": [{ "text": "a" }, { "text": "b" }],
+        }));
+        assert!(normalize_prompt_sections(&mut lying)
+            .unwrap_err()
+            .contains("system_sections"));
+
+        let mut legacy = call(json!({ "model": "m", "messages": [], "system_prompt": "a" }));
+        assert!(normalize_prompt_sections(&mut legacy).is_ok());
+        assert_eq!(legacy.system_prompt.as_deref(), Some("a"));
+        let mut neither = call(json!({ "model": "m", "messages": [] }));
+        assert!(normalize_prompt_sections(&mut neither).is_ok());
+        assert!(neither.system_prompt.is_none());
     }
 }

@@ -568,6 +568,34 @@
         },
         "type": "object"
       },
+      "PromptCacheIntent": {
+        "description": "Why a request's stable prefix is shareable across sessions: `surface_digest` is the caller's content identity for the text before the boundary (`sha256:<hex>`). A routing/accounting hint only — never a provider cache handle, and never evidence of a cache hit.",
+        "properties": {
+          "surface_digest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "surface_digest"
+        ],
+        "type": "object"
+      },
+      "PromptSection": {
+        "description": "One ordered system-prompt section. `cache_boundary` marks the end of a cumulative prefix worth its own provider cache entry (the frozen agent-profile surface). Adapters without a boundary concept read the sections joined with \"\\n\\n\", which must equal `system_prompt` when both forms are sent.",
+        "properties": {
+          "cache_boundary": {
+            "default": false,
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
       "ReasoningEffort": {
         "description": "One provider-native reasoning effort advertised for a specific model.\n\nValues intentionally remain strings: provider catalogs can add efforts without requiring a router-wide enum release first.",
         "properties": {
@@ -766,6 +794,16 @@
     },
     "description": "Input of a provider worker's `provider::<id>::stream` iii function — what the router forwards per attempt. (No `PartialEq`: `iii_sdk::StreamChannelRef` doesn't implement it.)",
     "properties": {
+      "cache_intent": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/PromptCacheIntent"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "max_output_tokens": {
         "format": "uint64",
         "minimum": 0.0,
@@ -820,6 +858,16 @@
       "system_prompt": {
         "type": [
           "string",
+          "null"
+        ]
+      },
+      "system_sections": {
+        "description": "Ordered sections behind `system_prompt` (always forwarded alongside the flat string, which equals the sections joined with \"\\n\\n\").",
+        "items": {
+          "$ref": "#/definitions/PromptSection"
+        },
+        "type": [
+          "array",
           "null"
         ]
       },

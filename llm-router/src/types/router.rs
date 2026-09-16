@@ -18,6 +18,27 @@ pub struct ResponseFormat {
     pub schema: Option<Value>,
 }
 
+/// One ordered system-prompt section. `cache_boundary` marks the end of a
+/// cumulative prefix worth its own provider cache entry (the frozen
+/// agent-profile surface). Adapters without a boundary concept read the
+/// sections joined with "\n\n", which must equal `system_prompt` when both
+/// forms are sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PromptSection {
+    pub text: String,
+    #[serde(default)]
+    pub cache_boundary: bool,
+}
+
+/// Why a request's stable prefix is shareable across sessions:
+/// `surface_digest` is the caller's content identity for the text before the
+/// boundary (`sha256:<hex>`). A routing/accounting hint only — never a
+/// provider cache handle, and never evidence of a cache hit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PromptCacheIntent {
+    pub surface_digest: String,
+}
+
 /// Input of the `router::chat` iii function.
 /// (No `PartialEq`: `iii_sdk::StreamChannelRef` doesn't implement it.)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -32,6 +53,12 @@ pub struct ChatRequest {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Structured form of `system_prompt`: ordered sections with cache
+    /// boundaries. Sections-only flattens to the string; both must agree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_sections: Option<Vec<PromptSection>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_intent: Option<PromptCacheIntent>,
     pub messages: Vec<AgentMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<AgentFunction>>, // adapter boundary (pending rename → functions)
@@ -220,6 +247,12 @@ pub struct ProviderStreamInput {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Ordered sections behind `system_prompt` (always forwarded alongside the
+    /// flat string, which equals the sections joined with "\n\n").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_sections: Option<Vec<PromptSection>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_intent: Option<PromptCacheIntent>,
     pub model: String,
     pub messages: Vec<AgentMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -142,6 +142,7 @@ async fn run_stream_call(
             model: cfg.model.clone(),
             max_tokens: cfg.max_tokens,
             system_prompt: input.system_prompt.unwrap_or_default(),
+            system_sections: input.system_sections,
             messages: input.messages,
             tools: input.tools.unwrap_or_default(),
             thinking: thinking_build.config,

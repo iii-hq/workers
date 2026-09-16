@@ -99,6 +99,20 @@ capable, `provider::<id>::refresh_models` (model discovery),
 `provider::<id>::embed` (embeddings), and the speech pair
 `provider::<id>::transcribe` / `provider::<id>::speak`.
 
+`router::chat` accepts an optional structured prompt next to the flat
+`system_prompt`: `system_sections` (ordered `{text, cache_boundary}` blocks)
+and `cache_intent` (`{surface_digest}`, the caller's `sha256:` identity for
+the text before the boundary). A sections-only request is flattened into
+`system_prompt` (sections joined with `\n\n`); when both are sent they must
+agree byte for byte or the request is rejected as `invalid_request`. Both are
+forwarded verbatim to `provider::<id>::stream` alongside the flat string, so a
+provider that knows nothing about sections keeps reading `system_prompt`.
+Cache-aware providers put their prefix marker on the boundary block
+(Anthropic, Claude Code) or derive a shared `prompt_cache_key` from the digest
+(OpenAI, Codex) so every session on the same frozen prefix lands on one cache
+entry. The digest is a routing hint, never evidence of a hit — read
+`usage.cache_read` for that.
+
 ## Configuration
 
 All operator configuration lives in the engine's `llm-router` configuration

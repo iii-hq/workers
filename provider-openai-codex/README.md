@@ -102,6 +102,14 @@ provider id `openai`.
   `chatgpt-account-id`, Codex compatibility `version`,
   `openai-beta: responses=experimental`,
   `originator: codex_cli_rs`.
+- **Cache routing:** the `session-id` / `thread-id` / `x-client-request-id`
+  headers always carry a UUID derived from the router's `session_id` (the
+  backend's cache affinity follows these). The body `prompt_cache_key` is
+  resolved separately: a caller's `provider_options.openai-codex.prompt_cache_key`
+  override, else the router's `cache_intent.surface_digest` (the frozen
+  agent-profile prefix), else the same session-derived UUID. Whether a shared
+  body key alone yields cross-session cache hits on the Codex backend is
+  unverified; read `usage.cache_read` rather than assuming it.
 - **SSE:** `response.output_text.delta` → text, `response.reasoning_*` →
   thinking, `response.function_call_arguments.delta` → tool calls,
   `response.completed` → usage + terminal. Unknown event types are ignored
