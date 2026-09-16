@@ -110,6 +110,29 @@ const CONVERSATIONS: Conversation[] = [
     title: 'Workers registry',
     updatedAt: NOW - 2 * DAY,
   }),
+  /* Machine-made sessions: hidden by the default Type filter (User), shown
+     with a mono tag once the filter admits their kind. */
+  conversation({
+    id: 'e2e-sandbox',
+    workingDir: '/home/me/harness-e2e',
+    title: 'Shell coder sandbox',
+    kind: 'e2e',
+    updatedAt: NOW - 3 * HOUR,
+  }),
+  conversation({
+    id: 'e2e-sandbox-probe',
+    title: 'Probe runner',
+    parentId: 'e2e-sandbox',
+    createdAt: NOW - 3 * HOUR,
+    updatedAt: NOW - 3 * HOUR,
+    spawnedBy: 'agent',
+  }),
+  conversation({
+    id: 'nightly',
+    title: 'Nightly changelog digest',
+    kind: 'automation',
+    updatedAt: NOW - 9 * HOUR,
+  }),
   conversation({
     id: 'debts',
     title: 'Tech debts',

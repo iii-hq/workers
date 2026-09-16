@@ -4,7 +4,8 @@
  * Two modes answer two different questions. `recent` ("what was I just
  * doing?") buckets by calendar day — Today, Yesterday, Previous 7 days,
  * Previous 30 days, Older. `project` ("what was I doing *here*?") buckets by
- * the session's filesystem scope, `Conversation.workingDir`.
+ * the session's filesystem scope, `Conversation.workingDir`. `none` is the
+ * flat list: one section the sidebar draws without a header.
  *
  * Grouping applies to ROOT rows only. A spawned sub-agent stays nested under
  * its parent, so a subtree never splits across two sections and a child
@@ -17,33 +18,24 @@
 
 import type { ConvNode } from './conversation-tree'
 
-export type ConversationGrouping = 'recent' | 'project'
+export type ConversationGrouping = 'none' | 'recent' | 'project'
 
 export const DEFAULT_CONVERSATION_GROUPING: ConversationGrouping = 'recent'
 
 export function isConversationGrouping(
   value: unknown,
 ): value is ConversationGrouping {
-  return value === 'recent' || value === 'project'
+  return value === 'none' || value === 'recent' || value === 'project'
 }
 
 /** The groupings the filter menu offers, in menu order. */
 export const CONVERSATION_GROUPING_OPTIONS: readonly {
   value: ConversationGrouping
   label: string
-  /** One line explaining what the sections become. */
-  description: string
 }[] = [
-  {
-    value: 'recent',
-    label: 'Recent',
-    description: 'Today, Yesterday, Previous 7 days',
-  },
-  {
-    value: 'project',
-    label: 'Project',
-    description: 'The working directory of each chat',
-  },
+  { value: 'none', label: 'None' },
+  { value: 'recent', label: 'Recent' },
+  { value: 'project', label: 'Project' },
 ]
 
 export interface ConversationGroup {
@@ -73,6 +65,9 @@ const RECENCY_BUCKETS = [
 ] as const
 
 export const NO_PROJECT_GROUP_KEY = 'project:none'
+
+/** The single section of the flat list; never drawn as a header. */
+export const UNGROUPED_KEY = 'none:all'
 
 function startOfDay(ts: number): number {
   const d = new Date(ts)
@@ -191,6 +186,11 @@ export function groupConversationRoots(
   grouping: ConversationGrouping,
   now: number,
 ): ConversationGroup[] {
+  if (grouping === 'none') {
+    return roots.length > 0
+      ? [{ key: UNGROUPED_KEY, label: 'All conversations', roots }]
+      : []
+  }
   return grouping === 'project'
     ? groupByProject(roots)
     : groupByRecency(roots, now)

@@ -177,3 +177,17 @@ describe('countConversations', () => {
     expect(countConversations([])).toBe(0)
   })
 })
+
+describe('grouping none', () => {
+  it('is one headerless section holding every root, or nothing', () => {
+    const roots = buildConversationTree([
+      conv('a', { updatedAt: NOW - 40 * DAY }),
+      conv('b'),
+    ])
+    const groups = groupConversationRoots(roots, 'none', NOW)
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.key).toBe('none:all')
+    expect(ids(groups[0]?.roots ?? [])).toEqual(['b', 'a'])
+    expect(groupConversationRoots([], 'none', NOW)).toEqual([])
+  })
+})

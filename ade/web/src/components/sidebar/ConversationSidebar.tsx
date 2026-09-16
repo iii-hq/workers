@@ -1,20 +1,26 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { filterConversations } from '@/lib/conversation-filter'
 import {
-  type ConversationGrouping,
   countConversations,
-  DEFAULT_CONVERSATION_GROUPING,
   groupConversationRoots,
-  isConversationGrouping,
 } from '@/lib/conversation-groups'
 import {
   buildConversationTree,
   type ConvNode,
   flattenConversationTree,
 } from '@/lib/conversation-tree'
+import {
+  type ConversationListView,
+  DEFAULT_CONVERSATION_LIST_VIEW,
+  effectiveConversationKind,
+  filterConversationsByKind,
+  parseConversationListView,
+  sortConversationRoots,
+} from '@/lib/conversation-view'
 import type { Conversation } from '@/types/chat'
 import { ConversationFilterMenu } from './ConversationFilterMenu'
 import { ConversationGroupHeader } from './ConversationGroupHeader'
@@ -33,7 +39,9 @@ interface ConversationSidebarProps {
 
 const TREE_COLLAPSED_KEY = 'iii-chat-tree-collapsed'
 const GROUPS_COLLAPSED_KEY = 'iii-chat-groups-collapsed'
-const GROUPING_KEY = 'iii-chat-grouping'
+const LIST_VIEW_KEY = 'iii-chat-list-view'
+/** The grouping-only key this view record replaced; read as a fallback. */
+const LEGACY_GROUPING_KEY = 'iii-chat-grouping'
 
 function loadStringSet(storageKey: string): Set<string> {
   if (typeof window === 'undefined') return new Set()
@@ -58,13 +66,16 @@ function persistStringSet(storageKey: string, set: Set<string>): void {
   }
 }
 
-function loadGrouping(): ConversationGrouping {
-  if (typeof window === 'undefined') return DEFAULT_CONVERSATION_GROUPING
+function loadListView(): ConversationListView {
+  if (typeof window === 'undefined') return DEFAULT_CONVERSATION_LIST_VIEW
   try {
-    const raw = window.localStorage.getItem(GROUPING_KEY)
-    return isConversationGrouping(raw) ? raw : DEFAULT_CONVERSATION_GROUPING
+    const raw = window.localStorage.getItem(LIST_VIEW_KEY)
+    return parseConversationListView(
+      raw ? JSON.parse(raw) : undefined,
+      window.localStorage.getItem(LEGACY_GROUPING_KEY),
+    )
   } catch {
-    return DEFAULT_CONVERSATION_GROUPING
+    return DEFAULT_CONVERSATION_LIST_VIEW
   }
 }
 
@@ -94,15 +105,16 @@ export function ConversationSidebar({
     persistStringSet(GROUPS_COLLAPSED_KEY, collapsedGroups)
   }, [collapsedGroups])
 
-  const [grouping, setGrouping] = useState<ConversationGrouping>(loadGrouping)
+  /* Kinds shown, grouping and order — one record, one Clear filters. */
+  const [view, setView] = useState<ConversationListView>(loadListView)
   useEffect(() => {
     if (typeof window === 'undefined') return
     try {
-      window.localStorage.setItem(GROUPING_KEY, grouping)
+      window.localStorage.setItem(LIST_VIEW_KEY, JSON.stringify(view))
     } catch {
       // best-effort persistence
     }
-  }, [grouping])
+  }, [view])
 
   const toggleNode = useCallback((id: string) => {
     setCollapsedNodes((prev) => {
@@ -137,21 +149,36 @@ export function ConversationSidebar({
     [onRename],
   )
 
+  /* The kind filter runs on the flat list before the tree is built, judging
+     each row by its root's kind, so hiding a kind hides whole subtrees and
+     search matches inside them alike. */
+  const visible = useMemo(
+    () => filterConversationsByKind(conversations, view.kinds),
+    [conversations, view.kinds],
+  )
+  const byId = useMemo(
+    () => new Map(conversations.map((c) => [c.id, c])),
+    [conversations],
+  )
+  /* A row wears its kind only when the list mixes kinds; with one kind on
+     show the tag would just repeat the filter. */
+  const tagKinds = view.kinds.length > 1
+
   const roots = useMemo<ConvNode[]>(() => {
     const q = query.trim()
-    if (q) {
-      /* Flat matches while searching: a matched child under an unmatched
-         parent has no tree context to render, so no indent/caret. Sections
-         still apply — they are what tells a match from last month apart
-         from one from this morning. */
-      return filterConversations(conversations, q).map((conversation) => ({
-        conversation,
-        children: [],
-        depth: 0,
-      }))
-    }
-    return buildConversationTree(conversations)
-  }, [conversations, query])
+    const nodes: ConvNode[] = q
+      ? /* Flat matches while searching: a matched child under an unmatched
+           parent has no tree context to render, so no indent/caret. Sections
+           still apply — they are what tells a match from last month apart
+           from one from this morning. */
+        filterConversations(visible, q).map((conversation) => ({
+          conversation,
+          children: [],
+          depth: 0,
+        }))
+      : buildConversationTree(visible)
+    return sortConversationRoots(nodes, view.sort)
+  }, [visible, query, view.sort])
 
   /* `Date.now()` is read here rather than held in state: the bucket a chat
      falls into is only ever read beside its own relative timestamp, which the
@@ -159,15 +186,17 @@ export function ConversationSidebar({
      update. */
   const sections = useMemo(
     () =>
-      groupConversationRoots(roots, grouping, Date.now()).map((group) => ({
+      groupConversationRoots(roots, view.grouping, Date.now()).map((group) => ({
         group,
         count: countConversations(group.roots),
         rows: collapsedGroups.has(group.key)
           ? []
           : flattenConversationTree(group.roots, collapsedNodes),
       })),
-    [roots, grouping, collapsedGroups, collapsedNodes],
+    [roots, view.grouping, collapsedGroups, collapsedNodes],
   )
+  /* The flat list has one section and no header to collapse it by. */
+  const headers = view.grouping !== 'none'
 
   /* The 8px gutter plus the tree row's own 10px inset puts every glyph,
      the heading and the empty copy on one 18px column. */
@@ -179,8 +208,8 @@ export function ConversationSidebar({
             Conversations
           </h2>
           <ConversationFilterMenu
-            grouping={grouping}
-            onGroupingChange={setGrouping}
+            view={view}
+            onViewChange={setView}
             narrow={narrow}
           />
         </div>
@@ -212,23 +241,41 @@ export function ConversationSidebar({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
         {sections.length === 0 ? (
-          <div className="px-[10px] py-6 font-sans text-base text-ink-ghost sm:text-[13px]">
-            {query.trim()
-              ? 'No matches.'
-              : 'No conversations yet. Start one above.'}
+          <div className="flex flex-col items-start gap-2 px-[10px] py-6 font-sans text-base text-ink-ghost sm:text-[13px]">
+            {query.trim() ? (
+              'No matches.'
+            ) : conversations.length === 0 ? (
+              'No conversations yet. Start one above.'
+            ) : (
+              <>
+                {/* Every chat is hidden by the kind filter, not missing:
+                    say so, and put the way back one click away. */}
+                No conversations match these filters.
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="-ml-3 h-7 px-3 text-[12px]"
+                  onClick={() => setView(DEFAULT_CONVERSATION_LIST_VIEW)}
+                >
+                  Clear filters
+                </Button>
+              </>
+            )}
           </div>
         ) : (
           <div className={uiClasses.tree} data-narrow={narrow || undefined}>
             {sections.map(({ group, count, rows }) => (
               <Fragment key={group.key}>
-                <ConversationGroupHeader
-                  label={group.label}
-                  title={group.title}
-                  count={count}
-                  collapsed={collapsedGroups.has(group.key)}
-                  onToggle={() => toggleGroup(group.key)}
-                  narrow={narrow}
-                />
+                {headers ? (
+                  <ConversationGroupHeader
+                    label={group.label}
+                    title={group.title}
+                    count={count}
+                    collapsed={collapsedGroups.has(group.key)}
+                    onToggle={() => toggleGroup(group.key)}
+                    narrow={narrow}
+                  />
+                ) : null}
                 {rows.map(({ conversation: c, depth, hasChildren }) => (
                   <ConversationRow
                     key={c.id}
@@ -236,6 +283,9 @@ export function ConversationSidebar({
                     active={c.id === activeId}
                     depth={depth}
                     hasChildren={hasChildren}
+                    kind={
+                      tagKinds ? effectiveConversationKind(c, byId) : undefined
+                    }
                     treeCollapsed={collapsedNodes.has(c.id)}
                     onToggleTree={() => toggleNode(c.id)}
                     onSelect={() => onSelect(c.id)}

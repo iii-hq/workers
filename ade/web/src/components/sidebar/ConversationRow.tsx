@@ -1,11 +1,17 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
-import { Bot, ChevronRight, MessageSquare, X } from 'lucide-react'
+import { Bot, ChevronRight, MessageSquare, Pencil, X } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
-import type { Conversation, SubagentColor } from '@/types/chat'
+import { CONVERSATION_KIND_TAGS } from '@/lib/conversation-view'
+import { cn } from '@/lib/utils'
+import type {
+  Conversation,
+  ConversationKind,
+  SubagentColor,
+} from '@/types/chat'
 
 interface ConversationRowProps {
   conversation: Conversation
@@ -21,6 +27,11 @@ interface ConversationRowProps {
   treeCollapsed?: boolean
   /** Toggle this row's subtree (only wired when `hasChildren`). */
   onToggleTree?: () => void
+  /**
+   * The kind this row is listed under, when the list mixes kinds and the
+   * row needs telling apart. Omitted (or `user`) draws no tag.
+   */
+  kind?: ConversationKind
 }
 
 function formatRelative(ts: number): string {
@@ -79,6 +90,7 @@ export function ConversationRow({
   hasChildren = false,
   treeCollapsed = false,
   onToggleTree,
+  kind,
 }: ConversationRowProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(conversation.title)
@@ -102,6 +114,7 @@ export function ConversationRow({
   }
 
   const glyph = resolveGlyph(conversation, depth)
+  const kindTag = kind ? CONVERSATION_KIND_TAGS[kind] : undefined
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: row hosts nested caret/delete <button>s; using a real <button> here would nest interactive elements.
@@ -177,9 +190,35 @@ export function ConversationRow({
             title={conversation.statusReason ?? 'error'}
           />
         ) : null}
+        {kindTag ? (
+          <span
+            className={cn(
+              uiClasses.treeItemMeta,
+              'rounded-xs bg-surface px-1 font-mono text-[10px]',
+            )}
+            title={kindTag.title}
+          >
+            {kindTag.label}
+          </span>
+        ) : null}
         <span className={uiClasses.treeItemMeta}>
           {formatRelative(conversation.updatedAt)}
         </span>
+        {/* Double-click and F2 rename too, but neither exists on a phone —
+            the tree reveals this on hover and keeps it visible when narrow. */}
+        <button
+          type="button"
+          className={uiClasses.treeItemAction}
+          data-conversation-rename=""
+          aria-label={`rename ${conversation.title}`}
+          title="Rename chat"
+          onClick={(e) => {
+            e.stopPropagation()
+            setEditing(true)
+          }}
+        >
+          <Pencil aria-hidden />
+        </button>
         <button
           type="button"
           className={uiClasses.treeItemAction}
