@@ -466,6 +466,7 @@ async fn seed_child(
         // The child's own resolved identity: the profile the spawn named, or
         // the parent's when it named none.
         agent: agent.as_ref().map(|a| a.identity.clone()),
+        preloaded_contracts: agent.as_ref().map(|a| a.contract_digests.clone()),
         max_validation_retries: req
             .options
             .as_ref()
@@ -862,6 +863,7 @@ mod tests {
                 agent: None,
                 max_validation_retries: 2,
                 max_transient_resumes: 1,
+                preloaded_contracts: None,
             },
             calls: Default::default(),
             parent: None,
@@ -1575,6 +1577,7 @@ mod tests {
             model: None,
             reasoning_effort: None,
             name: name.to_string(),
+            contract_digests: Default::default(),
             icon,
             color: None,
         }

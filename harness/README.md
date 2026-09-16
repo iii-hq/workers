@@ -199,6 +199,7 @@ max_depth: 3                     # sub-agent depth budget
 max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
 max_result_bytes: 262144         # function-result byte cap at capture; oversized results become an elision marker (0 = off)
+prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
@@ -257,6 +258,22 @@ too). Naming either field resolves fresh — an explicit bare
 hatch. The inherited string is frozen at its original resolution — resend
 the prompt fields to re-resolve.
 
+The prompt reaches `router::chat` in two forms: the flat `system_prompt`,
+and `system_sections` — the STABLE prefix (the frozen profile or identity
+prompt plus the frozen skills index, `cache_boundary: true`) followed by the
+per-session tail (session id, working directory, policy aid, and whatever
+context assembly and hooks append). Two sessions on the same profile send
+the same stable bytes, and `cache_intent.surface_digest` (`sha256:` of that
+section) names them, so cache-aware providers keep one prefix entry for all
+of them: Anthropic puts its cache marker on the boundary block, OpenAI and
+Codex derive `prompt_cache_key` from the digest. The digest is a local
+identity, never evidence of a hit — `usage.cache_read` is. `harness::status`
+reports it as `context.prompt_surface_digest`, or
+`context.prompt_sections_fallback` when no sections went out: `disabled`
+(`prompt_cache_sections: false`), `no_stable_prefix`, or `prefix_rewritten`
+(a `pre_generate` hook replaced the prompt head — the hook's prompt still
+wins, it just shares nothing).
+
 ### Agent profiles
 
 `options.agent` on a session-creating `harness::send` names a directory agent
@@ -288,7 +305,10 @@ frozen prompt (contracts come from the cached registry snapshot, with one
 the engine does not know are named as unavailable), so the model calls them
 on the first step instead of spending a search and a contract lookup per
 session. The `<preloaded_functions>` block comes first, `<preloaded_skills>`
-after it. The frozen name/icon/color/model/effort/skills/functions snapshot is also
+after it. The frozen block is never rewritten (it is the shared cache
+prefix); when a preloaded contract later changes, disappears, or an
+unavailable one appears, every step carries a tail notice naming exactly
+those ids until a new session resolves the profile afresh. The frozen name/icon/color/model/effort/skills/functions snapshot is also
 written to session metadata for clients that render established sessions. The frozen identity
 travels with the prompt-stickiness rule: bare later sends
 inherit it, an explicit prompt field sheds it. Refused on an existing

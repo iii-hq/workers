@@ -899,6 +899,7 @@ fn build_options(
             .max_validation_retries
             .unwrap_or(cfg.max_validation_retries),
         max_transient_resumes: cfg.max_transient_resumes,
+        preloaded_contracts: agent.map(|a| a.contract_digests.clone()),
     }
 }
 
@@ -1041,6 +1042,7 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.system_prompt = prev.system_prompt.clone();
     options.skills_prompt = prev.skills_prompt.clone();
     options.agent = prev.agent.clone();
+    options.preloaded_contracts = prev.preloaded_contracts.clone();
 }
 
 /// Resolve `options.agent` for this send, or `None` when absent. Validation
@@ -1812,6 +1814,7 @@ mod tests {
             agent: None,
             max_validation_retries: 2,
             max_transient_resumes: 1,
+            preloaded_contracts: None,
         }
     }
 
@@ -2125,6 +2128,10 @@ mod tests {
         let mut prev = options_with(None);
         prev.system_prompt = Some("frozen custom prompt".into());
         prev.skills_prompt = Some("frozen skill prompt".into());
+        prev.preloaded_contracts = Some(std::collections::BTreeMap::from([(
+            "state::get".to_string(),
+            Some("sha256:frozen".to_string()),
+        )]));
         inherit_prior_system_prompt(&mut options, &prev);
         assert_eq!(
             options.system_prompt.as_deref(),
@@ -2134,6 +2141,8 @@ mod tests {
             options.skills_prompt.as_deref(),
             Some("frozen skill prompt")
         );
+        // The frozen contract digests travel with the identity.
+        assert_eq!(options.preloaded_contracts, prev.preloaded_contracts);
 
         // A prior `disabled` turn's None inherits too — disabled stays disabled.
         let mut options = bare_options();
@@ -2459,6 +2468,7 @@ mod tests {
             skills: vec!["review".into()],
             functions: Vec::new(),
             model: model.map(str::to_string),
+            contract_digests: Default::default(),
             reasoning_effort: None,
             name: "Tech Leader".into(),
             icon: None,

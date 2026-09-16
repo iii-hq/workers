@@ -103,6 +103,10 @@ pub struct ResolvedAgent {
     /// Harness display color; `None` when the profile uses the neutral
     /// default.
     pub color: Option<SubagentColor>,
+    /// Content digest of each preloaded contract as rendered into `prompt`
+    /// (declared id → `Some(digest)`, or `None` when unavailable), frozen onto
+    /// `TurnOptions.preloaded_contracts` for the per-step stale check.
+    pub contract_digests: BTreeMap<String, Option<String>>,
 }
 
 /// Fetch and normalize one agent profile. An unknown id or a profile whose
@@ -297,6 +301,35 @@ impl PreloadedContract {
     }
 }
 
+/// Content identity of one preloaded contract as the model sees it:
+/// whitespace-collapsed description + compacted request schema. The stale
+/// check builds the live registry's contract through the same constructor,
+/// so compaction alone can never read as a change.
+fn digest_of(contract: &PreloadedContract) -> String {
+    crate::skills::fingerprint(&format!(
+        "{}\n{}",
+        contract.description.as_deref().unwrap_or_default(),
+        contract
+            .request_schema
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_default()
+    ))
+}
+
+/// [`digest_of`] for a live registry descriptor (`turn_loop::preloaded_stale_notice`).
+pub(crate) fn contract_digest(
+    function_id: &str,
+    description: Option<&str>,
+    request_schema: Option<Value>,
+) -> String {
+    digest_of(&PreloadedContract::new(
+        function_id,
+        description,
+        request_schema,
+    ))
+}
+
 /// Freeze the profile's preloaded functions onto the prompt. Contracts come
 /// from the cached registry snapshot (already hydrated with schemas, no
 /// round-trip) and, for ids the snapshot cannot vouch for — not listed, or
@@ -359,12 +392,20 @@ async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
     }
     let mut ordered = Vec::with_capacity(agent.functions.len());
     let mut unavailable = Vec::new();
+    let mut digests = BTreeMap::new();
     for id in &agent.functions {
         match contracts.remove(id) {
-            Some(contract) => ordered.push(contract),
-            None => unavailable.push(id.clone()),
+            Some(contract) => {
+                digests.insert(id.clone(), Some(digest_of(&contract)));
+                ordered.push(contract);
+            }
+            None => {
+                digests.insert(id.clone(), None);
+                unavailable.push(id.clone());
+            }
         }
     }
+    agent.contract_digests = digests;
     if !unavailable.is_empty() {
         tracing::warn!(
             agent = %agent.identity.id,
@@ -542,6 +583,7 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
         name,
         icon,
         color,
+        contract_digests: BTreeMap::new(),
     }
 }
 
@@ -923,5 +965,26 @@ mod tests {
         // alone for a prompt-less profile.
         assert_eq!(append_block("You lead.\n\n", "<b/>"), "You lead.\n\n<b/>");
         assert_eq!(append_block("", "<b/>"), "<b/>");
+
+        // The frozen digest is the rendered contract's identity: the same
+        // inputs through the live-descriptor path give the same digest, a
+        // schema edit a different one.
+        let same = contract_digest(
+            "coder::tree",
+            Some("Show a directory tree."),
+            Some(
+                serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+            ),
+        );
+        assert_eq!(same, digest_of(&contracts[0]));
+        assert!(same.starts_with("sha256:"));
+        assert_ne!(
+            same,
+            contract_digest(
+                "coder::tree",
+                Some("Show a directory tree."),
+                Some(serde_json::json!({ "type": "object" })),
+            )
+        );
     }
 }

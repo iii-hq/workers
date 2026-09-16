@@ -211,6 +211,11 @@ request schema, taken from its cached registry snapshot with one
 `engine::functions::info` batch for ids the snapshot cannot vouch for — to
 that frozen prompt; ids the engine does not know are named as unavailable.
 The declared ids also travel in `SessionMeta.metadata.agent_profile.functions`.
+The harness also freezes each preloaded contract's digest on the turn: a
+later registry change to one of those ids reaches the model as a per-id
+notice on every step, never as a rewrite of the frozen block — that block
+(with the skills index) is the stable prompt prefix that sessions on the same
+profile share through provider prompt caching.
 When the profile declares (or inherits) `skills`, the harness appends a
 `<preloaded_skills>` block after it — one `<skill id="…">` section per id
 with the body `directory::skills::get` serves, fetched once at resolution;
