@@ -155,7 +155,7 @@ export const TOURS = [
         id: "extensibility",
         agent: TECH_LEAD,
         ask: {
-          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Have separate subagents build the frontend and backend simultaneously. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes). Open the page for me when it is done.",
+          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Have separate subagents build the frontend and backend simultaneously. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes). Do not navigate the user away from the current workspace. Do not use the browser worker to verify. Verify via functions. This is an onboarding demo. Open the TODO page for me when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
