@@ -36,8 +36,12 @@ pub struct Preview {
 #[derive(Serialize, JsonSchema)]
 pub struct ImportResult {
     pub session_id: String,
+    /// Every entry appended to the new session: turns, calls, and results.
     pub imported_messages: usize,
+    /// User and assistant turns that carried text.
     pub total_messages: usize,
+    /// Tool calls that came across with their recorded results.
+    pub imported_commands: usize,
 }
 
 fn handler_error(error: impl std::fmt::Display) -> Error {
@@ -59,16 +63,31 @@ pub fn register(iii: &Arc<IIIClient>) {
         .metadata(json!({"internal":true})),
     );
 
-    iii.register_function("console::conversations::preview", RegisterFunction::new_async(|req: Selection| async move {
-        let mut transcript = tokio::task::spawn_blocking(move || source::read(req.source, &req.id))
-            .await.map_err(handler_error)?.map_err(handler_error)?;
-        if transcript.messages.len() > 50 {
-            transcript.warnings.push("Preview shows the last 50 text messages; import includes the full text history.".into());
-            transcript.messages = transcript.messages.split_off(transcript.messages.len() - 50);
-        }
-        Ok::<_, Error>(Preview { conversation: transcript.conversation, messages: transcript.messages, warnings: transcript.warnings })
-    }).description("Preview text from a selected local conversation without importing or running it.")
-        .metadata(json!({"internal":true})));
+    iii.register_function(
+        "console::conversations::preview",
+        RegisterFunction::new_async(|req: Selection| async move {
+            let mut transcript =
+                tokio::task::spawn_blocking(move || source::read(req.source, &req.id))
+                    .await
+                    .map_err(handler_error)?
+                    .map_err(handler_error)?;
+            if transcript.messages.len() > 50 {
+                transcript.warnings.push(
+                    "Preview shows the last 50 messages; import includes the full history.".into(),
+                );
+                transcript.messages = transcript
+                    .messages
+                    .split_off(transcript.messages.len() - 50);
+            }
+            Ok::<_, Error>(Preview {
+                conversation: transcript.conversation,
+                messages: transcript.messages,
+                warnings: transcript.warnings,
+            })
+        })
+        .description("Preview a selected local conversation without importing or running it.")
+        .metadata(json!({"internal":true})),
+    );
 
     let client = iii.clone();
     iii.register_function(
@@ -86,7 +105,9 @@ pub fn register(iii: &Arc<IIIClient>) {
                     .map_err(handler_error)
             }
         })
-        .description("Create a new editable ADE conversation from a local text history.")
+        .description(
+            "Create a new editable ADE conversation from a local history, commands included.",
+        )
         .metadata(json!({"internal":true})),
     );
 }
@@ -104,24 +125,74 @@ async fn rpc(iii: &IIIClient, function_id: &str, payload: Value) -> Result<Value
 
 async fn import_transcript(iii: &IIIClient, transcript: Transcript) -> Result<ImportResult> {
     let source = &transcript.conversation;
-    let messages: Vec<_> = transcript.messages.iter().map(|message| {
-        let mut body = json!({"role":message.role,"content":[{"type":"text","text":message.text}],"timestamp":message.timestamp});
-        if message.role == "assistant" {
-            body["model"] = json!(message.model.as_deref().unwrap_or(""));
-            body["provider"] = json!(message.provider.as_deref().unwrap_or(""));
-            body["agent"] = json!(source.source.as_str());
-            body["stop_reason"] = json!(match message.native_stop_reason.as_deref() {
-                Some("max_tokens" | "length") => "length",
-                Some("tool_use" | "function_call") => "function_call",
-                Some("aborted") => "aborted",
-                Some("error") => "error",
-                _ => "end",
-            });
-            body["native_stop_reason"] = json!(message.native_stop_reason);
-        }
-        body
-    }).collect();
+    let messages: Vec<_> = transcript
+        .messages
+        .iter()
+        .map(|message| {
+            let mut content = Vec::new();
+            if !message.text.is_empty() {
+                content.push(json!({"type":"text","text":message.text}));
+            }
+            match message.role.as_str() {
+                "function_result" => json!({
+                    "role": "function_result",
+                    "function_call_id": message.call_id.as_deref().unwrap_or(""),
+                    "function_id": message.function_id.as_deref().unwrap_or("tool"),
+                    "content": content,
+                    "details": Value::Null,
+                    "is_error": message.is_error,
+                    "timestamp": message.timestamp,
+                }),
+                "assistant" => {
+                    for call in &message.calls {
+                        content.push(json!({
+                            "type": "function_call",
+                            "id": call.id,
+                            "function_id": call.function_id,
+                            "arguments": call.arguments,
+                        }));
+                    }
+                    let stop_reason = if message.calls.is_empty() {
+                        match message.native_stop_reason.as_deref() {
+                            Some("max_tokens" | "length") => "length",
+                            Some("tool_use" | "function_call") => "function_call",
+                            Some("aborted") => "aborted",
+                            Some("error") => "error",
+                            _ => "end",
+                        }
+                    } else {
+                        "function_call"
+                    };
+                    json!({
+                        "role": "assistant",
+                        "content": content,
+                        "timestamp": message.timestamp,
+                        "model": message.model.as_deref().unwrap_or(""),
+                        "provider": message.provider.as_deref().unwrap_or(""),
+                        "agent": source.source.as_str(),
+                        "stop_reason": stop_reason,
+                        "native_stop_reason": message.native_stop_reason,
+                    })
+                }
+                _ => json!({
+                    "role": message.role,
+                    "content": content,
+                    "timestamp": message.timestamp,
+                }),
+            }
+        })
+        .collect();
     let count = messages.len();
+    let total_messages = transcript
+        .messages
+        .iter()
+        .filter(|message| message.role != "function_result" && !message.text.trim().is_empty())
+        .count();
+    let imported_commands = transcript
+        .messages
+        .iter()
+        .filter(|message| message.role == "function_result")
+        .count();
     let created = rpc(
         iii,
         "session::create",
@@ -161,7 +232,8 @@ async fn import_transcript(iii: &IIIClient, transcript: Transcript) -> Result<Im
     Ok(ImportResult {
         session_id,
         imported_messages: count,
-        total_messages: count,
+        total_messages,
+        imported_commands,
     })
 }
 
@@ -249,15 +321,12 @@ mod tests {
                 created_at: 1,
                 updated_at: 2,
             },
-            messages: vec![ExternalMessage {
-                id: "original-message".into(),
-                role: "user".into(),
-                text: "context".into(),
-                timestamp: 1,
-                model: None,
-                provider: None,
-                native_stop_reason: None,
-            }],
+            messages: vec![ExternalMessage::new(
+                "original-message",
+                "user",
+                "context".into(),
+                1,
+            )],
             warnings: vec![],
         };
         let first = import_transcript(&iii, history()).await.unwrap();

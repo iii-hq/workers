@@ -21,15 +21,38 @@ export type Discovery = {
   conversations: ExternalConversation[]
   next_cursor: string | null
 }
+/** A tool the source's agent called, as the source recorded it. */
+export type ExternalCall = {
+  id: string
+  /** The source's own tool name: `Bash`, `Read`, `exec`, `apply_patch`… */
+  function_id: string
+  arguments: unknown
+}
+export type PreviewMessage = {
+  id: string
+  role: 'user' | 'assistant' | 'function_result'
+  text: string
+  timestamp: number
+  /** The calls an assistant turn made, in order. */
+  calls?: ExternalCall[]
+  /** On a `function_result`: the call it answers and the tool that ran. */
+  call_id?: string
+  function_id?: string
+  is_error?: boolean
+}
 export type ConversationPreview = {
   conversation: ExternalConversation
-  messages: {
-    id: string
-    role: 'user' | 'assistant'
-    text: string
-    timestamp: number
-  }[]
+  messages: PreviewMessage[]
   warnings: string[]
+}
+export type ImportResult = {
+  session_id: string
+  /** Every entry appended to the new session: turns, calls, and results. */
+  imported_messages: number
+  /** User and assistant turns that carried text. */
+  total_messages: number
+  /** Tool calls that came across with their recorded results. */
+  imported_commands: number
 }
 export async function discoverConversations(input: {
   source: ConversationSource
@@ -54,9 +77,9 @@ export async function importConversation(
   source: ConversationSource,
   id: string,
 ) {
-  return (await getIiiClient()).trigger<{
-    session_id: string
-    imported_messages: number
-    total_messages: number
-  }>('console::conversations::import', { source, id }, { timeoutMs: 120_000 })
+  return (await getIiiClient()).trigger<ImportResult>(
+    'console::conversations::import',
+    { source, id },
+    { timeoutMs: 120_000 },
+  )
 }

@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 use anyhow::{bail, ensure, Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 const PAGE_SIZE: usize = 25;
 
@@ -52,15 +52,60 @@ pub struct ConversationSummary {
     pub updated_at: i64,
 }
 
+/// A tool the source's agent called during a turn, as the source recorded it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ExternalCall {
+    /// The source's own call identity; the matching result echoes it.
+    pub id: String,
+    /// The source's own tool name (`Bash`, `Read`, `exec`, `apply_patch`, `server::tool`).
+    pub function_id: String,
+    /// The recorded arguments, verbatim.
+    pub arguments: Value,
+}
+
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ExternalMessage {
     pub id: String,
+    /// `user`, `assistant`, or `function_result`.
     pub role: String,
     pub text: String,
     pub timestamp: i64,
     pub model: Option<String>,
     pub provider: Option<String>,
     pub native_stop_reason: Option<String>,
+    /// The calls an assistant turn made, in order; empty for every other role.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<ExternalCall>,
+    /// On a `function_result`: the call it answers and the tool that ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    /// On a `function_result`: whether the source recorded the call as failed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
+}
+
+impl ExternalMessage {
+    pub(super) fn new(id: impl Into<String>, role: &str, text: String, timestamp: i64) -> Self {
+        Self {
+            id: id.into(),
+            role: role.into(),
+            text,
+            timestamp,
+            model: None,
+            provider: None,
+            native_stop_reason: None,
+            calls: Vec::new(),
+            call_id: None,
+            function_id: None,
+            is_error: false,
+        }
+    }
+
+    fn is_turn(&self) -> bool {
+        self.role != "function_result"
+    }
 }
 
 pub struct Transcript {
@@ -102,6 +147,77 @@ fn content_text(content: &Value, block_type: &str) -> String {
         .filter_map(|block| text(block, "text"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A Codex tool item as one call: the source's tool name and the arguments it ran with.
+/// `None` for item kinds this import does not carry (plans, image views, sub-agent chatter).
+fn codex_call(kind: &str, entry_id: &str, item: &Value) -> Option<ExternalCall> {
+    let (function_id, arguments) = match kind {
+        "CommandExecution" => {
+            let argv: Vec<&str> = item["command"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            // Codex runs shell as `bash -lc <script>`: keep the script, not the wrapper.
+            let command = match argv.as_slice() {
+                [_, flag, script] if matches!(*flag, "-lc" | "-c") => (*script).to_owned(),
+                _ => argv.join(" "),
+            };
+            let cwd = text(item, "cwd").map(|cwd| cwd.strip_prefix("file://").unwrap_or(cwd));
+            ("exec".to_owned(), json!({"command": command, "cwd": cwd}))
+        }
+        "FileChange" => (
+            "apply_patch".to_owned(),
+            json!({"changes": item["changes"]}),
+        ),
+        "McpToolCall" => (
+            format!(
+                "{}::{}",
+                text(item, "server").unwrap_or("mcp"),
+                text(item, "tool").unwrap_or("tool")
+            ),
+            item["arguments"].clone(),
+        ),
+        "WebSearch" => ("web_search".to_owned(), json!({"query": item["query"]})),
+        _ => return None,
+    };
+    Some(ExternalCall {
+        id: entry_id.to_owned(),
+        function_id,
+        arguments,
+    })
+}
+
+/// What a Codex tool item recorded coming back, and whether the source counted it as a failure.
+fn codex_result(kind: &str, item: &Value) -> (String, bool) {
+    let failed = text(item, "status").is_some_and(|status| status != "completed");
+    let streams = || {
+        [text(item, "stdout"), text(item, "stderr")]
+            .into_iter()
+            .flatten()
+            .filter(|stream| !stream.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    match kind {
+        "CommandExecution" => (
+            text(item, "aggregated_output")
+                .map(str::to_owned)
+                .unwrap_or_else(streams),
+            failed || item["exit_code"].as_i64().is_some_and(|code| code != 0),
+        ),
+        "FileChange" => (streams(), failed),
+        "McpToolCall" => {
+            let result = &item["result"];
+            (
+                content_text(&result["content"], "text"),
+                failed || result["isError"] == true,
+            )
+        }
+        _ => (String::new(), failed),
+    }
 }
 
 fn records(mut reader: impl BufRead, mut visit: impl FnMut(Value) -> Result<()>) -> Result<bool> {
@@ -160,31 +276,64 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                             return Ok(());
                         }
                         let item = &payload["item"];
-                        let (role, block_type) = match text(item, "type") {
-                            Some("UserMessage") => ("user", "text"),
-                            Some("AgentMessage") => ("assistant", "Text"),
-                            _ => return Ok(()),
+                        let Some(kind) = text(item, "type") else {
+                            return Ok(());
+                        };
+                        let entry_id = text(item, "id").context("Codex item ID is missing")?;
+                        let completed_at = payload["completed_at_ms"]
+                            .as_i64()
+                            .context("Codex item completion time is missing")?;
+                        let (role, block_type) = match kind {
+                            "UserMessage" => ("user", "text"),
+                            "AgentMessage" => ("assistant", "Text"),
+                            _ => {
+                                // Tool activity arrives already resolved: one call, then the
+                                // result the source recorded for it.
+                                let Some(call) = codex_call(kind, entry_id, item) else {
+                                    return Ok(());
+                                };
+                                ensure!(
+                                    seen.insert(entry_id.to_owned()),
+                                    "The history repeats a completed item ID"
+                                );
+                                let (output, is_error) = codex_result(kind, item);
+                                let started_at =
+                                    payload["started_at_ms"].as_i64().unwrap_or(completed_at);
+                                let mut turn = ExternalMessage::new(
+                                    format!("{entry_id}:call"),
+                                    "assistant",
+                                    String::new(),
+                                    started_at,
+                                );
+                                turn.model = model.clone();
+                                turn.provider = provider.clone();
+                                let mut result = ExternalMessage::new(
+                                    format!("{entry_id}:result"),
+                                    "function_result",
+                                    output,
+                                    completed_at,
+                                );
+                                result.call_id = Some(call.id.clone());
+                                result.function_id = Some(call.function_id.clone());
+                                result.is_error = is_error;
+                                turn.calls.push(call);
+                                messages.push(turn);
+                                messages.push(result);
+                                return Ok(());
+                            }
                         };
                         let body = content_text(&item["content"], block_type);
                         if body.trim().is_empty() {
                             return Ok(());
                         }
-                        let entry_id = text(item, "id").context("Codex message ID is missing")?;
                         ensure!(
                             seen.insert(entry_id.to_owned()),
                             "The history repeats a completed message ID"
                         );
-                        messages.push(ExternalMessage {
-                            id: entry_id.to_owned(),
-                            role: role.into(),
-                            text: body,
-                            timestamp: payload["completed_at_ms"]
-                                .as_i64()
-                                .context("Codex message completion time is missing")?,
-                            model: model.clone(),
-                            provider: provider.clone(),
-                            native_stop_reason: None,
-                        });
+                        let mut message = ExternalMessage::new(entry_id, role, body, completed_at);
+                        message.model = model.clone();
+                        message.provider = provider.clone();
+                        messages.push(message);
                     }
                     _ => {}
                 }
@@ -192,13 +341,13 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
             })?;
             ensure!(has_meta, "Codex session metadata is missing");
             ensure!(
-                !messages.is_empty(),
+                messages.iter().any(ExternalMessage::is_turn),
                 "No supported Codex messages found; completed item events are required"
             );
             incomplete
         }
         Source::ClaudeCode => {
-            // Keep the parent graph and projected text, never tool output or reasoning.
+            // Keep the parent graph with each row's text and tool activity; never reasoning.
             let mut nodes = HashMap::new();
             let mut leaf = None;
             let mut custom_title = None;
@@ -221,25 +370,60 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                     if role.is_some() {
                         leaf = Some(entry_id.to_owned());
                     }
-                    let projected = (|| -> Result<Option<ExternalMessage>> {
-                        let Some(role) = role else { return Ok(None) };
+                    let projected = (|| -> Result<Vec<ExternalMessage>> {
+                        let Some(role) = role else {
+                            return Ok(Vec::new());
+                        };
                         if row["isMeta"] == true || row["isCompactSummary"] == true {
-                            return Ok(None);
+                            return Ok(Vec::new());
                         }
                         let message = &row["message"];
-                        let body = content_text(&message["content"], "text");
-                        if body.trim().is_empty() {
-                            return Ok(None);
+                        let content = &message["content"];
+                        let when = timestamp(&row["timestamp"])?;
+                        let body = content_text(content, "text");
+                        let blocks = content.as_array().into_iter().flatten();
+                        let mut out = Vec::new();
+                        if role == "assistant" {
+                            let calls: Vec<_> = blocks
+                                .filter(|block| text(block, "type") == Some("tool_use"))
+                                .map(|block| ExternalCall {
+                                    id: text(block, "id").unwrap_or_default().to_owned(),
+                                    function_id: text(block, "name").unwrap_or("tool").to_owned(),
+                                    arguments: block.get("input").cloned().unwrap_or(Value::Null),
+                                })
+                                .collect();
+                            if body.trim().is_empty() && calls.is_empty() {
+                                return Ok(out);
+                            }
+                            let mut turn = ExternalMessage::new(entry_id, role, body, when);
+                            turn.model = text(message, "model").map(str::to_owned);
+                            turn.provider = Some("anthropic".into());
+                            turn.native_stop_reason =
+                                text(message, "stop_reason").map(str::to_owned);
+                            turn.calls = calls;
+                            out.push(turn);
+                            return Ok(out);
                         }
-                        Ok(Some(ExternalMessage {
-                            id: entry_id.to_owned(),
-                            role: role.into(),
-                            text: body,
-                            timestamp: timestamp(&row["timestamp"])?,
-                            model: text(message, "model").map(str::to_owned),
-                            provider: Some("anthropic".into()),
-                            native_stop_reason: text(message, "stop_reason").map(str::to_owned),
-                        }))
+                        // A user row is the person's text, or the results of the calls before
+                        // it: the source files those under the user role, this import does not.
+                        for (index, block) in blocks.enumerate() {
+                            if text(block, "type") != Some("tool_result") {
+                                continue;
+                            }
+                            let mut result = ExternalMessage::new(
+                                format!("{entry_id}:{index}"),
+                                "function_result",
+                                content_text(&block["content"], "text"),
+                                when,
+                            );
+                            result.call_id = text(block, "tool_use_id").map(str::to_owned);
+                            result.is_error = block["is_error"] == true;
+                            out.push(result);
+                        }
+                        if !body.trim().is_empty() {
+                            out.push(ExternalMessage::new(entry_id, role, body, when));
+                        }
+                        Ok(out)
                     })();
                     nodes.insert(
                         entry_id.to_owned(),
@@ -255,26 +439,42 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
                     visited.insert(entry_id.clone()),
                     "The history contains a parent cycle"
                 );
-                let (parent, message) = nodes
+                let (parent, projected) = nodes
                     .remove(&entry_id)
                     .context("The history has a missing parent message")?;
-                if let Some(message) = message? {
-                    messages.push(message);
-                }
+                // The walk is leaf-first; reversing each row's own messages here keeps
+                // them in order once the whole list is reversed below.
+                messages.extend(projected?.into_iter().rev());
                 leaf = parent;
             }
             messages.reverse();
+            // Results are met before the calls they answer: name them now that every
+            // call on the branch is known.
+            let names: HashMap<String, String> = messages
+                .iter()
+                .flat_map(|message| message.calls.iter())
+                .map(|call| (call.id.clone(), call.function_id.clone()))
+                .collect();
+            for message in &mut messages {
+                if message.role == "function_result" {
+                    message.function_id = Some(
+                        message
+                            .call_id
+                            .as_deref()
+                            .and_then(|id| names.get(id).cloned())
+                            .unwrap_or_else(|| "tool".into()),
+                    );
+                }
+            }
             ensure!(
-                !messages.is_empty(),
-                "No supported Claude Code text messages found"
+                messages.iter().any(ExternalMessage::is_turn),
+                "No supported Claude Code messages found"
             );
             incomplete
         }
     };
-    let mut warnings = vec![
-        "Only user and assistant text is imported; tools, reasoning, and attachments are omitted."
-            .into(),
-    ];
+    let mut warnings =
+        vec!["Reasoning, attachments, and subagent activity are not imported.".into()];
     if incomplete {
         warnings.push("The last record is still being written and was omitted. Wait for the source to finish before importing its complete history.".into());
     }
@@ -283,7 +483,12 @@ fn parse(source: Source, id: &str, reader: impl BufRead, modified_at: i64) -> Re
     let title = title.unwrap_or_else(|| {
         messages
             .iter()
-            .find(|m| m.role == "user")
+            .find(|m| m.role == "user" && !m.text.trim().is_empty())
+            .or_else(|| {
+                messages
+                    .iter()
+                    .find(|m| m.is_turn() && !m.text.trim().is_empty())
+            })
             .unwrap_or(first)
             .text
             .split_whitespace()
@@ -489,18 +694,36 @@ mod tests {
             json!({"type":"turn_context","payload":{"model":"example"}}),
             json!({"type":"response_item","payload":{"role":"user","content":[{"type":"text","text":"internal instructions"}]}}),
             json!({"type":"event_msg","payload":{"type":"item_completed","completed_at_ms":1000,"item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"hello"},{"type":"image","image_url":"private"}]}}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","started_at_ms":1500,"completed_at_ms":1800,"item":{"type":"CommandExecution","id":"exec-1","command":["/bin/bash","-lc","cargo test"],"cwd":"file:///project","status":"completed","exit_code":1,"aggregated_output":"1 failed","stdout":"","stderr":""}}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","completed_at_ms":1900,"item":{"type":"Plan","id":"plan-1"}}}),
             json!({"type":"event_msg","payload":{"type":"item_completed","completed_at_ms":2000,"item":{"type":"AgentMessage","id":"a1","content":[{"type":"Text","text":"hello back"}]}}}),
         ]);
         let result = parse(Source::Codex, ID, bytes.as_slice(), 3000).unwrap();
-        assert_eq!(result.messages.len(), 2);
+        let roles: Vec<_> = result.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "function_result", "assistant"]);
         assert_eq!(result.messages[0].text, "hello");
         assert_eq!(result.messages[0].timestamp, 1000);
-        assert_eq!(result.messages[1].model.as_deref(), Some("example"));
+        let call = &result.messages[1].calls[0];
+        assert_eq!(call.id, "exec-1");
+        assert_eq!(call.function_id, "exec");
+        assert_eq!(
+            call.arguments,
+            json!({"command":"cargo test","cwd":"/project"})
+        );
+        assert_eq!(result.messages[1].timestamp, 1500);
+        let outcome = &result.messages[2];
+        assert_eq!(outcome.call_id.as_deref(), Some("exec-1"));
+        assert_eq!(outcome.function_id.as_deref(), Some("exec"));
+        assert_eq!(outcome.text, "1 failed");
+        assert!(outcome.is_error);
+        assert_eq!(outcome.timestamp, 1800);
+        assert_eq!(result.messages[3].model.as_deref(), Some("example"));
+        assert_eq!(result.conversation.title, "hello");
         assert_eq!(result.conversation.cwd.as_deref(), Some("/project"));
     }
 
     #[test]
-    fn claude_follows_latest_branch_and_excludes_tool_results_and_meta() {
+    fn claude_follows_latest_branch_and_carries_tool_calls_as_function_rows() {
         let mut internal = claude("meta", Some("root"), "user", json!("system context"));
         internal["isMeta"] = json!(true);
         let mut sidechain = claude("child", None, "assistant", json!("child text"));
@@ -510,10 +733,16 @@ mod tests {
             claude("abandoned", Some("root"), "assistant", json!("old branch")),
             internal,
             claude(
-                "tool",
+                "call",
                 Some("meta"),
+                "assistant",
+                json!([{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]),
+            ),
+            claude(
+                "tool",
+                Some("call"),
                 "user",
-                json!([{"type":"tool_result","content":"tool output"}]),
+                json!([{"type":"tool_result","tool_use_id":"toolu_1","content":"tool output","is_error":true}]),
             ),
             claude(
                 "answer",
@@ -531,10 +760,23 @@ mod tests {
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect::<Vec<_>>(),
-            ["root", "answer", "repeat"]
+            ["root", "call", "tool:0", "answer", "repeat"]
         );
-        assert_eq!(result.messages[0].text, result.messages[2].text);
+        let turn = &result.messages[1];
+        assert_eq!(turn.role, "assistant");
+        assert_eq!(turn.text, "");
+        assert_eq!(turn.calls[0].id, "toolu_1");
+        assert_eq!(turn.calls[0].function_id, "Bash");
+        assert_eq!(turn.calls[0].arguments, json!({"command":"ls"}));
+        let outcome = &result.messages[2];
+        assert_eq!(outcome.role, "function_result");
+        assert_eq!(outcome.call_id.as_deref(), Some("toolu_1"));
+        assert_eq!(outcome.function_id.as_deref(), Some("Bash"));
+        assert_eq!(outcome.text, "tool output");
+        assert!(outcome.is_error);
+        assert_eq!(result.messages[0].text, result.messages[4].text);
         assert_eq!(result.messages[0].timestamp, 1789473600000);
+        assert_eq!(result.conversation.title, "repeat");
     }
 
     #[test]
@@ -549,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn histories_above_64_mib_are_read_without_retaining_tool_output() {
+    fn histories_above_64_mib_are_read() {
         use std::io::Write;
         let root = std::env::temp_dir().join(format!("ade-history-{}", uuid::Uuid::new_v4()));
         let project = root.join("projects/project");
