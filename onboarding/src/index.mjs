@@ -264,6 +264,112 @@ iii.registerFunction(
 )
 
 // ---------------------------------------------------------------------------
+// The build half of the tour — a chat of its own, under its own profile
+// ---------------------------------------------------------------------------
+
+/** A harness turn is started, not waited out, but the start still crosses the
+    directory and the model router. */
+const CHAT_TIMEOUT_MS = 30_000
+
+/** Always present (`builtin: true`), so the fallback cannot itself go missing. */
+const FALLBACK_AGENT = 'iii-minimal'
+
+/**
+ * The reasoning effort the tour runs at, the same one the page asks the
+ * console for on the first step. Every step hands the agent a short, concrete
+ * task and then waits on it; deliberation over instructions that are already
+ * explicit is time the operator spends watching a spinner.
+ *
+ * Sent on the turn itself, not written to the session: the console keeps its
+ * own level per conversation and sends it with every turn it starts, so this
+ * covers the turns the tour starts and the console covers the operator's.
+ * A profile naming its own `reasoning_effort` outranks this, which is the
+ * profile author's call to make.
+ */
+const THINKING_LEVEL = 'minimal'
+
+/** One session per subject and tour: every step naming an agent joins the
+    chat the first one opened. */
+const chatKey = (subject, tourId) => `chat:${subject}:${tourId}`
+
+/**
+ * The profile to send under, resolved at the moment of the send.
+ *
+ * Profiles are files in a folder: one can be renamed, edited into a broken
+ * `extends` chain, or deleted between one step and the next. So the id is
+ * tried first, then the display name, then the bundled profile — the tour
+ * asks its question either way, and never stops to tell the operator which
+ * identity answered it.
+ */
+const resolveAgent = async (agent) => {
+  const listed = await iii
+    .trigger({
+      function_id: 'directory::agents::list',
+      payload: {},
+      timeoutMs: STATE_TIMEOUT_MS,
+    })
+    .catch(() => null)
+  const usable = (listed?.agents ?? []).filter((row) => row && !row.inheritance_error)
+  const match = usable.find((row) => row.id === agent.id) ?? usable.find((row) => row.name === agent.name)
+  return match?.id ?? FALLBACK_AGENT
+}
+
+const harnessSend = (payload) =>
+  iii.trigger({ function_id: 'harness::send', payload, timeoutMs: CHAT_TIMEOUT_MS })
+
+iii.registerFunction(
+  'onboarding::steps::ask',
+  async (input) => {
+    const found = findStep(input.tour_id, input.step_id)
+    if (!found) throw new Error(`unknown step: ${input.tour_id}/${input.step_id}`)
+    const { step } = found
+    if (!step.ask || !step.agent) {
+      throw new Error(`step sends its own prompt from the console: ${input.tour_id}/${input.step_id}`)
+    }
+    const subject = input.subject ?? 'local'
+    const key = chatKey(subject, input.tour_id)
+    const stored = await stateGet(key)
+    const existing = typeof stored?.session_id === 'string' ? stored.session_id : null
+    if (existing) {
+      // A stored session the harness no longer has is not an error the
+      // operator can do anything with: the step wants a chat under this
+      // profile, so a refused steer opens a new one below.
+      const steered = await harnessSend({
+        session_id: existing,
+        message: step.ask.text,
+        options: { thinking_level: THINKING_LEVEL },
+      }).catch(() => null)
+      if (steered) return { session_id: existing, agent: stored.agent ?? null, created: false }
+    }
+    const agent = await resolveAgent(step.agent)
+    // `options.agent` is honoured only on the send that CREATES the session —
+    // an identity cannot be retrofitted onto the tour's original chat, which
+    // is why this half of the tour is a session of its own. The profile's own
+    // model wins when it names one; `model` is the fallback for one that
+    // does not, and the page sends the model the operator is already on.
+    const started = await harnessSend({
+      message: step.ask.text,
+      ...(input.model ? { model: input.model } : {}),
+      options: { agent, thinking_level: THINKING_LEVEL },
+    })
+    await stateUpdate(key, [{ type: 'merge', value: { session_id: started.session_id, agent, at: Date.now() } }])
+    return { session_id: started.session_id, agent, created: true }
+  },
+  {
+    description:
+      "Send one tour step's prompt to the agent profile that step names, in a chat of its own \u2014 opening that chat on the first such step and steering it on every later one.",
+    request_format: object({ subject: string, tour_id: string, step_id: string, model: string }, [
+      'tour_id',
+      'step_id',
+    ]),
+    response_format: object(
+      { session_id: string, agent: string, created: { type: 'boolean' } },
+      ['session_id', 'created'],
+    ),
+  },
+)
+
+// ---------------------------------------------------------------------------
 // Product updates
 // ---------------------------------------------------------------------------
 

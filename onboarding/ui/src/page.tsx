@@ -46,6 +46,23 @@ const TOUR_THINKING_LEVEL = 'minimal'
  */
 const OPEN_TIMEOUT_MS = 8_000
 
+/** How long the box stays on what a step's `on_closed` note points at. */
+const HINT_SPOTLIGHT_MS = 5_000
+
+/** Attempts to hand a just-opened conversation the tour's reasoning effort,
+    and the gap between them: the console mounts it a moment after it is
+    selected, and refuses the level until it has. */
+const THINKING_LEVEL_TRIES = 10
+const THINKING_LEVEL_RETRY_MS = 300
+
+function askForThinkingLevel(host: Host, sessionId: string, left = THINKING_LEVEL_TRIES): void {
+  const took = host.chat?.requestThinkingLevelChange?.({ sessionId, level: TOUR_THINKING_LEVEL })
+  // A console too old to be asked returns nothing and never will; one that
+  // has not mounted the conversation yet returns false and shortly will.
+  if (took || !host.chat?.requestThinkingLevelChange || left <= 1) return
+  setTimeout(() => askForThinkingLevel(host, sessionId, left - 1), THINKING_LEVEL_RETRY_MS)
+}
+
 /** Console class recipes, with a literal fallback for an older build that
     does not publish them. */
 const ui = uiClasses ?? {
@@ -64,6 +81,9 @@ interface Step {
   screen?: string
   /** A prompt the step hands to the chat composer and sends. */
   ask?: { text: string; label: string }
+  /** An agent profile the step's prompt goes to, in a chat of its own. The
+      worker does that send; the page only places the chat it names. */
+  agent?: { id: string; name: string }
   /** A screen the step suggests closing, with what to show once it is gone. */
   on_closed?: { screen: string; body: string; anchors?: string[] }
 }
@@ -226,7 +246,53 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
    */
   const ask = useCallback(
     (step: Step) => {
-      if (!step.ask) return
+      if (!step.ask || !tour) return
+      // A step that names an agent profile is not this chat's to send: an
+      // identity can only be given to a session as it is created, so the
+      // worker opens one under that profile and steers it on every later
+      // step. The page places the chat beside the tour and nothing else.
+      if (step.agent) {
+        // The fallback model, used only when the profile names none: the one
+        // the operator is already talking to, rather than a default this page
+        // would have to guess at.
+        const model = host.chat?.composerModel?.(conversationId)
+        void host.iii
+          .trigger<{ session_id: string }>('onboarding::steps::ask', {
+            tour_id: tour.id,
+            step_id: step.id,
+            ...(model ? { model } : {}),
+          })
+          .then(({ session_id }) => {
+            // The chat pane beside the tour is the console's PLAIN `chat`
+            // screen, which follows the sidebar — so selecting the new
+            // conversation moves that pane onto it, and the tour carries on
+            // where it already was. Opening a `chat:<session>` pane as well
+            // would put the same conversation on screen twice.
+            if (host.chat?.selectConversation) {
+              host.chat.selectConversation(session_id)
+              // The worker already sent this turn at the tour's effort. This
+              // is the console's own record for the new conversation, so the
+              // operator's own messages in it run there too — and it is
+              // refused until the conversation is MOUNTED, which the select
+              // above only starts, hence the retry.
+              askForThinkingLevel(host, session_id)
+            } else {
+              // An older console cannot be asked; it gets a pinned pane of
+              // its own instead, which is the same conversation either way.
+              void host.iii
+                .trigger('console::workspace::open', {
+                  screen: 'chat',
+                  session_id,
+                  relative_to: 'ext:onboarding',
+                  direction: 'left',
+                })
+                .catch(() => {})
+            }
+            if (!step.condition) complete(step.id)
+          })
+          .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+        return
+      }
       if (!host.chat?.compose) {
         setError('This console is too old to send a prompt for you. Type it in the chat instead.')
         return
@@ -244,7 +310,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
       host.chat.compose({ text: step.ask.text, submit: true })
       if (!step.condition) complete(step.id)
     },
-    [complete, conversationId, host],
+    [complete, conversationId, host, tour],
   )
 
   // Every step that is still open for business gets its condition bound, so a
@@ -321,12 +387,24 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
   /**
    * The box frames whatever step is open, and leaves with the page. A step
    * whose `on_closed` screen is gone points at what brings it back instead
-   * of at the empty space where it used to be.
+   * of at the empty space where it used to be — for a few seconds, and then
+   * the box goes back to the step. That hint answers one question ("where did
+   * the panel go?"), and a box that stays lit long after it is answered is
+   * just something on the screen the operator cannot turn off.
    */
+  const hinting = Boolean(openStep?.on_closed && closed === openStep.on_closed.screen)
+  const [hintDone, setHintDone] = useState(false)
+  useEffect(() => {
+    if (!hinting) {
+      setHintDone(false)
+      return
+    }
+    setHintDone(false)
+    const timer = setTimeout(() => setHintDone(true), HINT_SPOTLIGHT_MS)
+    return () => clearTimeout(timer)
+  }, [hinting])
   const framed =
-    openStep?.on_closed && closed === openStep.on_closed.screen
-      ? (openStep.on_closed.anchors ?? null)
-      : (openStep?.anchors ?? null)
+    hinting && !hintDone ? (openStep?.on_closed?.anchors ?? null) : (openStep?.anchors ?? null)
   useEffect(() => {
     showSpotlight(framed)
     return hideSpotlight
@@ -409,7 +487,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
               </button>
               {isOpen ? (
                 <div className="ob-open flex flex-col gap-3 px-4 pb-4 pl-11">
-                  <p className="m-0 text-base leading-relaxed text-ink text-pretty">{step.body}</p>
+                  <p className="m-0 whitespace-pre-line text-base leading-relaxed text-ink text-pretty">{step.body}</p>
                   {step.condition?.prompt && state !== 'complete' ? (
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
