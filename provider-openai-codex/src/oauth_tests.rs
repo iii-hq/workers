@@ -2,7 +2,7 @@ use super::*;
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -131,13 +131,6 @@ async fn read_request(stream: &mut TcpStream) -> Request {
         headers,
         body: String::from_utf8(bytes[header_end..].to_vec()).unwrap(),
     }
-}
-
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
 }
 
 fn jwt(claims: Value) -> String {

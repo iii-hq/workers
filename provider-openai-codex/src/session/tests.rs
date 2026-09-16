@@ -514,8 +514,7 @@ async fn stream_requests(
             ("chatgpt-account-id", "account".into()),
         ],
     };
-    let mut rx =
-        crate::upstream::spawn_authenticated_upstream(reqwest::Client::new(), args, manager);
+    let mut rx = crate::upstream::spawn_upstream(reqwest::Client::new(), args, Some(manager));
     let mut events = Vec::new();
     while let Some(event) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await

@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fmt;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use crate::auth::{account_id_from_access_token, expires_at_from_access_token};
 
@@ -388,10 +388,7 @@ impl TokenResponse {
 }
 
 fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    crate::now_ms() / 1000
 }
 
 fn retry_after(response: &reqwest::Response) -> Option<u64> {

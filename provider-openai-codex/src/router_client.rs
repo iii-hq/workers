@@ -56,10 +56,6 @@ async fn function_available(iii: &IIIClient, function_id: &str) -> Result<bool, 
     Ok(list_contains_function(&raw, function_id, &namespace))
 }
 
-pub async fn auth_get_token_available(iii: &IIIClient) -> Result<bool, Error> {
-    function_available(iii, AUTH_GET_TOKEN_FN).await
-}
-
 /// `router::provider::resolve` — effective settings (api_url / max_tokens).
 /// The `credential` field is unused here; the vault is the credential source.
 pub async fn resolve(
@@ -104,7 +100,7 @@ pub async fn get_token_if_available(
     iii: &IIIClient,
     provider: &str,
 ) -> Result<Option<Value>, Error> {
-    if !auth_get_token_available(iii).await? {
+    if !function_available(iii, AUTH_GET_TOKEN_FN).await? {
         return Ok(None);
     }
     get_token(iii, provider).await

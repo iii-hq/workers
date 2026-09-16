@@ -27,21 +27,6 @@ pub struct UpstreamArgs {
 pub fn spawn_upstream(
     client: reqwest::Client,
     args: UpstreamArgs,
-) -> mpsc::Receiver<AssistantMessageEvent> {
-    spawn_with_auth(client, args, None)
-}
-
-pub fn spawn_authenticated_upstream(
-    client: reqwest::Client,
-    args: UpstreamArgs,
-    auth: Arc<AuthManager>,
-) -> mpsc::Receiver<AssistantMessageEvent> {
-    spawn_with_auth(client, args, Some(auth))
-}
-
-fn spawn_with_auth(
-    client: reqwest::Client,
-    args: UpstreamArgs,
     auth: Option<Arc<AuthManager>>,
 ) -> mpsc::Receiver<AssistantMessageEvent> {
     let (tx, rx) = mpsc::channel(64);
@@ -301,7 +286,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn happy_stream_yields_start_through_stop_and_done() {
         let url = stub(HAPPY).await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         assert!(matches!(
             events.first(),
             Some(AssistantMessageEvent::Start { .. })
@@ -334,7 +319,7 @@ mod tests {
             "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"message\":\"Incorrect API key provided.\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}",
         )
         .await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         assert_eq!(events.len(), 1);
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
@@ -351,7 +336,7 @@ mod tests {
         // cause, not stop at the opaque "builder error".
         let mut a = args("http://127.0.0.1:1/v1/chat/completions".into());
         a.headers = vec![("authorization", "Bearer sk-bad\ninjected".into())];
-        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), a, None)).await;
         assert_eq!(events.len(), 1);
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
@@ -372,7 +357,7 @@ mod tests {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             format!("http://{}/v1/chat/completions", l.local_addr().unwrap())
         };
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(dead))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(dead), None)).await;
         assert_eq!(events.len(), 1);
         match &events[0] {
             AssistantMessageEvent::Error { error } => {
@@ -388,7 +373,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n",
         )
         .await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         match events.last() {
             Some(AssistantMessageEvent::Done { message }) => {
                 assert!(
@@ -408,7 +393,7 @@ mod tests {
         let url =
             stub("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n")
                 .await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         match events.last() {
             Some(AssistantMessageEvent::Error { error }) => {
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
@@ -441,7 +426,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn stream_cut_inside_function_call_arguments_ends_as_one_error() {
         let url = stub(TRUNCATED_MID_ARGUMENTS).await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         let error = single_terminal_error(&events);
         assert_eq!(error.error_kind, Some(ErrorKind::Transient));
         let message = error.error_message.as_deref().unwrap_or_default();
@@ -466,7 +451,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn stream_cut_inside_an_event_frame_ends_as_one_error() {
         let url = stub(TRUNCATED_MID_FRAME).await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         let error = single_terminal_error(&events);
         assert_eq!(error.error_kind, Some(ErrorKind::Transient));
         let message = error.error_message.as_deref().unwrap_or_default();
@@ -481,7 +466,7 @@ mod tests {
         let url =
             stub("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n")
                 .await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         let error = single_terminal_error(&events);
         let message = error.error_message.as_deref().unwrap_or_default();
         assert!(message.contains("reason=empty"), "{message}");
@@ -490,7 +475,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn final_block_without_blank_line_still_completes() {
         let url = stub(FINAL_BLOCK_WITHOUT_BLANK_LINE).await;
-        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url), None)).await;
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
         match events.last() {
             Some(AssistantMessageEvent::Done { message }) => {
@@ -507,7 +492,7 @@ mod tests {
         let url = stub(HAPPY).await;
         let mut a = args(url);
         a.warnings = vec!["thinking_level ignored".into()];
-        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), a, None)).await;
         match events.last() {
             Some(AssistantMessageEvent::Done { message }) => {
                 assert_eq!(

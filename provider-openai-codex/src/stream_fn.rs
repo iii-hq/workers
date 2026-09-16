@@ -5,7 +5,7 @@ use crate::reasoning::{is_reasoning_model, native_reasoning_effort, reasoning_ef
 use crate::request::{build_body, build_headers, resolve_cache_routing, BodyArgs};
 use crate::session::AuthManager;
 use crate::sse::synthetic_error_event;
-use crate::upstream::{spawn_authenticated_upstream, UpstreamArgs};
+use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
@@ -197,7 +197,7 @@ async fn run_stream_call(
     if abort_reg.is_some_and(|g| g.is_fired()) {
         return;
     }
-    let rx = spawn_authenticated_upstream(
+    let rx = spawn_upstream(
         http,
         UpstreamArgs {
             api_url: cfg.api_url.clone(),
@@ -206,7 +206,7 @@ async fn run_stream_call(
             headers,
             warnings,
         },
-        auth,
+        Some(auth),
     );
     let kind = match abort_reg {
         Some(g) => pump_abortable(rx, sink, PING_INTERVAL, g.watch()).await,
