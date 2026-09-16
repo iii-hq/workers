@@ -249,24 +249,25 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
             ...(model ? { model } : {}),
           })
           .then(({ session_id }) => {
-            // Best effort: the turn is running either way, and an older
-            // console that refuses the placement still has the chat in its
-            // sidebar.
-            void host.iii
-              .trigger('console::workspace::open', {
-                screen: 'chat',
-                session_id,
-                relative_to: 'ext:onboarding',
-                direction: 'left',
-                activate: true,
-              })
-              .catch(() => {})
-            // The pane is placed; this is what moves the operator INTO it.
-            // The tour has just handed the work to another identity, and a
-            // chat that has to be found in the sidebar first reads as a
-            // prompt that went nowhere. Feature-detected: an older console
-            // still has the conversation, one click away.
-            host.chat?.selectConversation?.(session_id)
+            // The chat pane beside the tour is the console's PLAIN `chat`
+            // screen, which follows the sidebar — so selecting the new
+            // conversation moves that pane onto it, and the tour carries on
+            // where it already was. Opening a `chat:<session>` pane as well
+            // would put the same conversation on screen twice.
+            if (host.chat?.selectConversation) {
+              host.chat.selectConversation(session_id)
+            } else {
+              // An older console cannot be asked; it gets a pinned pane of
+              // its own instead, which is the same conversation either way.
+              void host.iii
+                .trigger('console::workspace::open', {
+                  screen: 'chat',
+                  session_id,
+                  relative_to: 'ext:onboarding',
+                  direction: 'left',
+                })
+                .catch(() => {})
+            }
             if (!step.condition) complete(step.id)
           })
           .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
