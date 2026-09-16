@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["page.tsx"]
+  "include": ["page.tsx", "page.test.tsx", "src"]
 }

@@ -71,6 +71,7 @@ impl IIIEngine {
 /// here, because only that names an SDK type.
 fn guest_trigger_input(input: Value) -> Result<RegisterTriggerInput, String> {
     let guest = parse_guest_trigger(input)?;
+    crate::agent_dispatch::validate_trigger_target(&guest.function_id)?;
     Ok(RegisterTriggerInput {
         metadata: guest.metadata,
         ..RegisterTriggerInput::new(guest.r#type, guest.function_id, guest.config)
@@ -101,6 +102,7 @@ impl Engine for IIIEngine {
     ) -> BoxFuture<'static, CallResult> {
         let iii = self.iii.clone();
         Box::pin(async move {
+            crate::agent_dispatch::validate_call(&fn_id, &payload)?;
             let action = action.map(|raw| parse_trigger_action(&raw)).transpose()?;
             iii.trigger(TriggerRequest {
                 function_id: fn_id,

@@ -79,6 +79,48 @@
 [data-iii-ui='provider-openai-codex'] .codex-provider-action {
   flex-wrap: wrap;
   justify-content: space-between;
+  margin-top: 12px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-login {
+  margin: 16px 0;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-login ol {
+  list-style: decimal;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-action:empty {
+  display: none;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-login .codex-provider-code {
+  font-size: 18px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card a {
+  color: var(--color-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card a:hover {
+  color: var(--color-accent, var(--color-ink));
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card a:focus-visible {
+  outline: 2px solid var(--color-accent, var(--color-ink));
+  outline-offset: 3px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-account {
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-help {
+  margin-top: 16px;
 }
 
 @media (min-width: 640px) {

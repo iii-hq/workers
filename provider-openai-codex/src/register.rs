@@ -5,9 +5,10 @@ use crate::discovery::{
     make_refresh_models, refresh_models, refresh_models_periodically, CatalogRefreshState,
 };
 use crate::errors::invalid_request_from_serde;
+use crate::session::AuthManager;
 use crate::stream_fn::make_stream;
 use crate::surface;
-use crate::{auth, router_client, state, PROVIDER_ID};
+use crate::{router_client, state, PROVIDER_ID};
 use iii_sdk::errors::Error;
 use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
@@ -26,7 +27,7 @@ pub fn declaration() -> ProviderDeclaration {
     ProviderDeclaration {
         id: PROVIDER_ID.into(),
         display_name: Some("OpenAI Codex".into()),
-        // OAuth-only: credentials come from the auth-credentials vault, never
+        // OAuth-only: credentials come from the provider session, never
         // from a router-config api_key or an env var.
         credential_env_var: None,
         defaults: Some(ProviderDefaults {
@@ -101,16 +102,15 @@ pub async fn declare_with_backoff(iii: IIIClient) {
     }
 }
 
-/// Register, seed the vault from `~/.codex/auth.json` if it has no credential
-/// yet (best-effort, read-only), then reconcile the dynamic backend catalog.
+/// Register and reconcile the authenticated backend catalog.
 pub async fn declare_and_refresh(
     iii: IIIClient,
     http: reqwest::Client,
     refresh_state: Arc<CatalogRefreshState>,
+    auth: Arc<AuthManager>,
 ) {
     declare_with_backoff(iii.clone()).await;
-    auth::import_codex_home_if_absent(&iii).await;
-    match refresh_models(&iii, &http, &refresh_state, true).await {
+    match refresh_models(&iii, &http, &refresh_state, true, &auth).await {
         Ok(count) => println!("[provider-openai-codex] catalog reconciled: {count} models"),
         Err(e) => eprintln!(
             "[provider-openai-codex] post-register reconcile failed ({e}); keeping last known catalog"
@@ -130,6 +130,23 @@ fn read_timeout() -> Duration {
 }
 
 pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
+    // OAuth POST bodies must never be forwarded to a redirect target.
+    let oauth_http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .expect("OAuth HTTP client");
+    let auth = AuthManager::new(iii.clone(), oauth_http);
+    register_provider_with_auth(iii, auth).await
+}
+
+/// Register using an injected session authority (also used by hermetic engine
+/// tests). Production uses `register_provider`, with the fixed OpenAI issuer.
+pub async fn register_provider_with_auth(
+    iii: IIIClient,
+    auth: Arc<AuthManager>,
+) -> Result<(), Error> {
     // Shared per-process cache for the registration token and the resolve
     // response (see llm_router::provider_scaffold::cache). Invalidated on
     // router::ready — a restarted router may carry new config and reissues
@@ -151,7 +168,13 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     iii.register_function(
         surface::STREAM_ID,
         typed_async_with_bad_request(
-            make_stream(iii.clone(), http.clone(), cache.clone(), aborts.clone()),
+            make_stream(
+                iii.clone(),
+                http.clone(),
+                cache.clone(),
+                aborts.clone(),
+                auth.clone(),
+            ),
             invalid_request_from_serde,
         )
         .description(surface::STREAM_DESC)
@@ -169,6 +192,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             iii.clone(),
             http.clone(),
             refresh_state.clone(),
+            auth.clone(),
         ))
         .description(surface::REFRESH_MODELS_DESC)
         .metadata(json!({ "internal": true })),
@@ -187,6 +211,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         let http_ready = http.clone();
         let refresh_state_ready = refresh_state.clone();
         let cache_ready = cache.clone();
+        let auth_ready = auth.clone();
         iii.register_function(
             surface::ON_ROUTER_READY_ID,
             RegisterFunction::new_async(move |_event: RouterReadyEvent| {
@@ -195,9 +220,10 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                     http_ready.clone(),
                     refresh_state_ready.clone(),
                 );
+                let auth = auth_ready.clone();
                 cache_ready.invalidate();
                 async move {
-                    tokio::spawn(declare_and_refresh(iii, http, refresh_state));
+                    tokio::spawn(declare_and_refresh(iii, http, refresh_state, auth));
                     Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
@@ -211,11 +237,31 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
         json!({}),
     ));
 
+    crate::login::register(&iii, auth.clone());
+    {
+        let mut changed = auth.subscribe();
+        let (iii, http, refresh_state, auth) = (
+            iii.clone(),
+            http.clone(),
+            refresh_state.clone(),
+            auth.clone(),
+        );
+        tokio::spawn(async move {
+            while changed.changed().await.is_ok() {
+                cache.invalidate();
+                if let Err(e) = refresh_models(&iii, &http, &refresh_state, true, &auth).await {
+                    tracing::warn!(error = %e, "Codex signed in; catalog refresh failed");
+                }
+            }
+        });
+    }
+
     tokio::spawn(declare_and_refresh(
         iii.clone(),
         http.clone(),
         refresh_state.clone(),
+        auth.clone(),
     ));
-    tokio::spawn(refresh_models_periodically(iii, http, refresh_state));
+    tokio::spawn(refresh_models_periodically(iii, http, refresh_state, auth));
     Ok(())
 }

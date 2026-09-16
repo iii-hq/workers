@@ -1,5 +1,5 @@
 {
-  "description": "Stream an OpenAI Codex completion: resolve a ChatGPT OAuth token from the vault, call the upstream Responses API, and relay AssistantMessageEvent frames to writer_ref.",
+  "description": "Stream an OpenAI Codex completion: resolve a ChatGPT OAuth token from the provider session, call the upstream Responses API, and relay AssistantMessageEvent frames to writer_ref.",
   "function_id": "provider::openai-codex::stream",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -4,14 +4,20 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && node build.mjs"
+    "build": "tsc --noEmit && node build.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "esbuild": "^0.25.0",
-    "typescript": "^5.9.2"
+    "jsdom": "^30.0.1",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.6"
   }
 }

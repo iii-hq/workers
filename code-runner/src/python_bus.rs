@@ -38,6 +38,7 @@ impl GuestBridge for IIIBridge {
     ) -> BoxFuture<'static, Result<Value, String>> {
         let iii = self.iii.clone();
         Box::pin(async move {
+            crate::agent_dispatch::validate_call(&fn_id, &payload)?;
             iii.trigger(TriggerRequest {
                 function_id: fn_id,
                 payload,

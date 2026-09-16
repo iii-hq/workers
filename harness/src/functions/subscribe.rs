@@ -261,21 +261,28 @@ pub async fn invoke(
                 let args = with_caller_session_id(arguments, session_id);
                 trigger::invoke_target(engine, policy, function_id, &args).await
             }
-            internal if internal.starts_with("harness::state::") => {
-                trigger::denied_result(internal)
-            }
-            // Claiming a private state namespace is a control-plane act this
-            // worker performs for ITSELF. Agent calls are dispatched with the
-            // harness's own worker identity, so without this an agent could
-            // launder a claim through us and reserve arbitrary scopes — denying
-            // other workers the public `state::*` API. It could never READ them
-            // (the `harness::state::*` accessors are denied above), so the risk
-            // is denial of service, not exfiltration; deny it anyway.
-            crate::state::CLAIM_NAMESPACE_ID => trigger::denied_result(function_id),
+            internal if agent_call_forbidden(internal) => trigger::denied_result(internal),
             _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
         }
     };
     trigger::cap_result(result, deps.cfg().await.max_result_bytes)
+}
+
+/// Agent calls carry the harness worker's authority. Private state accessors
+/// do not check their caller, so neither those nor credential-management RPCs
+/// may be reached by agents, even with `allow = ["*"]`. Namespace claims are
+/// likewise reserved for the worker itself. Console/operator calls bypass
+/// this agent boundary; ordinary provider and public state calls remain valid.
+fn agent_call_forbidden(function_id: &str) -> bool {
+    function_id == crate::state::CLAIM_NAMESPACE_ID
+        || [
+            "harness::state::",
+            "provider::openai-codex::login::",
+            "provider::openai-codex::auth::",
+            "provider-openai-codex::state::",
+        ]
+        .iter()
+        .any(|prefix| function_id.starts_with(prefix))
 }
 
 fn send_invocation_context(
@@ -1202,6 +1209,18 @@ fn validate_call_target(target: &str, policy: &CompiledPolicy) -> Result<(), Str
             "`{target}` is not a binding target: a binding can wake you (omit `function_id`) or \
              call a plain non-harness function — it never starts an agent. Spawn children \
              directly from a turn and register a wake on what they write."
+        ));
+    }
+    if agent_call_forbidden(target) {
+        return Err(format!(
+            "`{target}` is not available to agents, including through bindings"
+        ));
+    }
+    // Fired targets, conditions, and post-turn validators call the raw engine,
+    // outside `invoke`. A nested registration would bypass this very guard.
+    if matches!(target, REGISTER_TRIGGER_ID | UNREGISTER_TRIGGER_ID) {
+        return Err(format!(
+            "`{target}` requires the harness's agent-call intercept; call it directly from a turn"
         ));
     }
     if !policy.allows(target) {
@@ -2218,6 +2237,191 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         }))
+    }
+
+    const AGENT_FORBIDDEN_CALLS: &[&str] = &[
+        "harness::state::get",
+        "harness::state::list",
+        "harness::state::compare-and-set",
+        "state::claim-namespace",
+        "provider::openai-codex::login::start",
+        "provider::openai-codex::login::poll",
+        "provider::openai-codex::login::cancel",
+        "provider::openai-codex::auth::status",
+        "provider::openai-codex::auth::logout",
+        "provider-openai-codex::state::get",
+        "provider-openai-codex::state::list",
+        "provider-openai-codex::state::compare-and-set",
+        "provider::openai-codex::login::future-operation",
+        "provider::openai-codex::auth::future-operation",
+        "provider-openai-codex::state::future-operation",
+    ];
+
+    fn disconnected_deps() -> Deps {
+        let iii = std::sync::Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:0"));
+        Deps::new(
+            iii.clone(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(
+                crate::config::WorkerConfig::default(),
+            ))),
+            crate::discovery::new_cell(),
+            crate::skills::new_cell(),
+            crate::events::TurnEvents::register(&iii),
+            crate::hooks::HookRegistry::register(&iii),
+        )
+    }
+
+    #[tokio::test]
+    async fn operator_only_calls_are_denied_before_dispatch_even_with_allow_all() {
+        let deps = disconnected_deps();
+        let engine = deps.engine().await;
+        let policy = policy_allowing(&["*"]);
+        for &id in AGENT_FORBIDDEN_CALLS {
+            assert!(
+                policy.allows(id),
+                "the policy must allow {id} for this regression"
+            );
+            // No connected engine: a denial must complete locally, without
+            // waiting for an RPC timeout or relying on the target's own auth.
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                invoke(
+                    &deps,
+                    &engine,
+                    &policy,
+                    id,
+                    &json!({}),
+                    "owner",
+                    false,
+                    None,
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{id} escaped the agent guard"));
+            assert!(result.is_error, "{id} must be denied");
+            assert_eq!(result.details["error"], "policy_denied", "{id}");
+            assert_eq!(result.details["function_id"], id);
+        }
+    }
+
+    #[test]
+    fn operator_only_calls_cannot_be_binding_targets_even_with_allow_all() {
+        let policy = policy_allowing(&["*"]);
+        for &id in AGENT_FORBIDDEN_CALLS {
+            assert!(policy.allows(id));
+            assert!(
+                validate_call_target(id, &policy).is_err(),
+                "{id} must be denied"
+            );
+        }
+    }
+
+    #[test]
+    fn intercepted_engine_controls_cannot_be_binding_targets_even_with_allow_all() {
+        let policy = policy_allowing(&["*"]);
+        for id in [REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID] {
+            assert!(policy.allows(id));
+            assert!(
+                validate_call_target(id, &policy).is_err(),
+                "{id} must be intercepted"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_only_subscription_targets_and_conditions_are_denied() {
+        let deps = disconnected_deps();
+        let policy = policy_allowing(&["*"]);
+        for id in AGENT_FORBIDDEN_CALLS
+            .iter()
+            .copied()
+            .chain([REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID])
+        {
+            for args in [
+                json!({ "trigger_type": "state", "function_id": id }),
+                json!({ "trigger_type": "state", "target": { "function_id": id } }),
+            ] {
+                let req = serde_json::from_value(args).unwrap();
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    resolve_target(&deps, &req, "owner", &policy),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("{id} reached the approval probe"));
+                assert!(
+                    matches!(result, Err(HarnessError::InvalidRequest(_))),
+                    "{id}"
+                );
+            }
+            let conditions = vec![ConditionSpec {
+                function_id: id.into(),
+                config: None,
+            }];
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                authorize_conditions(&deps, &conditions, "owner", &policy),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{id} reached the condition approval probe"));
+            assert!(
+                matches!(result, Err(HarnessError::InvalidRequest(_))),
+                "{id}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_only_post_turn_validators_are_denied_by_the_register_intercept() {
+        let deps = disconnected_deps();
+        let engine = deps.engine().await;
+        let policy = policy_allowing(&["*"]);
+        for id in AGENT_FORBIDDEN_CALLS
+            .iter()
+            .copied()
+            .chain([REGISTER_TRIGGER_ID, UNREGISTER_TRIGGER_ID])
+        {
+            let result = invoke(
+                &deps,
+                &engine,
+                &policy,
+                REGISTER_TRIGGER_ID,
+                &json!({ "trigger_type": crate::hooks::POST_TURN, "function_id": id }),
+                "owner",
+                false,
+                None,
+            )
+            .await;
+            assert!(result.is_error, "{id} must not register a validator");
+            assert!(result.details["error"].as_str().unwrap().contains(id));
+        }
+    }
+
+    #[test]
+    fn ordinary_provider_and_state_binding_targets_remain_allowed() {
+        let policy = policy_allowing(&["*"]);
+        for id in [
+            "provider::openai-codex::stream",
+            "provider::openai-codex::models",
+            "provider::openai::stream",
+            "state::get",
+            "state::list",
+            "state::set",
+            "state::compare-and-set",
+            "other-worker::state::get",
+            "provider-openai::state::get",
+            "provider::openai-codex::login-info",
+            "provider::openai-codex::authenticate",
+            "provider-openai-codex::state-info",
+        ] {
+            assert!(
+                !agent_call_forbidden(id),
+                "{id} must stay directly callable"
+            );
+            assert!(
+                validate_call_target(id, &policy).is_ok(),
+                "{id} must stay callable"
+            );
+        }
     }
 
     /// A fired call runs with WORKER authority outside the turn loop, so the

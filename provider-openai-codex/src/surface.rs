@@ -15,7 +15,7 @@ use llm_router::types::router::{
 
 pub const STREAM_ID: &str = "provider::openai-codex::stream";
 pub const STREAM_DESC: &str = "Stream an OpenAI Codex completion: resolve a ChatGPT OAuth token \
-     from the vault, call the upstream Responses API, and relay AssistantMessageEvent frames to \
+     from the provider session, call the upstream Responses API, and relay AssistantMessageEvent frames to \
      writer_ref.";
 
 pub const ABORT_ID: &str = "provider::openai-codex::abort";
@@ -34,6 +34,19 @@ pub const COUNT_TOKENS_ID: &str = "provider::openai-codex::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
     "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with the \
      tiktoken tokenizers; never runs the model and costs nothing.";
+
+pub const LOGIN_START_ID: &str = "provider::openai-codex::login::start";
+pub const LOGIN_START_DESC: &str = "Start a ChatGPT device-code login. Returns the verification URL and one-time user code; the provider completes and saves the session in the background.";
+pub const LOGIN_POLL_ID: &str = "provider::openai-codex::login::poll";
+pub const LOGIN_POLL_DESC: &str =
+    "Read a device login attempt's status without exposing OAuth tokens.";
+pub const LOGIN_CANCEL_ID: &str = "provider::openai-codex::login::cancel";
+pub const LOGIN_CANCEL_DESC: &str =
+    "Cancel a pending device login. Does not disconnect the current account.";
+pub const AUTH_STATUS_ID: &str = "provider::openai-codex::auth::status";
+pub const AUTH_STATUS_DESC: &str = "Read Codex session status, credential source, account id, and any pending login. Never returns tokens.";
+pub const AUTH_LOGOUT_ID: &str = "provider::openai-codex::auth::logout";
+pub const AUTH_LOGOUT_DESC: &str = "Disconnect this provider, cancel pending login, and persistently disable automatic use of legacy credentials. Does not sign out the Codex CLI.";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
@@ -75,5 +88,22 @@ pub fn catalog() -> Vec<FunctionSpec> {
             COUNT_TOKENS_ID,
             COUNT_TOKENS_DESC,
         ),
+        spec::<crate::session::EmptyRequest, crate::session::LoginStartResponse>(
+            LOGIN_START_ID,
+            LOGIN_START_DESC,
+        ),
+        spec::<crate::session::LoginIdRequest, crate::session::LoginPollResponse>(
+            LOGIN_POLL_ID,
+            LOGIN_POLL_DESC,
+        ),
+        spec::<crate::session::LoginIdRequest, crate::session::Ack>(
+            LOGIN_CANCEL_ID,
+            LOGIN_CANCEL_DESC,
+        ),
+        spec::<crate::session::EmptyRequest, crate::session::AuthStatusResponse>(
+            AUTH_STATUS_ID,
+            AUTH_STATUS_DESC,
+        ),
+        spec::<crate::session::EmptyRequest, crate::session::Ack>(AUTH_LOGOUT_ID, AUTH_LOGOUT_DESC),
     ]
 }

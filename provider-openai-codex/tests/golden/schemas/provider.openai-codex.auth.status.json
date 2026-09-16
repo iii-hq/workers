@@ -1,0 +1,98 @@
+{
+  "description": "Read Codex session status, credential source, account id, and any pending login. Never returns tokens.",
+  "function_id": "provider::openai-codex::auth::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AuthStatus": {
+        "enum": [
+          "signed_out",
+          "authenticated",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "CredentialSource": {
+        "enum": [
+          "managed",
+          "vault",
+          "local"
+        ],
+        "type": "string"
+      },
+      "LoginStartResponse": {
+        "properties": {
+          "expires_at": {
+            "description": "Unix timestamp in seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "interval": {
+            "description": "Seconds between status requests from the UI.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "login_id": {
+            "type": "string"
+          },
+          "user_code": {
+            "type": "string"
+          },
+          "verification_uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "interval",
+          "login_id",
+          "user_code",
+          "verification_uri"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "account_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "login": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/LoginStartResponse"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "source": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CredentialSource"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/AuthStatus"
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "title": "AuthStatusResponse",
+    "type": "object"
+  }
+}

@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 const DESCRIPTION: &str =
-    "OpenAI Codex (ChatGPT subscription) Responses provider worker behind llm-router.";
+    "OpenAI Codex Responses provider with ChatGPT device-code sign-in and automatic session renewal.";
 
 #[derive(Serialize)]
 pub struct ModuleManifest {

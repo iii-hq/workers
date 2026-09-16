@@ -33,9 +33,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 # JWT payload (account id / exp) decode — unsigned, no verification.
 base64 = "0.22"
+httpdate = "1"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["net", "io-util", "test-util"] }
 
 [features]
 default = ["console-ui"]

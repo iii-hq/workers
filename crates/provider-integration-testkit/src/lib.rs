@@ -1,13 +1,16 @@
 //! Hermetic provider contract suite.
 //!
 //! The production engine, router, and provider code run unchanged. Only the
-//! vendor HTTP boundary is replaced with a loopback server. Secrets in this
+//! vendor boundary is replaced with a loopback server or, for Codex login,
+//! an injected OAuth transport and empty legacy source. Secrets in this
 //! crate are fixed dummy values and captured requests are redacted before
 //! rendering diagnostics.
 
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
 mod case;
+#[cfg(all(test, feature = "provider-openai-codex"))]
+mod codex_login;
 mod contract;
 mod protocol;
 mod runtime;

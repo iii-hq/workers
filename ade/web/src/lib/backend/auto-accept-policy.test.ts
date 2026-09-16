@@ -98,6 +98,28 @@ describe('isAutoAcceptable (default policy)', () => {
     expect(isAutoAcceptable('creds::credential::lookup')).toBe(false)
   })
 
+  it.each([
+    'provider::openai-codex::login::start',
+    'provider::openai-codex::login::poll',
+    'provider::openai-codex::login::cancel',
+    'provider::openai-codex::auth::status',
+    'provider::openai-codex::auth::logout',
+  ])('requires an explicit decision for %s', (functionId) => {
+    expect(isAutoAcceptable(functionId)).toBe(false)
+  })
+
+  it.each([
+    'provider::openai-codex::stream',
+    'provider::openai-codex::models',
+    'provider::openai::stream',
+    'state::get',
+    'state::list',
+    'provider::openai-codex::login-info',
+    'provider::other::login::poll',
+  ])('keeps the Codex login rule narrowly scoped for %s', (functionId) => {
+    expect(isAutoAcceptable(functionId)).toBe(true)
+  })
+
   it('fails closed on empty / undefined ids', () => {
     expect(isAutoAcceptable(undefined)).toBe(false)
     expect(isAutoAcceptable('')).toBe(false)

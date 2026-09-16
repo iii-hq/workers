@@ -5,6 +5,56 @@
 use fp::{pipe, util};
 use serde_json::json;
 
+#[tokio::test]
+async fn operator_only_steps_are_rejected_before_any_bus_call() {
+    let iii = iii_sdk::IIIClient::new("ws://127.0.0.1:0");
+    for function in [
+        "provider-openai-codex::state::get",
+        "provider-openai-codex::state::list",
+        "provider-openai-codex::state::compare-and-set",
+        "provider-openai-codex::state::future-operation",
+        "harness::state::get",
+        "state::claim-namespace",
+        "provider::openai-codex::login::start",
+        "provider::openai-codex::login::cancel",
+        "provider::openai-codex::auth::status",
+        "provider::openai-codex::auth::logout",
+    ] {
+        let req = serde_json::from_value(json!({"through": [
+            {"function": "fp::pick", "payload": {"value": {}, "paths": []}},
+            {"function": function, "payload": {
+                "scope": "provider-openai-codex-auth", "key": "session"
+            }},
+            {"function": "state::set", "payload": {"scope": "public", "key": "leaked"}}
+        ]}))
+        .unwrap();
+        let error =
+            tokio::time::timeout(std::time::Duration::from_millis(100), pipe::run(&iii, req))
+                .await
+                .expect("a forbidden pipe must not reach the bus")
+                .expect_err("operator state must never reach a preview or public state");
+        assert!(
+            error.contains(function) && error.contains("not supported"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn public_state_steps_and_similarly_named_functions_remain_valid() {
+    for function in [
+        "state::get",
+        "state::set",
+        "state::compare-and-set",
+        "state::claim-namespace-info",
+        "provider-openai-codex::state-info",
+        "another-worker::state::get",
+    ] {
+        let req = serde_json::from_value(json!({"through": [{"function": function}]})).unwrap();
+        assert!(pipe::validate(&req).is_ok(), "{function}");
+    }
+}
+
 #[test]
 fn transforms_cover_the_lodash_surface() {
     assert_eq!(

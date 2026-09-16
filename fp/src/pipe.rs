@@ -143,6 +143,13 @@ fn is_scoped_step(function_id: &str) -> bool {
 /// exposes fp::pipe while denying shell::* could launder a scope through a
 /// non-harness call; shell-side caller verification is tracked follow-up.
 fn forbidden_step(function_id: &str, approval_gate_running: bool) -> Option<&'static str> {
+    // Private accessors validate their scope, not the caller. A pipe must not
+    // turn an agent's request into a privileged read or namespace claim.
+    if function_id == "state::claim-namespace"
+        || function_id.starts_with("provider-openai-codex::state::")
+    {
+        return Some("operator-only state functions are not supported in a pipe");
+    }
     // Shell control-plane ids sit inside the scoped shell::* prefix but are
     // NOT session tools: config-status is agent-policy hard-denied (it can
     // surface operator paths) and workspace::* is console picker plumbing —

@@ -1,15 +1,12 @@
-//! The `provider::openai-codex::stream` iii function: resolve a fresh OAuth
-//! token from the vault, build a Responses request, and relay
-//! AssistantMessageEvent frames into the router-owned channel. Login + refresh
-//! live in the oauth-openai-codex worker / auth-credentials vault — this
-//! provider only *triggers* a refresh when the token is near expiry.
+//! Resolve the provider session, build a Responses request, and relay frames.
 use crate::config::build_config;
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, native_reasoning_effort, reasoning_effort_for};
 use crate::request::{build_body, build_headers, resolve_cache_routing, BodyArgs};
+use crate::session::AuthManager;
 use crate::sse::synthetic_error_event;
-use crate::upstream::{spawn_upstream, UpstreamArgs};
-use crate::{auth, router_client, state};
+use crate::upstream::{spawn_authenticated_upstream, UpstreamArgs};
+use crate::{router_client, state};
 use futures::future::BoxFuture;
 use iii_sdk::errors::Error;
 use iii_sdk::IIIClient;
@@ -22,18 +19,21 @@ use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{
     CredentialSource, ProviderResolveResponse, ProviderStreamInput, ProviderStreamOutput,
 };
+use std::sync::Arc;
 
 pub fn make_stream(
     iii: IIIClient,
     http: reqwest::Client,
     cache: ScaffoldCache,
     aborts: StreamAborts,
+    auth: Arc<AuthManager>,
 ) -> impl Fn(ProviderStreamInput) -> BoxFuture<'static, Result<ProviderStreamOutput, Error>>
        + Send
        + Sync
        + 'static {
     move |input: ProviderStreamInput| {
         let (iii, http, cache, aborts) = (iii.clone(), http.clone(), cache.clone(), aborts.clone());
+        let auth = auth.clone();
         Box::pin(async move {
             // Register BEFORE the first await: an abort landing while the sink
             // opens must latch, not hit an unknown id. The RAII guard
@@ -44,7 +44,16 @@ pub fn make_stream(
                 .as_ref()
                 .map(|rid| aborts.register(rid));
             let sink = open_sink(&iii, &input.writer_ref).await?;
-            run_stream_call(&iii, http, &cache, abort_reg.as_ref(), input, sink.as_ref()).await;
+            run_stream_call(
+                &iii,
+                http,
+                &cache,
+                abort_reg.as_ref(),
+                input,
+                sink.as_ref(),
+                auth,
+            )
+            .await;
             sink.close();
             Ok(ProviderStreamOutput { ok: true })
         })
@@ -68,14 +77,14 @@ async fn run_stream_call(
     abort_reg: Option<&AbortGuard>,
     input: ProviderStreamInput,
     sink: &dyn FrameSink,
+    auth: Arc<AuthManager>,
 ) {
     let model = input.model.clone(); // router id (e.g. codex/gpt-5.5)
     let mut warnings = Vec::new();
 
     // Token + resolve are cached (ScaffoldCache): zero engine round trips on
-    // the hot path within the TTL. The vault credential lookup below is NOT
-    // cached — the vault refreshes expiring OAuth tokens on its own resolve,
-    // so a cached access token could be served after expiry.
+    // the hot path within the TTL. Session resolution stays fresh and serializes
+    // token rotation independently of the router registration cache.
     let token = cache.load_token(iii, state::STATE_SCOPE).await;
     // Effective settings from the router; tolerate a missing router (defaults).
     // An auth-classified failure drops the cache so the next attempt
@@ -93,12 +102,21 @@ async fn run_stream_call(
         }
     };
 
-    let credential = auth::fetch_fresh_credential(iii).await;
+    let credential = match auth.resolve(None).await {
+        Ok(credential) => credential,
+        Err(e) => {
+            let _ = send_event(
+                sink,
+                &synthetic_error_event(&e.message, &model, e.error_kind()),
+            );
+            return;
+        }
+    };
     let cfg = match build_config(
         &model,
         input.max_output_tokens,
         &resolved,
-        credential.as_ref(),
+        credential.as_ref().map(|c| &c.value),
     ) {
         Ok(c) => c,
         Err(e) => {
@@ -179,7 +197,7 @@ async fn run_stream_call(
     if abort_reg.is_some_and(|g| g.is_fired()) {
         return;
     }
-    let rx = spawn_upstream(
+    let rx = spawn_authenticated_upstream(
         http,
         UpstreamArgs {
             api_url: cfg.api_url.clone(),
@@ -188,14 +206,13 @@ async fn run_stream_call(
             headers,
             warnings,
         },
+        auth,
     );
     let kind = match abort_reg {
         Some(g) => pump_abortable(rx, sink, PING_INTERVAL, g.watch()).await,
         None => pump(rx, sink, PING_INTERVAL).await,
     };
-    // An upstream auth terminal usually means the VAULT token expired (the
-    // existing vault flow handles refresh); invalidating the resolve/token
-    // cache is harmless — the next attempt just re-fetches both.
+    // Invalidate router settings after an authentication terminal as well.
     if kind == Some(ErrorKind::AuthExpired) {
         cache.invalidate();
     }

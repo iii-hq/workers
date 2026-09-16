@@ -1,9 +1,5 @@
-//! Provider-scoped shims over the shared router-protocol client
-//! (`llm_router::provider_scaffold::router_client` — every call binds this
-//! crate's `PROVIDER_ID` and carries the registration token) AND the
-//! `auth-credentials` vault + `oauth-openai-codex` refresh. Credentials come
-//! from the vault, never from the router config: this provider is a dumb token
-//! consumer (login + refresh live out-of-band).
+//! Provider-scoped router shims and optional compatibility with an external
+//! credential vault. Native authentication is owned by `session::AuthManager`.
 use crate::PROVIDER_ID;
 use iii_sdk::engine::EngineFunctions;
 use iii_sdk::errors::Error;
@@ -14,7 +10,6 @@ use llm_router::types::router::ProviderResolveResponse;
 use serde_json::{json, Value};
 
 const AUTH_GET_TOKEN_FN: &str = "auth::get_token";
-const AUTH_SET_TOKEN_FN: &str = "auth::set_token";
 
 fn function_prefix(function_id: &str) -> &str {
     function_id
@@ -49,21 +44,19 @@ fn list_contains_function(raw: &Value, function_id: &str, namespace: &str) -> bo
     })
 }
 
-async fn function_available(iii: &IIIClient, function_id: &str) -> bool {
+async fn function_available(iii: &IIIClient, function_id: &str) -> Result<bool, Error> {
     let prefix = format!("{}::", function_prefix(function_id));
     let raw = call(
         iii,
         EngineFunctions::LIST_FUNCTIONS,
         json!({ "prefix": prefix }),
     )
-    .await;
+    .await?;
     let namespace = iii.namespace().unwrap_or_else(|| "default".into());
-    raw.as_ref()
-        .map(|raw| list_contains_function(raw, function_id, &namespace))
-        .unwrap_or(false)
+    Ok(list_contains_function(&raw, function_id, &namespace))
 }
 
-pub async fn auth_get_token_available(iii: &IIIClient) -> bool {
+pub async fn auth_get_token_available(iii: &IIIClient) -> Result<bool, Error> {
     function_available(iii, AUTH_GET_TOKEN_FN).await
 }
 
@@ -111,36 +104,10 @@ pub async fn get_token_if_available(
     iii: &IIIClient,
     provider: &str,
 ) -> Result<Option<Value>, Error> {
-    if !auth_get_token_available(iii).await {
+    if !auth_get_token_available(iii).await? {
         return Ok(None);
     }
     get_token(iii, provider).await
-}
-
-/// `auth::set_token` — upsert a credential. Used ONLY for the one-time
-/// read-only import from `~/.codex/auth.json`.
-pub async fn set_token(iii: &IIIClient, provider: &str, credential: Value) -> Result<(), Error> {
-    call(
-        iii,
-        "auth::set_token",
-        json!({ "provider": provider, "credential": credential }),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Optional vault import. Returns `Ok(false)` when the vault write function is
-/// not registered.
-pub async fn set_token_if_available(
-    iii: &IIIClient,
-    provider: &str,
-    credential: Value,
-) -> Result<bool, Error> {
-    if !function_available(iii, AUTH_SET_TOKEN_FN).await {
-        return Ok(false);
-    }
-    set_token(iii, provider, credential).await?;
-    Ok(true)
 }
 
 /// `oauth::openai-codex::refresh` — vault/oauth-worker-owned refresh. The
@@ -158,7 +125,7 @@ pub async fn refresh(iii: &IIIClient, provider: &str) -> Result<(), Error> {
 /// Optional OAuth refresh. Returns `Ok(false)` when the refresh worker is not
 /// registered.
 pub async fn refresh_if_available(iii: &IIIClient, provider: &str) -> Result<bool, Error> {
-    if !function_available(iii, crate::auth::REFRESH_FN_ID).await {
+    if !function_available(iii, crate::auth::REFRESH_FN_ID).await? {
         return Ok(false);
     }
     refresh(iii, provider).await?;

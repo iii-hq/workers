@@ -148,6 +148,38 @@ pub(crate) fn test_init_options() -> InitOptions {
     }
 }
 
+pub(crate) fn provider_init_options(provider: &str) -> InitOptions {
+    let mut options = test_init_options();
+    if provider == "openai-codex" {
+        // Private state claims authenticate the worker name, not its function ids.
+        options
+            .metadata
+            .as_mut()
+            .expect("test worker metadata")
+            .name = "provider-openai-codex".into();
+    }
+    options
+}
+
+#[cfg(feature = "provider-openai-codex")]
+pub(crate) async fn wait_for_codex_state(provider: &IIIClient) -> anyhow::Result<()> {
+    use provider_openai_codex::credential_store::{PrivateStateStore, SessionStore};
+    let store = PrivateStateStore::new(provider.clone());
+    // The claim response can precede engine visibility of the dynamic
+    // accessors. Probe through the real store before boot-time discovery.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if store.load().await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .context("Codex private state namespace did not become ready")?;
+    Ok(())
+}
+
 async fn wait_for_engine(url: &str) -> anyhow::Result<()> {
     let probe = register_worker(url, test_init_options());
     let deadline = Instant::now() + Duration::from_secs(20);

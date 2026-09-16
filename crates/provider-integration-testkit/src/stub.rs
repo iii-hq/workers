@@ -144,6 +144,10 @@ impl StubUpstream {
         self.state.requests.lock().expect("requests lock").clear();
     }
 
+    pub(crate) fn requests(&self) -> Vec<CapturedRequest> {
+        self.state.requests.lock().expect("requests lock").clone()
+    }
+
     pub(crate) fn post_requests(&self) -> Vec<CapturedRequest> {
         self.state
             .requests

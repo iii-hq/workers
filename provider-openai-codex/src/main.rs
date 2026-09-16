@@ -1,7 +1,7 @@
-//! `provider-openai` binary entry.
+//! `provider-openai-codex` binary entry.
 //!
-//! The worker keeps no operator settings of its own: credentials, `api_url`,
-//! and `max_tokens` arrive per request from llm-router's resolve step.
+//! `api_url` and `max_tokens` settings arrive from the router. The provider
+//! manages its OAuth session in private state.
 //! `--config` is still accepted per the binary-worker CLI contract (the
 //! engine passes it when an operator sets a config block); keys found there
 //! are warned about instead of silently dropped.
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tracing::warn!(
                 path = %cli.config,
                 "provider-openai-codex takes no file-based config; credentials come from the \
-                 auth-credentials vault (sign in with ChatGPT) — ignoring this file's keys"
+                 provider session (sign in with ChatGPT in the console) — ignoring this file's keys"
             );
         }
     }

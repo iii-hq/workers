@@ -4,13 +4,17 @@
 pub mod auth;
 pub mod config;
 pub mod count_tokens;
+pub mod credential_store;
 pub mod discovery;
 pub mod errors;
+pub mod login;
 pub mod manifest;
+pub mod oauth;
 pub mod reasoning;
 pub mod register;
 pub mod request;
 pub mod router_client;
+pub mod session;
 pub mod sse;
 pub mod state;
 pub mod stream_fn;

@@ -1,10 +1,6 @@
-//! OAuth token helpers. This provider is a *dumb consumer*: login and refresh
-//! live in the `oauth-openai-codex` worker + `auth-credentials` vault. The only
-//! token work here is (a) decoding the unsigned JWT payload for the ChatGPT
-//! account id / expiry, (b) resolving a fresh credential for backend calls,
-//! and (c) an optional one-time, READ-ONLY import of an existing
-//! `~/.codex/auth.json` into the vault (never written back, so the running
-//! `codex` CLI's rotating refresh token is never clobbered).
+//! JWT metadata and read-only compatibility with existing vault/CLI sessions.
+//! New login and token rotation are owned by `session::AuthManager`.
+use crate::session::{CredentialSource, ResolvedCredential, SessionError};
 use crate::{router_client, PROVIDER_ID};
 use base64::Engine as _;
 use iii_sdk::IIIClient;
@@ -57,7 +53,8 @@ pub fn expires_at_from_access_token(token: &str) -> Option<i64> {
 }
 
 /// Token expiry (seconds) from the credential's `expires_at`, else its JWT.
-fn credential_expires_at(cred: &Value) -> Option<i64> {
+pub(crate) fn credential_expires_at(cred: &Value) -> Option<i64> {
+    let cred = cred.get("credential").unwrap_or(cred);
     cred.get("expires_at").and_then(Value::as_i64).or_else(|| {
         cred.get("access_token")
             .and_then(Value::as_str)
@@ -86,7 +83,7 @@ fn codex_auth_path() -> Option<std::path::PathBuf> {
     Some(home.join("auth.json"))
 }
 
-/// Build a vault credential Value from a `~/.codex/auth.json` `tokens` object.
+/// Read the access credential from a CLI login without copying its refresh token.
 fn credential_from_auth_json(root: &Value) -> Option<Value> {
     if root.get("auth_mode").and_then(Value::as_str) != Some("chatgpt") {
         return None;
@@ -103,14 +100,7 @@ fn credential_from_auth_json(root: &Value) -> Option<Value> {
         "provider": PROVIDER_ID,
         "access_token": access_token,
         "provider_extra": { "account_id": account_id },
-        "refresh_fn": REFRESH_FN_ID,
     });
-    if let Some(rt) = tokens.get("refresh_token").and_then(Value::as_str) {
-        cred["refresh_token"] = json!(rt);
-    }
-    if let Some(idt) = tokens.get("id_token").and_then(Value::as_str) {
-        cred["id_token"] = json!(idt);
-    }
     if let Some(exp) = expires_at_from_access_token(access_token) {
         cred["expires_at"] = json!(exp);
     }
@@ -128,82 +118,38 @@ pub fn read_codex_home_credential() -> Option<Value> {
     credential_from_auth_json(&root)
 }
 
-/// Fetch a usable credential for either streaming or model discovery.
-///
-/// The vault is authoritative when present. A near-expiry vault token triggers
-/// the vault-owned refresh. Local development falls back to the Codex CLI's
-/// read-only `auth.json` when no vault credential is available.
-pub async fn fetch_fresh_credential(iii: &IIIClient) -> Option<Value> {
-    if let Some(cred) = router_client::get_token_if_available(iii, PROVIDER_ID)
+/// Legacy credentials are never copied into provider-managed storage. Only the
+/// external vault may rotate its own tokens; the CLI always owns its auth file.
+pub async fn fetch_legacy_credential(
+    iii: &IIIClient,
+) -> Result<Option<ResolvedCredential>, SessionError> {
+    if let Some(mut cred) = router_client::get_token_if_available(iii, PROVIDER_ID)
         .await
-        .ok()
-        .flatten()
+        .map_err(|_| SessionError::storage())?
     {
-        if near_expiry(&cred)
-            && matches!(
-                router_client::refresh_if_available(iii, PROVIDER_ID).await,
-                Ok(true)
-            )
-        {
-            return router_client::get_token_if_available(iii, PROVIDER_ID)
-                .await
-                .ok()
-                .flatten()
-                .or(Some(cred));
+        if near_expiry(&cred) {
+            match router_client::refresh_if_available(iii, PROVIDER_ID).await {
+                Ok(true) => {
+                    cred = router_client::get_token(iii, PROVIDER_ID)
+                        .await
+                        .map_err(|_| SessionError::storage())?
+                        .ok_or_else(SessionError::storage)?;
+                }
+                Ok(false) => {}
+                Err(_) => return Err(SessionError::storage()),
+            }
         }
-        return Some(cred);
+        return Ok(Some(ResolvedCredential {
+            value: cred,
+            source: CredentialSource::Vault,
+        }));
     }
-    if let Some(cred) = read_codex_home_credential() {
-        eprintln!(
-            "[provider-openai-codex] no auth-credentials vault — using local ~/.codex/auth.json (dev fallback)"
-        );
-        return Some(cred);
-    }
-    None
-}
-
-/// One-time, best-effort READ-ONLY import of `~/.codex/auth.json` into the
-/// vault — only when the vault has no credential yet (so a fresher, rotated
-/// vault token is never downgraded). Never writes back to auth.json.
-pub async fn import_codex_home_if_absent(iii: &IIIClient) {
-    if !router_client::auth_get_token_available(iii).await {
-        return;
-    }
-    // Don't clobber a credential the vault already holds.
-    if matches!(
-        router_client::get_token(iii, PROVIDER_ID).await,
-        Ok(Some(_))
-    ) {
-        return;
-    }
-    let Some(path) = codex_auth_path() else {
-        return;
-    };
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return; // no file / unreadable (e.g. sandboxed home) — silent, expected
-    };
-    let Ok(root) = serde_json::from_str::<Value>(&contents) else {
-        eprintln!(
-            "[provider-openai-codex] {} is not valid JSON — skipping import",
-            path.display()
-        );
-        return;
-    };
-    let Some(cred) = credential_from_auth_json(&root) else {
-        eprintln!(
-            "[provider-openai-codex] {} is not a ChatGPT login (auth_mode != chatgpt) — skipping import",
-            path.display()
-        );
-        return;
-    };
-    match router_client::set_token_if_available(iii, PROVIDER_ID, cred).await {
-        Ok(true) => println!(
-            "[provider-openai-codex] imported ChatGPT credential from {} into the vault",
-            path.display()
-        ),
-        Ok(false) => {}
-        Err(e) => eprintln!("[provider-openai-codex] vault import failed ({e})"),
-    }
+    Ok(
+        read_codex_home_credential().map(|value| ResolvedCredential {
+            value,
+            source: CredentialSource::Local,
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -259,6 +205,7 @@ mod tests {
         let cred = credential_from_auth_json(&chatgpt).unwrap();
         assert_eq!(cred["type"], "oauth");
         assert_eq!(cred["provider_extra"]["account_id"], "acc");
-        assert_eq!(cred["refresh_fn"], REFRESH_FN_ID);
+        assert!(cred.get("refresh_token").is_none());
+        assert!(cred.get("id_token").is_none());
     }
 }

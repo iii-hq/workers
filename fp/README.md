@@ -141,3 +141,5 @@ fp::pipe { through: [
   surface — pulling an attachment out of the session and threading it on is
   exactly what a pipe is for. `state::*` is the deliberate exception on the
   write side: persisting the threaded value is the pipe's purpose.
+  `state::claim-namespace` and `provider-openai-codex::state::*` remain
+  operator-only and cannot be pipe steps, even when the pipe itself is approved.

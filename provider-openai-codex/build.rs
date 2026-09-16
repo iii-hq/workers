@@ -13,6 +13,7 @@ fn main() {
 
     for path in [
         "ui/page.tsx",
+        "ui/src",
         "ui/styles.css",
         "ui/build.mjs",
         "ui/package.json",
@@ -43,6 +44,7 @@ fn main() {
     let pnpm = locate_pnpm();
     let install = Command::new(&pnpm)
         .arg("install")
+        .arg("--frozen-lockfile")
         .current_dir(&ui_dir)
         .status()
         .expect("failed to run pnpm install for provider-openai-codex UI");
@@ -65,19 +67,35 @@ fn dist_is_fresh(asset: &Path, ui_dir: &Path) -> bool {
     };
     for source in [
         ui_dir.join("page.tsx"),
+        ui_dir.join("src"),
         ui_dir.join("styles.css"),
         ui_dir.join("build.mjs"),
         ui_dir.join("package.json"),
         ui_dir.join("tsconfig.json"),
         ui_dir.join("../../pnpm-lock.yaml"),
     ] {
-        if let Ok(source_mtime) = source.metadata().and_then(|metadata| metadata.modified()) {
-            if source_mtime > dist_mtime {
-                return false;
-            }
+        if source_is_newer(&source, dist_mtime) {
+            return false;
         }
     }
     true
+}
+
+fn source_is_newer(source: &Path, dist_mtime: std::time::SystemTime) -> bool {
+    let Ok(metadata) = source.metadata() else {
+        return false;
+    };
+    if metadata.modified().is_ok_and(|mtime| mtime > dist_mtime) {
+        return true;
+    }
+    if metadata.is_dir() {
+        let Ok(mut entries) = source.read_dir() else {
+            return true;
+        };
+        return entries
+            .any(|entry| entry.map_or(true, |entry| source_is_newer(&entry.path(), dist_mtime)));
+    }
+    false
 }
 
 fn locate_pnpm() -> String {
@@ -100,4 +118,39 @@ fn locate_pnpm() -> String {
         }
     }
     panic!("pnpm is required to build provider-openai-codex UI");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dist_is_fresh;
+    use std::fs::{self, File};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn nested_typescript_edits_invalidate_built_assets() {
+        let ui = std::env::temp_dir().join(format!("codex-ui-freshness-{}", std::process::id()));
+        fs::create_dir_all(ui.join("src/login")).unwrap();
+        let asset = ui.join("page.js");
+        let source = ui.join("src/login/session.ts");
+        let before = SystemTime::now() - Duration::from_secs(60);
+        let built = before + Duration::from_secs(20);
+        File::create(&source).unwrap().set_modified(before).unwrap();
+        File::open(ui.join("src/login"))
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        File::open(ui.join("src"))
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        File::create(&asset).unwrap().set_modified(built).unwrap();
+        assert!(dist_is_fresh(&asset, &ui));
+
+        File::open(&source)
+            .unwrap()
+            .set_modified(built + Duration::from_secs(1))
+            .unwrap();
+        assert!(!dist_is_fresh(&asset, &ui));
+        fs::remove_dir_all(ui).unwrap();
+    }
 }
