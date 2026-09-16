@@ -139,7 +139,7 @@ export const TOURS = [
       agentStep({
         id: "extensibility",
         ask: {
-          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes). Do not navigate the user away from the current workspace. Do not use screenshots or other UI based checks. Verify via functions. This is an onboarding demo. Open the TODO page for me when it is done.",
+          text: "Using the database worker, build me a TODO list: a CRUD app with an injectable console UI on the browser SDK. Make it reactive with triggers: a database::row-changed trigger on the todo table. Ensure the TODO application is reactive to triggers (ie. database changes) and that emits Triggers when a change happens (ie. register trigger type). Do not navigate the user away from the current workspace. Do not use screenshots or other UI based checks. Verify via functions. This is an onboarding demo. Open the TODO page for me when it is done.",
           label: "Ask the agent",
         },
         title: "Extensibility",
@@ -158,7 +158,7 @@ export const TOURS = [
       agentStep({
         id: "reactivity",
         ask: {
-          text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off by the user, not you the agent.",
+          text: "Add 3 items to the TODO list, and set a Trigger that fires when each one is checked off by the user, not you the agent. Pre-existing triggers should work, and were tested in the last step.",
           label: "Ask the agent",
         },
         title: "Reactivity",
