@@ -30,6 +30,31 @@ pub const MODELS_REFRESH_INTERVAL: Duration = Duration::from_secs(3 * 60);
 /// conservative router metadata rather than a request parameter.
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 128_000;
 const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
+/// GPT-6 Astra's full context window; the backend may expose its 272K pricing
+/// threshold as `context_window` instead of the model's actual limit.
+const GPT_6_ASTRA_CONTEXT_WINDOW: u64 = 1_050_000;
+
+/// Keep the Codex catalog aligned with the provider's curated model metadata.
+fn curated_context_window(slug: &str) -> Option<u64> {
+    if slug == "gpt-6-astra" {
+        return Some(GPT_6_ASTRA_CONTEXT_WINDOW);
+    }
+
+    let suffix = slug.strip_prefix("gpt-6-astra-")?;
+    let bytes = suffix.as_bytes();
+    if bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        Some(GPT_6_ASTRA_CONTEXT_WINDOW)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct CatalogRefreshState {
@@ -143,8 +168,8 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
                 id: format!("codex/{}", model.slug),
                 provider: PROVIDER_ID.to_string(),
                 display_name: Some(format!("{} (Codex)", model.display_name)),
-                context_window: model
-                    .context_window
+                context_window: curated_context_window(&model.slug)
+                    .or(model.context_window)
                     .or(model.max_context_window)
                     .unwrap_or(DEFAULT_CONTEXT_WINDOW),
                 max_output_tokens: model.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
@@ -400,6 +425,14 @@ mod tests {
             hidden.is_empty(),
             "hidden Astra must not reach the router catalog"
         );
+    }
+
+    #[test]
+    fn astra_uses_the_curated_context_window() {
+        for slug in ["gpt-6-astra", "gpt-6-astra-2026-09-15"] {
+            let models = map_models(vec![model(slug, "list", 1)]);
+            assert_eq!(models[0].context_window, 1_050_000);
+        }
     }
 
     #[test]
