@@ -451,6 +451,41 @@ pub async fn inject(
     entry_id: Option<&str>,
     origin: Option<&Value>,
 ) -> Result<StartOutcome, HarnessError> {
+    inject_holding(
+        deps,
+        session_id,
+        message,
+        entry_id,
+        origin,
+        LockHeld::default(),
+    )
+    .await
+}
+
+/// The turn lock a caller already holds, if any. [`crate::locks::SessionLocks`]
+/// is not reentrant: a delivery made FROM a turn's tool phase into that same
+/// session — a registration reconciling its own binding — must say so, or
+/// [`deliver`] re-acquires the lock the caller holds and deadlocks whenever
+/// the message cannot park as a queued row (a turn in `AwaitingFunctions`
+/// resuming a held call). Same contract as the in-turn self-spawn.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LockHeld<'a>(pub Option<&'a str>);
+
+impl LockHeld<'_> {
+    pub fn covers(&self, session_id: &str) -> bool {
+        self.0 == Some(session_id)
+    }
+}
+
+/// [`inject`] from a caller that may already hold the target session's lock.
+pub async fn inject_holding(
+    deps: &Deps,
+    session_id: &str,
+    message: AgentMessage,
+    entry_id: Option<&str>,
+    origin: Option<&Value>,
+    held: LockHeld<'_>,
+) -> Result<StartOutcome, HarnessError> {
     let cfg = deps.cfg().await;
 
     let options = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
@@ -473,7 +508,7 @@ pub async fn inject(
             entry_id,
             origin,
             lineage: &TurnLineage::default(),
-            caller_holds_session_lock: false,
+            caller_holds_session_lock: held.covers(session_id),
             skills_explicit: false,
         },
     )

@@ -133,6 +133,13 @@ pub struct SubscribeResponse {
     /// exist). Read it and fix the wiring if it applies.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// `true` when the registration itself already delivered the binding's
+    /// event: the watched state key held a value at registration (delivered
+    /// as `replayed: true`), or a fire landed before this response. A
+    /// one-shot binding is then retired and the session is NOT parked on it.
+    /// Absent while the binding is armed and nothing has been delivered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivered: Option<bool>,
 }
 
 /// Agent-facing unsubscribe contract. The id is the harness subscription id
@@ -249,7 +256,15 @@ pub async fn invoke(
     }
     match function_id {
         REGISTER_TRIGGER_ID => {
-            intercept_register(deps, arguments, session_id, caller, policy).await
+            intercept_register(
+                deps,
+                arguments,
+                session_id,
+                caller,
+                policy,
+                caller_holds_session_lock,
+            )
+            .await
         }
         UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
         crate::functions::triggers_list::TRIGGERS_LIST_ID
@@ -448,18 +463,22 @@ fn watched_state_key(req: &SubscribeRequest) -> Option<(&str, &str)> {
 fn prewritten_key_note(scope: &str, key: &str) -> String {
     format!(
         "warning: state {scope}/{key} ALREADY holds a value — state events do not replay, so \
-         writes from before this registration never fire this binding, and a condition counting \
-         arrivals (state::barrier) starts without them. If earlier writers matter, arm the \
-         binding BEFORE starting them, or reconcile the gate against what is already written."
+         writes from before this registration never fire this STANDING binding (only a \
+         one-shot binding is reconciled against the existing value at registration), and a \
+         condition counting arrivals (state::barrier) starts without them. If earlier writers \
+         matter, arm the binding BEFORE starting them, or reconcile the gate against what is \
+         already written."
     )
 }
 
-/// Advisory for a state binding on a key somebody already wrote. Discovery
-/// run 2: the finish gate — a barrier over three suppliers — was registered
-/// mid-setup, AFTER the first supplier's done event had fired; it starved at
-/// 2/3 forever and only the deadline path saved the run. The stale value is
-/// detectable at registration, so say so. Fail-open: a lookup error produces
-/// no note.
+/// Advisory for a STANDING state binding on a key somebody already wrote.
+/// Discovery run 2: the finish gate — a barrier over three suppliers — was
+/// registered mid-setup, AFTER the first supplier's done event had fired; it
+/// starved at 2/3 forever and only the deadline path saved the run. The stale
+/// value is detectable at registration, so say so. A one-shot binding no
+/// longer gets this warning: it is RECONCILED instead (the value is delivered
+/// — [`crate::bindings::state_wake`]) and told so by [`reconciliation_note`].
+/// Fail-open: a lookup error produces no note.
 async fn prewritten_key_advisory(deps: &Deps, req: &SubscribeRequest) -> Option<String> {
     let (scope, key) = watched_state_key(req)?;
     let timeout_ms = deps.cfg().await.session_timeout_ms;
@@ -510,13 +529,23 @@ async fn intercept_register(
     session_id: &str,
     caller: Option<CallerModel<'_>>,
     policy: &CompiledPolicy,
+    caller_holds_session_lock: bool,
 ) -> ResultData {
     let req: SubscribeRequest = match serde_json::from_value(args.clone()) {
         Ok(r) => r,
         Err(e) => return error_result(format!("invalid subscribe arguments: {e}")),
     };
 
-    match handle(deps, req, session_id, caller, policy).await {
+    match handle(
+        deps,
+        req,
+        session_id,
+        caller,
+        policy,
+        caller_holds_session_lock,
+    )
+    .await
+    {
         Ok(resp) => ok_result(&resp),
         Err(e) => error_result(e.to_string()),
     }
@@ -574,6 +603,7 @@ async fn handle(
     session_id: &str,
     caller: Option<CallerModel<'_>>,
     policy: &CompiledPolicy,
+    caller_holds_session_lock: bool,
 ) -> Result<SubscribeResponse, HarnessError> {
     // The one harness-internal type an agent MAY bind: a post-turn validator
     // for ITS OWN session. The session scope is force-stamped, so an agent
@@ -643,9 +673,10 @@ async fn handle(
             subscription_id: existing,
             once,
             note: None,
+            delivered: None,
         });
     }
-    let mut binding = Binding {
+    let binding = Binding {
         id: format!("sub_{}", uuid::Uuid::new_v4().simple()),
         trigger_id: None,
         owner: OwnerScope {
@@ -668,51 +699,66 @@ async fn handle(
         fires: 0,
         created_at: crate::types::message::AgentMessage::now_ms(),
     };
-    // Durable BEFORE the engine knows about it: a fire that arrives before the
-    // engine's answer must still resolve its record. The reservation and
-    // per-owner capacity check are one CAS-backed operation; a deadline that
-    // lapsed since resolution surfaces as `ReserveOutcome::Exhausted`.
-    require_reserved(store.reserve(&binding).await?)?;
-
-    let trigger_id =
-        match register_delivery_trigger(deps, &req.trigger_type, &req.config, &binding.id) {
-            Ok(id) => id,
-            Err(reason) => {
-                let _ = store.delete(&binding.id).await;
-                return Err(HarnessError::Dependency(format!(
-                    "delivery trigger registration `{}` failed: {reason}",
-                    req.trigger_type
-                )));
-            }
-        };
-    match store.attach_trigger_id(&binding, &trigger_id).await {
-        Ok(crate::bindings::AttachOutcome::Attached(current)) => {
-            binding = *current;
-        }
-        Ok(crate::bindings::AttachOutcome::Gone) => {
-            // A fast one-shot fired and retired before registration
-            // returned. Its provider id still needs explicit teardown.
+    let binding_id = binding.id.clone();
+    let armed = arm_binding(
+        &store,
+        binding,
+        || register_delivery_trigger(deps, &req.trigger_type, &req.config, &binding_id),
+        |trigger_id| async move {
             unregister_engine_trigger(deps, &trigger_id).await;
-        }
-        Err(error) => {
-            // The caller must never observe a failed registration
-            // while its provider trigger remains live.
-            unregister_engine_trigger(deps, &trigger_id).await;
-            let _ = store.delete(&binding.id).await;
-            return Err(error);
-        }
-    }
+        },
+    )
+    .await
+    .map_err(|e| e.for_registration(&req.trigger_type))?;
+    let (binding, consumed) = match armed {
+        ArmOutcome::Armed(binding) => (binding, false),
+        ArmOutcome::Consumed(binding) => (binding, true),
+    };
 
     // A preflight snapshot cannot close the provider's asynchronous activation
     // window. Recover a missed terminal event now and through the durable sweep.
     crate::bindings::compose::schedule(deps, &binding);
 
+    // The same window for a keyed state binding: the key may already hold
+    // the value it waits for (written before this registration, or between
+    // the preflight read and the provider's activation). Reconcile NOW,
+    // through the delivery hop, and say what happened — the old advisory
+    // only warned and left the binding armed on a value that would never
+    // fire it (Linkly `link-build-e2e`, `state_wake` module doc).
+    // The tool phase holds this session's turn lock (`turn_loop`, and the
+    // held-call resume in `deferred`); the hop must know, or its wake
+    // re-acquires the lock whenever it cannot park as a queued row.
+    let held = if caller_holds_session_lock {
+        crate::functions::send::LockHeld(Some(session_id))
+    } else {
+        crate::functions::send::LockHeld::default()
+    };
+    let reconciled = if consumed {
+        Reconciled::ConsumedBeforeAttach
+    } else {
+        Reconciled::CatchUp(
+            crate::bindings::state_wake::catch_up_holding(deps, &binding, held).await,
+        )
+    };
+    let delivered = reconciled.delivered();
+
     let notes: Vec<String> = [
         provider_presence_note(deps, &req.trigger_type).await,
-        prewritten_key_advisory(deps, &req).await,
+        reconciliation_note(&req, &reconciled),
+        // A standing keyed binding is not reconciled; the warning still
+        // applies to it in full.
+        match reconciled {
+            Reconciled::CatchUp(crate::bindings::state_wake::CatchUp::NotApplicable) => {
+                prewritten_key_advisory(deps, &req).await
+            }
+            _ => None,
+        },
         standing_binding_advisory(&req, once),
         state_catchall_advisory(&req),
-        armed_wake_advisory(&req, once),
+        // Delivered means retired: nothing is parked, so do not say it is.
+        (!delivered)
+            .then(|| armed_wake_advisory(&req, once))
+            .flatten(),
     ]
     .into_iter()
     .flatten()
@@ -722,7 +768,226 @@ async fn handle(
         subscription_id: binding.id,
         once,
         note: compose_note(notes),
+        delivered: delivered.then_some(true),
     })
+}
+
+/// The store operations the arm sequence needs — a trait so the rollback
+/// guarantee (no durable record outlives a failed registration) is testable
+/// without an engine. [`crate::bindings::BindingStore`] is the real one.
+#[async_trait::async_trait]
+pub(crate) trait ArmStore {
+    async fn reserve(&self, binding: &Binding) -> Result<ReserveOutcome, HarnessError>;
+    async fn attach_trigger_id(
+        &self,
+        binding: &Binding,
+        trigger_id: &str,
+    ) -> Result<crate::bindings::AttachOutcome, HarnessError>;
+    async fn delete(&self, id: &str) -> Result<(), HarnessError>;
+}
+
+#[async_trait::async_trait]
+impl ArmStore for crate::bindings::BindingStore {
+    async fn reserve(&self, binding: &Binding) -> Result<ReserveOutcome, HarnessError> {
+        crate::bindings::BindingStore::reserve(self, binding).await
+    }
+    async fn attach_trigger_id(
+        &self,
+        binding: &Binding,
+        trigger_id: &str,
+    ) -> Result<crate::bindings::AttachOutcome, HarnessError> {
+        crate::bindings::BindingStore::attach_trigger_id(self, binding, trigger_id).await
+    }
+    async fn delete(&self, id: &str) -> Result<(), HarnessError> {
+        crate::bindings::BindingStore::delete(self, id).await
+    }
+}
+
+/// How the arm sequence left the binding.
+#[derive(Debug)]
+enum ArmOutcome {
+    /// Reserved, registered, and carrying its engine trigger id.
+    Armed(Binding),
+    /// A fast fire consumed and retired the record before the trigger id
+    /// could be attached — the binding delivered already. The id is still
+    /// the caller's handle; the record is gone.
+    Consumed(Binding),
+}
+
+/// Why the arm sequence failed, with the state it left behind.
+#[derive(Debug)]
+enum ArmError {
+    /// The reservation itself refused (capacity, lapsed deadline) or the
+    /// store errored; nothing was written.
+    Reserve(HarnessError),
+    /// The engine trigger could not be registered. `orphan` names a reserved
+    /// record the rollback could NOT remove — an armed-looking binding that
+    /// nothing will ever fire, which the caller must know about.
+    Register {
+        reason: String,
+        orphan: Option<(String, HarnessError)>,
+    },
+    /// The trigger registered but the id could not be recorded; the trigger
+    /// was torn down and the record removed (or `orphan` names the leftover).
+    Attach {
+        error: HarnessError,
+        orphan: Option<(String, HarnessError)>,
+    },
+}
+
+impl ArmError {
+    fn for_registration(self, trigger_type: &str) -> HarnessError {
+        fn leftover(orphan: Option<(String, HarnessError)>) -> String {
+            match orphan {
+                Some((id, e)) => format!(
+                    "; the reserved binding record {id} could not be rolled back ({e}) — \
+                     unregister it explicitly, it cannot fire"
+                ),
+                None => String::new(),
+            }
+        }
+        match self {
+            ArmError::Reserve(e) => e,
+            ArmError::Register { reason, orphan } => HarnessError::Dependency(format!(
+                "delivery trigger registration `{trigger_type}` failed: {reason}{}",
+                leftover(orphan)
+            )),
+            ArmError::Attach { error, orphan } => match orphan {
+                None => error,
+                Some(_) => HarnessError::State(format!("{error}{}", leftover(orphan))),
+            },
+        }
+    }
+}
+
+/// Reserve the durable record, register ONE engine trigger for it, and
+/// attach the trigger id. Durable BEFORE the engine knows about it: a fire
+/// that arrives before the engine's answer must still resolve its record.
+/// The reservation and per-owner capacity check are one CAS-backed
+/// operation; a deadline that lapsed since resolution surfaces as
+/// `ReserveOutcome::Exhausted`. On any failure after the reservation the
+/// record is rolled back and the trigger (if any) torn down, so the caller
+/// never observes a failed registration with a live trigger or an armed
+/// record behind it.
+async fn arm_binding<S, R, U, UF>(
+    store: &S,
+    binding: Binding,
+    register: R,
+    unregister: U,
+) -> Result<ArmOutcome, ArmError>
+where
+    S: ArmStore,
+    R: FnOnce() -> Result<String, String>,
+    U: Fn(String) -> UF,
+    UF: std::future::Future<Output = ()>,
+{
+    let reserved = store.reserve(&binding).await.map_err(ArmError::Reserve)?;
+    require_reserved(reserved).map_err(ArmError::Reserve)?;
+
+    let trigger_id = match register() {
+        Ok(id) => id,
+        Err(reason) => {
+            let orphan = rollback(store, &binding).await;
+            return Err(ArmError::Register { reason, orphan });
+        }
+    };
+    match store.attach_trigger_id(&binding, &trigger_id).await {
+        Ok(crate::bindings::AttachOutcome::Attached(current)) => Ok(ArmOutcome::Armed(*current)),
+        Ok(crate::bindings::AttachOutcome::Gone) => {
+            // A fast one-shot fired and retired before registration
+            // returned. Its provider id still needs explicit teardown.
+            unregister(trigger_id).await;
+            Ok(ArmOutcome::Consumed(binding))
+        }
+        Err(error) => {
+            // The caller must never observe a failed registration
+            // while its provider trigger remains live.
+            unregister(trigger_id).await;
+            let orphan = rollback(store, &binding).await;
+            Err(ArmError::Attach { error, orphan })
+        }
+    }
+}
+
+/// Remove the reserved record after a failed arm. A record that survives
+/// here looks armed to `session_expects_wake` and parks its owner on a
+/// trigger that does not exist, so a failed rollback is returned by name —
+/// logged here, surfaced to the caller by [`ArmError::for_registration`].
+async fn rollback<S: ArmStore>(store: &S, binding: &Binding) -> Option<(String, HarnessError)> {
+    match store.delete(&binding.id).await {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::error!(
+                binding = %binding.id,
+                owner = %binding.owner.session_id,
+                error = %e,
+                "reserved binding could not be rolled back after a failed registration"
+            );
+            Some((binding.id.clone(), e))
+        }
+    }
+}
+
+/// What registration found out about the binding's first event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Reconciled {
+    /// A live fire consumed the one-shot before its trigger id was attached.
+    ConsumedBeforeAttach,
+    CatchUp(crate::bindings::state_wake::CatchUp),
+}
+
+impl Reconciled {
+    fn delivered(&self) -> bool {
+        match self {
+            Reconciled::ConsumedBeforeAttach => true,
+            Reconciled::CatchUp(outcome) => outcome.delivered(),
+        }
+    }
+}
+
+/// Say what the reconciliation did, in the registration response — the
+/// outcome is decided by the time the response is built, so the registrant
+/// never has to infer it. `None` when there is nothing to report: the key was
+/// absent (the live trigger owns the wake) or the shape is not reconciled.
+fn reconciliation_note(req: &SubscribeRequest, reconciled: &Reconciled) -> Option<String> {
+    use crate::bindings::state_wake::CatchUp;
+    let outcome = match reconciled {
+        Reconciled::ConsumedBeforeAttach => {
+            return Some(
+                "note: this one-shot binding ALREADY fired and retired before registration \
+                 returned — its event is delivered (queued into this session if a turn is \
+                 running). Nothing is parked on it; do not wait for it."
+                    .to_string(),
+            );
+        }
+        Reconciled::CatchUp(outcome) => outcome,
+    };
+    let (scope, key) = watched_state_key(req)?;
+    match outcome {
+        CatchUp::NotApplicable | CatchUp::Absent => None,
+        CatchUp::Delivered => Some(format!(
+            "note: state {scope}/{key} ALREADY held a value at registration — that value was \
+             delivered NOW as this binding's event (`replayed: true`; `old_value` is \
+             unknowable) and the one-shot binding is retired. This session is NOT parked on \
+             it: the notification is already in this session (queued if a turn is running). \
+             If you meant to wait for a LATER write to that key, arm the binding BEFORE \
+             starting the writer, or watch a key the writer has not written yet."
+        )),
+        CatchUp::Stopped { gate, reason } => Some(format!(
+            "note: state {scope}/{key} ALREADY held a value at registration — it was offered \
+             as this binding's event NOW, and the delivery stopped at `{gate}`: {reason}. A \
+             condition `skip` leaves the binding armed with that arrival counted; a lost \
+             lifecycle claim means a concurrent live fire delivered it already. Check \
+             `harness::status` → armed_wakes rather than assuming either."
+        )),
+        CatchUp::Failed(error) => Some(format!(
+            "warning: state {scope}/{key} could not be reconciled at registration ({error}). \
+             If that key already holds a value, this binding will NOT fire on it by itself — \
+             the binding sweep re-checks every {}s and delivers the value then; read the key \
+             now if you cannot wait.",
+            crate::bindings::expiry::sweep_interval_ms() / 1_000
+        )),
+    }
 }
 
 fn validate_lifecycle(lifecycle: Option<&LifecycleRequest>) -> Result<(), HarnessError> {
@@ -1147,6 +1412,7 @@ async fn register_post_turn_hook(
             "post-turn validator bound to THIS session only ({session_id}); unregister with this \
              id when the goal is met."
         )),
+        delivered: None,
     })
 }
 
@@ -1484,6 +1750,7 @@ fn error_result(msg: String) -> ResultData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::state_wake::CatchUp;
 
     /// An ordinary delivery trigger rides the worker channel with both
     /// namespace fields unset. The SDK then stamps this worker's namespace on
@@ -1853,6 +2120,306 @@ mod tests {
         assert!(note.starts_with("registration SUCCEEDED"), "got: {note}");
         assert!(note.contains("rather than starting over"), "got: {note}");
         assert!(note.contains("warning: x.") && note.contains("note: y."));
+    }
+
+    /// An in-memory [`ArmStore`]: the durable record map plus the failure
+    /// switches the arm sequence has to survive, so its rollback guarantee
+    /// (no record outlives a failed registration) is checkable without an
+    /// engine.
+    #[derive(Default)]
+    struct MemStore {
+        records: std::sync::Mutex<std::collections::HashMap<String, Binding>>,
+        attach_gone: bool,
+        attach_err: bool,
+        delete_err: bool,
+    }
+
+    impl MemStore {
+        fn ids(&self) -> Vec<String> {
+            self.records.lock().unwrap().keys().cloned().collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ArmStore for MemStore {
+        async fn reserve(&self, binding: &Binding) -> Result<ReserveOutcome, HarnessError> {
+            self.records
+                .lock()
+                .unwrap()
+                .insert(binding.id.clone(), binding.clone());
+            Ok(ReserveOutcome::Reserved)
+        }
+        async fn attach_trigger_id(
+            &self,
+            binding: &Binding,
+            trigger_id: &str,
+        ) -> Result<crate::bindings::AttachOutcome, HarnessError> {
+            if self.attach_err {
+                return Err(HarnessError::State("attach boom".into()));
+            }
+            let mut records = self.records.lock().unwrap();
+            if self.attach_gone {
+                // A fast fire claimed and retired the record already.
+                records.remove(&binding.id);
+                return Ok(crate::bindings::AttachOutcome::Gone);
+            }
+            let mut next = binding.clone();
+            next.trigger_id = Some(trigger_id.to_string());
+            records.insert(binding.id.clone(), next.clone());
+            Ok(crate::bindings::AttachOutcome::Attached(Box::new(next)))
+        }
+        async fn delete(&self, id: &str) -> Result<(), HarnessError> {
+            if self.delete_err {
+                return Err(HarnessError::State("delete boom".into()));
+            }
+            self.records.lock().unwrap().remove(id);
+            Ok(())
+        }
+    }
+
+    fn arm_wake() -> Binding {
+        Binding {
+            id: "sub_arm".into(),
+            trigger_id: None,
+            owner: OwnerScope {
+                session_id: "s1".into(),
+                root_session_id: None,
+            },
+            target: BindingTarget::new(crate::functions::SEND_ID),
+            conditions: Vec::new(),
+            lifecycle: Lifecycle {
+                once: true,
+                max_fires: None,
+                expires_at: None,
+            },
+            capability: None,
+            causation: Causation::default(),
+            dedup_key: Some(json!({
+                "trigger_type": "state",
+                "config": { "scope": "run", "key": "b" },
+            })),
+            fires: 0,
+            created_at: 0,
+        }
+    }
+
+    /// Run the arm sequence against a [`MemStore`], recording every trigger
+    /// id handed to `unregister`.
+    async fn arm(
+        store: &MemStore,
+        register: Result<&str, &str>,
+    ) -> (Result<ArmOutcome, ArmError>, Vec<String>) {
+        let unregistered = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = unregistered.clone();
+        let outcome = arm_binding(
+            store,
+            arm_wake(),
+            || register.map(str::to_string).map_err(str::to_string),
+            move |id| {
+                let log = log.clone();
+                async move { log.lock().unwrap().push(id) }
+            },
+        )
+        .await;
+        let unregistered = unregistered.lock().unwrap().clone();
+        (outcome, unregistered)
+    }
+
+    /// The reservation is durable BEFORE the engine trigger exists. When the
+    /// trigger cannot be registered, that record must not survive: an
+    /// unfired record with no trigger looks armed to `session_expects_wake`
+    /// and parks its owner on a wake nothing can ever fire.
+    #[tokio::test]
+    async fn a_failed_trigger_registration_leaves_no_durable_record() {
+        let store = MemStore::default();
+        let (outcome, unregistered) = arm(&store, Err("channel closed")).await;
+        let error = match outcome {
+            Err(error @ ArmError::Register { orphan: None, .. }) => error,
+            other => panic!("expected a clean registration failure, got {other:?}"),
+        };
+        assert!(
+            store.ids().is_empty(),
+            "the reserved record must be rolled back"
+        );
+        assert!(
+            unregistered.is_empty(),
+            "nothing was registered, nothing to tear down"
+        );
+        let message = error.for_registration("state").to_string();
+        assert!(
+            message.contains("delivery trigger registration `state` failed: channel closed"),
+            "got: {message}"
+        );
+        assert!(
+            !message.contains("rolled back"),
+            "no orphan, no orphan talk: {message}"
+        );
+    }
+
+    /// A rollback that itself fails must be NAMED in the error, not swallowed
+    /// behind `let _ =`: the caller is the only one who can unregister the
+    /// leftover, and it cannot know to unless told.
+    #[tokio::test]
+    async fn a_failed_rollback_is_named_in_the_registration_error() {
+        let store = MemStore {
+            delete_err: true,
+            ..Default::default()
+        };
+        let (outcome, _) = arm(&store, Err("channel closed")).await;
+        let error = match outcome {
+            Err(
+                error @ ArmError::Register {
+                    orphan: Some(_), ..
+                },
+            ) => error,
+            other => panic!("expected an orphaned registration failure, got {other:?}"),
+        };
+        let message = error.for_registration("state").to_string();
+        assert!(message.contains("channel closed"), "got: {message}");
+        assert!(
+            message.contains("binding record sub_arm could not be rolled back"),
+            "the leftover must be named: {message}"
+        );
+        assert!(
+            message.contains("unregister it explicitly"),
+            "got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_registered_binding_carries_its_trigger_id_durably() {
+        let store = MemStore::default();
+        let (outcome, unregistered) = arm(&store, Ok("sdk:sub_arm")).await;
+        let binding = match outcome {
+            Ok(ArmOutcome::Armed(binding)) => binding,
+            other => panic!("expected an armed binding, got {other:?}"),
+        };
+        assert_eq!(binding.trigger_id.as_deref(), Some("sdk:sub_arm"));
+        assert_eq!(
+            store.records.lock().unwrap()["sub_arm"]
+                .trigger_id
+                .as_deref(),
+            Some("sdk:sub_arm"),
+            "the record must carry the id for restart replay"
+        );
+        assert!(unregistered.is_empty());
+    }
+
+    /// A fast one-shot fire can claim and retire the record before the id is
+    /// attached. That is a DELIVERY, not a failure: the caller gets its id
+    /// back flagged as consumed, and the now-pointless engine trigger is torn
+    /// down so it cannot fire into a missing record.
+    #[tokio::test]
+    async fn a_fire_that_retired_the_record_before_attach_is_reported_consumed() {
+        let store = MemStore {
+            attach_gone: true,
+            ..Default::default()
+        };
+        let (outcome, unregistered) = arm(&store, Ok("sdk:sub_arm")).await;
+        assert!(
+            matches!(outcome, Ok(ArmOutcome::Consumed(ref b)) if b.id == "sub_arm"),
+            "got {outcome:?}"
+        );
+        assert_eq!(unregistered, vec!["sdk:sub_arm".to_string()]);
+        assert!(store.ids().is_empty());
+        let reconciled = Reconciled::ConsumedBeforeAttach;
+        assert!(reconciled.delivered());
+        let note = reconciliation_note(&keyed_once_request(), &reconciled).unwrap();
+        assert!(note.contains("ALREADY fired and retired"), "got: {note}");
+        assert!(note.contains("Nothing is parked"), "got: {note}");
+    }
+
+    /// A failed attach tears down BOTH sides: the caller must never observe a
+    /// failed registration with a live trigger or an armed record behind it.
+    #[tokio::test]
+    async fn a_failed_attach_tears_down_the_trigger_and_the_record() {
+        let store = MemStore {
+            attach_err: true,
+            ..Default::default()
+        };
+        let (outcome, unregistered) = arm(&store, Ok("sdk:sub_arm")).await;
+        assert!(
+            matches!(outcome, Err(ArmError::Attach { orphan: None, .. })),
+            "got {outcome:?}"
+        );
+        assert_eq!(unregistered, vec!["sdk:sub_arm".to_string()]);
+        assert!(store.ids().is_empty());
+    }
+
+    fn keyed_once_request() -> SubscribeRequest {
+        serde_json::from_value(json!({
+            "trigger_type": "state",
+            "config": { "scope": "link-build-e2e", "key": "b" },
+            "once": true
+        }))
+        .unwrap()
+    }
+
+    /// The Linkly response, after: the registration SAYS the value was
+    /// delivered — and the "stays parked" advisory is withheld, because it
+    /// would be false. Every other catch-up outcome is named the same way;
+    /// only "nothing happened" (absent key, unreconciled shape) is silent.
+    #[test]
+    fn the_registration_response_names_the_catch_up_outcome() {
+        let req = keyed_once_request();
+        let delivered = Reconciled::CatchUp(CatchUp::Delivered);
+        assert!(delivered.delivered());
+        let note = reconciliation_note(&req, &delivered).unwrap();
+        for needle in [
+            "link-build-e2e/b ALREADY held a value",
+            "delivered NOW",
+            "replayed: true",
+            "NOT parked",
+            "BEFORE starting the writer",
+        ] {
+            assert!(note.contains(needle), "missing {needle:?} in: {note}");
+        }
+        assert!(
+            !note.contains("do not replay"),
+            "the pre-fix warning must not survive a delivery: {note}"
+        );
+
+        let stopped = Reconciled::CatchUp(CatchUp::Stopped {
+            gate: "condition:state::barrier".into(),
+            reason: "1/2 arrived".into(),
+        });
+        assert!(!stopped.delivered());
+        let note = reconciliation_note(&req, &stopped).unwrap();
+        assert!(
+            note.contains("stopped at `condition:state::barrier`: 1/2 arrived"),
+            "got: {note}"
+        );
+        assert!(note.contains("armed_wakes"), "got: {note}");
+
+        let failed = Reconciled::CatchUp(CatchUp::Failed("state worker down".into()));
+        assert!(!failed.delivered());
+        let note = reconciliation_note(&req, &failed).unwrap();
+        assert!(
+            note.starts_with("warning:"),
+            "a failed read is a warning: {note}"
+        );
+        assert!(note.contains("state worker down"), "got: {note}");
+        assert!(
+            note.contains("sweep re-checks every"),
+            "the retry path is named: {note}"
+        );
+
+        for silent in [CatchUp::Absent, CatchUp::NotApplicable] {
+            let reconciled = Reconciled::CatchUp(silent);
+            assert!(!reconciled.delivered());
+            assert_eq!(reconciliation_note(&req, &reconciled), None);
+        }
+
+        // A non-state shape has no key to talk about, whatever the outcome.
+        let cron: SubscribeRequest = serde_json::from_value(json!({
+            "trigger_type": "cron",
+            "config": { "expression": "0 * * * * *" }
+        }))
+        .unwrap();
+        assert_eq!(
+            reconciliation_note(&cron, &Reconciled::CatchUp(CatchUp::Delivered)),
+            None
+        );
     }
 
     /// The barrier-armed-late shape: a keyed state watch is checkable for a

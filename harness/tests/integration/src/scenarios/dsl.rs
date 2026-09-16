@@ -154,6 +154,27 @@ impl Scenario {
     ) -> Self {
         self.probe_actions.push(crate::fixtures::ProbeAction {
             after_turns,
+            count_parked: false,
+            after_target_calls: None,
+            function_id: function_id.to_string(),
+            payload,
+        });
+        self
+    }
+
+    /// Like [`Self::probe_after`], but a PARKED completion (the turn finished
+    /// with an armed once-wake, `terminal: false`) counts too. This is the
+    /// only way to fire an external write deterministically AFTER a session
+    /// has parked on a wake: the arm turn never goes terminal by itself.
+    pub(super) fn probe_after_completion(
+        mut self,
+        after_completions: usize,
+        function_id: &str,
+        payload: serde_json::Value,
+    ) -> Self {
+        self.probe_actions.push(crate::fixtures::ProbeAction {
+            after_turns: after_completions,
+            count_parked: true,
             after_target_calls: None,
             function_id: function_id.to_string(),
             payload,

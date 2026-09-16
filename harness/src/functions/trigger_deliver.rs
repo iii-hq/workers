@@ -30,6 +30,7 @@ use serde_json::{json, Value};
 use crate::bindings::Binding;
 use crate::conditions::{self, Skip};
 use crate::deps::Deps;
+use crate::functions::send::LockHeld;
 use crate::policy::CompiledPolicy;
 use crate::subscriptions::fired;
 use crate::surface::schema_value;
@@ -143,6 +144,20 @@ pub async fn handle(
     event: Value,
     metadata: Option<Value>,
 ) -> Result<DeliverResult, crate::error::HarnessError> {
+    handle_holding(deps, event, metadata, LockHeld::default()).await
+}
+
+/// [`handle`] for a caller that already holds a session's turn lock — the
+/// registration-time state catch-up runs inside the registering turn's tool
+/// phase. Every injection the hop can make (the wake, the claim-failure and
+/// condition-failure notices, the expiry notice) honours it, so none can
+/// re-acquire the lock the caller holds.
+pub async fn handle_holding(
+    deps: &Deps,
+    event: Value,
+    metadata: Option<Value>,
+    held: LockHeld<'_>,
+) -> Result<DeliverResult, crate::error::HarnessError> {
     let Some(meta) = metadata.and_then(|m| serde_json::from_value::<DeliverMetadata>(m).ok())
     else {
         tracing::warn!("{DELIVER_ID}: fire without a `__binding` key; dropping");
@@ -201,6 +216,7 @@ pub async fn handle(
             },
             retirement_reason,
             retired,
+            held,
         )
         .await);
     }
@@ -211,7 +227,7 @@ pub async fn handle(
             // A skipped fire does NOT consume the lifecycle: a barrier that
             // answers "not yet" ten times still gets its one delivery.
             let e = json!({ "skipped": skip.reason });
-            return Ok(record_stop(deps, &binding, &e, skip, None).await);
+            return Ok(record_stop(deps, &binding, &e, skip, None, held).await);
         }
     };
 
@@ -235,6 +251,7 @@ pub async fn handle(
                 },
                 retirement_reason,
                 retired,
+                held,
             )
             .await);
         }
@@ -263,12 +280,13 @@ pub async fn handle(
                  `state::compare-and-set` in the stack?).",
                 binding.id
             );
-            if let Err(inject_err) = crate::functions::send::inject(
+            if let Err(inject_err) = crate::functions::send::inject_holding(
                 deps,
                 &binding.owner.session_id,
                 AgentMessage::user_text(notice),
                 Some(&format!("e_claimfail_{}", binding.id)),
                 Some(&json!({ "notification": true, "binding": binding.id })),
+                held,
             )
             .await
             {
@@ -283,7 +301,7 @@ pub async fn handle(
     let fires_after = claimed.fires;
     let retiring = binding.retires_after_fire(fires_after);
 
-    let (delivered, outcome) = dispatch(deps, &claimed, &event).await;
+    let (delivered, outcome) = dispatch(deps, &claimed, &event, held).await;
 
     if retiring {
         retire(deps, &claimed).await;
@@ -342,9 +360,14 @@ pub async fn handle(
 /// keeps delivery generic across state, database, queue, cron, timer, and
 /// trigger types that do not exist yet. Returns the best-known delivered
 /// payload alongside the outcome so the fired record can carry it.
-async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> (Value, Result<(), String>) {
+async fn dispatch(
+    deps: &Deps,
+    binding: &Binding,
+    event: &Value,
+    held: LockHeld<'_>,
+) -> (Value, Result<(), String>) {
     match binding.target.function_id.as_str() {
-        crate::functions::SEND_ID => (event.clone(), wake_target(deps, binding, event).await),
+        crate::functions::SEND_ID => (event.clone(), wake_target(deps, binding, event, held).await),
         other => call_target(deps, binding, other, project(binding, event)).await,
     }
 }
@@ -390,7 +413,12 @@ pub(crate) fn inject_at(payload: Value, pointer: &str, value: Value) -> Value {
 /// `send::inject` rather than an engine call to `harness::send` so it keeps the
 /// notification origin marker (clients must not render it as human-typed) and a
 /// deterministic entry id (a redelivered fire appends nothing new).
-async fn wake_target(deps: &Deps, binding: &Binding, event: &Value) -> Result<(), String> {
+async fn wake_target(
+    deps: &Deps,
+    binding: &Binding,
+    event: &Value,
+    held: LockHeld<'_>,
+) -> Result<(), String> {
     let session_id = binding
         .target
         .payload
@@ -401,12 +429,13 @@ async fn wake_target(deps: &Deps, binding: &Binding, event: &Value) -> Result<()
         .to_string();
     let message = AgentMessage::user_text(notification_text(binding, event));
     let entry_id = fire_entry_id(&binding.id, binding.fires);
-    crate::functions::send::inject(
+    crate::functions::send::inject_holding(
         deps,
         &session_id,
         message,
         Some(&entry_id),
         Some(&json!({ "notification": true, "binding": binding.id })),
+        held,
     )
     .await
     .map(|_| ())
@@ -721,15 +750,16 @@ async fn finish_pre_delivery_retirement(
     skip: Skip,
     reason: fired::RetirementReason,
     retired: bool,
+    held: LockHeld<'_>,
 ) -> DeliverResult {
     match pre_delivery_retirement_action(reason, retired) {
         PreDeliveryRetirementAction::LostRace => DeliverResult::stopped(skip.gate, skip.reason),
         PreDeliveryRetirementAction::Expired => {
-            crate::bindings::expiry::report_expired_retirement(deps, binding).await;
+            crate::bindings::expiry::report_expired_retirement_holding(deps, binding, held).await;
             DeliverResult::stopped(skip.gate, skip.reason)
         }
         PreDeliveryRetirementAction::Skipped(reason) => {
-            record_stop(deps, binding, event, skip, Some(reason)).await
+            record_stop(deps, binding, event, skip, Some(reason), held).await
         }
     }
 }
@@ -744,6 +774,7 @@ async fn record_stop(
     event: &Value,
     skip: Skip,
     retirement_reason: Option<fired::RetirementReason>,
+    held: LockHeld<'_>,
 ) -> DeliverResult {
     let (scope, key) = fired::event_state_watch(event);
     let (trigger_type, config) = binding
@@ -777,7 +808,7 @@ async fn record_stop(
     )
     .await;
     if skip.is_condition_failure() {
-        notify_condition_failure(deps, binding, &skip).await;
+        notify_condition_failure(deps, binding, &skip, held).await;
     }
     DeliverResult::stopped(skip.gate, skip.reason)
 }
@@ -825,13 +856,14 @@ fn exhausted_retirement_reason(binding: &Binding, now: i64) -> fired::Retirement
 /// failure surfaces where the wake was expected. The stable entry id makes
 /// re-injection idempotent — one notice per binding, while every later skip
 /// still writes its own record.
-async fn notify_condition_failure(deps: &Deps, binding: &Binding, skip: &Skip) {
-    if let Err(e) = crate::functions::send::inject(
+async fn notify_condition_failure(deps: &Deps, binding: &Binding, skip: &Skip, held: LockHeld<'_>) {
+    if let Err(e) = crate::functions::send::inject_holding(
         deps,
         &binding.owner.session_id,
         AgentMessage::user_text(condition_failure_text(binding, skip)),
         Some(&condition_failure_entry_id(&binding.id)),
         Some(&json!({ "notification": true, "binding": binding.id })),
+        held,
     )
     .await
     {

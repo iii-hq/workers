@@ -159,68 +159,13 @@ async fn replay_delivery_triggers(
             }
         }
         super::compose::schedule(deps, &binding);
-        caught_up += usize::from(catch_up_state_wake(deps, &binding).await);
+        caught_up += usize::from(
+            super::state_wake::catch_up(deps, &binding)
+                .await
+                .delivered(),
+        );
     }
     (rearmed, caught_up)
-}
-
-/// A one-shot state wake that has never fired watches exactly one key; that
-/// key may have been written while no engine trigger existed for it. When
-/// this binding qualifies for the replay catch-up read, name the watched
-/// `(scope, key)`.
-fn state_wake_catchup(binding: &crate::bindings::Binding) -> Option<(String, String)> {
-    if binding.fires != 0 || !binding.lifecycle.once {
-        return None;
-    }
-    let (trigger_type, config) = binding.trigger_watch()?;
-    if trigger_type != "state" {
-        return None;
-    }
-    let scope = config.get("scope")?.as_str()?;
-    let key = config.get("key")?.as_str()?;
-    Some((scope.to_string(), key.to_string()))
-}
-
-/// Deliver the wake a dead trigger missed: the watched key already holds a
-/// value, so the value read NOW stands in for the missed event. Biased
-/// deliberately toward firing — a spurious wake costs one extra turn once,
-/// a lost one strands the owner forever — and the delivery claim keeps it
-/// exactly-once against a racing live fire.
-async fn catch_up_state_wake(deps: &Deps, binding: &crate::bindings::Binding) -> bool {
-    let Some((scope, key)) = state_wake_catchup(binding) else {
-        return false;
-    };
-    let timeout_ms = deps.cfg().await.session_timeout_ms;
-    let value = match crate::state::state_get(&deps.iii, &scope, &key, timeout_ms).await {
-        Ok(v) if !v.is_null() => v,
-        _ => return false,
-    };
-    let event = json!({
-        "type": "state",
-        "event_type": "state:updated",
-        "scope": scope,
-        "key": key,
-        "old_value": null,
-        "new_value": value,
-        "replayed": true,
-    });
-    let metadata = json!({ "__binding": binding.id });
-    match crate::functions::trigger_deliver::handle(deps, event, Some(metadata)).await {
-        Ok(result) => {
-            tracing::info!(
-                binding = %binding.id,
-                scope = %scope,
-                key = %key,
-                result = ?result,
-                "replayed missed state wake"
-            );
-            result.delivered
-        }
-        Err(e) => {
-            tracing::warn!(binding = %binding.id, error = %e, "state wake catch-up failed");
-            false
-        }
-    }
 }
 
 /// Tear down a stored binding that still targets `harness::spawn` — a record
@@ -475,79 +420,5 @@ mod tests {
         assert!(!is_orphan(Some("sub_live"), &stored));
         assert!(is_orphan(Some("sub_missing"), &stored));
         assert!(is_orphan(None, &stored));
-    }
-
-    fn wake_binding(dedup: Value) -> crate::bindings::Binding {
-        crate::bindings::Binding {
-            id: "sub_r".into(),
-            trigger_id: Some("old-engine-uuid".into()),
-            owner: crate::bindings::OwnerScope {
-                session_id: "s1".into(),
-                root_session_id: None,
-            },
-            target: crate::bindings::BindingTarget::new(crate::functions::SEND_ID),
-            conditions: Vec::new(),
-            lifecycle: crate::bindings::Lifecycle {
-                once: true,
-                max_fires: None,
-                expires_at: None,
-            },
-            capability: None,
-            causation: Default::default(),
-            dedup_key: Some(dedup),
-            fires: 0,
-            created_at: 0,
-        }
-    }
-
-    /// The replay catch-up reads exactly the console-04e02cb7 shape: a
-    /// one-shot `state` wake on a scope/key, never fired.
-    #[test]
-    fn catchup_names_the_watched_key_for_unfired_one_shot_state_wakes() {
-        let b = wake_binding(json!({
-            "trigger_type": "state",
-            "config": { "scope": "calc-delivery", "key": "plan" },
-        }));
-        assert_eq!(
-            state_wake_catchup(&b),
-            Some(("calc-delivery".to_string(), "plan".to_string()))
-        );
-    }
-
-    #[test]
-    fn catchup_skips_fired_standing_keyless_and_non_state_bindings() {
-        let fired = crate::bindings::Binding {
-            fires: 1,
-            ..wake_binding(json!({
-                "trigger_type": "state",
-                "config": { "scope": "s", "key": "k" },
-            }))
-        };
-        assert_eq!(state_wake_catchup(&fired), None);
-
-        let standing = crate::bindings::Binding {
-            lifecycle: crate::bindings::Lifecycle {
-                once: false,
-                max_fires: None,
-                expires_at: None,
-            },
-            ..wake_binding(json!({
-                "trigger_type": "state",
-                "config": { "scope": "s", "key": "k" },
-            }))
-        };
-        assert_eq!(state_wake_catchup(&standing), None);
-
-        let keyless = wake_binding(json!({
-            "trigger_type": "state",
-            "config": { "scope": "s" },
-        }));
-        assert_eq!(state_wake_catchup(&keyless), None);
-
-        let cron = wake_binding(json!({
-            "trigger_type": "cron",
-            "config": { "expression": "0 * * * * *" },
-        }));
-        assert_eq!(state_wake_catchup(&cron), None);
     }
 }

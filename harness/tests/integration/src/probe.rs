@@ -386,6 +386,20 @@ impl ScenarioProbe {
         expected: usize,
         deadline: Deadline,
     ) -> anyhow::Result<Vec<CompletionObservation>> {
+        self.wait_for_completions(expected, false, deadline).await
+    }
+
+    /// Wait until `expected` distinct turns have completed. Only TERMINAL
+    /// completions count unless `count_parked` — a turn that completed while
+    /// its session still owns an armed wake (`terminal: false`) is a
+    /// completion boundary too, and the only one a park-then-wake scenario
+    /// can gate an external stimulus on.
+    pub async fn wait_for_completions(
+        &self,
+        expected: usize,
+        count_parked: bool,
+        deadline: Deadline,
+    ) -> anyhow::Result<Vec<CompletionObservation>> {
         anyhow::ensure!(expected > 0, "expected completion count must be positive");
         loop {
             let notified = self.completion_notify.notified();
@@ -396,14 +410,21 @@ impl ScenarioProbe {
                 .clone();
             let turns = observations
                 .iter()
-                .filter(|observation| observation.event.terminal)
+                .filter(|observation| count_parked || observation.event.terminal)
                 .map(|observation| observation.event.turn_id.as_str())
                 .collect::<BTreeSet<_>>();
             if turns.len() >= expected {
                 return Ok(observations);
             }
             deadline
-                .timeout("terminal turn completion", notified)
+                .timeout(
+                    if count_parked {
+                        "turn completion"
+                    } else {
+                        "terminal turn completion"
+                    },
+                    notified,
+                )
                 .await?;
         }
     }

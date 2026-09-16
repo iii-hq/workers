@@ -33,6 +33,10 @@ pub(super) struct ActiveTurn {
     pub(super) turn_id: Option<String>,
     pub(super) send_response: Value,
     pub(super) final_status: Value,
+    /// Final `harness::metrics` report for the tracked session's tree (JSON
+    /// null when the call failed) — its `complete` flag is the watchdog's
+    /// terminality verdict, independent of `harness::status`.
+    pub(super) final_metrics: Value,
     pub(super) transcript: Vec<Value>,
     pub(super) traces: TraceEvidenceV1,
     pub(super) trace_generation: u64,
@@ -58,6 +62,7 @@ impl ActiveTurn {
             turn_id,
             send_response,
             final_status: Value::Null,
+            final_metrics: Value::Null,
             transcript: Vec::new(),
             traces: TraceEvidenceV1::new(Vec::new()),
             trace_generation,

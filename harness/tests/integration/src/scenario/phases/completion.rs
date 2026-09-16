@@ -45,7 +45,7 @@ impl ScenarioRunner<'_> {
             for action in actions {
                 if let Err(error) = services
                     .probe()
-                    .wait_for_completion_turns(action.after_turns, deadline)
+                    .wait_for_completions(action.after_turns, action.count_parked, deadline)
                     .await
                 {
                     if deadline.is_expired() {
@@ -276,6 +276,26 @@ impl ScenarioRunner<'_> {
                     anyhow::anyhow!(error),
                 )
             })?;
+        // The watchdog's verdict alongside the status: `harness::metrics`
+        // reports `complete` only when every session in the tree is terminal
+        // AND expects no wake. Evidence only — a scenario that cares asserts
+        // on it; a failed call is recorded as null, not a runner error.
+        active.final_metrics = match services
+            .client()
+            .call_with_deadline(
+                "harness::metrics",
+                json!({ "root_session_id": self.session_id }),
+                evidence_deadline,
+                DEFAULT_CALL_TIMEOUT_MS,
+            )
+            .await
+        {
+            Ok(metrics) => metrics,
+            Err(error) => {
+                tracing::warn!(error = %error, "harness::metrics evidence unavailable");
+                Value::Null
+            }
+        };
         Ok(())
     }
 }

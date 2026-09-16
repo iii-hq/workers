@@ -282,6 +282,53 @@ else's armed wake. `is_armed_wake` discounts exhausted bindings, so the woken
 turn completes terminal; `harness::status` exposes the armed set as
 `armed_wakes` (watch, config, created_at, expires_at). Pinned by E2E-012.
 
+### State wake catch-up — a value that predates the trigger still wakes
+
+State events do not replay: the state worker fans a write out only to the
+triggers ACTIVE at that moment, and activation is asynchronous — the SDK's
+`register_trigger` queues the registration over the channel and returns
+before the provider installs it (the engine's `TriggerRegistrationResult`
+comes back later and the SDK only logs it). A one-shot wake on `(scope, key)`
+therefore has a window in which the write it waits for lands unseen: before
+the registration, or between the registration and the provider's activation.
+The Linkly `link-build-e2e` run (`0491ffe3…`) was the first shape — the
+parent read `null`, the sub-agent wrote `b`, the parent registered, the
+advisory said "ALREADY holds a value — state events do not replay", and the
+parent parked on `fires: 0` for 900 s while `harness::metrics` reported
+`complete: false`.
+
+One rule closes every window (`bindings::state_wake`): if an unfired one-shot
+keyed state binding's key currently holds a value, deliver that value NOW as
+a synthetic `state:updated` event (`replayed: true`, `old_value: null`)
+through the ordinary delivery hop — conditions, claim CAS, record, once-
+retirement, all the live fire's. It runs from three places:
+
+- **at registration** (`subscribe`), right after the trigger is registered,
+  so the response is deterministic about it: `delivered: true` and a note
+  saying the value was delivered and nothing is parked — never the old
+  warning, never the "stays parked" advisory. A stopped delivery (a
+  condition's `skip`, a lost claim to a concurrent live fire) is named with
+  its gate and reason; an unreadable key is a warning that names the sweep.
+  Standing bindings are not reconciled ("every future write" excludes a
+  value that predates the registration) and keep the warning;
+- **every expiry sweep** (`III_HARNESS_EXPIRY_SWEEP_MS`, default 30s) for
+  still-armed candidates, which bounds the residual activation-window loss to
+  one sweep interval of DELAY instead of never;
+- **the startup replay** (`gc`), for restarts.
+
+A live fire and a catch-up offering the same value both enter the hop, and
+the claim admits one: the loser records at most a `skipped` attempt and wakes
+nobody. Biased deliberately toward firing — a spurious wake costs one extra
+turn once; a lost one strands the owner forever. Pinned by INT-030 (pre-
+written key: delivered at registration, `metrics.complete`) and INT-031
+(armed before the write: nothing at registration, exactly one live wake).
+
+The residual window is the SDK's: `IIIClient::register_trigger` exposes no
+activation acknowledgement, so the harness cannot await "installed" before
+its post-registration read. Surfacing `TriggerRegistrationResult` to the
+registrant (a future on the returned `Trigger`) would let registration block
+until the provider has the row and turn the sweep into a pure backstop.
+
 ## What stays out of scope
 
 Harness-only cannot deliver:

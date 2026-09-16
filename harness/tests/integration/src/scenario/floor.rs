@@ -569,6 +569,7 @@ mod tests {
                 "queued": [],
                 "children": []
             }),
+            metrics: Value::Null,
             transcript: Vec::new(),
             generations_consumed: 1,
             generations_total: 1,

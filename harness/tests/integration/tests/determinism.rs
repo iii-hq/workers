@@ -66,6 +66,7 @@ fn evidence(run_id: &str, session_id: &str, turn_id: &str) -> RunEvidence {
             "pending_function_calls": [],
             "children": []
         }),
+        metrics: Value::Null,
         transcript: vec![],
         generations_consumed: 1,
         generations_total: 1,
