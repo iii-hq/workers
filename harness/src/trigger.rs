@@ -571,16 +571,13 @@ pub async fn trigger_call(
     policy: &CompiledPolicy,
     function_id: &str,
     arguments: &Value,
-    max_result_bytes: usize,
 ) -> TriggerResult {
     // Fail-closed glob policy — structural and final.
     if !policy.allows(function_id) {
         return TriggerResult::Result(denied_result(function_id));
     }
 
-    TriggerResult::Result(
-        invoke_target(engine, policy, function_id, arguments, max_result_bytes).await,
-    )
+    TriggerResult::Result(invoke_target(engine, policy, function_id, arguments).await)
 }
 
 /// Invoke the target and normalise its result — WITHOUT the policy gate (the
@@ -592,7 +589,6 @@ pub async fn invoke_target(
     policy: &CompiledPolicy,
     function_id: &str,
     arguments: &Value,
-    max_result_bytes: usize,
 ) -> ResultData {
     if let Some(denied) = project_wide_compose_denial(function_id, arguments) {
         return denied;
@@ -604,31 +600,40 @@ pub async fn invoke_target(
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
             }
-            normalized_result(value, max_result_bytes)
+            normalized_result(value)
         }
         Err(e) => invocation_error_result(e.code, e.message),
     }
 }
 
 /// Apply the same function-result normalization to a locally intercepted call
-/// as [`invoke_target`] applies to an engine-dispatched return value, then
-/// bound it with [`cap_result`].
-pub(crate) fn normalized_result(value: Value, max_result_bytes: usize) -> ResultData {
+/// as [`invoke_target`] applies to an engine-dispatched return value.
+pub(crate) fn normalized_result(value: Value) -> ResultData {
     let (content, is_error) = normalize(&value);
-    cap_result(
-        ResultData {
-            content,
-            is_error,
-            details: value,
-        },
-        max_result_bytes,
-    )
+    ResultData {
+        content,
+        is_error,
+        details: value,
+    }
 }
+
+/// Smallest cap [`cap_result`] honours. The elision marker plus its
+/// `result_capped` details must themselves fit under the cap, so a smaller
+/// configured `max_result_bytes` is raised to this instead of producing a
+/// replacement that is itself over the limit.
+pub(crate) const MIN_RESULT_CAP_BYTES: usize = 1_024;
 
 /// Bound a captured function result BEFORE it is written to the session or
 /// echoed to the provider. A result whose `content` + `details` serialize
 /// past `max_bytes` is replaced whole by an elision marker naming its size
-/// and shape; `is_error` is preserved. `max_bytes == 0` disables the cap.
+/// and shape; `is_error` is preserved. `max_bytes == 0` disables the cap;
+/// anything else is raised to at least [`MIN_RESULT_CAP_BYTES`].
+///
+/// Applied once at the exit of `subscribe::invoke` — the chokepoint every
+/// in-turn, hook-released and `harness::function::trigger` call returns
+/// through, dispatch and intercept ERRORS included, since an error message
+/// can echo a payload too — and on the `function::resolve` deliver path,
+/// whose payload arrives off the wire without passing through `invoke`.
 ///
 /// This is the capture-time guard for the engine's per-frame WebSocket limit
 /// (16 MiB by default; the SDK sends one unfragmented frame per message): an
@@ -642,6 +647,7 @@ pub(crate) fn cap_result(result: ResultData, max_bytes: usize) -> ResultData {
     if max_bytes == 0 {
         return result;
     }
+    let max_bytes = max_bytes.max(MIN_RESULT_CAP_BYTES);
     let content_bytes = serde_json::to_vec(&result.content).map_or(0, |b| b.len());
     let details_bytes = serde_json::to_vec(&result.details).map_or(0, |b| b.len());
     let total = content_bytes + details_bytes;
@@ -966,11 +972,27 @@ mod tests {
 
     #[test]
     fn cap_result_passes_small_results_and_zero_disables() {
-        let small = normalized_result(json!({ "ok": true }), 262_144);
+        let small = cap_result(normalized_result(json!({ "ok": true })), 262_144);
         assert_eq!(small.details, json!({ "ok": true }));
         let giant = Value::String("x".repeat(300_000));
-        let uncapped = normalized_result(giant.clone(), 0);
+        let uncapped = cap_result(normalized_result(giant.clone()), 0);
         assert_eq!(uncapped.details, giant);
+    }
+
+    #[test]
+    fn cap_result_replacement_fits_even_under_a_tiny_cap() {
+        let giant = Value::String("x".repeat(300_000));
+        let capped = cap_result(normalized_result(giant), 1);
+        let bytes = serde_json::to_vec(&capped.content).unwrap().len()
+            + serde_json::to_vec(&capped.details).unwrap().len();
+        assert!(
+            bytes <= MIN_RESULT_CAP_BYTES,
+            "replacement is {bytes} bytes"
+        );
+        assert_eq!(
+            capped.details["result_capped"]["max_bytes"],
+            MIN_RESULT_CAP_BYTES
+        );
     }
 
     #[test]
@@ -979,7 +1001,7 @@ mod tests {
             .map(|i| json!({ "name": format!("f{i}") }))
             .collect();
         let raw = json!({ "is_error": true, "entries": entries });
-        let capped = normalized_result(raw, 262_144);
+        let capped = cap_result(normalized_result(raw), 262_144);
         assert!(
             capped.is_error,
             "the tool's own error flag survives the cap"

@@ -16,6 +16,8 @@ use crate::fixtures::ScenarioFixture;
 /// Past the 256 KiB default cap once `content` and `details` both carry it.
 const PAYLOAD_CHARS: usize = 150_000;
 
+/// INT-030: the controlled function returns more than the default cap; the
+/// model must see the elision marker and still finish the turn.
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-030";
     const MESSAGE: &str = "Dump the recorder once.";

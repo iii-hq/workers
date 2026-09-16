@@ -55,7 +55,8 @@ pub struct WorkerConfig {
     /// per-frame WebSocket limit (16 MiB, the axum/tungstenite default; the
     /// SDK sends each message as one unfragmented frame), which an oversized
     /// `session::append` echo trips into a permanent reconnect loop that also
-    /// drops every `harness::*` registration (MOT-4498). 0 disables.
+    /// drops every `harness::*` registration (MOT-4498). 0 disables; any
+    /// other value below 1 KiB is raised to 1 KiB so the marker itself fits.
     #[serde(default = "default_max_result_bytes")]
     pub max_result_bytes: usize,
 
@@ -239,6 +240,7 @@ fn default_max_transient_resumes() -> u32 {
     // (observed live 2026-07-21, session dcmcp-scan-p6w4-c-aq).
     3
 }
+/// Default for [`WorkerConfig::max_result_bytes`].
 fn default_max_result_bytes() -> usize {
     // 256 KiB: the same ceiling `database` uses for its state-backed history
     // (MOT-4372). Far below the 16 MiB frame limit on purpose — the cap is

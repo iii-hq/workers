@@ -227,9 +227,37 @@ impl<'a> CallerModel<'a> {
 /// trusted caller context; the model cannot forge session-lock ownership.
 /// Everything else invokes the target normally. Every call site (the turn loop,
 /// `harness::function::trigger`, and the hook-held release path) routes through
-/// here so trusted context cannot be bypassed.
+/// here so trusted context cannot be bypassed — and so every result, error
+/// results included, leaves through one capture-time size cap (MOT-4498).
 #[allow(clippy::too_many_arguments)]
 pub async fn invoke(
+    deps: &Deps,
+    engine: &EngineClient,
+    policy: &CompiledPolicy,
+    function_id: &str,
+    arguments: &Value,
+    session_id: &str,
+    caller_holds_session_lock: bool,
+    caller: Option<CallerModel<'_>>,
+) -> ResultData {
+    let result = invoke_uncapped(
+        deps,
+        engine,
+        policy,
+        function_id,
+        arguments,
+        session_id,
+        caller_holds_session_lock,
+        caller,
+    )
+    .await;
+    trigger::cap_result(result, deps.cfg().await.max_result_bytes)
+}
+
+/// [`invoke`] before the size cap: intercepts, denials and the target
+/// dispatch, each returning its own uncapped [`ResultData`].
+#[allow(clippy::too_many_arguments)]
+async fn invoke_uncapped(
     deps: &Deps,
     engine: &EngineClient,
     policy: &CompiledPolicy,
@@ -247,7 +275,6 @@ pub async fn invoke(
     ) {
         return intercept_send(deps, request, session_id).await;
     }
-    let max_result_bytes = deps.cfg().await.max_result_bytes;
     match function_id {
         REGISTER_TRIGGER_ID => {
             intercept_register(deps, arguments, session_id, caller, policy).await
@@ -258,7 +285,7 @@ pub async fn invoke(
             // In-turn controls always target their caller. External console
             // calls bypass this chokepoint and continue supplying session_id.
             let args = with_caller_session_id(arguments, session_id);
-            trigger::invoke_target(engine, policy, function_id, &args, max_result_bytes).await
+            trigger::invoke_target(engine, policy, function_id, &args).await
         }
         internal if internal.starts_with("harness::state::") => trigger::denied_result(internal),
         // Claiming a private state namespace is a control-plane act this
@@ -269,7 +296,7 @@ pub async fn invoke(
         // (the `harness::state::*` accessors are denied above), so the risk
         // is denial of service, not exfiltration; deny it anyway.
         crate::state::CLAIM_NAMESPACE_ID => trigger::denied_result(function_id),
-        _ => trigger::invoke_target(engine, policy, function_id, arguments, max_result_bytes).await,
+        _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
     }
 }
 
@@ -292,10 +319,9 @@ async fn intercept_send(
     request: crate::functions::send::SendRequest,
     caller_session_id: &str,
 ) -> ResultData {
-    let max_result_bytes = deps.cfg().await.max_result_bytes;
     match crate::functions::send::handle_from_invoke(deps, request, caller_session_id, true).await {
         Ok(response) => match serde_json::to_value(response) {
-            Ok(value) => trigger::normalized_result(value, max_result_bytes),
+            Ok(value) => trigger::normalized_result(value),
             Err(error) => trigger::invocation_error_result(
                 None,
                 format!("{}: {error}", crate::functions::SEND_ID),
