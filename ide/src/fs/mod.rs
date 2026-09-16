@@ -286,6 +286,7 @@ pub struct LsRequest {
     #[schemars(skip)]
     pub fs_scope: Option<FsScope>,
 }
+/// Default for [`LsRequest::page`]: the first page.
 fn default_ls_page() -> u32 {
     1
 }

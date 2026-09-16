@@ -6,6 +6,8 @@ use crate::fs::error::FsError;
 use crate::fs::{FsBackend, LsRequest, LsResponse};
 use crate::functions::fs_dispatch::pick_backend;
 
+/// `shell::fs::ls`: list one directory on the host or a sandbox, name-sorted
+/// and cut to the requested page (see [`LsResponse::paginate`]).
 pub async fn handle(
     host: Arc<dyn FsBackend>,
     iii: iii_sdk::IIIClient,
