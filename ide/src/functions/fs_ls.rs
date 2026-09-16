@@ -22,8 +22,6 @@ pub async fn handle(
     let (page, page_size) = (req.page, req.page_size);
     let (target, args) = req.split();
     let backend = pick_backend(target, host, iii, sandbox_enabled);
-    // Both backends return the whole directory; the page is cut here so the
-    // wire contract is the same for host and sandbox targets.
     backend
         .ls(args)
         .await

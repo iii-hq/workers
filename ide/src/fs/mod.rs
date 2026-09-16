@@ -274,8 +274,8 @@ pub struct LsRequest {
     /// Jail-relative when fs.host_roots are set, else absolute.
     pub path: String,
     /// 1-based page of the name-sorted listing. Default 1.
-    #[serde(default = "default_ls_page")]
-    pub page: u32,
+    #[serde(default)]
+    pub page: Option<u32>,
     /// Entries per page. Default 500, clamped to 2000. A directory larger
     /// than one page answers `has_more: true` — request the next `page`
     /// rather than expecting the whole directory in one result.
@@ -285,10 +285,6 @@ pub struct LsRequest {
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<FsScope>,
-}
-/// Default for [`LsRequest::page`]: the first page.
-fn default_ls_page() -> u32 {
-    1
 }
 impl LsRequest {
     pub fn split(self) -> (Target, LsArgs) {
@@ -301,13 +297,6 @@ impl LsRequest {
         )
     }
 }
-
-/// `shell::fs::ls` page size when the caller omits one. Sized so a full page
-/// of entries (~160 bytes each on the wire) stays under the harness's
-/// function-result cap once the result is echoed as content + details.
-pub const LS_DEFAULT_PAGE_SIZE: u32 = 500;
-/// Hard cap on a `shell::fs::ls` page; larger requests are clamped.
-pub const LS_MAX_PAGE_SIZE: u32 = 2_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StatRequest {
@@ -751,22 +740,16 @@ pub struct LsResponse {
     pub has_more: bool,
 }
 impl LsResponse {
-    /// Reduce a full directory listing to one name-sorted page. Applied at
-    /// the registration boundary so host and sandbox backends (which both
-    /// return the whole directory) share one wire contract. Mirrors
-    /// `coder::list-folder`: unbounded listings are what made an agent's
-    /// `ls` of a large directory a multi-megabyte function result (MOT-4498).
-    pub fn paginate(mut self, page: u32, page_size: Option<u32>) -> Self {
+    /// One name-sorted page of a full listing; cut at the registration
+    /// boundary so host and sandbox share the contract (MOT-4498).
+    pub fn paginate(mut self, page: Option<u32>, page_size: Option<u32>) -> Self {
         self.entries.sort_by(|a, b| a.name.cmp(&b.name));
-        let page = page.max(1);
-        let page_size = page_size
-            .unwrap_or(LS_DEFAULT_PAGE_SIZE)
-            .clamp(1, LS_MAX_PAGE_SIZE);
+        let page = page.unwrap_or(1).max(1);
+        // ~160 B per entry on the wire keeps a default page under the harness cap.
+        let page_size = page_size.unwrap_or(500).clamp(1, 2000);
         let total = self.entries.len();
-        let start = ((page - 1) as usize)
-            .saturating_mul(page_size as usize)
-            .min(total);
-        let end = start.saturating_add(page_size as usize).min(total);
+        let start = ((page - 1) as usize * page_size as usize).min(total);
+        let end = (start + page_size as usize).min(total);
         self.entries.drain(..start);
         self.entries.truncate(end - start);
         self.total = total as u64;
@@ -1108,21 +1091,21 @@ mod tests {
             entries: vec![entry("c"), entry("a"), entry("b")],
             ..Default::default()
         };
-        let p1 = full().paginate(1, Some(2));
+        let p1 = full().paginate(Some(1), Some(2));
         let names = |r: &LsResponse| r.entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(&p1), ["a", "b"]);
         assert!(p1.has_more);
         assert_eq!((p1.total, p1.page, p1.page_size), (3, 1, 2));
-        let p2 = full().paginate(2, Some(2));
+        let p2 = full().paginate(Some(2), Some(2));
         assert_eq!(names(&p2), ["c"]);
         assert!(!p2.has_more);
         // Past the end: empty page, nothing more, no panic.
-        let p9 = full().paginate(9, Some(2));
+        let p9 = full().paginate(Some(9), Some(2));
         assert!(p9.entries.is_empty() && !p9.has_more);
         // Page 0 and an oversized page size are clamped, not rejected.
-        let clamped = full().paginate(0, Some(u32::MAX));
-        assert_eq!((clamped.page, clamped.page_size), (1, LS_MAX_PAGE_SIZE));
-        assert_eq!(full().paginate(1, None).page_size, LS_DEFAULT_PAGE_SIZE);
+        let clamped = full().paginate(Some(0), Some(u32::MAX));
+        assert_eq!((clamped.page, clamped.page_size), (1, 2000));
+        assert_eq!(full().paginate(None, None).page_size, 500);
     }
 
     #[test]
