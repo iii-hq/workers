@@ -1,5 +1,5 @@
 {
-  "description": "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker, plus matching installed skill documents under `skills` in Jev mode.",
+  "description": "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker, plus, in Jev mode, matching installed skill documents under `skills` and registered trigger bindings under `triggers`.",
   "function_id": "directory::search_functions",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -138,6 +138,37 @@
           "title"
         ],
         "type": "object"
+      },
+      "TriggerCandidate": {
+        "description": "A registered trigger binding (an `engine::registered-triggers::list` row) whose event, schedule, or hook matches a requested capability.",
+        "properties": {
+          "config": {
+            "description": "The binding's configuration (cron expression, hook filters, …)."
+          },
+          "function_id": {
+            "description": "The function the trigger runs; inspect it with `engine::functions::info`.",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "trigger_type": {
+            "type": "string"
+          },
+          "worker_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "config",
+          "function_id",
+          "id",
+          "trigger_type"
+        ],
+        "type": "object"
       }
     },
     "properties": {
@@ -170,6 +201,13 @@
         },
         "type": "array"
       },
+      "triggers": {
+        "description": "Registered trigger bindings matching the capabilities (Jev mode only): what already fires, schedules, or hooks a function for them.",
+        "items": {
+          "$ref": "#/definitions/TriggerCandidate"
+        },
+        "type": "array"
+      },
       "workers": {
         "items": {
           "$ref": "#/definitions/SearchWorker"
@@ -183,6 +221,7 @@
       "latency_ms",
       "search_mode",
       "skills",
+      "triggers",
       "workers"
     ],
     "title": "SearchFunctionsResponse",

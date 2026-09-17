@@ -39,7 +39,7 @@ describe('isErrorOutput', () => {
 
 describe('parseDiscoverResponse', () => {
   it('parses a flat response and an enveloped one identically', () => {
-    const parsed = { ...response, installable: [], skills: [] }
+    const parsed = { ...response, installable: [], skills: [], triggers: [] }
     expect(parseDiscoverResponse(response)).toEqual(parsed)
     expect(
       parseDiscoverResponse({ content: [{ type: 'text', text: 'x' }], details: response }),
@@ -48,7 +48,7 @@ describe('parseDiscoverResponse', () => {
 
   it('keeps empty worker lists (the refine-guidance card)', () => {
     const empty = { guidance: 'No functions matched…', workers: [], latency_ms: 3 }
-    expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [], skills: [] })
+    expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [], skills: [], triggers: [] })
   })
 
   it('parses the search mode when present and rejects an unknown one', () => {
@@ -72,6 +72,45 @@ describe('parseDiscoverResponse', () => {
       { id: 'cron', title: 'cron', description: 'Schedule any registered function on a cron expression.' },
     ])
     expect(parsed?.workers).toEqual([])
+  })
+
+  it('parses the registered triggers section when present', () => {
+    const parsed = parseDiscoverResponse({
+      guidance: 'The `triggers` entries are registered trigger bindings…',
+      workers: [],
+      triggers: [
+        {
+          id: 't-1',
+          trigger_type: 'cron',
+          function_id: 'harness::sweep-pending',
+          worker_name: 'harness',
+          config: { expression: '0 0 0 * * *' },
+        },
+        { id: 't-2', trigger_type: 'configuration', function_id: 'queue::on-config-change' },
+      ],
+      latency_ms: 7,
+    })
+    expect(parsed?.triggers).toEqual([
+      {
+        id: 't-1',
+        triggerType: 'cron',
+        functionId: 'harness::sweep-pending',
+        workerName: 'harness',
+        config: { expression: '0 0 0 * * *' },
+      },
+      { id: 't-2', triggerType: 'configuration', functionId: 'queue::on-config-change', config: {} },
+    ])
+  })
+
+  it('rejects a malformed triggers section', () => {
+    for (const triggers of [
+      {},
+      [{ trigger_type: 'cron', function_id: 'x' }], // no id
+      [{ id: 't', trigger_type: 'cron' }], // no function_id
+      [{ id: 't', trigger_type: 'cron', function_id: 'x', worker_name: 7 }],
+    ]) {
+      expect(parseDiscoverResponse({ guidance: 'g', workers: [], triggers, latency_ms: 1 })).toBeNull()
+    }
   })
 
   it('rejects a malformed skills section', () => {
@@ -179,6 +218,7 @@ describe('functionCount', () => {
         latency_ms: 1,
         installable: [],
         skills: [],
+        triggers: [],
         workers: [
           { namespace: 'a', functions: [candidate, candidate] },
           { namespace: 'b', functions: [candidate] },

@@ -15,13 +15,14 @@ import {
   MetaRow,
   TerminalCommandLine,
 } from '@iii-dev/console-ui'
-import { BookOpen, ChevronRight, Dot, SquareFunction } from 'lucide-react'
+import { BookOpen, ChevronRight, Dot, SquareFunction, Zap } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { kv } from '../lib/widgets'
 import {
   type DiscoverCandidateView,
   type DiscoverInstallableView,
   type DiscoverSkillView,
+  type DiscoverTriggerView,
   type DiscoverView,
   discoverCapabilities,
   functionCount,
@@ -93,6 +94,35 @@ function SkillBlock({ skill }: { skill: DiscoverSkillView }) {
   )
 }
 
+/** The binding config as one compact line; empty for `{}`/null. */
+function configSummary(config: unknown): string {
+  if (config === null || config === undefined) return ''
+  if (typeof config === 'object' && Object.keys(config as object).length === 0) return ''
+  return JSON.stringify(config)
+}
+
+/** One registered trigger binding: its type, the function it runs (and the
+ * owning worker), and the binding config. The function is inspectable with
+ * `engine::functions::info`. */
+function TriggerBlock({ trigger }: { trigger: DiscoverTriggerView }) {
+  const config = configSummary(trigger.config)
+  return (
+    <details className="dir-ui-search-fn">
+      <summary>
+        <ChevronRight aria-hidden className="dir-ui-search-caret" />
+        <Zap aria-hidden className="dir-ui-search-sym" />
+        <span className="dir-ui-search-fn-id">{trigger.triggerType}</span>
+        <span className="dir-ui-search-fn-desc">
+          → {trigger.functionId}
+          {trigger.workerName ? ` · ${trigger.workerName}` : ''}
+        </span>
+      </summary>
+      {config.length > 0 ? <div className="dir-ui-search-desc">{config}</div> : null}
+      <TerminalCommandLine command={`engine::functions::info { "function_id": "${trigger.functionId}" }`} copy />
+    </details>
+  )
+}
+
 function GuidanceDetails({ guidance }: { guidance: string }) {
   return (
     <details className="dir-ui-search-guidance">
@@ -106,7 +136,11 @@ function GuidanceDetails({ guidance }: { guidance: string }) {
 }
 
 export function DiscoverCard({ capabilities, view }: { capabilities: string[]; view: DiscoverView }) {
-  const empty = view.workers.length === 0 && view.installable.length === 0 && view.skills.length === 0
+  const empty =
+    view.workers.length === 0 &&
+    view.installable.length === 0 &&
+    view.skills.length === 0 &&
+    view.triggers.length === 0
   return (
     <Card>
       <MetaRow
@@ -115,6 +149,7 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
           ['functions', functionCount(view)],
           ['installable', view.installable.length > 0 && view.installable.length],
           ['skills', view.skills.length > 0 && view.skills.length],
+          ['triggers', view.triggers.length > 0 && view.triggers.length],
           ['latency', `${Math.round(view.latency_ms)}ms`],
         ])}
       >
@@ -150,6 +185,14 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
               <SectionHead count={view.skills.length}>installed skills</SectionHead>
               {view.skills.map((skill) => (
                 <SkillBlock key={skill.id} skill={skill} />
+              ))}
+            </section>
+          ) : null}
+          {view.triggers.length > 0 ? (
+            <section aria-label="triggers">
+              <SectionHead count={view.triggers.length}>registered triggers</SectionHead>
+              {view.triggers.map((trigger) => (
+                <TriggerBlock key={trigger.id} trigger={trigger} />
               ))}
             </section>
           ) : null}

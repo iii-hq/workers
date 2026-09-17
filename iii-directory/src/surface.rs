@@ -39,7 +39,7 @@ pub fn search_catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<SearchFunctionsRequest, SearchFunctionsResponse>(
             "directory::search_functions",
-            "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker, plus matching installed skill documents under `skills` in Jev mode.",
+            "Search available functions for the unmet external capabilities of a step (usually one to six, at most eighteen per call); returns compact function-id candidates grouped by worker, plus, in Jev mode, matching installed skill documents under `skills` and registered trigger bindings under `triggers`.",
         ),
         spec::<PreGenerateHookRequest, PreGenerateHookResponse>(
             "directory::pre-generate",

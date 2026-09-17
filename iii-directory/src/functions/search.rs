@@ -104,6 +104,18 @@ const MAX_SEARCH_SKILLS: usize = 6;
 /// Bytes of `title: description` one skill document contributes to the
 /// Jev payload.
 const SKILL_DOC_BYTES: usize = 300;
+/// Registered trigger bindings one Jev search returns, round-robin across
+/// the capabilities.
+const MAX_SEARCH_TRIGGERS: usize = 6;
+/// Bytes of `type trigger runs function with config` one trigger contributes to the Jev
+/// payload.
+const TRIGGER_DOC_BYTES: usize = 300;
+/// Console tabs register ephemeral `iii::*` listeners and `console:*` asset
+/// triggers; neither is a binding an agent can reuse.
+/// ponytail: prefix heuristic; switch to an engine-side ephemeral flag if
+/// registered-triggers::list ever carries one.
+const EPHEMERAL_TRIGGER_FUNCTION_PREFIX: &str = "iii::";
+const EPHEMERAL_TRIGGER_TYPE_PREFIX: &str = "console:";
 /// Registry list queries per search: each capability, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
 /// natural-language queries that a single term ("email") hits. All
@@ -338,6 +350,11 @@ const SEARCH_SKILLS_NOTE: &str = "The `skills` entries are installed how-to docu
 content matches the requested capabilities: before acting on such a capability, read the \
 relevant one with directory::skills::get { \"id\": \"<id>\" } and follow it.";
 
+const SEARCH_TRIGGERS_NOTE: &str = "The `triggers` entries are registered trigger bindings \
+that already fire, schedule, or hook a function for a matching capability: inspect the bound \
+function with engine::functions::info { \"function_id\": \"<id>\" } and reuse the binding \
+instead of registering a duplicate.";
+
 const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable` \
 for unmet capabilities. An explicit installation request follows the installation workflow below \
 even when compose::add is already in `workers`. The `installable` entries are registry workers \
@@ -423,6 +440,20 @@ pub struct SkillCandidate {
     pub description: String,
 }
 
+/// A registered trigger binding (an `engine::registered-triggers::list`
+/// row) whose event, schedule, or hook matches a requested capability.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
+pub struct TriggerCandidate {
+    pub id: String,
+    pub trigger_type: String,
+    /// The function the trigger runs; inspect it with `engine::functions::info`.
+    pub function_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_name: Option<String>,
+    /// The binding's configuration (cron expression, hook filters, …).
+    pub config: Value,
+}
+
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct SearchWorker {
     pub namespace: String,
@@ -470,6 +501,10 @@ pub struct SearchFunctionsResponse {
     /// Read one with `directory::skills::get { id }` before acting on it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillCandidate>,
+    /// Registered trigger bindings matching the capabilities (Jev mode only):
+    /// what already fires, schedules, or hooks a function for them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<TriggerCandidate>,
     /// The search mode that actually produced these results: `jev`, `hybrid`
     /// or `lexical`. It can be lower than the configured mode when a batch
     /// fell back (missing key, remote failure, or no local model).
@@ -1310,8 +1345,15 @@ pub async fn search_functions(
             Vec::new()
         }
     };
-    let ((mut selected, installable, search_mode), skills) =
-        tokio::join!(function_search, skill_search);
+    let trigger_search = async {
+        if cfg.function_search_mode == FunctionSearchMode::Jev {
+            jev_triggers(deps, &cfg, &request.capabilities, jev_deadline).await
+        } else {
+            Vec::new()
+        }
+    };
+    let ((mut selected, installable, search_mode), skills, triggers) =
+        tokio::join!(function_search, skill_search, trigger_search);
     let batches = request.capabilities.len().div_ceil(MAX_SEARCH_QUERIES);
     let session_id = baggage_session_id();
     // Repeat queries in one session skip candidates the session already
@@ -1384,6 +1426,11 @@ unchanged — reuse the earlier result): {}.",
     } else {
         format!("{guidance} {SEARCH_SKILLS_NOTE}")
     };
+    let guidance = if triggers.is_empty() {
+        guidance
+    } else {
+        format!("{guidance} {SEARCH_TRIGGERS_NOTE}")
+    };
     let guidance = if dropped.is_empty() {
         guidance
     } else {
@@ -1399,6 +1446,7 @@ search again for: {}.",
         workers,
         installable,
         skills,
+        triggers,
         search_mode,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
@@ -1488,15 +1536,152 @@ async fn jev_skills(
     capabilities: &[String],
     deadline: tokio::time::Instant,
 ) -> Vec<SkillCandidate> {
-    let queries = search_queries(capabilities);
     let (documents, candidates): (Vec<ToolSchema>, Vec<SkillCandidate>) =
         installed_skill_docs(deps, cfg, tools)
             .await
             .into_iter()
             .unzip();
+    let lane = JevLane {
+        corpus: JevCorpus::Skills,
+        budget: MAX_SEARCH_SKILLS,
+        name: "skill",
+    };
+    jev_rank_documents(deps, cfg, capabilities, deadline, &documents, lane)
+        .await
+        .into_iter()
+        .filter_map(|id| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .cloned()
+        })
+        .collect()
+}
+
+/// Jev-judged registered trigger bindings for the requested capabilities,
+/// at most `MAX_SEARCH_TRIGGERS` round-robin across capabilities. A listing
+/// or Jev failure omits the section.
+async fn jev_triggers(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    capabilities: &[String],
+    deadline: tokio::time::Instant,
+) -> Vec<TriggerCandidate> {
+    let (documents, candidates): (Vec<ToolSchema>, Vec<TriggerCandidate>) =
+        registered_trigger_docs(deps).await.into_iter().unzip();
+    let lane = JevLane {
+        corpus: JevCorpus::Triggers,
+        budget: MAX_SEARCH_TRIGGERS,
+        name: "trigger",
+    };
+    jev_rank_documents(deps, cfg, capabilities, deadline, &documents, lane)
+        .await
+        .into_iter()
+        .filter_map(|id| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.id == id)
+                .cloned()
+        })
+        .collect()
+}
+
+/// The registered trigger bindings a search may surface, as the Jev carrier
+/// (`name` = trigger id, `description` = `type trigger runs function with config`) plus the
+/// response row. Ephemeral console listeners are skipped.
+async fn registered_trigger_docs(deps: &Deps) -> Vec<(ToolSchema, TriggerCandidate)> {
+    let Some(iii) = deps.iii.as_ref() else {
+        return Vec::new();
+    };
+    let listed = match iii
+        .trigger(TriggerRequest {
+            function_id: "engine::registered-triggers::list".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(CATALOG_TIMEOUT_MS),
+        })
+        .await
+    {
+        Ok(listed) => listed,
+        Err(error) => {
+            tracing::warn!(%error, "registered-triggers list failed; omitting the triggers section");
+            return Vec::new();
+        }
+    };
+    listed
+        .get("registered_triggers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(trigger_candidate)
+        .map(|candidate| {
+            let document = truncate_bytes(
+                &format!(
+                    "{} trigger runs {} with config {}",
+                    candidate.trigger_type, candidate.function_id, candidate.config
+                ),
+                TRIGGER_DOC_BYTES,
+            );
+            (
+                ToolSchema {
+                    name: candidate.id.clone(),
+                    description: document,
+                    parameters: json!({}),
+                },
+                candidate,
+            )
+        })
+        .collect()
+}
+
+/// One `registered_triggers[]` row as a candidate; `None` for malformed rows
+/// and for ephemeral console bindings.
+fn trigger_candidate(row: &Value) -> Option<TriggerCandidate> {
+    let id = row.get("id")?.as_str()?.to_string();
+    let trigger_type = row.get("trigger_type")?.as_str()?.to_string();
+    let function_id = row.get("function_id")?.as_str()?.to_string();
+    if trigger_type.starts_with(EPHEMERAL_TRIGGER_TYPE_PREFIX)
+        || function_id.starts_with(EPHEMERAL_TRIGGER_FUNCTION_PREFIX)
+    {
+        return None;
+    }
+    Some(TriggerCandidate {
+        id,
+        trigger_type,
+        function_id,
+        worker_name: row
+            .get("worker_name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        config: row.get("config").cloned().unwrap_or_else(|| json!({})),
+    })
+}
+
+/// A Jev side lane: which corpus the questions judge, how many ids it
+/// returns, and its name in logs.
+struct JevLane {
+    corpus: JevCorpus,
+    budget: usize,
+    name: &'static str,
+}
+
+/// Rank `documents` against the capabilities with Jev and return at most
+/// `lane.budget` document ids round-robin across capabilities. Any Jev
+/// failure yields an empty list: the function search never fails over a
+/// side lane.
+async fn jev_rank_documents(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    capabilities: &[String],
+    deadline: tokio::time::Instant,
+    documents: &[ToolSchema],
+    lane: JevLane,
+) -> Vec<String> {
+    let queries = search_queries(capabilities);
     tracing::debug!(
+        lane = lane.name,
         documents = ?documents.iter().map(|document| document.name.as_str()).collect::<Vec<_>>(),
-        "Jev skill candidates"
+        "Jev side-lane candidates"
     );
     if queries.is_empty() || documents.is_empty() {
         return Vec::new();
@@ -1509,11 +1694,11 @@ async fn jev_skills(
     match jev
         .rank(
             &queries,
-            &documents,
+            documents,
             &JevOptions {
                 model: cfg.function_search_jev_model.clone(),
                 min_relevance: cfg.function_search_jev_min_relevance,
-                corpus: JevCorpus::Skills,
+                corpus: lane.corpus,
             },
             deadline,
         )
@@ -1521,25 +1706,18 @@ async fn jev_skills(
     {
         Ok(outcome) => {
             tracing::debug!(
+                lane = lane.name,
                 requests = outcome.stats.requests,
                 questions = outcome.stats.questions,
                 elapsed_ms = outcome.stats.elapsed_ms,
                 documents = documents.len(),
-                "Jev skill evaluation completed"
+                "Jev side-lane evaluation completed"
             );
-            round_robin_rankings(&outcome.rankings, MAX_SEARCH_SKILLS)
-                .into_iter()
-                .filter_map(|id| {
-                    candidates
-                        .iter()
-                        .find(|candidate| candidate.id == id)
-                        .cloned()
-                })
-                .collect()
+            round_robin_rankings(&outcome.rankings, lane.budget)
         }
         Err(error) => {
-            tracing::warn!(%error, requests = error.stats.requests,
-                "Jev skill search failed; omitting the skills section");
+            tracing::warn!(%error, lane = lane.name, requests = error.stats.requests,
+                "Jev {} search failed; omitting the {}s section", lane.name, lane.name);
             Vec::new()
         }
     }
@@ -2105,6 +2283,30 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Deps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trigger_candidate_skips_console_plumbing_and_keeps_bindings() {
+        let cron = json!({
+            "id": "t-1", "trigger_type": "cron", "function_id": "harness::sweep-pending",
+            "worker_name": "harness", "config": {"expression": "0 0 0 * * *"}, "status": "active"
+        });
+        let candidate = trigger_candidate(&cron).unwrap();
+        assert_eq!(candidate.function_id, "harness::sweep-pending");
+        assert_eq!(candidate.worker_name.as_deref(), Some("harness"));
+        assert_eq!(candidate.config["expression"], "0 0 0 * * *");
+        for (trigger_type, function_id) in [
+            ("console:style", "state::ui-content"),
+            ("trace", "iii::console::trace_activity::console-1"),
+        ] {
+            let row =
+                json!({ "id": "t", "trigger_type": trigger_type, "function_id": function_id });
+            assert!(
+                trigger_candidate(&row).is_none(),
+                "{trigger_type} {function_id}"
+            );
+        }
+        assert!(trigger_candidate(&json!({ "id": "t" })).is_none());
+    }
     use crate::functions::search_index::SEARCH_FN;
     use crate::hook::ExposeKind;
 

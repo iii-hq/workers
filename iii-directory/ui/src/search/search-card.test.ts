@@ -79,6 +79,36 @@ describe('search trigger renderer', () => {
     expect(serialized).not.toContain('No functions matched')
   })
 
+  it('renders registered triggers with their functions::info call, even without functions', () => {
+    const rendered = createSearchTriggerRenderer().tryRender({
+      functionId: 'directory::search_functions',
+      input: { capabilities: ['run a job every night'] },
+      output: {
+        guidance: 'The `triggers` entries are registered trigger bindings…',
+        workers: [],
+        triggers: [
+          {
+            id: 't-1',
+            trigger_type: 'cron',
+            function_id: 'harness::sweep-pending',
+            worker_name: 'harness',
+            config: { expression: '0 0 0 * * *' },
+          },
+        ],
+        latency_ms: 900,
+      },
+    } as FunctionTriggerMessage) as {
+      type: (props: Record<string, unknown>) => unknown
+      props: Record<string, unknown>
+    }
+
+    const serialized = JSON.stringify(rendered.type(rendered.props))
+    expect(serialized).toContain('registered triggers')
+    expect(serialized).toContain('"functionId":"harness::sweep-pending"')
+    expect(serialized).toContain('0 0 0 * * *')
+    expect(serialized).not.toContain('No functions matched')
+  })
+
   it('labels the card with the search mode when present', () => {
     const rendered = createSearchTriggerRenderer().tryRender({
       functionId: 'directory::search_functions',

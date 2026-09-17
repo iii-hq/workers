@@ -29,6 +29,17 @@ export interface DiscoverSkillView {
   description: string
 }
 
+/** A registered trigger binding the search judged relevant to the requested
+ * capabilities (Jev mode only): what already fires, schedules, or hooks
+ * `functionId`. Inspect the function with `engine::functions::info`. */
+export interface DiscoverTriggerView {
+  id: string
+  triggerType: string
+  functionId: string
+  workerName?: string
+  config: unknown
+}
+
 /** The search mode that actually ranked the results: remote relevance (`jev`),
  * local BM25+MiniLM (`hybrid`), or BM25 only (`lexical`). Absent on transcript
  * rows from workers that predate the field. */
@@ -39,6 +50,7 @@ export interface DiscoverView {
   workers: DiscoverWorkerView[]
   installable: DiscoverInstallableView[]
   skills: DiscoverSkillView[]
+  triggers: DiscoverTriggerView[]
   searchMode?: DiscoverSearchMode
   latency_ms: number
 }
@@ -153,6 +165,25 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
       skills.push({ id: skill.id, title: skill.title, description: skill.description })
     }
   }
+  const triggers: DiscoverTriggerView[] = []
+  if ('triggers' in value && value.triggers !== undefined) {
+    if (!Array.isArray(value.triggers)) return null
+    for (const trigger of value.triggers) {
+      if (!isRecord(trigger)) return null
+      if (typeof trigger.id !== 'string' || trigger.id.length === 0) return null
+      if (typeof trigger.trigger_type !== 'string') return null
+      if (typeof trigger.function_id !== 'string') return null
+      const workerName = trigger.worker_name
+      if (workerName !== undefined && workerName !== null && typeof workerName !== 'string') return null
+      triggers.push({
+        id: trigger.id,
+        triggerType: trigger.trigger_type,
+        functionId: trigger.function_id,
+        ...(typeof workerName === 'string' ? { workerName } : {}),
+        config: trigger.config ?? {},
+      })
+    }
+  }
   let searchMode: DiscoverSearchMode | undefined
   if ('search_mode' in value && value.search_mode !== undefined) {
     if (value.search_mode !== 'lexical' && value.search_mode !== 'hybrid' && value.search_mode !== 'jev') {
@@ -165,6 +196,7 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
     workers,
     installable,
     skills,
+    triggers,
     ...(searchMode ? { searchMode } : {}),
     latency_ms: value.latency_ms,
   }
