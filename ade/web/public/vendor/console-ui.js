@@ -20,6 +20,7 @@ export const {
   BottomSheetDescription,
   BottomSheetTitle,
   BottomSheetTrigger,
+  Breadcrumb,
   Button,
   Card,
   CardBody,

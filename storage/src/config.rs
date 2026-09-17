@@ -22,9 +22,20 @@ pub struct ProvidersConfig {
 pub struct LocalProviderConfig {
     #[serde(default = "default_local_data_dir")]
     pub data_dir: String,
-    /// Optional direct-transfer HTTP server. Inline getObject/putObject work
-    /// without it; signed upload/download endpoints require it.
+    /// Direct-transfer HTTP server used by signed upload/download endpoints.
+    /// When omitted, the worker still starts one on a free loopback port
+    /// (`127.0.0.1:0`) so browser transfers work out of the box; set it to
+    /// choose the listener or publish a LAN/VPN/proxy `public_url`.
     pub http: Option<LocalHttpConfig>,
+}
+
+impl Default for LocalHttpConfig {
+    fn default() -> Self {
+        Self {
+            bind_address: default_local_http_bind_address(),
+            public_url: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]

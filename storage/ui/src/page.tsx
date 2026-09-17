@@ -1,4 +1,5 @@
 import {
+  Breadcrumb,
   Button,
   EmptyState,
   Eyebrow,
@@ -558,6 +559,14 @@ function StorageExplorer({
                       >
                         <RefreshCw />
                       </IconButton>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={transfer !== null}
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        <Upload /> upload
+                      </Button>
                     </>
                   }
                 >
@@ -569,54 +578,23 @@ function StorageExplorer({
                       <ChevronLeft />
                     </IconButton>
                   ) : null}
-                  <div className="storage-ui-path">
-                    <span className="storage-ui-path-bucket">{bucketName}</span>
-                    <span
-                      className="storage-ui-path-prefix"
-                      title={prefix || '/'}
-                    >
-                      {prefix || '/'}
-                    </span>
-                  </div>
-                </Toolbar>
-                <Toolbar
-                  aria-label="Folder actions"
-                  end={
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      disabled={transfer !== null}
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      <Upload /> upload
-                    </Button>
-                  }
-                >
-                  <div
-                    className="storage-ui-breadcrumb"
+                  <Breadcrumb
                     aria-label="Current folder"
-                  >
-                    <button type="button" onClick={() => openFolder('')}>
-                      {bucketName}
-                    </button>
-                    {prefix
-                      .split('/')
-                      .filter(Boolean)
-                      .map((segment, index, parts) => {
-                        const value = `${parts.slice(0, index + 1).join('/')}/`
-                        return (
-                          <span key={value}>
-                            <span aria-hidden="true">/</span>
-                            <button
-                              type="button"
-                              onClick={() => openFolder(value)}
-                            >
-                              {segment}
-                            </button>
-                          </span>
-                        )
-                      })}
-                  </div>
+                    items={[
+                      { key: '/', label: bucketName, onClick: () => openFolder('') },
+                      ...prefix
+                        .split('/')
+                        .filter(Boolean)
+                        .map((segment, index, parts) => {
+                          const value = `${parts.slice(0, index + 1).join('/')}/`
+                          return {
+                            key: value,
+                            label: segment,
+                            onClick: () => openFolder(value),
+                          }
+                        }),
+                    ]}
+                  />
                   <input
                     ref={fileInputRef}
                     className="storage-ui-file-input"
@@ -666,9 +644,11 @@ function StorageExplorer({
                     />
                   ) : rowCount === 0 ? (
                     <EmptyState
+                      compact
                       icon={Folder}
                       title="This folder is empty"
                       description="Upload a file here, or choose another bucket or folder."
+                      className="storage-ui-status"
                       action={{
                         label: 'upload file',
                         onClick: () => fileInputRef.current?.click(),

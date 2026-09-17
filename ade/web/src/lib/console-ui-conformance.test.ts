@@ -36,6 +36,7 @@ import {
   BottomSheetTitle,
   BottomSheetTrigger,
 } from '@/components/ui/BottomSheet'
+import { Breadcrumb } from '@/components/ui/Breadcrumb'
 import { Button } from '@/components/ui/Button'
 import { Checkbox } from '@/components/ui/Checkbox'
 import { Chip } from '@/components/ui/Chip'
@@ -150,6 +151,7 @@ const conformance: {
   BottomSheetDescription: typeof ConsoleUi.BottomSheetDescription
   BottomSheetTitle: typeof ConsoleUi.BottomSheetTitle
   BottomSheetTrigger: typeof ConsoleUi.BottomSheetTrigger
+  Breadcrumb: typeof ConsoleUi.Breadcrumb
   Button: typeof ConsoleUi.Button
   Eyebrow: typeof ConsoleUi.Eyebrow
   Kbd: typeof ConsoleUi.Kbd
@@ -253,6 +255,7 @@ const conformance: {
   BottomSheetDescription,
   BottomSheetTitle,
   BottomSheetTrigger,
+  Breadcrumb,
   Button,
   Eyebrow,
   Kbd,

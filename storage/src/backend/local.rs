@@ -6,7 +6,7 @@
 //! compatibility), and multipart presigned POST uploads for large files.
 
 use super::*;
-use crate::config::LocalProviderConfig;
+use crate::config::{LocalHttpConfig, LocalProviderConfig};
 use crate::triggers::dispatcher::EventDispatcher;
 use crate::triggers::normalize::{EventKind, ObjectEventNormalized};
 use axum::body::Body;
@@ -155,7 +155,15 @@ impl LocalRuntime {
             provider_error(format!("create local data dir {}: {error}", root.display()))
         })?;
 
-        let desired_http = config.and_then(|value| value.http.as_ref());
+        // Signed transfers need the HTTP listener; when the operator did not
+        // configure one, fall back to a free loopback port instead of leaving
+        // presign calls to fail with PRESIGN_UNSUPPORTED.
+        let default_http = LocalHttpConfig::default();
+        let desired_http = Some(
+            config
+                .and_then(|value| value.http.as_ref())
+                .unwrap_or(&default_http),
+        );
         let desired_bind = desired_http.map(|http| http.bind_address.clone());
         let (current_bind, current_addr, current_running) = {
             let current = self.http.lock().await;
@@ -283,7 +291,12 @@ pub async fn prepare(
         provider_error(format!("create local data dir {}: {error}", root.display()))
     })?;
 
-    let (listener, public_url) = match config.and_then(|value| value.http.as_ref()) {
+    let default_http = LocalHttpConfig::default();
+    let (listener, public_url) = match Some(
+        config
+            .and_then(|value| value.http.as_ref())
+            .unwrap_or(&default_http),
+    ) {
         Some(http) => {
             let listener = TcpListener::bind(&http.bind_address)
                 .await

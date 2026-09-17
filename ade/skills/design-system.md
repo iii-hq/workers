@@ -268,6 +268,7 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | `StatusDot` | 6px dot, `tone` accent/alert/warn/ink, `pulse` (`pulse-dot`, the one glow) | Accent = running |
 | `LiveRegion` | `announcement` `{ seq, text, urgency }` | Announce async results once |
 | `Eyebrow` | Mono caps label, `as`, `size` md/lg | Don't uppercase anything else |
+| `Breadcrumb` | Mono path, `items[{ label, onClick?, key? }]` root → current; `separator` (`/`), `emphasizeRoot`; last item is `aria-current="page"`, overflow scrolls | One per `Toolbar`; never repeat the path in a header above it |
 | `Kbd` / `KeyCombo` | Key cap with `shadow-keycap`; `binding` (`Mod+S`) per `platform` | Shortcuts in prose |
 | `ErrorBoundary` | Catches render errors of injected UI | Wrap independently failing regions |
 
@@ -331,6 +332,7 @@ The six hooks are `@iii-dev/console-ui/hooks`; the formatters are `@iii-dev/cons
 | Error | `StatusPanel variant="alert"` + `errorMessage(err)` + a retry `Button`; never raw error text |
 | Selection | `data-selected` / `aria-selected` / `aria-current` → `surface-selected` + `ink`; never accent |
 | Toolbars | `Toolbar` above the content, `StatusBar` below; both inside `PageMain` |
+| Paths | `Breadcrumb` inside the `Toolbar` (back `IconButton` before it, actions in `end`); ancestors navigate, the current segment is plain `ink` |
 | Search / filter | `SearchField` (Escape clears); debounce remote queries in the page |
 | Confirmation | `useConfirm` / `ConfirmDialog`; `tone="danger"` for destructive; never `window.confirm` |
 | Eyebrows | `Eyebrow` for section labels and key/value keys; no other uppercase |

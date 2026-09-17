@@ -22,6 +22,7 @@ export const componentNames = [
   'BottomSheetDescription',
   'BottomSheetTitle',
   'BottomSheetTrigger',
+  'Breadcrumb',
   'Button',
   'Card',
   'CardBody',

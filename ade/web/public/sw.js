@@ -4,7 +4,10 @@
  * injected worker UIs must never be answered from an offline cache. Only the
  * application shell and immutable/static presentation assets are retained so
  * an installed Console can open into its normal disconnected state and
- * reconnect when the server becomes reachable again.
+ * reconnect when the server becomes reachable again. The `vendor/` shims are
+ * part of the injected-UI contract: their file names never change while
+ * their export lists do, so a cache-first copy would strand every worker page
+ * that imports a newer export.
  */
 
 const scopeUrl = new URL(self.registration.scope)
@@ -13,7 +16,7 @@ const scopePath = scopeUrl.pathname.endsWith('/')
   : `${scopeUrl.pathname}/`
 const scopeKey = scopePath.replace(/[^a-z0-9]/gi, '-') || 'root'
 const cachePrefix = `iii-console-shell-${scopeKey}-`
-const cacheName = `${cachePrefix}v3`
+const cacheName = `${cachePrefix}v4`
 const shellUrl = new URL('./', self.registration.scope).href
 
 function relativePath(url) {
@@ -27,7 +30,6 @@ function isStaticAsset(path) {
   return (
     path.startsWith('assets/') ||
     path.startsWith('icons/') ||
-    path.startsWith('vendor/') ||
     path === 'manifest.webmanifest'
   )
 }

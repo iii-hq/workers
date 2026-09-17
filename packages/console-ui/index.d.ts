@@ -1717,6 +1717,30 @@ export interface LiveRegionProps {
 /** Visually hidden polite + assertive ARIA live regions. */
 export declare const LiveRegion: React.ComponentType<LiveRegionProps>
 
+export interface BreadcrumbItem {
+  /** Authored or machine text; rendered verbatim in mono. */
+  label: React.ReactNode
+  /** Navigate to this ancestor. Omit on the current (last) item. */
+  onClick?: () => void
+  /** Stable key when labels can repeat; defaults to the index. */
+  key?: string
+}
+export interface BreadcrumbProps
+  extends Omit<React.HTMLAttributes<HTMLElement>, 'children'> {
+  /** Root first, current location last. */
+  items: readonly BreadcrumbItem[]
+  /** Glyph between segments; `/` by default. */
+  separator?: React.ReactNode
+  /** Emphasise the first item (a bucket, a repository, a workspace root). */
+  emphasizeRoot?: boolean
+}
+/**
+ * Horizontal path in the mono voice: ancestors are ghost buttons that
+ * navigate, the last item is the current location (`aria-current="page"`).
+ * Overflow scrolls horizontally; the path never wraps a `Toolbar`.
+ */
+export declare const Breadcrumb: React.ComponentType<BreadcrumbProps>
+
 export interface EyebrowProps extends React.HTMLAttributes<HTMLElement> {
   as?: 'span' | 'div' | 'p' | 'h2' | 'h3' | 'h4' | 'header' | 'dt' | 'legend'
   /** `lg` is the section eyebrow: the same 11px, tracked 0.14em. */

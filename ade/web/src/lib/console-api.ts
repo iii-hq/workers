@@ -52,6 +52,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
+import { Breadcrumb } from '@/components/ui/Breadcrumb'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { Eyebrow } from '@/components/ui/Eyebrow'
@@ -143,6 +144,7 @@ export const components: ConsoleApi['components'] = {
   BottomSheetDescription,
   BottomSheetTitle,
   BottomSheetTrigger,
+  Breadcrumb,
   Button,
   Eyebrow,
   Kbd,
