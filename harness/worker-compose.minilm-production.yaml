@@ -96,10 +96,6 @@ containers:
   document:
     worker: path://../document
     scripts: { run: cargo run --locked --bin document }
-  editor:
-    worker: path://../editor
-    start_after: [ide, state]
-    scripts: { run: cargo run --locked --bin editor }
   email:
     worker: path://../email
     start_after: [state]
@@ -322,14 +318,6 @@ containers:
     config_name: rbac-proxy-minilm-production
     config_override: { host: 127.0.0.1, port: 0, engine_url: "ws://127.0.0.1:49234", middleware_function_id: null, expose_worker_internals: false, rbac: {} }
     scripts: { run: cargo run --locked --bin rbac-proxy }
-  scrapling:
-    # Run from source on the host. Pointing at the bundle root asks current
-    # Compose to prepare its publishing manifest as a VM before this explicit
-    # run command is considered.
-    worker: path://../scrapling/src
-    working_dir: ../scrapling
-    start_after: [harness]
-    scripts: { run: uv run --isolated --no-project --with . python -m src.main }
   security-scan:
     worker: path://../security-scan
     start_after: [github, harness, cron, state, queue, worktree, storage]

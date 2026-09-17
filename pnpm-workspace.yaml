@@ -19,7 +19,6 @@ packages:
   - code-runner/ui
   - computer/ui
   - database/ui
-  - editor/ui
   - eval/ui
   - harness/ui
   - memory/ui

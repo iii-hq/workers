@@ -55,7 +55,7 @@ describe('pipe schemas', () => {
   it('parses the canonical through request', () => {
     const r = safeParseRequest(pipeRequestSchema, {
       through: [
-        { function: 'scrapling::fetch', payload: { url: 'u' } },
+        { function: 'browser::fetch', payload: { url: 'u' } },
         { function: 'fp::get', payload: { path: '/content' } },
         { function: 'state::set', payload: { scope: 's' }, into: '/value' },
       ],
@@ -72,7 +72,7 @@ describe('pipe schemas', () => {
   it('parses receipts + preview out of success details', () => {
     const details = {
       steps: [
-        { function: 'scrapling::fetch', chars: 84213 },
+        { function: 'browser::fetch', chars: 84213 },
         { function: 'state::set', chars: 46 },
       ],
       value_preview: '## Circuit breakers…',
@@ -91,7 +91,7 @@ describe('pipe schemas', () => {
     const display = parseSandboxErrorDisplay(
       errorEnvelope(
         'handler_error',
-        'pipe failed at step 2 (fp::get): path "/body" matched nothing · completed: scrapling::fetch→84213ch',
+        'pipe failed at step 2 (fp::get): path "/body" matched nothing · completed: browser::fetch→84213ch',
       ),
     )
     expect(display?.variant).toBe('invocation')

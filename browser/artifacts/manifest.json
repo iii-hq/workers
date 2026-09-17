@@ -1,0 +1,51 @@
+{
+  "format": 1,
+  "browser": {
+    "playwright_revision": "1223",
+    "chromium_version": "148.0.7778.96",
+    "archives": [
+      {
+        "name": "chromium-linux-x64",
+        "url": "https://cdn.playwright.dev/builds/cft/148.0.7778.96/linux64/chrome-linux64.zip",
+        "path": "pw-chromium-1223-linux-x64.zip",
+        "size": 183945705,
+        "sha256": "e58a0612f6156ad287ff392c681f6e1154d0c938feccf631d0c5d7abf3bbf81a"
+      },
+      {
+        "name": "chromium-headless-shell-linux-x64",
+        "url": "https://cdn.playwright.dev/builds/cft/148.0.7778.96/linux64/chrome-headless-shell-linux64.zip",
+        "path": "pw-headless-1223-linux-x64.zip",
+        "size": 118673688,
+        "sha256": "88817c574c1838a39f88fda0bbd043b4481fd385fb10e92c323e230844d636ce"
+      },
+      {
+        "name": "ffmpeg-linux-x64",
+        "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1011/ffmpeg-linux.zip",
+        "path": "pw-ffmpeg-1011-linux-x64.zip",
+        "size": 2376500,
+        "sha256": "ebc74fc5b94830176a3c2914ae96bd8bc7f6a91f4f33890230f84a172ee61ccc"
+      },
+      {
+        "name": "chromium-linux-arm64",
+        "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1223/chromium-linux-arm64.zip",
+        "path": "pw-chromium-1223-linux-arm64.zip",
+        "size": 194706293,
+        "sha256": "3f7fd102f646dad864a987de04782e238e98a3d38543a1c8be0129b96706a283"
+      },
+      {
+        "name": "chromium-headless-shell-linux-arm64",
+        "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1223/chromium-headless-shell-linux-arm64.zip",
+        "path": "pw-headless-1223-linux-arm64.zip",
+        "size": 114718332,
+        "sha256": "4578d731ef7f2f344ae1d79c0ae2664453fc0848ccaa726856a5e9d34aaa1a0e"
+      },
+      {
+        "name": "ffmpeg-linux-arm64",
+        "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1011/ffmpeg-linux-arm64.zip",
+        "path": "pw-ffmpeg-1011-linux-arm64.zip",
+        "size": 1717234,
+        "sha256": "2628c03f05318ff812c8c9baaf207dea2ddf53e818c0dc936714b0fbe3afb009"
+      }
+    ]
+  }
+}

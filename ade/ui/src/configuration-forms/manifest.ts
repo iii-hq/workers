@@ -71,8 +71,8 @@ export function declaredFields(spec: WorkerConfigurationSpec): string[] {
 }
 
 export function validateWorkerConfigurationManifest(): void {
-  if (workerConfigurationManifest.length !== 39) {
-    throw new Error(`Expected 39 worker configuration forms, found ${workerConfigurationManifest.length}`)
+  if (workerConfigurationManifest.length !== 38) {
+    throw new Error(`Expected 38 worker configuration forms, found ${workerConfigurationManifest.length}`)
   }
 
   const ids = new Set<string>()

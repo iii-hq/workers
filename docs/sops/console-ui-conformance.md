@@ -85,7 +85,6 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 | `context-manager` | no | Minimal shared renderer audited; no selectable navigation; lint clean | Context accounting payload |
 | `cron` | no | Shared page chrome with `PageSidebar`, `List`/`ListItem`, `Tabs`, `Table` family, `Select`/`SegmentedControl`, `IconButton`, `Dialog`/`DropdownMenu`, settings primitives with `RawValueInput`; canonical trigger-activity renderer and small settings form; inline `<svg>` and viewport media queries to replace | Schedule composer and run history |
 | `database` | no | Shared line tabs with default icons, icon-only header actions, selects, and tooltips; neutral tree/ERD selection; canonical `SettingsDeck` form; local `useContainerNarrow`, `icons.tsx`, toolbars and formatters to replace | Data grid, query plan, ERD, health metrics, multi-filter chips |
-| `editor` | no (own build) | Neutral row/tab/mode selection; own `build.mjs` (shiki narrowing) that runs the same scope/token checks and lint; literal mono stacks to swap for `var(--font-code)` | Editor tab strip and diff rendering (deprecated in favour of `ide`) |
 | `eval` | no | Shared selects/tabs; neutral history/session/run selection; hand-written tablist to replace with `Tabs` | Session comparison is intentionally multi-select |
 | `github` | no | Shared line tabs; neutral graph/list selection; local narrow hook, `icons.tsx` and formatters to replace | Commit graph and repository status semantics |
 | `harness` | no | Shared controls and token styling audited; `context-chip` popover with its own portal and media query to move onto `Dialog`/`Tooltip` | Harness run/approval payloads |
@@ -157,7 +156,6 @@ owns; the registry refuses those at registration. See the injectable-UI SOP,
 | github | toggle live, refresh, close detail; setup: open | `L`, `R`, `Escape` | (PR / issue data not wired in the UI yet) |
 | pdf | choose file; setup: open | `O` | |
 | onboarding, vscode | setup: open | | |
-| editor (deprecated) | save; setup: open | `Mod+S` | |
 
 Every page names its `data-autofocus` target. Shared `TableRow interactive` and `List` carry the arrows, Enter and Space for the rows and lists built from them.
 

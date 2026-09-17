@@ -637,7 +637,7 @@ mod tests {
     #[test]
     fn repo_workers_are_everything_the_compose_file_does_not_declare() {
         let repo = repo_fixture();
-        for (worker, deploy) in [("browser", "binary"), ("scrapling", "bundle")] {
+        for (worker, deploy) in [("browser", "binary"), ("hermes", "bundle")] {
             std::fs::create_dir_all(repo.path().join(worker)).unwrap();
             std::fs::write(
                 repo.path().join(worker).join("iii.worker.yaml"),
@@ -654,11 +654,7 @@ mod tests {
 
         let offered = offered(&repo, Vec::new());
         let names: Vec<&str> = offered.iter().map(|worker| worker.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["browser", "scrapling"],
-            "name order, stack excluded"
-        );
+        assert_eq!(names, ["browser", "hermes"], "name order, stack excluded");
         assert_eq!(offered[0].bin.as_deref(), Some("browser"));
         // Not a Rust binary: offered, but never started with `cargo run`.
         assert_eq!(offered[1].bin, None);

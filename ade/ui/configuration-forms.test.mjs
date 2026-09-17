@@ -32,7 +32,6 @@ const EXPECTED_IDS = [
   'queue',
   'rbac-proxy',
   'sandbox-code-runner',
-  'scrapling',
   'security-scan',
   'session-manager',
   'shell',
@@ -110,11 +109,11 @@ async function loadConfigurationValues() {
   return import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
 }
 
-test('manifest covers the 39 worker-owned configuration entries', async () => {
+test('manifest covers the 38 worker-owned configuration entries', async () => {
   const manifest = await loadManifest()
   assert.doesNotThrow(() => manifest.validateWorkerConfigurationManifest())
-  assert.equal(manifest.workerConfigurationManifest.length, 39)
-  assert.equal(new Set(manifest.workerConfigurationIds).size, 39)
+  assert.equal(manifest.workerConfigurationManifest.length, 38)
+  assert.equal(new Set(manifest.workerConfigurationIds).size, 38)
   assert.deepEqual([...manifest.workerConfigurationIds].sort(), EXPECTED_IDS)
   assert.equal(manifest.workerConfigurationIds.includes('shell-ui'), false)
 })

@@ -164,7 +164,7 @@ a second call to parse what you fetched. Each takes a single `url` or a bulk
 Safe mode refuses private, loopback and cloud-metadata addresses on every one
 of these connections (including redirects and crawl hops). To scrape a local
 dev server the operator must set `browser.scrapling.allow_loopback` in worker
-config. Compat mode reproduces the standalone worker's unrestricted network
+config. Compat mode reproduces the Python wrapper's unrestricted network
 behavior and is for trusted calls.
 
 ### HTML parsing — no session, no browser, no network
@@ -197,7 +197,7 @@ any source (a fetch body, a file, a page you already read).
 `adaptive: true` persists element identities in the configured SQLite file.
 Parse calls are auto-allowed, so do not assume parsing is side-effect-free
 when adaptive tracking is enabled. Safe mode enforces the configured database
-quota; compat mode preserves the standalone worker's unbounded behavior.
+quota; compat mode preserves the Python wrapper's unbounded behavior.
 
 ### Safe and compat modes
 
@@ -209,9 +209,9 @@ the frozen curl-impersonate and Chromium artifacts. Other targets reject it,
 and a Tier-1 build missing an artifact reports a capability error instead of
 silently using the safe transport.
 
-Native ids are `browser::<leaf>`. Map `scrapling::screenshot` to
-`browser::screenshot-url`; `browser::screenshot` is the interactive-session
-function. Crawl's default stream is `browser::crawl`.
+Every id is `browser::<leaf>`. `browser::screenshot-url` screenshots a url,
+while `browser::screenshot` is the interactive-session function. Crawl's
+default stream is `browser::crawl`.
 
 ## Workflow: inspect before acting
 

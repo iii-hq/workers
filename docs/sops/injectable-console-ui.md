@@ -233,7 +233,7 @@ esbuild's `external` list would also externalize the package's bundleable
 the 8 MiB cap, an unscoped selector, an unprefixed `@keyframes`, `@font-face`
 (`assertScoped`) or a `var(--…)` token the console does not define
 (`checkTokens`, `strictTokens: false` to warn instead), then lints the
-source (below). A worker that needs its own pipeline (`editor`, `canvas`)
+source (below). A worker that needs its own pipeline (`canvas`)
 imports `workerUiExternals`, `assertScoped`, `checkTokens` and
 `lintWorkerUi` and runs the same checks itself.
 

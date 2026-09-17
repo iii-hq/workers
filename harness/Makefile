@@ -6,31 +6,21 @@ ENGINE_URL   ?= ws://127.0.0.1:49134
 ENGINE_PORT  ?= 49134
 CONSOLE_PORT ?= 3113
 RUST_LOG     ?= info
-PYTHON       ?= python3
 
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT    := $(abspath $(MAKEFILE_DIR)/..)
 WORKTREE_ROOT ?= $(REPO_ROOT)
 WORKTREE_ROOT_ABS := $(abspath $(if $(filter /%,$(WORKTREE_ROOT)),$(WORKTREE_ROOT),$(REPO_ROOT)/$(WORKTREE_ROOT)))
 ENGINE_CONFIG ?= $(MAKEFILE_DIR)engine.config.yaml
-SCRAPLING_ROOT := $(WORKTREE_ROOT_ABS)/scrapling
-SCRAPLING_VENV := $(SCRAPLING_ROOT)/.venv
-SCRAPLING_STAMP := $(SCRAPLING_VENV)/.installed
 
 BASE_STACK := state queue iii-directory llm-router session-manager context-manager \
-              provider-anthropic provider-openai provider-openai-codex ide scrapling cron \
+              provider-anthropic provider-openai provider-openai-codex ide cron \
               approval-gate harness ade
 STACK := $(BASE_STACK) eval
 
-# scrapling is a Python worker (pyproject + venv, see prepare-scrapling);
-# every other STACK member is a Rust crate with <worker>/Cargo.toml. Cargo
-# targets must only ever see the Rust subset.
-PYTHON_WORKERS := scrapling
-RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
-
 GOAL_ARGS        := $(filter-out help install-iii-rc build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
                     engine wait-engine wait-base wait-stack restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session prepare-scrapling require-engine where integration-build integration-run integration-test integration-coverage integration-playground integration-validate quickstart-validate,$(MAKECMDGOALS))
+                    ensure-session require-engine where integration-build integration-run integration-test integration-coverage integration-playground integration-validate quickstart-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -41,7 +31,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 .DEFAULT_GOAL := help
 
 .PHONY: help install-iii-rc build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
-        restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
+        restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session \
         require-engine where integration-build integration-run integration-test integration-coverage integration-playground integration-validate quickstart-validate $(STACK)
 
 help:
@@ -78,37 +68,24 @@ quickstart-validate:
 install-iii-rc:
 	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --rc
 
-$(SCRAPLING_STAMP): $(SCRAPLING_ROOT)/pyproject.toml
-	@test -x "$(SCRAPLING_VENV)/bin/python" || "$(PYTHON)" -m venv --without-pip "$(SCRAPLING_VENV)"
-	@"$(PYTHON)" -m pip --python "$(SCRAPLING_VENV)/bin/python" install --disable-pip-version-check -e "$(SCRAPLING_ROOT)"
-	@touch "$@"
-
-prepare-scrapling: $(SCRAPLING_STAMP)
-
 build:
 	@if [ -n "$(UNKNOWN_WORKERS)" ]; then \
 	  echo "unknown worker(s): $(UNKNOWN_WORKERS)"; \
 	  echo "valid workers: $(STACK)"; \
 	  exit 2; \
 	fi
-	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
+	@for w in $(ACTIVE_WORKERS); do \
 	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	  echo "building $$w ($(PROFILE)) from $(WORKTREE_ROOT_ABS)"; \
 	  cargo build $(BUILD_FLAG) --manifest-path "$$manifest" || exit 1; \
 	done
-	@if [ -n "$(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS))" ]; then \
-	  $(MAKE) --no-print-directory prepare-scrapling; \
-	fi
 
 install-local: build
 	@mkdir -p "$(III_WORKERS)"
-	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
+	@for w in $(ACTIVE_WORKERS); do \
 	  ln -sfn "$(WORKTREE_ROOT_ABS)/$$w/target/$(PROFILE)/$$w" "$(III_WORKERS)/$$w"; \
 	  echo "linked $(III_WORKERS)/$$w"; \
-	done
-	@for w in $(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS)); do \
-	  echo "skipping $$w: Python worker has no binary to link; run it with make restart $$w"; \
 	done
 	@echo "restart the engine to load linked binaries, or use make dev-up for cargo-run development"
 
@@ -121,14 +98,11 @@ cargo-clean:
 	  echo "valid workers: $(STACK)"; \
 	  exit 2; \
 	fi
-	@for w in $(filter $(RUST_WORKERS),$(ACTIVE_WORKERS)); do \
+	@for w in $(ACTIVE_WORKERS); do \
 	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	  echo "cleaning cargo artifacts for $$w from $(WORKTREE_ROOT_ABS)"; \
 	  cargo clean --manifest-path "$$manifest" || exit 1; \
-	done
-	@for w in $(filter $(PYTHON_WORKERS),$(ACTIVE_WORKERS)); do \
-	  echo "skipping $$w: no cargo artifacts"; \
 	done
 
 dev-run: dev-up
@@ -252,11 +226,7 @@ restart:
 	  exit 2; \
 	fi
 	@for w in $(SELECTED_WORKERS); do \
-	  if [ "$$w" = "scrapling" ]; then \
-	    manifest="$(SCRAPLING_ROOT)/pyproject.toml"; \
-	  else \
-	    manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
-	  fi; \
+	  manifest="$(WORKTREE_ROOT_ABS)/$$w/Cargo.toml"; \
 	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
 	done
 	@$(MAKE) --no-print-directory require-engine
@@ -272,18 +242,12 @@ restart-worker:
 	  *) echo "unknown worker: $(WORKER)"; echo "valid workers: $(STACK)"; exit 2 ;; \
 	esac
 	@worker="$(WORKER)"; \
-	if [ "$$worker" = "scrapling" ]; then \
-	  test -f "$(SCRAPLING_ROOT)/pyproject.toml" || { echo "missing $(SCRAPLING_ROOT)/pyproject.toml"; exit 2; }; \
-	  $(MAKE) --no-print-directory prepare-scrapling || exit 1; \
-	  cmd="cd '$(SCRAPLING_ROOT)' && III_URL='$(ENGINE_URL)' '$(SCRAPLING_VENV)/bin/python' -m src.main"; \
-	else \
-	  manifest="$(WORKTREE_ROOT_ABS)/$$worker/Cargo.toml"; \
-	  test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
-	  args="--url $(ENGINE_URL)"; \
-	  if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
-	  if [ "$$worker" = "ade" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
-	  cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
-	fi; \
+	manifest="$(WORKTREE_ROOT_ABS)/$$worker/Cargo.toml"; \
+	test -f "$$manifest" || { echo "missing $$manifest"; exit 2; }; \
+	args="--url $(ENGINE_URL)"; \
+	if [ "$$worker" = "queue" ]; then args="$$args --config '$(MAKEFILE_DIR)queue.config.yaml'"; fi; \
+	if [ "$$worker" = "ade" ]; then args="$$args --http-port $(CONSOLE_PORT)"; fi; \
+	cmd="cd '$(WORKTREE_ROOT_ABS)' && RUST_LOG='$(RUST_LOG)' cargo run $(RUN_FLAG) --manifest-path '$$manifest' -- $$args"; \
 	if tmux list-windows -t "$(TMUX_SESSION)" -F '#W' | grep -Fxq "$$worker"; then \
 	  tmux respawn-window -k -t "$(TMUX_SESSION):$$worker" -c "$(WORKTREE_ROOT_ABS)" "$$cmd"; \
 	else \

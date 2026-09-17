@@ -18,9 +18,9 @@ def test_opengantry_uses_current_sdk_release() -> None:
     assert package["dependencies"]["iii-sdk"] == "0.23.0"
 
 
-def test_scrapling_uses_current_sdk_release() -> None:
+def test_hermes_uses_current_sdk_release() -> None:
     pyproject = tomllib.loads(
-        (REPO_ROOT / "scrapling" / "pyproject.toml").read_text(encoding="utf-8")
+        (REPO_ROOT / "hermes" / "pyproject.toml").read_text(encoding="utf-8")
     )
     dependencies = pyproject["project"]["dependencies"]
 

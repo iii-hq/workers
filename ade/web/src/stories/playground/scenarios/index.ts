@@ -12,10 +12,6 @@ import { markdownStress } from './markdown-stress'
 import { multiFunctionAgent } from './multi-function-agent'
 import { pendingApproval } from './pending-approval'
 import { sandboxLifecycle } from './sandbox'
-import { scraplingCrawlScenario } from './scrapling-crawl'
-import { scraplingParse } from './scrapling-parse'
-import { scraplingScrape } from './scrapling-scrape'
-import { scraplingSession } from './scrapling-session'
 import { slowTokens } from './slow-tokens'
 
 export type ScenarioGroup =
@@ -118,38 +114,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
       'gated create → fs::write → exec → stop, then a create that fails with the daemon S102 transient error.',
     group: 'agent',
     backend: sandboxLifecycle,
-  },
-  {
-    id: 'scrapling-scrape',
-    label: 'scrapling · scrape',
-    description:
-      'gated scrapling::stealthy-fetch (approve → extraction), then fetch + css cards.',
-    group: 'agent',
-    backend: scraplingScrape,
-  },
-  {
-    id: 'scrapling-parse',
-    label: 'scrapling · parse',
-    description:
-      'pure parsers: find-by-text → describe → to-markdown over static HTML (no approval).',
-    group: 'agent',
-    backend: scraplingParse,
-  },
-  {
-    id: 'scrapling-session',
-    label: 'scrapling · session',
-    description:
-      'session lifecycle: gated open → gated fetch (reuses cookies) → list → close.',
-    group: 'agent',
-    backend: scraplingSession,
-  },
-  {
-    id: 'scrapling-crawl',
-    label: 'scrapling · crawl',
-    description:
-      'gated crawl that BFS-follows same-domain links and streams extracted items back.',
-    group: 'agent',
-    backend: scraplingCrawlScenario,
   },
   {
     id: 'pending-approval',
