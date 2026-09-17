@@ -12,7 +12,8 @@
 # editing `./data/configuration/iii-directory.yaml` directly.
 #
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
-# registry_cache_ttl_ms, filter_unregistered, function_search_mode). Topology fields require a
+# registry_cache_ttl_ms, filter_unregistered, function_search_mode and all
+# function_search_jev_* options). Topology fields require a
 # worker restart (skills_folder, local_skills_folder, agents_folder,
 # global_agents_folder, agents_skills_folder, global_agents_skills_folder,
 # auto_download, function_search_model_path, function_search_model_download).
@@ -63,15 +64,36 @@ download_timeout_ms: 60000
 
 # Search lane: hybrid (BM25 fused with the local MiniLM model) is the default.
 # Lexical is BM25 only. Hybrid serves BM25 until the model bundle below is ready.
+# Jev uses the remote TypeSafe service independently of MiniLM, including when
+# function_search_model_path is null. Set function_search_mode: jev to enable it.
 function_search_mode: hybrid
 
+# Jev options (hot-reloadable, including the credential).
+# Optional TypeSafe key, also editable in the console's masked Jev API key field.
+# A configured value takes precedence over TYPESAFE_API_KEY captured from the
+# worker process environment at startup. Missing, null or blank restores that
+# environment fallback. New searches use changes immediately; in-flight searches
+# keep their original key. The configuration service persists configured keys.
+function_search_jev_api_key: null
+# The model must be a non-empty string.
+function_search_jev_model: jev-1.13.0
+# Integer 1..30000 ms for all Jev calls in a public search, shared across batches.
+# Registry HTTP requests have separate timeouts, so total search time may exceed it.
+function_search_jev_timeout_ms: 3000
+# Finite 0..1 inclusive; 0.5 is an initial calibration value.
+function_search_jev_min_relevance: 0.5
+# A valid result with no relevant functions stays empty. Missing credentials,
+# timeouts and service/protocol errors use lexical fallback for the affected batch.
+# Registry Jev ranking evaluates only the pool returned by upstream lexical search;
+# it cannot recover workers that the registry did not return.
+
 # Local semantic model directory: the pinned MiniLM bundle. Changing it
-# requires restart; `null` disables the semantic lane.
+# requires restart; `null` disables the Hybrid semantic lane, not Jev.
 # function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf
 
-# With a semantic mode and a missing/incomplete bundle at boot, download the
+# With Hybrid and a missing/incomplete bundle at boot, download the
 # pinned files from Hugging Face once (each verified by length and SHA-256).
-# Set false for air-gapped stacks; the worker then stays BM25-only until the
+# Set false for air-gapped stacks; Hybrid then stays BM25-only until the
 # bundle is provisioned by hand.
 function_search_model_download: true
 

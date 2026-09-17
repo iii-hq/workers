@@ -142,6 +142,8 @@ local_skills_folder: skills/iii        # project-scoped overrides (whole-namespa
 agents_folder: agents                  # direct <id>.md agent profiles
 agents_skills_folder: .agents/skills   # READ-ONLY agent skills, with the same relative-path base
 auto_download: true                   # subscribe to worker-add + run the boot reconcile
+# function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-<revision> # pinned Hybrid bundle; null disables it
+function_search_model_download: true   # download the pinned bundle at boot in Hybrid mode
 
 # TUNABLE — hot-reload live on `configuration:updated`.
 registry_url: https://api.workers.iii.dev   # workers registry base URL
@@ -151,6 +153,11 @@ filter_unregistered: true                    # hide skills whose namespace isn't
 inject_hint: false                           # bind the directory::pre-generate search-hint hook (off: the harness identity prompt already teaches directory-first discovery)
 hint_min_workers: 2                          # minimum surface width before the hint fires (0 = always)
 registry_search: true                        # include installable registry workers in every search
+function_search_mode: hybrid                 # lexical | hybrid (default) | jev
+function_search_jev_api_key: null             # optional override; null/blank uses TYPESAFE_API_KEY
+function_search_jev_model: jev-1.13.0          # non-empty TypeSafe model name
+function_search_jev_timeout_ms: 3000          # integer 1..30000; shared Jev deadline per public search
+function_search_jev_min_relevance: 0.5        # finite 0..1 inclusive; initial calibration value
 ```
 
 The writable `skills_folder` and `agents_folder` roots are created when needed.
@@ -172,8 +179,16 @@ On `configuration::set` (or an external edit to the persisted file), the worker
 re-fetches the authoritative value. Tunable changes apply in place and the
 registry caches are cleared so a repointed `registry_url` takes effect
 immediately. Topology changes (`skills_folder` / `local_skills_folder` /
-`agents_folder` / `agents_skills_folder` / `auto_download`) are refused with a "restart
+`agents_folder` / `agents_skills_folder` / `auto_download` /
+`function_search_model_path` / `function_search_model_download`) are refused with a "restart
 required" log; the previous configuration is kept until the worker restarts.
+
+`function_search_mode` and all `function_search_jev_*` options hot-reload,
+including `function_search_jev_api_key`. A configured key takes precedence over
+`TYPESAFE_API_KEY` captured from the **iii-directory worker process environment
+at boot**. Missing, null or blank keys restore that environment fallback.
+Changes apply to new searches; searches in progress keep their original key.
+Changing the environment variable itself still requires restarting the worker.
 
 The writable `skills_folder`, `local_skills_folder`, and `agents_folder` are
 watch roots, and the watcher creates each one at boot if it is missing.
@@ -462,8 +477,10 @@ There is **no** `directory::skills::register` — see
 ## Function search & pre-generate hint
 
 One-shot function search over the live engine catalog (hybrid by default:
-BM25 fused with the local MiniLM model, reranked; `function_search_mode:
-lexical` for BM25 only), absorbed from the former `discovery` worker. It returns only compact `{ function_id,
+BM25 fused with the local MiniLM model, reranked). Set `function_search_mode:
+lexical` for BM25 only, or `jev` for remote relevance evaluation through
+TypeSafe, independently of MiniLM. Absorbed from the former `discovery` worker,
+it returns only compact `{ function_id,
 description }` candidates, grouped by worker in rank order. The model chooses
 the candidates it needs, then fetches their contracts in one
 `engine::functions::info { function_ids: [...] }` call instead of walking the
@@ -471,12 +488,12 @@ catalog with `engine::functions::list`.
 
 | Function | Kind | What it does |
 |---|---|---|
-| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, latency_ms }`: hybrid rank over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
+| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
 | `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per turn). |
 | `directory::on-functions-change` | internal | Refreshes the search catalog on the engine's functions-available push. |
 | `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |
 
-Ranking pipeline:
+Lexical/Hybrid ranking pipeline:
 
 1. **Corpus**: the live engine catalog (boot snapshot + push refresh),
    slimmed to name + first description sentence + argument names. `engine::`
@@ -502,8 +519,8 @@ Ranking pipeline:
    queries plus informative-term retries (all concurrent; every listed worker
    is a candidate — the registry is team-authored). Candidates merge
    round-robin across search variants; their API references are pooled and
-   ranked per capability with BM25 fused with the MiniLM dense lane (same
-   0.30 admission floor as the installed catalog), so a capability sharing no
+   ranked per capability with the configured mode. Hybrid fuses BM25 with the
+   MiniLM dense lane (same 0.30 admission floor as the installed catalog), so a capability sharing no
    vocabulary with a contract ("retrieve web news articles" → `web::fetch`)
    still surfaces. Returns up to 2 workers / 6 candidates per batch of six
    capabilities (so up to 6 workers / 18 candidates across three batches; a
@@ -511,6 +528,71 @@ Ranking pipeline:
    that WOULD match if installed, with `compose::add` guidance.
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.
+
+### Jev mode
+
+Enter your TypeSafe key in **Jev API key** in the console's Function search
+settings, or set `function_search_jev_api_key` in the `iii-directory`
+configuration. The console masks this field; its value is persisted by the
+configuration service and omitted from the worker's configuration debug output.
+
+Alternatively, leave the field unset and provide `TYPESAFE_API_KEY` through the
+worker service or container environment before starting `iii-directory`.
+The configured key takes precedence. Clearing it (or setting null/blank) restores
+the environment key without a restart. If neither is available, search uses
+lexical fallback. A rejected configured key also uses lexical fallback; it does
+not retry with the environment credential.
+
+Select **Jev** in the console's Function search settings, or set:
+
+```yaml
+function_search_mode: jev
+function_search_jev_api_key: null # set your key here or in the masked console field
+function_search_jev_model: jev-1.13.0
+function_search_jev_timeout_ms: 3000
+function_search_jev_min_relevance: 0.5
+```
+
+These fields apply without a restart. The model must be a non-empty string,
+the timeout an integer from 1 to 30000 ms, and relevance a finite number from 0
+to 1 inclusive. YAML seeds and JSON configuration updates use the same validation.
+The relevance default is a starting point for calibration, not a measured quality
+guarantee.
+
+Jev evaluates eligible installed functions across the catalog, without a BM25
+shortlist or a MiniLM dependency. It sends normalized capabilities, function IDs,
+short descriptions and parameter names to TypeSafe; it does not send conversation
+history or function argument values. Exact eligible IDs, internal-function
+exclusions, session deduplication and result limits remain enforced locally.
+`function_search_model_path: null` is valid in Jev mode; Jev does not download,
+index or run MiniLM.
+
+Registry discovery still starts with the registry API's lexical search. Jev
+evaluates the returned contract pool and **cannot recover workers that upstream
+search did not return**. Installable results remain suggestions until installation.
+
+A valid response with no functions at or above the relevance threshold stays
+empty. Missing credentials, timeouts, HTTP failures and invalid/incomplete service
+responses instead trigger lexical fallback for the affected batch or registry
+pool. A registry failure still omits the installable section.
+
+The Jev deadline is shared across all batches in one public search, including
+waiting for a request slot and reading responses. Registry HTTP timeouts are
+separate, so total search latency may exceed the Jev deadline. Requests use up to
+16 functions × 6 capabilities per block and at most four concurrent requests per
+client; payloads are split at the local byte limits (48 KiB total JSON and 16 KiB
+for state plus the largest question). These byte guards are not token counts.
+Cost and latency grow with catalog size and capability count. Use the
+[opt-in benchmark](architecture/jev-search-evaluation.md) and returned token-usage
+telemetry to measure your workload; this
+configuration change supplies no measured remote quality, latency or cost result.
+
+Switch back to `lexical` at any time to use BM25 only. Switching to `hybrid`
+reactivates the local index from the current catalog. If the MiniLM bundle is
+missing, Hybrid uses lexical fallback; its boot-time download and changes to the
+local model path require a worker restart. Only Hybrid shows the local-model warning.
+
+### Pre-generate hint
 
 The pre-generate hook appends one `<discovery_assist>` block pointing the
 model at `search_functions`, telling it to derive capabilities from the goal

@@ -151,10 +151,10 @@ async fn main() -> Result<()> {
     let boot_topology = cfg.topology();
     let function_search_model_path = cfg.resolved_function_search_model_path();
     // MiniLM is compiled only for targets with a pinned ONNX Runtime (see
-    // build.rs); elsewhere a semantic mode serves BM25 and neither a download
+    // build.rs); elsewhere Hybrid serves BM25 and neither a download
     // nor a missing-bundle warning helps.
     let minilm_supported = cfg!(minilm);
-    if !minilm_supported && cfg.function_search_mode != FunctionSearchMode::Lexical {
+    if !minilm_supported && cfg.function_search_mode == FunctionSearchMode::Hybrid {
         tracing::info!(
             mode = ?cfg.function_search_mode,
             target = env!("TARGET"),
@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
         .as_deref()
         .is_some_and(functions::search_semantic::bundle_complete);
     let download_bundle = minilm_supported
-        && cfg.function_search_mode != FunctionSearchMode::Lexical
+        && cfg.function_search_mode == FunctionSearchMode::Hybrid
         && cfg.function_search_model_download
         && function_search_model_path.is_some()
         && !bundle_ready;
@@ -204,6 +204,7 @@ async fn main() -> Result<()> {
         Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
     let semantic =
         functions::search_semantic::SemanticSearch::new(function_search_model_path.clone());
+    semantic.set_enabled(cfg_handle.load().function_search_mode == FunctionSearchMode::Hybrid);
     if functions::search::refresh_catalog(&iii, &search_catalog, &semantic)
         .await
         .is_err()
@@ -216,6 +217,7 @@ async fn main() -> Result<()> {
         sessions: Arc::default(),
         registry_cache: registry_cache.clone(),
         semantic: semantic.clone(),
+        jev: functions::search_jev::JevSearch::new(std::env::var("TYPESAFE_API_KEY").ok()),
     };
     functions::search::register(&iii, &search_deps);
     functions::search::bind_best_effort(&iii);
@@ -231,8 +233,8 @@ async fn main() -> Result<()> {
             match functions::search_semantic::download_bundle(&root).await {
                 Ok(()) => {
                     tracing::info!(path = %root.display(), "MiniLM search bundle ready");
-                    let tools = catalog.read().await.clone();
-                    semantic.rebuild(tools);
+                    let tools = catalog.read().await;
+                    semantic.rebuild(tools.clone());
                 }
                 Err(error) => tracing::warn!(
                     %error,
@@ -272,6 +274,7 @@ async fn main() -> Result<()> {
         registered_cache,
         boot_topology,
         hint_binding,
+        search_deps.clone(),
     );
     configuration::register_config_trigger(&iii, state)
         .context("registering configuration change trigger")?;

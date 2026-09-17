@@ -13,6 +13,11 @@ export const FUNCTION_SEARCH_MODE_OPTIONS = [
     label: 'Hybrid',
     description: 'Fuse BM25 with the configured local semantic model.',
   },
+  {
+    value: 'jev',
+    label: 'Jev',
+    description: 'Use TypeSafe Jev to evaluate function relevance remotely.',
+  },
 ] as const
 
 export type FunctionSearchMode = (typeof FUNCTION_SEARCH_MODE_OPTIONS)[number]['value']
@@ -30,9 +35,9 @@ export function withFunctionSearchMode<T extends Record<string, unknown>>(
   return { ...draft, function_search_mode: mode }
 }
 
-/** A semantic mode is stranded only when the model directory is explicitly
+/** Hybrid is stranded only when the model directory is explicitly
  * `null`: an absent field falls back to the worker's default bundle path (and
  * the first-run download), so it needs no warning. */
 export function semanticModeNeedsModel(mode: FunctionSearchMode, modelPath: unknown): boolean {
-  return mode !== 'lexical' && modelPath === null
+  return mode === 'hybrid' && modelPath === null
 }

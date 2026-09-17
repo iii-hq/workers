@@ -1,9 +1,5 @@
-//! `directory::search_functions` — one-shot lexical function search — plus
-//! the engine-catalog plumbing and the per-session registries behind it.
-//!
-//! Moved from the reflex spike; only the bm25 method came along (the model
-//! consult stages measured token-equal and latency-worse — see the workers
-//! repo docs/reflex-discover-findings.md).
+//! `directory::search_functions` — lexical, local hybrid, or remote Jev
+//! function discovery, with shared catalog, registry and session policies.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -22,8 +18,13 @@ use crate::functions::registry::{
 use crate::functions::search_index::{
     canonical_tools, compact_query, excluded_from_search, tool_fingerprint, Bm25Index, ToolSchema,
 };
+use crate::functions::search_jev::{JevFailure, JevOptions, JevOutcome, JevSearch};
 use crate::functions::search_semantic::{weighted_rrf, SemanticSearch};
 use crate::surface::search_catalog as catalog;
+
+#[cfg(test)]
+#[path = "search_jev_integration.rs"]
+mod jev_tests;
 
 /// Timeout for one engine catalog call during a refresh.
 const CATALOG_TIMEOUT_MS: u64 = 5_000;
@@ -130,6 +131,7 @@ pub struct Deps {
     pub sessions: Arc<std::sync::Mutex<SessionRegistry>>,
     pub registry_cache: RegistryCache,
     pub semantic: SemanticSearch,
+    pub jev: JevSearch,
 }
 
 const SESSIONS_CAP: usize = 1024;
@@ -1065,6 +1067,7 @@ async fn installable_from_candidates(
     installed: &[ToolSchema],
     search_queries: &[String],
     candidates: &[RegistryCandidate],
+    jev: Option<(&JevSearch, tokio::time::Instant)>,
 ) -> Vec<InstallableWorker> {
     // Info round trips concurrently; pooling stays in candidate order
     // so first-seen contract dedupe is deterministic.
@@ -1109,8 +1112,26 @@ async fn installable_from_candidates(
             }
         }
     }
-    let dense = registry_dense_rankings(semantic, search_queries, &pooled, -1.0).await;
-    let ranked = rank_registry_contracts(search_queries, pooled, dense, MAX_INSTALLABLE_FUNCTIONS);
+    let ranked = if let Some((jev, deadline)) = jev {
+        let rankings = match rank_with_jev(jev, cfg, &pooled, search_queries, deadline).await {
+            Ok(outcome) => outcome.rankings,
+            Err(error) => {
+                tracing::warn!(%error, requested_mode = "jev", effective_mode = "lexical",
+                    "registry function search fell back to lexical");
+                let corpus = canonical_tools(&pooled);
+                let index = Bm25Index::build(&corpus);
+                let lexical = lexical_rankings(&index, search_queries);
+                production_fallback_rankings(&corpus, search_queries, &lexical)
+            }
+        };
+        round_robin_rankings(&rankings, MAX_INSTALLABLE_FUNCTIONS)
+            .into_iter()
+            .filter_map(|id| pooled.iter().find(|tool| tool.name == id).cloned())
+            .collect()
+    } else {
+        let dense = registry_dense_rankings(semantic, search_queries, &pooled, -1.0).await;
+        rank_registry_contracts(search_queries, pooled, dense, MAX_INSTALLABLE_FUNCTIONS)
+    };
     assemble_installable(ranked, &owners)
 }
 
@@ -1125,6 +1146,7 @@ async fn registry_installable(
     semantic: Option<&SemanticSearch>,
     installed: &[ToolSchema],
     search_queries: &[String],
+    jev: Option<(&JevSearch, tokio::time::Instant)>,
 ) -> Vec<InstallableWorker> {
     if search_queries.is_empty() {
         return Vec::new();
@@ -1180,11 +1202,20 @@ async fn registry_installable(
         })
         .collect();
     let candidates = round_robin_registry_candidates(&variant_lists, MAX_REGISTRY_CANDIDATES);
-    installable_from_candidates(cfg, cache, semantic, installed, search_queries, &candidates).await
+    installable_from_candidates(
+        cfg,
+        cache,
+        semantic,
+        installed,
+        search_queries,
+        &candidates,
+        jev,
+    )
+    .await
 }
 
-/// One-shot lexical search: rank the catalog with BM25 and return compact
-/// candidates for only the ranked functions — never a whole worker.
+/// Search the catalog using the configured mode and return compact candidates
+/// for only the selected functions — never a whole worker.
 pub async fn search_functions(
     deps: &Deps,
     mut request: SearchFunctionsRequest,
@@ -1211,11 +1242,13 @@ pub async fn search_functions(
     let started = Instant::now();
     let tools = deps.catalog.read().await.clone();
     let cfg = deps.config.load_full();
+    let jev_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(cfg.function_search_jev_timeout_ms);
     let fingerprint = tool_fingerprint(&tools);
     let mut selected: Vec<String> = Vec::new();
     let mut installable: Vec<InstallableWorker> = Vec::new();
     for batch in request.capabilities.chunks(MAX_SEARCH_QUERIES) {
-        let outcome = search_batch(deps, &cfg, &tools, &fingerprint, batch).await;
+        let outcome = search_batch(deps, &cfg, &tools, &fingerprint, batch, jev_deadline).await;
         for function_id in outcome.selected {
             if !selected.contains(&function_id) {
                 selected.push(function_id);
@@ -1338,88 +1371,254 @@ struct BatchOutcome {
     installable: Vec<InstallableWorker>,
 }
 
+/// Diagnostic result for the opt-in benchmark. Not part of the search wire schema.
+#[doc(hidden)]
+#[derive(Debug, Default, serde::Serialize)]
+pub struct BenchmarkOutcome {
+    pub selected: Vec<String>,
+    pub rankings: Vec<Vec<(String, f64)>>,
+    pub hybrid_complete: bool,
+    pub jev_complete: bool,
+    pub jev_requests: usize,
+    pub jev_questions: usize,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub jev_elapsed_ms: u64,
+    pub elapsed_ms: f64,
+}
+
+/// Resolve exact eligible IDs in code, and evaluate only the remaining lanes.
+/// The same policy is used for installed and registry function pools.
+async fn rank_with_jev(
+    jev: &JevSearch,
+    cfg: &SkillsConfig,
+    tools: &[ToolSchema],
+    queries: &[String],
+    deadline: tokio::time::Instant,
+) -> Result<JevOutcome, JevFailure> {
+    let jev = jev.with_api_key(
+        cfg.function_search_jev_api_key
+            .as_ref()
+            .map(|key| key.expose()),
+    );
+    let corpus = canonical_tools(tools);
+    let mut rankings: Vec<Vec<(String, f64)>> = queries
+        .iter()
+        .map(|query| {
+            exact_function_id(query, &corpus)
+                .map(|id| vec![(id, 1.0)])
+                .unwrap_or_default()
+        })
+        .collect();
+    let positions: Vec<usize> = rankings
+        .iter()
+        .enumerate()
+        .filter_map(|(position, lane)| lane.is_empty().then_some(position))
+        .collect();
+    let model_queries: Vec<String> = positions
+        .iter()
+        .map(|position| queries[*position].clone())
+        .collect();
+    let mut outcome = jev
+        .rank(
+            &model_queries,
+            &corpus,
+            &JevOptions {
+                model: cfg.function_search_jev_model.clone(),
+                min_relevance: cfg.function_search_jev_min_relevance,
+            },
+            deadline,
+        )
+        .await?;
+    for (position, lane) in positions
+        .into_iter()
+        .zip(std::mem::take(&mut outcome.rankings))
+    {
+        rankings[position] = lane;
+    }
+    outcome.rankings = rankings;
+    Ok(outcome)
+}
+
+async fn installed_search(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    tools: &[ToolSchema],
+    fingerprint: &str,
+    queries: &[String],
+    deadline: tokio::time::Instant,
+) -> BenchmarkOutcome {
+    let started = Instant::now();
+    let corpus = canonical_tools(tools);
+    let index = Bm25Index::build(&corpus);
+    let lexical = lexical_rankings(&index, queries);
+    let mut result = BenchmarkOutcome {
+        rankings: production_fallback_rankings(&corpus, queries, &lexical),
+        ..BenchmarkOutcome::default()
+    };
+    match cfg.function_search_mode {
+        FunctionSearchMode::Lexical => {}
+        FunctionSearchMode::Hybrid => {
+            if deps.semantic.is_production_minilm() {
+                if let Some(outcome) = production_minilm_rankings(
+                    &deps.semantic,
+                    fingerprint,
+                    tools,
+                    queries,
+                    &lexical,
+                )
+                .await
+                {
+                    result.rankings = outcome.rankings;
+                    result.hybrid_complete = outcome.complete;
+                }
+            }
+            tracing::debug!(complete = result.hybrid_complete, %fingerprint,
+                repository = deps.semantic.model_repository(),
+                revision = deps.semantic.model_revision(),
+                reranker_repository = deps.semantic.reranker_repository(),
+                reranker_revision = deps.semantic.reranker_revision(),
+                "production MiniLM retrieval and reranking completed");
+        }
+        FunctionSearchMode::Jev => {
+            let stats = match rank_with_jev(&deps.jev, cfg, &corpus, queries, deadline).await {
+                Ok(outcome) => {
+                    result.rankings = outcome.rankings;
+                    result.jev_complete = true;
+                    tracing::debug!(model = %outcome.model, requests = outcome.stats.requests,
+                        questions = outcome.stats.questions, input_tokens = outcome.stats.input_tokens,
+                        output_tokens = outcome.stats.output_tokens, elapsed_ms = outcome.stats.elapsed_ms,
+                        "Jev function evaluation completed");
+                    outcome.stats
+                }
+                Err(error) => {
+                    tracing::warn!(%error, requested_mode = "jev", effective_mode = "lexical",
+                        requests = error.stats.requests, questions = error.stats.questions,
+                        input_tokens = error.stats.input_tokens, output_tokens = error.stats.output_tokens,
+                        elapsed_ms = error.stats.elapsed_ms, "function search fell back to lexical");
+                    error.stats
+                }
+            };
+            result.jev_requests = stats.requests;
+            result.jev_questions = stats.questions;
+            result.input_tokens = stats.input_tokens;
+            result.output_tokens = stats.output_tokens;
+            result.jev_elapsed_ms = stats.elapsed_ms;
+        }
+    }
+    result.selected = if cfg.function_search_mode == FunctionSearchMode::Jev && result.jev_complete
+    {
+        limit_search_workers(
+            round_robin_rankings(&result.rankings, MAX_SEARCH_FUNCTIONS),
+            MAX_SEARCH_WORKERS.max(2 * queries.len()),
+        )
+    } else {
+        select_preordered_ids(result.rankings.clone())
+    };
+    result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    tracing::debug!(mode = ?cfg.function_search_mode, elapsed_ms = result.elapsed_ms,
+        hybrid_complete = result.hybrid_complete, jev_complete = result.jev_complete,
+        "installed function search completed");
+    result
+}
+
 async fn search_batch(
     deps: &Deps,
     cfg: &SkillsConfig,
     tools: &[ToolSchema],
     fingerprint: &str,
     capabilities: &[String],
+    jev_deadline: tokio::time::Instant,
 ) -> BatchOutcome {
-    let search_queries = search_queries(capabilities);
-    let mode = cfg.function_search_mode;
-    let lexical_started = Instant::now();
-    // ponytail: index rebuilt per call (~250 slim docs, sub-ms); cache by
-    // tool_fingerprint if search latency ever matters.
-    let corpus = canonical_tools(tools);
-    let index = Bm25Index::build(&corpus);
-    let lexical = lexical_rankings(&index, &search_queries);
-    let lexical_top_ids: Vec<&str> = lexical
-        .iter()
-        .filter_map(|ranking| ranking.first().map(|(id, _)| id.as_str()))
-        .collect();
-    tracing::debug!(
-        ?mode,
-        %fingerprint,
-        elapsed_ms = lexical_started.elapsed().as_secs_f64() * 1000.0,
-        ?lexical_top_ids,
-        "lexical lane ranked"
-    );
-    let production_minilm =
-        mode == FunctionSearchMode::Hybrid && deps.semantic.is_production_minilm();
-    let production_outcome = if production_minilm {
-        let semantic_started = Instant::now();
-        let rankings = production_minilm_rankings(
-            &deps.semantic,
-            fingerprint,
-            tools,
-            &search_queries,
-            &lexical,
-        )
-        .await;
-        tracing::debug!(
-            ?mode,
-            available = rankings.is_some(),
-            complete = rankings.as_ref().is_some_and(|outcome| outcome.complete),
-            %fingerprint,
-            repository = deps.semantic.model_repository(),
-            revision = deps.semantic.model_revision(),
-            reranker_repository = deps.semantic.reranker_repository(),
-            reranker_revision = deps.semantic.reranker_revision(),
-            elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
-            "production MiniLM retrieval and reranking completed"
-        );
-        rankings
-    } else {
-        None
-    };
-    let production_rankings = production_outcome.map(|outcome| outcome.rankings);
-    let selected = match production_rankings {
-        Some(rankings) => select_preordered_ids(rankings),
-        None => select_preordered_ids(production_fallback_rankings(
-            tools,
-            &search_queries,
-            &lexical,
-        )),
-    };
-    // Installable section: every search also consults the public registry
-    // for NOT-installed workers whose functions match — behind the
-    // registry_search knob; every failure inside returns an empty section
-    // (fail-open).
-    let mut installable: Vec<InstallableWorker> = Vec::new();
-    if cfg.registry_search {
-        installable = registry_installable(
+    let queries = search_queries(capabilities);
+    let installed = installed_search(deps, cfg, tools, fingerprint, &queries, jev_deadline).await;
+    let installable = if cfg.registry_search {
+        registry_installable(
             cfg,
             &deps.registry_cache,
-            production_minilm.then_some(&deps.semantic),
+            (cfg.function_search_mode == FunctionSearchMode::Hybrid
+                && deps.semantic.is_production_minilm())
+            .then_some(&deps.semantic),
             tools,
-            &search_queries,
+            &queries,
+            (cfg.function_search_mode == FunctionSearchMode::Jev)
+                .then_some((&deps.jev, jev_deadline)),
         )
-        .await;
-    }
+        .await
+    } else {
+        Vec::new()
+    };
     BatchOutcome {
-        selected,
+        selected: installed.selected,
         installable,
     }
+}
+
+/// Run production installed selection with diagnostics, without registry or session suppression.
+#[doc(hidden)]
+pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkOutcome {
+    let started = Instant::now();
+    let cfg = deps.config.load_full();
+    let tools = deps.catalog.read().await.clone();
+    let fingerprint = tool_fingerprint(&tools);
+    let deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(cfg.function_search_jev_timeout_ms);
+    let mut total = BenchmarkOutcome {
+        hybrid_complete: cfg.function_search_mode == FunctionSearchMode::Hybrid,
+        jev_complete: cfg.function_search_mode == FunctionSearchMode::Jev,
+        ..BenchmarkOutcome::default()
+    };
+    for batch in capabilities
+        .chunks(MAX_SEARCH_QUERIES)
+        .take(MAX_SEARCH_BATCHES)
+    {
+        let queries = search_queries(batch);
+        let outcome = installed_search(deps, &cfg, &tools, &fingerprint, &queries, deadline).await;
+        total.hybrid_complete &= outcome.hybrid_complete;
+        total.jev_complete &= outcome.jev_complete;
+        total.jev_requests += outcome.jev_requests;
+        total.jev_questions += outcome.jev_questions;
+        total.jev_elapsed_ms = total.jev_elapsed_ms.saturating_add(outcome.jev_elapsed_ms);
+        total.input_tokens = total.input_tokens.saturating_add(outcome.input_tokens);
+        total.output_tokens = total.output_tokens.saturating_add(outcome.output_tokens);
+        for id in outcome.selected {
+            if !total.selected.contains(&id) {
+                total.selected.push(id);
+            }
+        }
+        let mut lanes = outcome.rankings.into_iter();
+        for capability in batch {
+            total.rankings.push(
+                if search_queries(std::slice::from_ref(capability)).is_empty() {
+                    Vec::new()
+                } else {
+                    lanes.next().unwrap_or_default()
+                },
+            );
+        }
+    }
+    total.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    total
+}
+
+/// Raw BM25 shortlist for the benchmark's retrieval-limited Jev comparison.
+#[doc(hidden)]
+pub fn lexical_candidate_ids(
+    tools: &[ToolSchema],
+    capabilities: &[String],
+    depth: usize,
+) -> Vec<String> {
+    let corpus = canonical_tools(tools);
+    let index = Bm25Index::build(&corpus);
+    let mut ids = Vec::new();
+    for query in search_queries(capabilities) {
+        for (id, _, _) in index.rank_with_matches(&query).into_iter().take(depth) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
 }
 
 fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
@@ -1573,13 +1772,15 @@ async fn activate_catalog(
     semantic: &SemanticSearch,
     tools: Vec<ToolSchema>,
 ) -> bool {
-    let catalog_unchanged =
-        tool_fingerprint(cell.read().await.as_ref()) == tool_fingerprint(&tools);
+    let mut current = cell.write().await;
+    let catalog_unchanged = tool_fingerprint(&current) == tool_fingerprint(&tools);
     if catalog_unchanged {
         return false;
     }
     let tools = Arc::new(tools);
-    *cell.write().await = tools.clone();
+    *current = tools.clone();
+    // Publish the catalog and its desired index under the same lock. Reloads
+    // and the background bundle loader hold a read guard when rebuilding.
     semantic.rebuild(tools);
     true
 }
@@ -1742,6 +1943,7 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
+            jev: JevSearch::default(),
         }
     }
 
@@ -2271,6 +2473,7 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
+            jev: JevSearch::default(),
         };
         let response = search_functions(
             &deps,
@@ -2463,6 +2666,7 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
+            jev: JevSearch::default(),
         };
         let response = search_functions(
             &deps,

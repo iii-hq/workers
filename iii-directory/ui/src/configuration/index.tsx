@@ -22,7 +22,7 @@ import {
   SettingsSection,
   Switch,
 } from '@iii-dev/console-ui'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   booleanWithDefault,
   FUNCTION_SEARCH_MODE_OPTIONS,
@@ -69,6 +69,10 @@ const INLINE_ERROR_POINTERS = new Set([
   '/hint_min_workers',
   '/registry_search',
   '/function_search_mode',
+  '/function_search_jev_api_key',
+  '/function_search_jev_model',
+  '/function_search_jev_timeout_ms',
+  '/function_search_jev_min_relevance',
   '/function_search_model_path',
   '/function_search_model_download',
 ])
@@ -250,7 +254,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <SettingsSection
         title="Function search"
-        description="Choose how installed function contracts are ranked. Mode changes apply without restarting iii-directory."
+        description="Choose how function contracts are ranked. Mode changes and Jev options apply without restarting iii-directory."
       >
         <SettingsList>
           <SearchModeField
@@ -260,10 +264,53 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             errors={props.errors}
           />
           <TextField
+            field="function_search_jev_api_key"
+            label="Jev API key"
+            placeholder="Use TYPESAFE_API_KEY from the worker environment"
+            type="password"
+            hint="This key takes precedence over TYPESAFE_API_KEY in the worker process environment. Changes apply without restarting. Clear it to use the environment key again."
+            value={asString(value.function_search_jev_api_key)}
+            onChange={setString}
+            errors={props.errors}
+          />
+          <TextField
+            field="function_search_jev_model"
+            label="Jev model"
+            placeholder="jev-1.13.0"
+            hint="Non-empty TypeSafe model name."
+            value={asString(value.function_search_jev_model)}
+            onChange={setString}
+            errors={props.errors}
+          />
+          <NumberField
+            field="function_search_jev_timeout_ms"
+            label="Jev timeout (ms)"
+            placeholder="3000"
+            hint="1–30000 ms for all Jev requests in one search. Registry requests have separate timeouts. Missing credentials or service errors use lexical fallback; a valid empty result stays empty."
+            min={1}
+            max={30000}
+            step={1}
+            value={value.function_search_jev_timeout_ms}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <NumberField
+            field="function_search_jev_min_relevance"
+            label="Jev minimum relevance"
+            placeholder="0.5"
+            hint="Finite value from 0 to 1, inclusive. Higher values admit fewer functions. The default 0.5 is a starting point for calibration."
+            max={1}
+            step="any"
+            inputMode="decimal"
+            value={value.function_search_jev_min_relevance}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <TextField
             field="function_search_model_path"
             label="Semantic model directory"
             placeholder="not set — e.g. ~/.cache/iii/all-MiniLM-L6-v2-<revision>"
-            hint="Directory holding the pinned MiniLM bundle (default under ~/.cache/iii). Changing this path requires a worker restart."
+            hint="Directory holding the pinned MiniLM bundle for Hybrid (default under ~/.cache/iii). Jev does not use it. Changing this path requires a worker restart."
             value={asString(value.function_search_model_path)}
             onChange={setString}
             errors={props.errors}
@@ -271,7 +318,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
           <CheckField
             field="function_search_model_download"
             label="Download the model on first run"
-            hint="When a semantic mode is on and the bundle is missing at startup, fetch the pinned files from Hugging Face once, each verified by length and SHA-256. Turn off for air-gapped stacks."
+            hint="When Hybrid is on and the bundle is missing at startup, fetch the pinned files from Hugging Face once, each verified by length and SHA-256. Turn off for air-gapped stacks."
             checked={booleanWithDefault(value.function_search_model_download, true)}
             onChange={setBool}
             errors={props.errors}
@@ -364,6 +411,7 @@ function TextField({
   label,
   placeholder,
   hint,
+  type = 'text',
   value,
   onChange,
   errors,
@@ -372,6 +420,7 @@ function TextField({
   label: string
   placeholder: string
   hint?: string
+  type?: 'text' | 'password'
   value: string
   onChange: (field: string, raw: string) => void
   errors?: ConfigFormProps['errors']
@@ -388,10 +437,11 @@ function TextField({
           id={presentation.id}
           name={field}
           className="dir-ui-config-control"
+          type={type}
           value={value}
           placeholder={placeholder}
           spellCheck={false}
-          autoComplete="off"
+          autoComplete={type === 'password' ? 'new-password' : 'off'}
           aria-label={label}
           aria-invalid={presentation.invalid || undefined}
           aria-describedby={presentation.describedBy}
@@ -407,6 +457,10 @@ function NumberField({
   label,
   placeholder,
   hint,
+  min = 0,
+  max,
+  step,
+  inputMode = 'numeric',
   value,
   onChange,
   errors,
@@ -415,11 +469,19 @@ function NumberField({
   label: string
   placeholder: string
   hint?: string
+  min?: number
+  max?: number
+  step?: number | 'any'
+  inputMode?: 'numeric' | 'decimal'
   value: JsonValue | undefined
   onChange: (field: string, raw: string) => void
   errors?: ConfigFormProps['errors']
 }) {
   const presentation = fieldPresentation(field, hint, errors)
+  // Keep intermediate text (e.g. 0.10) until commit; converting each
+  // keystroke to a number drops zeros before the next digit arrives.
+  const [draft, setDraft] = useState<string | null>(null)
+  useEffect(() => setDraft(null), [value])
   return (
     <SettingsRow
       data-field={field}
@@ -432,14 +494,24 @@ function NumberField({
           name={field}
           className="dir-ui-config-control dir-ui-config-number"
           type="number"
-          min={0}
-          inputMode="numeric"
-          value={typeof value === 'number' ? String(value) : ''}
+          min={min}
+          max={max}
+          step={step}
+          inputMode={inputMode}
+          value={draft ?? (typeof value === 'number' ? String(value) : '')}
           placeholder={placeholder}
           aria-label={label}
           aria-invalid={presentation.invalid || undefined}
           aria-describedby={presentation.describedBy}
-          onChange={(next) => onChange(field, next)}
+          onChange={setDraft}
+          onBlur={() => {
+            if (draft === null) return
+            onChange(field, draft)
+            setDraft(null)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+          }}
         />
       }
     />
@@ -458,7 +530,7 @@ function SearchModeField({
   errors?: ConfigFormProps['errors']
 }) {
   const field = 'function_search_mode'
-  const hint = 'Hybrid (default) fuses BM25 with the local semantic model. Lexical returns BM25 rankings.'
+  const hint = 'Hybrid (default) fuses BM25 with the local semantic model. Lexical uses BM25. Jev evaluates relevance remotely with TypeSafe, without MiniLM.'
   const presentation = fieldPresentation(field, hint, errors)
   const needsModel = semanticModeNeedsModel(value, modelPath)
   const noticeId = needsModel ? `${presentation.id}-model-notice` : undefined

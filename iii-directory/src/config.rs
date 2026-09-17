@@ -106,12 +106,25 @@ fn default_function_search_model_download() -> bool {
     true
 }
 
+fn default_function_search_jev_model() -> String {
+    "jev-1.13.0".to_string()
+}
+
+fn default_function_search_jev_timeout_ms() -> u64 {
+    3000
+}
+
+fn default_function_search_jev_min_relevance() -> f64 {
+    0.5
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FunctionSearchMode {
     Lexical,
     #[default]
     Hybrid,
+    Jev,
 }
 
 /// `hybrid` needs a local semantic model; without a complete
@@ -119,7 +132,7 @@ pub enum FunctionSearchMode {
 /// BM25-only, which is easy to mistake for the model being active. Say so
 /// once, loudly. `model_ready` is "the path is set and the bundle verifies".
 pub fn warn_if_search_mode_lacks_model(mode: FunctionSearchMode, model_ready: bool) {
-    if mode != FunctionSearchMode::Lexical && !model_ready {
+    if mode == FunctionSearchMode::Hybrid && !model_ready {
         tracing::warn!(
             ?mode,
             "function_search_mode needs a local semantic model but no complete bundle is \
@@ -138,6 +151,78 @@ where
     if value.as_deref().is_some_and(|path| path.trim().is_empty()) {
         return Err(serde::de::Error::custom(
             "function_search_model_path must not be empty",
+        ));
+    }
+    Ok(value)
+}
+
+fn deserialize_jev_model<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // YAML's String deserializer coerces scalars such as null and numbers.
+    // Require an actual string, just as the JSON schema does.
+    match Value::deserialize(deserializer)? {
+        Value::String(value) if !value.trim().is_empty() => Ok(value),
+        _ => Err(serde::de::Error::custom(
+            "function_search_jev_model must be a non-empty string",
+        )),
+    }
+}
+
+/// A configured credential serializes normally for the configuration store,
+/// but is never printed by `SkillsConfig`'s diagnostic formatter.
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+pub struct JevApiKey(String);
+
+impl std::fmt::Debug for JevApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl JevApiKey {
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+fn deserialize_jev_api_key<'de, D>(deserializer: D) -> Result<Option<JevApiKey>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::Null => Ok(None),
+        Value::String(value) if value.trim().is_empty() => Ok(None),
+        Value::String(value) => Ok(Some(JevApiKey(value.trim().to_owned()))),
+        _ => Err(serde::de::Error::custom(
+            "function_search_jev_api_key must be a string or null",
+        )),
+    }
+}
+
+fn deserialize_jev_timeout_ms<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    if !(1..=30_000).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "function_search_jev_timeout_ms must be between 1 and 30000",
+        ));
+    }
+    Ok(value)
+}
+
+fn deserialize_jev_min_relevance<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "function_search_jev_min_relevance must be finite and between 0 and 1",
         ));
     }
     Ok(value)
@@ -260,20 +345,56 @@ pub struct SkillsConfig {
     /// Installed-function search lane. Hybrid (BM25 fused with the local
     /// MiniLM model) is the default; lexical is BM25 only. Hybrid needs the bundle at
     /// `function_search_model_path` (downloaded on first run by default) and
-    /// serves BM25 until it is ready.
+    /// serves BM25 until it is ready. Jev evaluates relevance remotely with
+    /// TypeSafe, independently of MiniLM. Mode changes apply without restart.
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
 
+    /// Optional TypeSafe credential, applied without restarting. Takes precedence
+    /// over TYPESAFE_API_KEY captured from the worker environment at boot.
+    /// Missing, null or blank values restore that environment fallback.
+    #[serde(default, deserialize_with = "deserialize_jev_api_key")]
+    #[schemars(with = "Option<String>")]
+    pub function_search_jev_api_key: Option<JevApiKey>,
+
+    /// TypeSafe model used in Jev mode. Must not be blank. Hot-reloadable.
+    #[serde(
+        default = "default_function_search_jev_model",
+        deserialize_with = "deserialize_jev_model"
+    )]
+    #[schemars(length(min = 1), regex(pattern = r"\S"))]
+    pub function_search_jev_model: String,
+
+    /// Total Jev deadline per public search call, in milliseconds (1..=30000).
+    /// Registry requests have their own timeouts. Hot-reloadable.
+    #[serde(
+        default = "default_function_search_jev_timeout_ms",
+        deserialize_with = "deserialize_jev_timeout_ms"
+    )]
+    #[schemars(range(min = 1, max = 30000))]
+    pub function_search_jev_timeout_ms: u64,
+
+    /// Minimum Jev relevance, finite and between 0 and 1 inclusive.
+    /// A valid empty result stays empty; errors use lexical fallback.
+    /// The default is an initial calibration value. Hot-reloadable.
+    #[serde(
+        default = "default_function_search_jev_min_relevance",
+        deserialize_with = "deserialize_jev_min_relevance"
+    )]
+    #[schemars(range(min = 0, max = 1))]
+    pub function_search_jev_min_relevance: f64,
+
     /// Local semantic model directory: the pinned MiniLM bundle (embedding
     /// files at the root, reranker files under `reranker/`). Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
-    /// `null` disables the semantic lane. Changing it requires a restart.
+    /// `null` disables the local Hybrid lane; Jev is unaffected.
+    /// Changing it requires a restart.
     #[serde(
         default = "default_function_search_model_path",
         deserialize_with = "deserialize_model_path"
     )]
     pub function_search_model_path: Option<String>,
 
-    /// When a semantic mode is configured and the bundle at
+    /// When Hybrid mode is configured and the bundle at
     /// `function_search_model_path` is missing or incomplete at boot, download
     /// the pinned files from Hugging Face once, verifying every file by byte
     /// length and SHA-256 before use. Set `false` for air-gapped stacks; the
@@ -313,6 +434,10 @@ impl Default for SkillsConfig {
             hint_min_workers: default_hint_min_workers(),
             registry_search: default_registry_search(),
             function_search_mode: FunctionSearchMode::default(),
+            function_search_jev_api_key: None,
+            function_search_jev_model: default_function_search_jev_model(),
+            function_search_jev_timeout_ms: default_function_search_jev_timeout_ms(),
+            function_search_jev_min_relevance: default_function_search_jev_min_relevance(),
             function_search_model_path: default_function_search_model_path(),
             function_search_model_download: default_function_search_model_download(),
         }
@@ -421,6 +546,7 @@ impl SkillsConfig {
             }
             obj.insert("example".into(), SkillsConfig::default().to_json());
         }
+        schema["properties"]["function_search_jev_api_key"]["format"] = "password".into();
         schema
     }
 
@@ -474,6 +600,235 @@ pub fn load_config(path: &str) -> Result<SkillsConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jev_api_key_roundtrips_without_appearing_in_debug() {
+        let input = serde_json::json!({"function_search_jev_api_key":"test-config-secret"});
+        for cfg in [
+            SkillsConfig::from_json(&input).unwrap(),
+            SkillsConfig::from_yaml(&serde_yaml::to_string(&input).unwrap()).unwrap(),
+        ] {
+            assert_eq!(
+                cfg.to_json()["function_search_jev_api_key"],
+                "test-config-secret"
+            );
+            assert!(!format!("{cfg:?}").contains("test-config-secret"));
+            assert_eq!(cfg.topology(), SkillsConfig::default().topology());
+        }
+    }
+
+    #[test]
+    fn jev_api_key_accepts_empty_as_unset_and_rejects_non_strings_safely() {
+        for unset in [
+            Value::Null,
+            serde_json::json!(""),
+            serde_json::json!(" \t "),
+        ] {
+            let input = serde_json::json!({"function_search_jev_api_key":unset});
+            for cfg in [
+                SkillsConfig::from_json(&input).unwrap(),
+                SkillsConfig::from_yaml(&serde_yaml::to_string(&input).unwrap()).unwrap(),
+            ] {
+                assert!(cfg.to_json()["function_search_jev_api_key"].is_null());
+            }
+        }
+        for invalid in [
+            serde_json::json!(42),
+            serde_json::json!(true),
+            serde_json::json!(["test-config-secret"]),
+            serde_json::json!({"key":"test-config-secret"}),
+        ] {
+            let input = serde_json::json!({"function_search_jev_api_key":invalid});
+            for error in [
+                SkillsConfig::from_json(&input).unwrap_err(),
+                SkillsConfig::from_yaml(&serde_yaml::to_string(&input).unwrap()).unwrap_err(),
+            ] {
+                assert!(error.contains("function_search_jev_api_key"));
+                assert!(!error.contains("test-config-secret"));
+            }
+        }
+    }
+
+    #[test]
+    fn jev_defaults_preserve_hybrid_for_yaml_json_and_default() {
+        for cfg in [
+            SkillsConfig::default(),
+            SkillsConfig::from_yaml("{}").unwrap(),
+            SkillsConfig::from_json(&serde_json::json!({})).unwrap(),
+        ] {
+            let value = cfg.to_json();
+            assert_eq!(value["function_search_mode"], "hybrid");
+            assert_eq!(value["function_search_jev_model"], "jev-1.13.0");
+            assert_eq!(value["function_search_jev_timeout_ms"], 3000);
+            assert_eq!(value["function_search_jev_min_relevance"], 0.5);
+        }
+    }
+
+    #[test]
+    fn jev_accepts_yaml_and_json_without_a_local_model() {
+        let yaml = "function_search_mode: jev\nfunction_search_model_path: null\n";
+        let json = serde_json::json!({
+            "function_search_mode": "jev",
+            "function_search_model_path": null,
+        });
+        for cfg in [
+            SkillsConfig::from_yaml(yaml).unwrap(),
+            SkillsConfig::from_json(&json).unwrap(),
+        ] {
+            assert_eq!(cfg.to_json()["function_search_mode"], "jev");
+            assert!(cfg.function_search_model_path.is_none());
+        }
+    }
+
+    #[test]
+    fn jev_options_accept_inclusive_bounds_and_roundtrip() {
+        for (timeout, relevance) in [(1, 0.0), (30_000, 1.0), (4500, 0.725)] {
+            let value = serde_json::json!({
+                "function_search_jev_model": "jev-custom",
+                "function_search_jev_timeout_ms": timeout,
+                "function_search_jev_min_relevance": relevance,
+            });
+            for cfg in [
+                SkillsConfig::from_json(&value).unwrap(),
+                SkillsConfig::from_yaml(&serde_yaml::to_string(&value).unwrap()).unwrap(),
+            ] {
+                let serialized = cfg.to_json();
+                assert_eq!(serialized["function_search_jev_model"], "jev-custom");
+                assert_eq!(serialized["function_search_jev_timeout_ms"], timeout);
+                assert_eq!(serialized["function_search_jev_min_relevance"], relevance);
+                assert_eq!(
+                    SkillsConfig::from_json(&serialized).unwrap().to_json(),
+                    serialized
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn jev_invalid_options_are_rejected_by_yaml_and_json_deserializers() {
+        for (field, invalid) in [
+            (
+                "function_search_jev_model",
+                serde_json::json!(["", " \t\n", null, 42]),
+            ),
+            (
+                "function_search_jev_timeout_ms",
+                serde_json::json!([0, -1, 30001, 1.5, null, "3000"]),
+            ),
+            (
+                "function_search_jev_min_relevance",
+                serde_json::json!([-0.01, 1.01, null, "NaN", "Infinity", "0.5"]),
+            ),
+        ] {
+            for invalid in invalid.as_array().unwrap() {
+                // Validate even when Jev is not the selected mode.
+                let value = serde_json::json!({ field: invalid });
+                let yaml = serde_yaml::to_string(&value).unwrap();
+                assert!(
+                    serde_json::from_value::<SkillsConfig>(value.clone()).is_err(),
+                    "accepted JSON {value}"
+                );
+                assert!(
+                    serde_yaml::from_str::<SkillsConfig>(&yaml).is_err(),
+                    "accepted YAML {yaml}"
+                );
+                assert!(SkillsConfig::from_json(&value).is_err());
+                assert!(SkillsConfig::from_yaml(&yaml).is_err());
+            }
+        }
+        for invalid in [".nan", ".inf", "-.inf"] {
+            let yaml = format!("function_search_jev_min_relevance: {invalid}\n");
+            assert!(SkillsConfig::from_yaml(&yaml)
+                .unwrap_err()
+                .contains("function_search_jev_min_relevance"));
+        }
+    }
+
+    #[test]
+    fn jev_schema_exposes_options_and_an_optional_password_field() {
+        let schema = SkillsConfig::json_schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert_eq!(
+            schema["definitions"]["FunctionSearchMode"]["enum"],
+            serde_json::json!(["lexical", "hybrid", "jev"])
+        );
+        assert_eq!(props["function_search_mode"]["default"], "hybrid");
+        assert_eq!(props["function_search_jev_model"]["type"], "string");
+        assert_eq!(props["function_search_jev_model"]["default"], "jev-1.13.0");
+        assert_eq!(props["function_search_jev_model"]["minLength"], 1);
+        assert_eq!(props["function_search_jev_model"]["pattern"], r"\S");
+        assert_eq!(props["function_search_jev_timeout_ms"]["type"], "integer");
+        assert_eq!(props["function_search_jev_timeout_ms"]["default"], 3000);
+        assert_eq!(props["function_search_jev_timeout_ms"]["minimum"], 1.0);
+        assert_eq!(props["function_search_jev_timeout_ms"]["maximum"], 30000.0);
+        assert_eq!(props["function_search_jev_min_relevance"]["type"], "number");
+        assert_eq!(props["function_search_jev_min_relevance"]["default"], 0.5);
+        assert_eq!(props["function_search_jev_min_relevance"]["minimum"], 0.0);
+        assert_eq!(props["function_search_jev_min_relevance"]["maximum"], 1.0);
+        assert_eq!(schema["example"], SkillsConfig::default().to_json());
+        assert_eq!(props["function_search_jev_api_key"]["format"], "password");
+        assert_eq!(
+            props["function_search_jev_api_key"]["type"],
+            serde_json::json!(["string", "null"])
+        );
+        assert!(schema["example"]["function_search_jev_api_key"].is_null());
+    }
+
+    #[test]
+    fn jev_mode_and_options_do_not_change_restart_topology() {
+        let base = SkillsConfig::default();
+        let tuned = SkillsConfig::from_json(&serde_json::json!({
+            "function_search_mode": "jev",
+            "function_search_jev_model": "jev-custom",
+            "function_search_jev_timeout_ms": 4500,
+            "function_search_jev_min_relevance": 0.725,
+        }))
+        .unwrap();
+        assert_eq!(base.topology(), tuned.topology());
+        let shared = base.into_shared();
+        shared.store(Arc::new(tuned.clone()));
+        assert_eq!(shared.load_full().to_json(), tuned.to_json());
+    }
+
+    #[test]
+    fn only_hybrid_warns_when_the_local_model_is_missing() {
+        #[derive(Clone)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for (name, ready, should_warn) in [
+            ("lexical", false, false),
+            ("jev", false, false),
+            ("hybrid", false, true),
+            ("hybrid", true, false),
+        ] {
+            let output = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
+            let writer = output.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::WARN)
+                .with_writer(move || writer.clone())
+                .finish();
+            let mode = serde_json::from_value(serde_json::json!(name)).unwrap();
+            tracing::subscriber::with_default(subscriber, || {
+                warn_if_search_mode_lacks_model(mode, ready)
+            });
+            let message = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+            assert_eq!(
+                message.contains("needs a local semantic model"),
+                should_warn,
+                "{name}, model_ready={ready}: {message}"
+            );
+        }
+    }
 
     #[test]
     fn defaults_from_empty_yaml() {

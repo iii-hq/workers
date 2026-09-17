@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use sha2::{Digest, Sha256};
@@ -128,6 +129,7 @@ pub struct SemanticSearch {
 
 #[derive(Default)]
 struct Inner {
+    disabled: AtomicBool,
     model_dir: Option<PathBuf>,
     model: RwLock<Option<Arc<LoadedModel>>>,
     #[cfg(minilm)]
@@ -146,6 +148,17 @@ struct DenseIndex {
 }
 
 impl SemanticSearch {
+    /// Gate background rebuilds when a hot-reloaded search mode no longer uses MiniLM.
+    /// Work already in progress may finish, but cannot start another model stage.
+    pub fn set_enabled(&self, enabled: bool) {
+        self.inner.disabled.store(!enabled, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn requested_fingerprint(&self) -> Option<String> {
+        self.inner.desired_catalog.lock().unwrap().clone()
+    }
+
     pub fn new(model_dir: Option<PathBuf>) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -178,6 +191,9 @@ impl SemanticSearch {
     }
 
     pub fn rebuild(&self, tools: Arc<Vec<ToolSchema>>) {
+        if self.inner.disabled.load(Ordering::Acquire) {
+            return;
+        }
         let fingerprint = tool_fingerprint(&tools);
         *self.inner.desired_catalog.lock().expect("desired catalog") = Some(fingerprint.clone());
         let inner = self.inner.clone();
@@ -258,7 +274,7 @@ impl SemanticSearch {
                 // fused BM25+dense order (see production_minilm_assemble), so a
                 // missing or broken `reranker/` bundle must not hold back the
                 // dense index.
-                if reranker.is_none() {
+                if reranker.is_none() && is_desired(&inner, &fingerprint) {
                     if let Some(reranker_root) =
                         inner.model_dir.clone().map(|path| path.join("reranker"))
                     {
@@ -510,17 +526,19 @@ fn unavailable(message: impl Into<String>) -> SemanticUnavailable {
 }
 
 fn is_desired(inner: &Inner, fingerprint: &str) -> bool {
-    inner
-        .desired_catalog
-        .lock()
-        .expect("desired catalog")
-        .as_deref()
-        == Some(fingerprint)
+    !inner.disabled.load(Ordering::Acquire)
+        && inner
+            .desired_catalog
+            .lock()
+            .expect("desired catalog")
+            .as_deref()
+            == Some(fingerprint)
 }
 
 fn publish_if_desired(inner: &Inner, fingerprint: &str, index: DenseIndex) -> bool {
     let desired = inner.desired_catalog.lock().expect("desired catalog");
-    if desired.as_deref() != Some(fingerprint)
+    if inner.disabled.load(Ordering::Acquire)
+        || desired.as_deref() != Some(fingerprint)
         || index.searchable_texts.len() != index.function_ids.len()
         || validate_vectors(&index.vectors, index.function_ids.len(), MINILM_DIMENSIONS).is_err()
     {
@@ -956,6 +974,21 @@ fn normalize_minilm_embedding(embedding: &mut [f32]) -> Result<(), SemanticUnava
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn disabled_semantic_search_does_not_schedule_rebuilds() {
+        let semantic = SemanticSearch::default();
+        let tools = Arc::new(Vec::new());
+        semantic.set_enabled(false);
+        semantic.rebuild(tools.clone());
+        assert!(semantic.inner.desired_catalog.lock().unwrap().is_none());
+        semantic.set_enabled(true);
+        semantic.rebuild(tools.clone());
+        let fingerprint = tool_fingerprint(&tools);
+        assert!(is_desired(&semantic.inner, &fingerprint));
+        semantic.set_enabled(false);
+        assert!(!is_desired(&semantic.inner, &fingerprint));
+    }
 
     #[test]
     fn bundle_url_targets_the_pinned_revision() {

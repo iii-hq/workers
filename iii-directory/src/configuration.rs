@@ -23,7 +23,7 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
-use crate::config::{SharedConfig, SkillsConfig, Topology};
+use crate::config::{FunctionSearchMode, SharedConfig, SkillsConfig, Topology};
 use crate::functions::registry::RegistryCache;
 use crate::functions::skills::RegisteredWorkersCache;
 
@@ -69,6 +69,9 @@ pub struct SharedState {
     /// Live `directory::pre-generate` hook binding, reconciled with the
     /// `inject_hint` knob on every reload.
     pub hint_binding: crate::hook::HintBindingState,
+    pub search: crate::functions::search::Deps,
+    /// Keep each reload's config snapshot and semantic activation together.
+    apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SharedState {
@@ -79,6 +82,7 @@ impl SharedState {
         registered_cache: Arc<RegisteredWorkersCache>,
         boot_topology: Topology,
         hint_binding: crate::hook::HintBindingState,
+        search: crate::functions::search::Deps,
     ) -> Self {
         Self {
             config,
@@ -87,6 +91,8 @@ impl SharedState {
             registered_cache,
             boot_topology,
             hint_binding,
+            search,
+            apply_lock: Arc::default(),
         }
     }
 }
@@ -101,7 +107,8 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
         "description": "Skills and agent-skills folders, workers-registry URL, download timeouts, \
                         skill-visibility filters, and the function-search knobs \
                         (inject_hint, hint_min_workers, registry_search, function_search_mode, \
-                        function_search_model_path) for the \
+                        function_search_model_path, function_search_jev_api_key, function_search_jev_model, \
+                        function_search_jev_timeout_ms, function_search_jev_min_relevance) for the \
                         iii-directory worker.",
         "schema": SkillsConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
@@ -158,10 +165,25 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 /// shared cache TTL, and clear both caches so a repointed `registry_url`
 /// takes effect immediately and stale entries from the old registry drop.
 pub async fn apply_config(state: &SharedState, cfg: SkillsConfig) {
+    let _apply = state.apply_lock.lock().await;
+    let activate_semantic = cfg.function_search_mode == FunctionSearchMode::Hybrid
+        && state.config.load().function_search_mode != FunctionSearchMode::Hybrid;
+    state
+        .search
+        .semantic
+        .set_enabled(cfg.function_search_mode == FunctionSearchMode::Hybrid);
     state
         .cache_ttl_ms
         .store(cfg.registry_cache_ttl_ms, Ordering::Relaxed);
     state.config.store(Arc::new(cfg));
+    if activate_semantic {
+        // A mode change may leave the catalog fingerprint unchanged. Rebuild
+        // explicitly instead of waiting for a functions-available event.
+        // Hold the catalog lock until rebuild records its desired fingerprint,
+        // so a newer refresh cannot be superseded by this snapshot.
+        let tools = state.search.catalog.read().await;
+        state.search.semantic.rebuild(tools.clone());
+    }
     state.registry_cache.clear().await;
     state.registered_cache.invalidate().await;
 }

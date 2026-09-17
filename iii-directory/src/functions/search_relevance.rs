@@ -78,6 +78,7 @@ fn fixture_deps() -> Deps {
         sessions: Arc::default(),
         registry_cache: RegistryCache::new(std::time::Duration::from_millis(0)),
         semantic: super::search_semantic::SemanticSearch::default(),
+        jev: super::search_jev::JevSearch::default(),
     }
 }
 
