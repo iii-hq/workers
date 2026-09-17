@@ -352,6 +352,21 @@ a.iii-ui-tree-item {
     transform: translateY(-50%);
   }
 
+  /* Pointing at the row hands the cluster back to the flow and lifts the
+     quiet metadata out of it, in place, as it fades. The actions then sit
+     beside the label instead of over it — they are wider than the metadata
+     they replace, so the label yields that difference and its ellipsis
+     moves. Only the truncation point moves: no row changes height, and the
+     list never reserves the width while nothing is pointing at it. */
+  .iii-ui-tree:not([data-narrow]) .iii-ui-tree-item:hover
+    .iii-ui-tree-item__actions,
+  .iii-ui-tree:not([data-narrow])
+    .iii-ui-tree-item:focus-within
+    .iii-ui-tree-item__actions {
+    position: static;
+    transform: none;
+  }
+
   .iii-ui-tree:not([data-narrow])
     .iii-ui-tree-item:hover
     .iii-ui-tree-item__trailing
@@ -360,6 +375,7 @@ a.iii-ui-tree-item {
     .iii-ui-tree-item:focus-within
     .iii-ui-tree-item__trailing
     > :not(.iii-ui-tree-item__actions) {
+    position: absolute;
     opacity: 0;
   }
 }

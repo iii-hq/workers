@@ -434,6 +434,9 @@ describe('@iii-dev/console-ui surface', () => {
     )
     expect(hoverOnly).toContain('position: absolute')
     expect(hoverOnly).toContain(':not([data-narrow])')
+    /* ...and hands it back on hover, so the actions sit beside the label
+       rather than on top of it. */
+    expect(hoverOnly).toContain('position: static')
   })
 
   it('publishes the borderless card-highlight inset in both themes', () => {
