@@ -105,8 +105,8 @@ struct ListSkillsInput {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-struct SkillEntry {
-    id: String,
+pub(crate) struct SkillEntry {
+    pub(crate) id: String,
     /// On-disk id before `display_id` stripping (e.g. `iii-sandbox/index`).
     /// Internal only — used to classify worker-overview rows for
     /// `directory::skills::index`; never serialized, never in the schema.
@@ -114,7 +114,7 @@ struct SkillEntry {
     on_disk_id: String,
     /// Frontmatter `title:` when present and non-empty, otherwise the
     /// first `# H1` line in the body, otherwise the bare `id`.
-    title: String,
+    pub(crate) title: String,
     /// Frontmatter `type:` (e.g. `index`, `how-to`, `reference`).
     /// `null` when the file has no frontmatter or omits the key.
     #[serde(rename = "type")]
@@ -127,11 +127,11 @@ struct SkillEntry {
     /// aren't 1:1 with a single function (index/reference).
     function_id: Option<String>,
     /// Whether model-facing indexes should omit this skill from invocation candidates.
-    disable_model_invocation: bool,
+    pub(crate) disable_model_invocation: bool,
     /// First paragraph of the body, empty when the file has only
     /// headings. Also empty when the caller passed
     /// `list { include_description: false }` for a token-light row.
-    description: String,
+    pub(crate) description: String,
     bytes: usize,
     /// File mtime as RFC 3339 (best effort; empty if unavailable).
     modified_at: String,
@@ -732,7 +732,7 @@ fn display_id(on_disk: &str, siblings: &std::collections::HashSet<String>) -> St
 }
 
 /// Build the sibling id-set [`display_id`] needs from a skill view.
-fn id_set(skills: &[FsSkill]) -> std::collections::HashSet<String> {
+pub(crate) fn id_set(skills: &[FsSkill]) -> std::collections::HashSet<String> {
     skills.iter().map(|s| s.id.clone()).collect()
 }
 
@@ -1484,7 +1484,10 @@ pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
 /// Description precedence:
 /// 1. Frontmatter `description:` when present and non-empty (after trim).
 /// 2. Body first-paragraph via [`extract_description`] (fallback).
-fn skill_entry_from_fs(fs: FsSkill, siblings: &std::collections::HashSet<String>) -> SkillEntry {
+pub(crate) fn skill_entry_from_fs(
+    fs: FsSkill,
+    siblings: &std::collections::HashSet<String>,
+) -> SkillEntry {
     let (bytes, modified_at) = fs_metadata(&fs);
     // Agent-facing id drops the `/index` overview suffix; title falls back
     // to the same display id. Filtering already ran against the raw on-disk

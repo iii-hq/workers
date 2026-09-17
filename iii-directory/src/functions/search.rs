@@ -18,7 +18,7 @@ use crate::functions::registry::{
 use crate::functions::search_index::{
     canonical_tools, compact_query, excluded_from_search, tool_fingerprint, Bm25Index, ToolSchema,
 };
-use crate::functions::search_jev::{JevFailure, JevOptions, JevOutcome, JevSearch};
+use crate::functions::search_jev::{JevCorpus, JevFailure, JevOptions, JevOutcome, JevSearch};
 use crate::functions::search_semantic::{weighted_rrf, SemanticSearch};
 use crate::surface::search_catalog as catalog;
 
@@ -98,6 +98,12 @@ const MAX_SEARCH_QUERIES: usize = 6;
 /// mutex, so concurrent batches would only overlap their timeouts).
 /// Capabilities past the last batch are named in `guidance` instead.
 const MAX_SEARCH_BATCHES: usize = 3;
+/// Installed skill documents one Jev search returns, round-robin across
+/// the capabilities.
+const MAX_SEARCH_SKILLS: usize = 6;
+/// Bytes of `title: description` one skill document contributes to the
+/// Jev payload.
+const SKILL_DOC_BYTES: usize = 300;
 /// Registry list queries per search: each capability, then informative
 /// terms one by one — the registry's pg_trgm similarity misses long
 /// natural-language queries that a single term ("email") hits. All
@@ -322,6 +328,10 @@ directory::skills::get { id: \"<id>\" }. Do not search for intrinsic reasoning, 
 summarization, planning, or formatting. Always write every `capabilities` entry in English, \
 even when the user writes in another language; preserve proper names, URLs, and function IDs.";
 
+const SEARCH_SKILLS_NOTE: &str = "The `skills` entries are installed how-to documents whose \
+content matches the requested capabilities: before acting on such a capability, read the \
+relevant one with directory::skills::get { \"id\": \"<id>\" } and follow it.";
+
 const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable` \
 for unmet capabilities. An explicit installation request follows the installation workflow below \
 even when compose::add is already in `workers`. The `installable` entries are registry workers \
@@ -396,6 +406,17 @@ pub struct FunctionCandidate {
     pub description: String,
 }
 
+/// An installed skill document (a `directory::skills::list` row) whose
+/// content matches a requested capability.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
+pub struct SkillCandidate {
+    /// Pass to `directory::skills::get { id }` to read the document.
+    pub id: String,
+    pub title: String,
+    /// First description sentence, capped at 160 bytes.
+    pub description: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct SearchWorker {
     pub namespace: String,
@@ -439,6 +460,10 @@ pub struct SearchFunctionsResponse {
     /// NOT callable until the worker is installed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub installable: Vec<InstallableWorker>,
+    /// Installed skill documents matching the capabilities (Jev mode only).
+    /// Read one with `directory::skills::get { id }` before acting on it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<SkillCandidate>,
     pub latency_ms: f64,
 }
 
@@ -1247,17 +1272,30 @@ pub async fn search_functions(
     let jev_deadline = tokio::time::Instant::now()
         + std::time::Duration::from_millis(cfg.function_search_jev_timeout_ms);
     let fingerprint = tool_fingerprint(&tools);
-    let mut selected: Vec<String> = Vec::new();
-    let mut installable: Vec<InstallableWorker> = Vec::new();
-    for batch in request.capabilities.chunks(MAX_SEARCH_QUERIES) {
-        let outcome = search_batch(deps, &cfg, &tools, &fingerprint, batch, jev_deadline).await;
-        for function_id in outcome.selected {
-            if !selected.contains(&function_id) {
-                selected.push(function_id);
+    let function_search = async {
+        let mut selected: Vec<String> = Vec::new();
+        let mut installable: Vec<InstallableWorker> = Vec::new();
+        for batch in request.capabilities.chunks(MAX_SEARCH_QUERIES) {
+            let outcome = search_batch(deps, &cfg, &tools, &fingerprint, batch, jev_deadline).await;
+            for function_id in outcome.selected {
+                if !selected.contains(&function_id) {
+                    selected.push(function_id);
+                }
             }
+            merge_installable(&mut installable, outcome.installable);
         }
-        merge_installable(&mut installable, outcome.installable);
-    }
+        (selected, installable)
+    };
+    // Skill documents are judged by the same remote model, so the section
+    // exists only in Jev mode; it shares the Jev deadline with the batches.
+    let skill_search = async {
+        if cfg.function_search_mode == FunctionSearchMode::Jev {
+            jev_skills(deps, &cfg, &tools, &request.capabilities, jev_deadline).await
+        } else {
+            Vec::new()
+        }
+    };
+    let ((mut selected, installable), skills) = tokio::join!(function_search, skill_search);
     let batches = request.capabilities.len().div_ceil(MAX_SEARCH_QUERIES);
     let session_id = baggage_session_id();
     // Repeat queries in one session skip candidates the session already
@@ -1325,6 +1363,11 @@ unchanged — reuse the earlier result): {}.",
         guidance
     };
     let guidance = format!("{guidance} {SEARCH_LANGUAGE_GUIDANCE}");
+    let guidance = if skills.is_empty() {
+        guidance
+    } else {
+        format!("{guidance} {SEARCH_SKILLS_NOTE}")
+    };
     let guidance = if dropped.is_empty() {
         guidance
     } else {
@@ -1339,8 +1382,138 @@ search again for: {}.",
         guidance,
         workers,
         installable,
+        skills,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
+}
+
+/// The installed skill documents a search may recommend, as the Jev
+/// carrier (`name` = skill id, `description` = trimmed `title: body`) plus
+/// the response row. Visibility follows `directory::skills::list`, except
+/// that "installed" is read off the live function catalog (a worker with no
+/// registered functions has nothing the skill could drive) instead of a
+/// `compose::status` round trip. Skills flagged `disable_model_invocation`
+/// are never candidates.
+// ponytail: rescans the skill folders on every Jev search; cache behind
+// the skills watcher if the scan ever shows up in search latency.
+fn installed_skill_docs(
+    cfg: &SkillsConfig,
+    tools: &[ToolSchema],
+) -> Vec<(ToolSchema, SkillCandidate)> {
+    let global_root = cfg.resolved_skills_folder();
+    let local_root = cfg.local_skills_folder();
+    let agents_roots = cfg.resolved_agents_skills_roots();
+    let (merged, _skipped) = crate::fs_source::scan_skills_merged(&global_root, &local_root);
+    let visible = if cfg.filter_unregistered {
+        let registered: HashSet<String> = tools
+            .iter()
+            .filter_map(|tool| function_namespace(&tool.name))
+            .map(str::to_string)
+            .collect();
+        let agents_ns: Vec<String> = agents_roots
+            .iter()
+            .flat_map(|root| crate::fs_source::agents_namespaces(root))
+            .collect();
+        crate::functions::skills::filter_to_registered(merged, &registered, &agents_ns)
+    } else {
+        merged
+    };
+    let visible =
+        crate::fs_source::merge_agents_roots(visible, &global_root, &local_root, &agents_roots).0;
+    let siblings = crate::functions::skills::id_set(&visible);
+    visible
+        .into_iter()
+        .map(|fs| crate::functions::skills::skill_entry_from_fs(fs, &siblings))
+        .filter(|entry| !entry.disable_model_invocation)
+        .map(|entry| {
+            let document = truncate_bytes(
+                &format!("{}: {}", entry.title, entry.description),
+                SKILL_DOC_BYTES,
+            );
+            (
+                ToolSchema {
+                    name: entry.id.clone(),
+                    description: document,
+                    parameters: json!({}),
+                },
+                SkillCandidate {
+                    id: entry.id,
+                    title: entry.title,
+                    description: crate::functions::search_index::slim_description(
+                        &entry.description,
+                    ),
+                },
+            )
+        })
+        .collect()
+}
+
+fn truncate_bytes(text: &str, max_bytes: usize) -> String {
+    let mut end = text.len().min(max_bytes);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].trim_end().to_string()
+}
+
+/// Jev-judged installed skills for the requested capabilities, at most
+/// `MAX_SEARCH_SKILLS` round-robin across capabilities. Any Jev failure
+/// omits the section: the function search never fails over skills.
+async fn jev_skills(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    tools: &[ToolSchema],
+    capabilities: &[String],
+    deadline: tokio::time::Instant,
+) -> Vec<SkillCandidate> {
+    let queries = search_queries(capabilities);
+    let (documents, candidates): (Vec<ToolSchema>, Vec<SkillCandidate>) =
+        installed_skill_docs(cfg, tools).into_iter().unzip();
+    if queries.is_empty() || documents.is_empty() {
+        return Vec::new();
+    }
+    let jev = deps.jev.with_api_key(
+        cfg.function_search_jev_api_key
+            .as_ref()
+            .map(|key| key.expose()),
+    );
+    match jev
+        .rank(
+            &queries,
+            &documents,
+            &JevOptions {
+                model: cfg.function_search_jev_model.clone(),
+                min_relevance: cfg.function_search_jev_min_relevance,
+                corpus: JevCorpus::Skills,
+            },
+            deadline,
+        )
+        .await
+    {
+        Ok(outcome) => {
+            tracing::debug!(
+                requests = outcome.stats.requests,
+                questions = outcome.stats.questions,
+                elapsed_ms = outcome.stats.elapsed_ms,
+                documents = documents.len(),
+                "Jev skill evaluation completed"
+            );
+            round_robin_rankings(&outcome.rankings, MAX_SEARCH_SKILLS)
+                .into_iter()
+                .filter_map(|id| {
+                    candidates
+                        .iter()
+                        .find(|candidate| candidate.id == id)
+                        .cloned()
+                })
+                .collect()
+        }
+        Err(error) => {
+            tracing::warn!(%error, requests = error.stats.requests,
+                "Jev skill search failed; omitting the skills section");
+            Vec::new()
+        }
+    }
 }
 
 /// Fold one batch's installable workers into the merged section: a worker
@@ -1428,6 +1601,7 @@ async fn rank_with_jev(
             &JevOptions {
                 model: cfg.function_search_jev_model.clone(),
                 min_relevance: cfg.function_search_jev_min_relevance,
+                corpus: JevCorpus::Functions,
             },
             deadline,
         )

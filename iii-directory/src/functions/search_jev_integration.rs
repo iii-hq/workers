@@ -19,15 +19,34 @@ fn tools() -> Vec<ToolSchema> {
     .collect()
 }
 
+/// Skill roots for Jev tests: the defaults resolve to the crate's shipped
+/// `skills/` and the developer's `~/.agents/skills`, which would add a
+/// nondeterministic skill evaluation to every search.
+fn skill_roots(root: &std::path::Path) -> SkillsConfig {
+    SkillsConfig {
+        function_search_mode: FunctionSearchMode::Jev,
+        function_search_model_path: None,
+        registry_search: false,
+        skills_folder: root.join("skills").display().to_string(),
+        local_skills_folder: root.join("local").display().to_string(),
+        agents_skills_folder: root.join("agents").display().to_string(),
+        global_agents_skills_folder: root.join("global-agents").display().to_string(),
+        ..SkillsConfig::default()
+    }
+}
+
+fn empty_skill_root() -> &'static std::path::Path {
+    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| tempfile::tempdir().unwrap()).path()
+}
+
 fn deps(server: &MockServer) -> Deps {
+    deps_with_skill_root(server, empty_skill_root())
+}
+
+fn deps_with_skill_root(server: &MockServer, root: &std::path::Path) -> Deps {
     Deps {
-        config: SkillsConfig {
-            function_search_mode: FunctionSearchMode::Jev,
-            function_search_model_path: None,
-            registry_search: false,
-            ..SkillsConfig::default()
-        }
-        .into_shared(),
+        config: skill_roots(root).into_shared(),
         catalog: Arc::new(RwLock::new(Arc::new(tools()))),
         sessions: Arc::default(),
         registry_cache: RegistryCache::new(std::time::Duration::ZERO),
@@ -837,4 +856,155 @@ async fn benchmark_preserves_known_usage_and_stage_time_after_a_later_block_fail
         !result.selected.is_empty(),
         "lexical fallback still returns candidates"
     );
+}
+
+fn skills_root(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    for (rel, body) in files {
+        let path = root.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    root
+}
+
+fn is_skill_block(request: &Request) -> bool {
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    body["state"]["skills"].is_object()
+}
+
+const COMPOSE_SKILL: &str = "---\ndescription: How to compose and send a message with mail::send.\n---\n# Compose mail\n\nSteps.\n";
+
+#[tokio::test]
+async fn jev_lists_installed_skills_matching_the_capabilities() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|r: &Request| reply(r, 0.9))
+        .mount(&server)
+        .await;
+    let root = skills_root(&[
+        ("skills/mail/compose.md", COMPOSE_SKILL),
+        // No `browser::*` function is installed: the skill is not a candidate.
+        (
+            "skills/browser/scrape.md",
+            "---\ndescription: Scrape a page.\n---\n# Scrape\n\nSteps.\n",
+        ),
+    ]);
+    let response = ask(
+        &deps_with_skill_root(&server, root.path()),
+        &["dispatch correspondence"],
+    )
+    .await;
+    assert_eq!(ids(&response), ["mail::send", "state::get"]);
+    let skills: Vec<(&str, &str, &str)> = response
+        .skills
+        .iter()
+        .map(|skill| {
+            (
+                skill.id.as_str(),
+                skill.title.as_str(),
+                skill.description.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        skills,
+        [(
+            "mail/compose",
+            "Compose mail",
+            "How to compose and send a message with mail::send."
+        )]
+    );
+    assert!(response
+        .guidance
+        .contains("directory::skills::get { \"id\": \"<id>\" }"));
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<Value> = requests
+        .iter()
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    let skill_block = bodies
+        .iter()
+        .find(|body| body["state"]["skills"].is_object())
+        .expect("one skill evaluation was sent");
+    assert_eq!(
+        skill_block["state"]["skills"]["f0"]["skill_id"],
+        "mail/compose"
+    );
+    assert_eq!(
+        skill_block["state"]["skills"]["f0"]["description"],
+        "Compose mail: How to compose and send a message with mail::send."
+    );
+    assert!(skill_block["state"].get("functions").is_none());
+    assert!(skill_block["questions"]["c0_f0"]["instructions"]
+        .as_str()
+        .unwrap()
+        .starts_with("Does the skill document described in state.skills.f0"));
+    // The function evaluation is untouched by the skills corpus.
+    let function_block = bodies
+        .iter()
+        .find(|body| body["state"]["functions"].is_object())
+        .expect("one function evaluation was sent");
+    assert!(function_block["state"].get("skills").is_none());
+}
+
+#[tokio::test]
+async fn skills_below_the_relevance_threshold_are_omitted() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|r: &Request| reply(r, if is_skill_block(r) { 0.1 } else { 0.9 }))
+        .mount(&server)
+        .await;
+    let root = skills_root(&[("skills/mail/compose.md", COMPOSE_SKILL)]);
+    let response = ask(
+        &deps_with_skill_root(&server, root.path()),
+        &["dispatch correspondence"],
+    )
+    .await;
+    assert_eq!(ids(&response), ["mail::send", "state::get"]);
+    assert!(response.skills.is_empty());
+    assert!(!response.guidance.contains("`skills` entries"));
+}
+
+#[tokio::test]
+async fn a_failed_skill_evaluation_keeps_the_function_results() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|r: &Request| {
+            if is_skill_block(r) {
+                ResponseTemplate::new(500)
+            } else {
+                reply(r, 0.9)
+            }
+        })
+        .mount(&server)
+        .await;
+    let root = skills_root(&[("skills/mail/compose.md", COMPOSE_SKILL)]);
+    let response = ask(
+        &deps_with_skill_root(&server, root.path()),
+        &["dispatch correspondence"],
+    )
+    .await;
+    assert_eq!(ids(&response), ["mail::send", "state::get"]);
+    assert!(response.skills.is_empty());
+}
+
+#[tokio::test]
+async fn hybrid_mode_never_evaluates_skills() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|r: &Request| reply(r, 0.9))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let root = skills_root(&[("skills/mail/compose.md", COMPOSE_SKILL)]);
+    let mut deps = deps_with_skill_root(&server, root.path());
+    deps.config = SkillsConfig {
+        function_search_mode: FunctionSearchMode::Lexical,
+        ..skill_roots(root.path())
+    }
+    .into_shared();
+    let response = ask(&deps, &["send an email message"]).await;
+    assert_eq!(ids(&response), ["mail::send"]);
+    assert!(response.skills.is_empty());
 }

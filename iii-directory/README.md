@@ -488,7 +488,7 @@ catalog with `engine::functions::list`.
 
 | Function | Kind | What it does |
 |---|---|---|
-| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
+| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, skills[]?, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
 | `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per turn). |
 | `directory::on-functions-change` | internal | Refreshes the search catalog on the engine's functions-available push. |
 | `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |
@@ -573,6 +573,18 @@ download a missing bundle; automatic boot-time downloads remain tied to Hybrid m
 Registry discovery still starts with the registry API's lexical search. Jev
 evaluates the returned contract pool and **cannot recover workers that upstream
 search did not return**. Installable results remain suggestions until installation.
+
+Jev mode also judges the installed skill documents (the rows
+`directory::skills::list` serves, minus `disable_model_invocation` ones) against
+the same capabilities and lists the matches under `skills` as
+`{ id, title, description }`, at most six per call round-robin across the
+capabilities, with a guidance note to read them through
+`directory::skills::get { id }`. The evaluation sends each skill's id and a
+trimmed `title: description` (300 bytes) as `state.skills` with a how-to
+question, runs concurrently with the function batches under the same Jev
+deadline, and any failure only omits the section. "Installed" is read off the
+live function catalog: a worker with no registered functions contributes no
+skills. Lexical and Hybrid modes never search skills.
 
 A valid response with no functions at or above the relevance threshold stays
 empty. Missing credentials, timeouts, HTTP failures and invalid/incomplete service
