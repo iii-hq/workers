@@ -98,8 +98,10 @@ impl SharedState {
 }
 
 /// Register the `iii-directory` configuration schema with the configuration
-/// worker. When `seed` is present, its value is installed as `initial_value`.
-/// Otherwise, built-in defaults are seeded only when no stored value exists.
+/// worker. `initial_value` (the `--config` seed, else built-in defaults) is
+/// sent only when no stored value exists: `configuration::register` replaces
+/// the stored value whenever `initial_value` is present, so sending it on
+/// every boot would stomp runtime edits (console Settings, `configuration::set`).
 pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -113,13 +115,18 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
         "schema": SkillsConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default_value(iii).await? {
-        payload["initial_value"] = SkillsConfig::default().to_json();
+    if let Some(value) = initial_value(seed, should_seed_default_value(iii).await?) {
+        payload["initial_value"] = value;
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
+}
+
+/// `initial_value` for `configuration::register`: the seed (else built-in
+/// defaults) on first boot, nothing once a stored value exists.
+fn initial_value(seed: Option<&SkillsConfig>, first_boot: bool) -> Option<Value> {
+    first_boot
+        .then(|| seed.map_or_else(|| SkillsConfig::default().to_json(), SkillsConfig::to_json))
 }
 
 /// Read the live `iii-directory` configuration (env-expanded by the
@@ -311,4 +318,22 @@ async fn trigger_configuration_with_retry(
     Err(format!(
         "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seed_is_sent_only_on_first_boot() {
+        let mut seed = SkillsConfig::default();
+        seed.function_search_mode = FunctionSearchMode::Jev;
+        assert_eq!(initial_value(Some(&seed), true), Some(seed.to_json()));
+        assert_eq!(
+            initial_value(None, true),
+            Some(SkillsConfig::default().to_json())
+        );
+        assert_eq!(initial_value(Some(&seed), false), None);
+        assert_eq!(initial_value(None, false), None);
+    }
 }
