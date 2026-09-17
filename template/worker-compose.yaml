@@ -140,6 +140,10 @@ containers:
 
   browser:
     worker: path://../browser
+    config_name: browser
+    config_override:
+      scrapling:
+        allow_loopback: true # dev stack: the ADE lives on 127.0.0.1
     env_file:
       - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
     environment:
