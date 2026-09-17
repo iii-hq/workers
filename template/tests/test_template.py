@@ -158,6 +158,9 @@ class TemplateTests(unittest.TestCase):
             "template/.sync.lock/owner", "template/.sync-stage-test/file", "template/.iii/runtime.json",
             "template/config/new-worker.yaml", "template/worker-compose.lock",
             "template/scripts/.null-ls_test_sync_template.py",
+            "template/harness/worker-compose.yaml", "template/harness/agents/custom.md",
+            "template/harness/config/console.yaml", "template/harness/.env",
+            "template/another-template/notes.txt", "template/another-template/nested/file.py",
         ]
         for paths, expected in [(tracked, set()), (ignored, set(ignored))]:
             result = subprocess.run(
