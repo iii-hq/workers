@@ -108,9 +108,19 @@ test.describe('touch rows', () => {
     await expect(
       row.getByRole('button', { name: `rename ${title}`, exact: true }),
     ).toBeHidden()
-    await expect(
-      row.getByRole('button', { name: `delete ${title}`, exact: true }),
-    ).toBeVisible()
+
+    /* Delete survives, and survives finger-sized. The cluster around these
+       buttons is new markup, so pin the touch target rather than mere
+       presence — a coarse pointer gets 48px whatever the row measures. */
+    const remove = row.getByRole('button', {
+      name: `delete ${title}`,
+      exact: true,
+    })
+    await expect(remove).toBeVisible()
+    await expect(remove).toBeEnabled()
+    const target = await remove.boundingBox()
+    expect(target?.width ?? 0).toBeGreaterThanOrEqual(44)
+    expect(target?.height ?? 0).toBeGreaterThanOrEqual(44)
 
     expectPassingResult(await stack.finish())
   })
