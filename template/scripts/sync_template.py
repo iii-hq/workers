@@ -1,6 +1,7 @@
 """Download every tracked entry in a template folder without executing its code."""
 
 import argparse
+from contextlib import contextmanager, ExitStack
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -40,7 +41,9 @@ def stage_download(args, stage):
         header, raw_path = record.split(b"\t", 1)
         mode, kind, oid = header.decode().split()
         relative = PurePosixPath(os.fsdecode(raw_path))
-        if relative.is_absolute() or any(part in ("..", ".git") for part in relative.parts):
+        if relative.is_absolute() or any(
+            part == ".." or part.casefold() == ".git" for part in relative.parts
+        ):
             raise ValueError(f"Unsafe download path: {relative}")
         # A gitlink points outside this repository's contents; do not silently omit it.
         if kind != "blob" or mode not in ("100644", "100755", "120000"):
@@ -71,6 +74,37 @@ def check_destination(destination, paths):
             raise ValueError(f"Cannot overwrite a local directory with a file: {target}")
 
 
+@contextmanager
+def open_directory(path, *, dir_fd=None):
+    """Pin a real directory inode; never follow a symlink for this component."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def install_download(destination, stage, paths, *, overwrite):
+    """Create and replace entries relative to pinned, no-follow directory handles."""
+    with open_directory(destination.parent) as base_fd:
+        if not overwrite:
+            # Fail if another process creates the destination after our check:
+            # a newly appeared folder has not received overwrite confirmation.
+            os.mkdir(destination.name, dir_fd=base_fd)
+        with open_directory(destination.name, dir_fd=base_fd) as root_fd:
+            for relative in paths:
+                with ExitStack() as directories:
+                    parent_fd = root_fd
+                    for part in relative.parts[:-1]:
+                        try:
+                            os.mkdir(part, dir_fd=parent_fd)
+                        except FileExistsError:
+                            pass
+                        parent_fd = directories.enter_context(open_directory(part, dir_fd=parent_fd))
+                    # Replace a leaf symlink itself, never traverse its target.
+                    os.replace(stage / relative, relative.name, dst_dir_fd=parent_fd)
+
+
 def confirm_overwrite(destination):
     """Require explicit consent; empty input, EOF and interruptions never approve."""
     print(f"\nThe template folder already exists: {destination}")
@@ -93,7 +127,8 @@ def apply(args):
         stage.mkdir()
         paths = stage_download(args, stage)
         check_destination(destination, paths)
-        if destination.exists() and not args.dry_run:
+        overwrite = destination.exists()
+        if overwrite and not args.dry_run:
             if not confirm_overwrite(destination):
                 raise SystemExit("Download cancelled. No files were changed.")
             # Recheck filesystem boundaries after waiting for the user's answer.
@@ -105,14 +140,7 @@ def apply(args):
             print(f"  {relative}")
         if args.dry_run:
             return
-        if not destination.exists():
-            stage.rename(destination)
-        else:
-            for relative in paths:
-                target = destination / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                # Replace symlink leaves themselves, never write through their targets.
-                (stage / relative).replace(target)
+        install_download(destination, stage, paths, overwrite=overwrite)
         print("Template downloaded! Enter the folder with the command:")
         print(f"\ncd {shlex.quote(os.path.relpath(destination))}")
 

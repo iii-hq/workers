@@ -1,6 +1,11 @@
 """Exercise the download entrypoint against local Git fixtures; no network."""
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from unittest import mock
+from contextlib import redirect_stdout
+import importlib.util
+import io
 import os
 import shlex
 import shutil
@@ -10,6 +15,9 @@ import tempfile
 import unittest
 
 TEMPLATE = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("sync_template", TEMPLATE / "scripts/sync_template.py")
+SYNC = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SYNC)
 
 
 class SyncTests(unittest.TestCase):
@@ -266,6 +274,85 @@ class SyncTests(unittest.TestCase):
         self.destination.symlink_to(outside, target_is_directory=True)
         self.run_sync(success=False)
         self.assertEqual(list(outside.iterdir()), [])
+
+    def test_git_metadata_aliases_and_traversal_are_rejected_before_writing(self):
+        """Reject unsafe Git tree paths even on case-insensitive filesystems."""
+        stage = self.root / "unsafe-stage"
+        stage.mkdir()
+        args = SimpleNamespace(checkout=str(self.upstream), commit="HEAD", template="harness")
+        for path in (".git/config", ".GIT/hooks/post-checkout", "nested/.GiT/config", "../outside", "/outside"):
+            with self.subTest(path=path):
+                listing = f"100644 blob fake-blob\t{path}\0".encode()
+                resolved_tree = subprocess.CompletedProcess([], 0, stdout=b"fake-tree\n")
+                with mock.patch.object(SYNC.subprocess, "run", return_value=resolved_tree), \
+                        mock.patch.object(SYNC, "git", side_effect=(b"tree\n", listing)) as read:
+                    with self.assertRaisesRegex(ValueError, "Unsafe download path"):
+                        SYNC.stage_download(args, stage)
+                    self.assertEqual(read.call_count, 2)
+                self.assertEqual(list(stage.iterdir()), [])
+
+    def test_parent_swapped_after_validation_cannot_redirect_update(self):
+        """A symlink substituted after the last validation is rejected on open."""
+        self.run_sync()
+        outside = self.root / "race-outside"
+        outside.mkdir()
+        args = SimpleNamespace(root=self.launcher, checkout=str(self.upstream), commit="HEAD", template="harness", dry_run=False)
+        original_check = SYNC.check_destination
+        checks = 0
+
+        def swap_after_check(destination, paths):
+            nonlocal checks
+            original_check(destination, paths)
+            checks += 1
+            if checks == 2:
+                (destination / "config").rename(destination / "old-config")
+                (destination / "config").symlink_to(outside, target_is_directory=True)
+
+        with mock.patch.object(SYNC, "check_destination", side_effect=swap_after_check), \
+                mock.patch.object(SYNC, "confirm_overwrite", return_value=True), \
+                redirect_stdout(io.StringIO()):
+            with self.assertRaises(OSError):
+                SYNC.apply(args)
+        self.assertEqual(checks, 2)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertFalse(list(self.launcher.glob(".sync-stage-*")))
+
+    def test_parent_swapped_after_open_does_not_redirect_directory_creation(self):
+        """Pinned parents keep both mkdir and replace off a substituted symlink."""
+        stage = self.root / "race-stage"
+        (stage / "config/new").mkdir(parents=True)
+        (stage / "config/new/file.txt").write_text("Downloaded\n")
+        (self.destination / "config").mkdir(parents=True)
+        outside = self.root / "race-outside"
+        outside.mkdir()
+        real_open = SYNC.os.open
+        swapped = False
+
+        def swap_after_open(path, flags, *args, **kwargs):
+            nonlocal swapped
+            fd = real_open(path, flags, *args, **kwargs)
+            if path == "config" and not swapped:
+                swapped = True
+                (self.destination / "config").rename(self.destination / "old-config")
+                (self.destination / "config").symlink_to(outside, target_is_directory=True)
+            return fd
+
+        with mock.patch.object(SYNC.os, "open", side_effect=swap_after_open):
+            SYNC.install_download(self.destination, stage, [PurePosixPath("config/new/file.txt")], overwrite=True)
+        self.assertTrue(swapped)
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertEqual((self.destination / "old-config/new/file.txt").read_text(), "Downloaded\n")
+
+    def test_fresh_destination_appearing_after_check_is_not_overwritten(self):
+        """A competing folder creation must not bypass overwrite confirmation."""
+        stage = self.root / "race-stage"
+        stage.mkdir()
+        (stage / "README.md").write_text("Upstream\n")
+        self.destination.mkdir()
+        (self.destination / "README.md").write_text("Local\n")
+        with self.assertRaises(FileExistsError):
+            SYNC.install_download(self.destination, stage, [PurePosixPath("README.md")], overwrite=False)
+        self.assertEqual((self.destination / "README.md").read_text(), "Local\n")
 
     def test_invalid_names_cannot_escape_or_overwrite_tooling(self):
         """Names must select an isolated destination rather than a tool directory."""
