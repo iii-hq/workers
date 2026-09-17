@@ -369,5 +369,6 @@ The four hooks are `@iii-dev/console-ui/hooks`; the formatters are `@iii-dev/con
   (streaming text), and no glow except `pulse-dot`.
 - Don't set a whole panel in mono, or technical values in sans.
 - Don't reach for a Tailwind utility to override a property a recipe already sets:
-  `ui-recipes.css` is imported unlayered, so it beats `@layer utilities` at any specificity and
-  the utility silently loses. Put the rule in the recipe, keyed by a data attribute.
+  `ui-recipes.css` is imported unlayered, so a normal utility in `@layer utilities` loses to it
+  at any specificity and silently does nothing. Only an `!important` utility would win, and that
+  is not the answer — put the rule in the recipe, keyed by a data attribute.
