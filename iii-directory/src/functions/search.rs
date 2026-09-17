@@ -1697,7 +1697,7 @@ async fn jev_rank_documents(
             documents,
             &JevOptions {
                 model: cfg.function_search_jev_model.clone(),
-                min_relevance: cfg.function_search_jev_min_relevance,
+                min_relevance: cfg.function_search_jev_side_lane_min_relevance,
                 corpus: lane.corpus,
             },
             deadline,

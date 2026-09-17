@@ -74,6 +74,7 @@ const INLINE_ERROR_POINTERS = new Set([
   '/function_search_jev_model',
   '/function_search_jev_timeout_ms',
   '/function_search_jev_min_relevance',
+  '/function_search_jev_side_lane_min_relevance',
   '/function_search_model_path',
   '/function_search_model_download',
 ])
@@ -304,6 +305,18 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             step="any"
             inputMode="decimal"
             value={value.function_search_jev_min_relevance}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <NumberField
+            field="function_search_jev_side_lane_min_relevance"
+            label="Jev minimum relevance for skills and triggers"
+            placeholder="0.3"
+            hint="Finite value from 0 to 1, inclusive, for the installed-skills and registered-triggers sections. Those documents score lower than functions for the same capability, so the default 0.3 sits under the function floor."
+            max={1}
+            step="any"
+            inputMode="decimal"
+            value={value.function_search_jev_side_lane_min_relevance}
             onChange={setNumber}
             errors={props.errors}
           />

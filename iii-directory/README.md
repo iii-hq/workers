@@ -158,6 +158,7 @@ function_search_jev_api_key: null             # optional override; null/blank us
 function_search_jev_model: jev-1.13.0          # non-empty TypeSafe model name
 function_search_jev_timeout_ms: 3000          # integer 1..30000; shared Jev deadline per public search
 function_search_jev_min_relevance: 0.5        # finite 0..1 inclusive; initial calibration value
+function_search_jev_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; floor for the skills and triggers sections
 ```
 
 The writable `skills_folder` and `agents_folder` roots are created when needed.

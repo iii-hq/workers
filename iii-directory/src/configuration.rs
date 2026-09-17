@@ -110,7 +110,8 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
                         skill-visibility filters, and the function-search knobs \
                         (inject_hint, hint_min_workers, registry_search, function_search_mode, \
                         function_search_model_path, function_search_jev_api_key, function_search_jev_model, \
-                        function_search_jev_timeout_ms, function_search_jev_min_relevance) for the \
+                        function_search_jev_timeout_ms, function_search_jev_min_relevance, \
+                        function_search_jev_side_lane_min_relevance) for the \
                         iii-directory worker.",
         "schema": SkillsConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
@@ -326,8 +327,10 @@ mod tests {
 
     #[test]
     fn seed_is_sent_only_on_first_boot() {
-        let mut seed = SkillsConfig::default();
-        seed.function_search_mode = FunctionSearchMode::Jev;
+        let seed = SkillsConfig {
+            function_search_mode: FunctionSearchMode::Jev,
+            ..SkillsConfig::default()
+        };
         assert_eq!(initial_value(Some(&seed), true), Some(seed.to_json()));
         assert_eq!(
             initial_value(None, true),
