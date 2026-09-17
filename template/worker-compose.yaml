@@ -104,6 +104,7 @@ containers:
       RUST_LOG: info
       CI: "true"
       ORT_PREFER_DYNAMIC_LINK: "0"
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
     scripts:
       # Compose supplies III_COMPOSE_DIR even though Cargo runs in ../iii-directory.
       run: cargo run --bin iii-directory -- --config "$III_COMPOSE_DIR/config/iii-directory.yaml"

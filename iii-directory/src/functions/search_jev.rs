@@ -191,7 +191,11 @@ impl JevSearch {
                 .build()
                 .expect("Jev HTTP client initializes"),
             endpoint: "https://api.typesafe.ai/v1/systemone".into(),
-            api_key: api_key.map(Arc::from),
+            api_key: api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(Arc::from),
             permits: Arc::new(Semaphore::new(4)),
         }
     }
