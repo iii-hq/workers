@@ -426,6 +426,8 @@ fn deps(
         sessions: Arc::default(),
         registry_cache: RegistryCache::new(Duration::ZERO),
         semantic,
+        registered_workers: None,
+        iii: None,
         jev,
     }
 }

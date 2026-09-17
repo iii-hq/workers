@@ -138,6 +138,12 @@ pub struct Deps {
     pub registry_cache: RegistryCache,
     pub semantic: SemanticSearch,
     pub jev: JevSearch,
+    /// Registered-workers cache shared with `directory::skills::*`, so the
+    /// Jev skill search sees exactly the set `directory::skills::list`
+    /// serves. `None` (tests, benchmarks) falls back to the live function
+    /// catalog's namespaces.
+    pub registered_workers: Option<Arc<crate::functions::skills::RegisteredWorkersCache>>,
+    pub iii: Option<Arc<IIIClient>>,
 }
 
 const SESSIONS_CAP: usize = 1024;
@@ -1389,14 +1395,14 @@ search again for: {}.",
 
 /// The installed skill documents a search may recommend, as the Jev
 /// carrier (`name` = skill id, `description` = trimmed `title: body`) plus
-/// the response row. Visibility follows `directory::skills::list`, except
-/// that "installed" is read off the live function catalog (a worker with no
-/// registered functions has nothing the skill could drive) instead of a
-/// `compose::status` round trip. Skills flagged `disable_model_invocation`
-/// are never candidates.
+/// the response row. Visibility follows `directory::skills::list`: the
+/// registered-workers set (cached `compose::status`) plus, as a floor, the
+/// namespaces of the live function catalog. Skills flagged
+/// `disable_model_invocation` are never candidates.
 // ponytail: rescans the skill folders on every Jev search; cache behind
 // the skills watcher if the scan ever shows up in search latency.
-fn installed_skill_docs(
+async fn installed_skill_docs(
+    deps: &Deps,
     cfg: &SkillsConfig,
     tools: &[ToolSchema],
 ) -> Vec<(ToolSchema, SkillCandidate)> {
@@ -1405,11 +1411,16 @@ fn installed_skill_docs(
     let agents_roots = cfg.resolved_agents_skills_roots();
     let (merged, _skipped) = crate::fs_source::scan_skills_merged(&global_root, &local_root);
     let visible = if cfg.filter_unregistered {
-        let registered: HashSet<String> = tools
-            .iter()
-            .filter_map(|tool| function_namespace(&tool.name))
-            .map(str::to_string)
-            .collect();
+        let mut registered: HashSet<String> = match (&deps.registered_workers, &deps.iii) {
+            (Some(cache), Some(iii)) => cache.get_or_fetch(iii).await.unwrap_or_default(),
+            _ => HashSet::new(),
+        };
+        registered.extend(
+            tools
+                .iter()
+                .filter_map(|tool| function_namespace(&tool.name))
+                .map(str::to_string),
+        );
         let agents_ns: Vec<String> = agents_roots
             .iter()
             .flat_map(|root| crate::fs_source::agents_namespaces(root))
@@ -1468,7 +1479,14 @@ async fn jev_skills(
 ) -> Vec<SkillCandidate> {
     let queries = search_queries(capabilities);
     let (documents, candidates): (Vec<ToolSchema>, Vec<SkillCandidate>) =
-        installed_skill_docs(cfg, tools).into_iter().unzip();
+        installed_skill_docs(deps, cfg, tools)
+            .await
+            .into_iter()
+            .unzip();
+    tracing::debug!(
+        documents = ?documents.iter().map(|document| document.name.as_str()).collect::<Vec<_>>(),
+        "Jev skill candidates"
+    );
     if queries.is_empty() || documents.is_empty() {
         return Vec::new();
     }
@@ -2116,6 +2134,8 @@ mod tests {
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
             jev: JevSearch::default(),
+            registered_workers: None,
+            iii: None,
         }
     }
 
@@ -2646,6 +2666,8 @@ mod tests {
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
             jev: JevSearch::default(),
+            registered_workers: None,
+            iii: None,
         };
         let response = search_functions(
             &deps,
@@ -2839,6 +2861,8 @@ mod tests {
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
             jev: JevSearch::default(),
+            registered_workers: None,
+            iii: None,
         };
         let response = search_functions(
             &deps,

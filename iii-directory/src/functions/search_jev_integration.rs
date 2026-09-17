@@ -51,6 +51,8 @@ fn deps_with_skill_root(server: &MockServer, root: &std::path::Path) -> Deps {
         sessions: Arc::default(),
         registry_cache: RegistryCache::new(std::time::Duration::ZERO),
         semantic: SemanticSearch::default(),
+        registered_workers: None,
+        iii: None,
         jev: JevSearch::for_test(
             format!("{}/v1/systemone", server.uri()),
             Some("test-key".into()),

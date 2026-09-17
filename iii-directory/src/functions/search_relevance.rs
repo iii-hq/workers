@@ -79,6 +79,8 @@ fn fixture_deps() -> Deps {
         registry_cache: RegistryCache::new(std::time::Duration::from_millis(0)),
         semantic: super::search_semantic::SemanticSearch::default(),
         jev: super::search_jev::JevSearch::default(),
+        registered_workers: None,
+        iii: None,
     }
 }
 

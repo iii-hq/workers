@@ -288,7 +288,18 @@ impl JevSearch {
             }
         }
         check_deadline(deadline)?;
-        for ranking in &mut outcome.rankings {
+        for (lane, ranking) in outcome.rankings.iter_mut().enumerate() {
+            *ranking = admit(std::mem::take(ranking), 0.0);
+            tracing::debug!(
+                lane,
+                corpus = ?options.corpus,
+                top = ?ranking
+                    .iter()
+                    .take(5)
+                    .map(|(id, score)| format!("{id}={score:.2}"))
+                    .collect::<Vec<_>>(),
+                "Jev lane scored"
+            );
             *ranking = admit(std::mem::take(ranking), options.min_relevance);
         }
         Ok(())

@@ -462,6 +462,8 @@ mod tests {
             registry_cache: RegistryCache::new(std::time::Duration::from_millis(0)),
             semantic: crate::functions::search_semantic::SemanticSearch::default(),
             jev: crate::functions::search_jev::JevSearch::default(),
+            registered_workers: None,
+            iii: None,
         }
     }
 

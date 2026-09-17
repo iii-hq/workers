@@ -220,6 +220,8 @@ async fn main() -> Result<()> {
         registry_cache: registry_cache.clone(),
         semantic: semantic.clone(),
         jev: functions::search_jev::JevSearch::new(std::env::var("TYPESAFE_API_KEY").ok()),
+        registered_workers: Some(registered_cache.clone()),
+        iii: Some(iii.clone()),
     };
     functions::search::register(&iii, &search_deps);
     functions::search::bind_best_effort(&iii);
