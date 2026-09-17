@@ -32,6 +32,18 @@ export type {
 } from '../lib/rpc'
 export { isComplete, listDbs, opsFor, PAGE_SIZE, typeCategory } from '../lib/rpc'
 
+const DRIVER_LABELS: Readonly<Record<string, string>> = {
+  mysql: 'MySQL',
+  postgres: 'PostgreSQL',
+  postgresql: 'PostgreSQL',
+  sqlite: 'SQLite',
+}
+
+/** Human name of a driver id, for the header badge and the health copy. */
+export function driverLabel(driver: string): string {
+  return DRIVER_LABELS[driver.toLowerCase()] ?? driver
+}
+
 export interface TableSort {
   column: string
   dir: 'asc' | 'desc'

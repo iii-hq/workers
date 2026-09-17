@@ -1,26 +1,7 @@
-/*
- * The worktree worker's console stylesheet, shipped as its own
- * `console:style` asset (worktree/styles.css) — the console mounts it as a
- * <link> and link-swaps it on change, styles-before-scripts on boot.
- *
- * EVERY rule is scoped under [data-iii-ui="worktree"] — the wrapper the
- * console mounts around every injected render. Unscoped rules would beat
- * the console's layered CSS document-wide (injected sheets are unlayered).
- * Keyframe names ARE global: keep the wt-ui- prefix. Colors come from the
- * console's design tokens, so light/dark theming is free.
- *
- * The page follows the console redesign's surface + typography roles:
- *
- *   workspace   --color-panel           the graph canvas (the hero)
- *   navigation  --color-sidebar         the worktree detail column
- *   raised      --color-panel-raised    headers, repo anchor nodes
- *   states      --color-surface-*       node cards + hover/selected washes
- *   edges       --color-edge            hairlines and graph edges
- *
- *   sans (--font-sans)  interface text: empty states, error panels
- *   mono (--font-mono)  technical values: branches, ids, paths, shas,
- *                       counts, lifecycle words — most of this page
- */
+/* Worktree console UI, scoped under [data-iii-ui="worktree"]. Surfaces:
+   --color-panel graph canvas, --color-sidebar detail column, --color-edge
+   hairlines and graph edges. Sans for interface copy, mono for branches,
+   ids, paths, shas and counts. */
 
 /* ── the page (#/ext/worktree): application shell ─────────────────────
    The root + top bar are the shared page chrome (PageShell/PageHeader
@@ -46,14 +27,6 @@
 }
 [data-iii-ui="worktree"] .wt-ui-refresh-icon {
   color: var(--color-ink-faint);
-}
-[data-iii-ui="worktree"] .wt-ui-refresh-icon.spin {
-  animation: wt-ui-spin 1s linear infinite;
-}
-@keyframes wt-ui-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* ── body: graph canvas + detail column ─────────────────────────────── */
@@ -89,7 +62,7 @@
   background: var(--color-panel);
 }
 
-/* first-load skeleton bars */
+/* first-load skeleton bars (shared Skeleton; this only sizes them) */
 [data-iii-ui="worktree"] .wt-ui-skel {
   display: flex;
   flex-direction: column;
@@ -100,18 +73,6 @@
 [data-iii-ui="worktree"] .wt-ui-skel .bar {
   display: block;
   height: 10px;
-  border-radius: 4px;
-  background: var(--color-surface);
-  animation: wt-ui-pulse 1.6s ease-in-out infinite;
-}
-@keyframes wt-ui-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
 }
 [data-iii-ui="worktree"] .bar.w40 {
   width: 40%;
@@ -144,6 +105,7 @@
 [data-iii-ui="worktree"] .wt-ui-edge-label {
   fill: var(--color-ink-ghost);
   font-family: var(--font-mono, ui-monospace, monospace);
+  /* diagram edge label (data visualisation), not chrome. lint-allow font-size */
   font-size: 10px;
 }
 
@@ -171,7 +133,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
 }
 
@@ -212,7 +174,7 @@
   top: 6px;
   bottom: 6px;
   width: 2px;
-  border-radius: 1px;
+  border-radius: 9999px;
   background: var(--color-edge);
 }
 [data-iii-ui="worktree"] .wt-ui-node.selected .wt-ui-branch {
@@ -230,7 +192,7 @@
 }
 [data-iii-ui="worktree"] .wt-ui-node-id {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
 }
@@ -240,7 +202,7 @@
 }
 [data-iii-ui="worktree"] .wt-ui-ahead {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-ink-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -249,7 +211,7 @@
   min-width: 0;
   align-items: center;
   gap: 8px;
-  font-size: 10px;
+  font-size: 11px;
 }
 [data-iii-ui="worktree"] .wt-ui-lifecycle {
   display: flex;
@@ -263,7 +225,7 @@
   white-space: nowrap;
   padding: 0 4px;
   border: 1px solid var(--color-edge);
-  border-radius: 3px;
+  border-radius: 6px;
   color: var(--color-ink-ghost);
 }
 
@@ -317,53 +279,6 @@
   font-weight: 600;
   color: var(--color-ink);
 }
-[data-iii-ui="worktree"] .wt-ui-detail-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  padding: 0;
-  cursor: pointer;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="worktree"] .wt-ui-detail-close:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="worktree"] .wt-ui-detail-close:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-
-/* back affordance (drill-in flow) */
-[data-iii-ui="worktree"] .wt-ui-back {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  padding: 0;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-}
-[data-iii-ui="worktree"] .wt-ui-back:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="worktree"] .wt-ui-back:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-
 /* detail body — hairline-separated field rows, own scroll */
 [data-iii-ui="worktree"] .wt-ui-detail-body {
   flex: 1;
@@ -382,12 +297,6 @@
   flex-direction: column;
   gap: 2px;
   padding: 8px 14px;
-}
-[data-iii-ui="worktree"] .wt-ui-row-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--color-ink-faint);
 }
 [data-iii-ui="worktree"] .wt-ui-row-value {
   min-width: 0;
@@ -413,23 +322,7 @@
   word-break: break-all;
 }
 [data-iii-ui="worktree"] .wt-ui-copy {
-  margin-top: 2px;
   flex-shrink: 0;
-  appearance: none;
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--color-ink-ghost);
-  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
-}
-[data-iii-ui="worktree"] .wt-ui-copy:hover {
-  color: var(--color-ink);
-}
-[data-iii-ui="worktree"] .wt-ui-copy:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: 1px;
 }
 [data-iii-ui="worktree"] .wt-ui-sha {
   margin-left: 8px;
@@ -510,15 +403,8 @@
   color: var(--color-accent);
 }
 [data-iii-ui="worktree"] .wt-ui-tone-warn {
-  color: var(--color-warn);
+  color: var(--color-warn-strong);
 }
 [data-iii-ui="worktree"] .wt-ui-tone-alert {
-  color: var(--color-alert);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-iii-ui="worktree"] .wt-ui-refresh-icon.spin,
-  [data-iii-ui="worktree"] .wt-ui-skel .bar {
-    animation: none;
-  }
+  color: var(--color-alert-strong);
 }

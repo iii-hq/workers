@@ -1,6 +1,6 @@
 /** Audio belongs to the requesting browser, never a global worker playback. */
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
-import { errorMessage } from './format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import type { SpeakResponse } from './types'
 
 export type PlaybackState =

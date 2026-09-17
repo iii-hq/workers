@@ -23,12 +23,12 @@ import {
   StatusPanel,
   WorkerConfigurationDialog,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { Activity, FileMusic, Layers, type LucideIcon, Mic, RefreshCw, Volume2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { dictationList, doctor, modelsList } from '../lib/client'
 import type { DictationController } from '../lib/dictation'
 import { useDictation } from '../lib/dictation'
-import { errorMessage } from '../lib/format'
-import { ActivityIcon, FileAudioIcon, LayersIcon, MicIcon, RefreshIcon, SpeakerIcon } from '../lib/icons'
 import { useModelProgress } from '../lib/progress'
 import type { DictationListEntry, DoctorResponse, ModelsListResponse } from '../lib/types'
 import { DictateSection } from './DictateSection'
@@ -40,12 +40,12 @@ import { TranscribeSection } from './TranscribeSection'
 
 type SectionId = 'overview' | 'dictate' | 'transcribe' | 'models' | 'speak'
 
-const SECTIONS: { id: SectionId; label: string; description: string; icon: typeof MicIcon }[] = [
-  { id: 'overview', label: 'Overview', description: 'Engines and sessions', icon: ActivityIcon },
-  { id: 'dictate', label: 'Dictate', description: 'Speak, then send', icon: MicIcon },
-  { id: 'transcribe', label: 'Transcribe', description: 'A recording to text', icon: FileAudioIcon },
-  { id: 'models', label: 'Models', description: 'Listening and reading voices', icon: LayersIcon },
-  { id: 'speak', label: 'Read aloud', description: 'Text to speech', icon: SpeakerIcon },
+const SECTIONS: { id: SectionId; label: string; description: string; icon: LucideIcon }[] = [
+  { id: 'overview', label: 'Overview', description: 'Engines and sessions', icon: Activity },
+  { id: 'dictate', label: 'Dictate', description: 'Speak, then send', icon: Mic },
+  { id: 'transcribe', label: 'Transcribe', description: 'A recording to text', icon: FileMusic },
+  { id: 'models', label: 'Models', description: 'Listening and reading voices', icon: Layers },
+  { id: 'speak', label: 'Read aloud', description: 'Text to speech', icon: Volume2 },
 ]
 
 export function VoicePage({
@@ -190,12 +190,12 @@ export function VoicePage({
   return (
     <PageShell className="voice-shell">
       <PageHeader
-        icon={<MicIcon />}
+        icon={<Mic />}
         title="Voice"
         description={description}
         actions={
           <IconButton label="Refresh" variant="ghost" disabled={refreshing} onClick={() => void refresh()}>
-            <RefreshIcon className={refreshing ? 'voice-spin' : undefined} />
+            <RefreshCw className={refreshing ? host.uiClasses.spin : undefined} />
           </IconButton>
         }
         onClose={onRequestClose}
@@ -240,7 +240,7 @@ export function VoicePage({
               detail={notice.text}
             />
           ) : null}
-          <div key={section} className="voice-section">
+          <div key={section} className={`voice-section ${host.uiClasses.motionPanel}`}>
             {content}
           </div>
         </PageMain>

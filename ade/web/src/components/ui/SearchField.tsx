@@ -3,18 +3,17 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 import { Input } from './Input'
 
-export interface SearchFieldProps {
+export interface SearchFieldProps
+  extends Omit<
+    React.InputHTMLAttributes<HTMLInputElement>,
+    'value' | 'onChange' | 'type' | 'className'
+  > {
   value: string
   onChange: (next: string) => void
-  placeholder?: string
   /** Visible label above the field; otherwise pass `aria-label`. */
   label?: React.ReactNode
-  'aria-label'?: string
-  autoFocus?: boolean
+  /** Applies to the wrapper; every other prop (`data-*`, `aria-*`, `autoFocus`…) lands on the input. */
   className?: string
-  id?: string
-  name?: string
-  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
 }
 
 /**
@@ -29,11 +28,10 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
       placeholder,
       label,
       'aria-label': ariaLabel,
-      autoFocus,
       className,
       id,
-      name,
       onKeyDown,
+      ...rest
     },
     ref,
   ) => {
@@ -56,14 +54,13 @@ export const SearchField = React.forwardRef<HTMLInputElement, SearchFieldProps>(
           />
           <Input
             ref={ref}
+            {...rest}
             id={inputId}
-            name={name}
             type="search"
             value={value}
             onChange={onChange}
             placeholder={placeholder}
             aria-label={label ? undefined : (ariaLabel ?? placeholder)}
-            autoFocus={autoFocus}
             className="pl-8 pr-8 [&::-webkit-search-cancel-button]:hidden"
             onKeyDown={(event) => {
               onKeyDown?.(event)

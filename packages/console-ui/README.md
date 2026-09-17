@@ -139,9 +139,11 @@ all six import-map specifiers.
 
 Two subpaths DO bundle (React-free helpers and hooks the Console itself
 uses): `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
-`formatBytes`, `errorMessage`/`errorCode`, `copyText` — and
-`@iii-dev/console-ui/hooks` — `useContainerNarrow`, `usePaneState`,
-`useCopyFlash`, `useWorkerLive` (fetch + trigger bindings + visible-tab poll).
+`formatBytes`, `errorMessage`/`errorCode`, `copyText`, `unwrapEnvelope` —
+and `@iii-dev/console-ui/hooks` — `useContainerNarrow`, `usePaneState`,
+`useCopyFlash`, `useWorkerLive` (fetch + trigger bindings + visible-tab
+poll), `useDebounce`, `useSplitDrag` (pointer + arrow keys for a
+`role="separator"`).
 Newer shared components: `Eyebrow` (the mono caps label; `uiClasses.eyebrow`
 is the class form), `SearchField`, `Toolbar`/`StatusBar` (36 px raised and
 28 px quiet strips with an `end` slot), `MetaRow`/`ActionLine` (a card's
@@ -195,7 +197,10 @@ non-watch build and fails on errors; `strict: true` promotes every warning,
 ignores matching excerpts, and a `lint-allow <rule>` comment on the line
 above a finding does the same in place. CLI: `node
 packages/console-ui/lint-worker-ui.mjs <worker>/ui [--strict] [--json]`, or
-`--all` from the repo root for one row per worker.
+`--all` from the repo root for one row per worker. `node
+packages/console-ui/dead-classes.mjs <worker>/ui [prefix]` lists prefixed
+class tokens the code uses without a selector and selectors nothing uses —
+a regex heuristic (ids and `data-*` values show up), so grep before deleting.
 
 | Rule | Level | Checks |
 | --- | --- | --- |

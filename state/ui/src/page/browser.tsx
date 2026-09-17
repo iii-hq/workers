@@ -1,10 +1,10 @@
 /**
  * The scopes × keys browser the state page is built on.
  *
- * Layout adapts to the width the browser HAS (a ResizeObserver on its own
- * root, not a viewport media query — the console can host it in panes of
- * any size). Wide: three columns — scopes, the selected scope's keys, and
- * the value workspace side by side. Under NARROW_BELOW px it becomes a
+ * Layout adapts to the width the browser HAS (`useContainerNarrow` on its
+ * own root, not a viewport media query — the console can host it in panes
+ * of any size). Wide: three columns — scopes, the selected scope's keys,
+ * and the value workspace side by side. Under NARROW_BELOW px it becomes a
  * drill-in flow: scopes → keys → value, one pane at a time with ← back
  * buttons.
  *
@@ -18,21 +18,26 @@
 
 import {
   Button,
+  EmptyState,
   type Host,
+  IconButton,
+  KeyCombo,
+  List,
+  ListItem,
   type PageCommandsApi,
   PageSidebar,
   type PanelContextEvent,
+  Skeleton,
+  StatusPanel,
+  uiClasses,
   useConfirm,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
+import { ArrowLeft, Database, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { type Subscribe, useStateEvents } from '../lib/events'
-import {
-  BackButton,
-  DatabaseIcon,
-  RefreshButton,
-  useFlash,
-} from '../lib/widgets'
 import { parseStatePanelContext } from './panel-context'
 import { ValueEditor } from './ValueEditor'
 
@@ -40,34 +45,20 @@ import { ValueEditor } from './ValueEditor'
  * drill-in scopes ⇄ keys ⇄ value flow. */
 const NARROW_BELOW = 800
 
-/** Observe the browser root's own width. Returns a callback ref to put
- * on the root plus whether it is currently narrower than `threshold` —
- * container-driven, so the same page adapts inside any pane the console
- * gives it. Measures synchronously on mount to avoid a wide-mode flash;
- * zero widths (display:none) are ignored so a hidden browser keeps its
- * last real layout. */
-function useContainerNarrow(
-  threshold: number,
-): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const refCb = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
+/** Transient per-row highlight for live-arrived changes. */
+function useFlash(): [ReadonlySet<string>, (k: string) => void] {
+  const [flashed, setFlashed] = useState<ReadonlySet<string>>(new Set())
+  const mark = useCallback((k: string) => {
+    setFlashed((prev) => new Set(prev).add(k))
+    window.setTimeout(() => {
+      setFlashed((prev) => {
+        const next = new Set(prev)
+        next.delete(k)
+        return next
       })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-  return [refCb, narrow]
+    }, 1400)
+  }, [])
+  return [flashed, mark]
 }
 
 /** Shared column body: error / loading / empty / row list. */
@@ -93,38 +84,37 @@ function ColumnBody({
   return (
     <div className="state-ui-col-scroll">
       {error ? (
-        <div className="state-ui-error-panel">
-          <p>
-            The {noun} list could not be loaded.
-            <span className="detail">{error}</span>
-          </p>
-          <Button variant="ghost" size="sm" onClick={onRetry}>
-            retry
-          </Button>
-        </div>
+        <StatusPanel
+          variant="alert"
+          headline={`The ${noun} list could not be loaded.`}
+          detail={error}
+          action={
+            <Button variant="ghost" size="sm" onClick={onRetry}>
+              retry
+            </Button>
+          }
+        />
       ) : rows === null ? (
         <div className="state-ui-col-skel" aria-hidden>
-          {[0, 1, 2, 3].map((i) => (
-            <span key={i} className={`bar w${[60, 80, 40, 70][i]}`} />
+          {[60, 80, 40, 70].map((w) => (
+            <Skeleton key={w} className="state-ui-skel" style={{ width: `${w}%` }} />
           ))}
         </div>
       ) : rows.length === 0 ? (
         empty
       ) : (
-        <ul className="state-ui-nav-list">
+        <List>
           {rows.map((row) => (
-            <li key={row}>
-              <button
-                type="button"
-                className={`state-ui-nav-row${row === selected ? ' active' : ''}${flashed.has(row) ? ' flash' : ''}`}
-                aria-current={row === selected ? 'true' : undefined}
-                onClick={() => onOpen(row)}
-              >
-                <span className="name">{row}</span>
-              </button>
-            </li>
+            <ListItem
+              key={row}
+              selected={row === selected}
+              aria-current={row === selected ? 'true' : undefined}
+              className={flashed.has(row) ? 'state-ui-flash' : undefined}
+              onClick={() => onOpen(row)}
+              label={<span className="state-ui-name">{row}</span>}
+            />
           ))}
-        </ul>
+        </List>
       )}
     </div>
   )
@@ -154,7 +144,7 @@ export function StateBrowser({
   const [keysError, setKeysError] = useState<string | null>(null)
   const [keyFlash, flashKey] = useFlash()
 
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const { ref: rootRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
 
   // Live mirrors for the event handler (its closure is kept fresh by
   // useStateEvents, but list membership checks want the latest arrays
@@ -182,9 +172,7 @@ export function StateBrowser({
         setScopesError(null)
         setScopes(r.groups)
       })
-      .catch((err: unknown) =>
-        setScopesError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => setScopesError(errorMessage(err)))
   }, [host])
   useEffect(loadScopes, [loadScopes])
 
@@ -220,7 +208,7 @@ export function StateBrowser({
       })
       .catch((err: unknown) => {
         if (scopeRef.current !== current) return
-        setKeysError(err instanceof Error ? err.message : String(err))
+        setKeysError(errorMessage(err))
       })
   }, [host])
   useEffect(() => {
@@ -327,12 +315,14 @@ export function StateBrowser({
           tabIndex={-1}
           header={
             <div className="state-ui-col-head state-ui-primary-head">
-              <span className="label">scopes</span>
+              <span className={uiClasses.eyebrow}>scopes</span>
               <span className="spacer" />
               {scopes !== null && !scopesError ? (
                 <span className="count">{scopes.length}</span>
               ) : null}
-              <RefreshButton onClick={loadScopes} label="refresh scopes" />
+              <IconButton label="refresh scopes" onClick={loadScopes}>
+                <RefreshCw size={16} aria-hidden />
+              </IconButton>
             </div>
           }
         >
@@ -345,12 +335,11 @@ export function StateBrowser({
             flashed={scopeFlash}
             onOpen={openScope}
             empty={
-              <div className="state-ui-col-empty">
-                <p>No scopes yet.</p>
-                <p className="dim">
-                  A scope appears here live with its first state::set.
-                </p>
-              </div>
+              <EmptyState
+                compact
+                title="No scopes yet."
+                description="A scope appears here live with its first state::set."
+              />
             }
           />
         </PageSidebar>
@@ -361,7 +350,7 @@ export function StateBrowser({
           {scope === null ? (
             <>
               <header className="state-ui-col-head">
-                <span className="label">keys</span>
+                <span className={uiClasses.eyebrow}>keys</span>
               </header>
               <div className="state-ui-col-hint">
                 Select a scope to list its keys.
@@ -371,7 +360,9 @@ export function StateBrowser({
             <>
               <header className="state-ui-col-head">
                 {narrow ? (
-                  <BackButton onClick={backToScopes} label="back to scopes" />
+                  <IconButton label="back to scopes" onClick={backToScopes}>
+                    <ArrowLeft size={16} aria-hidden />
+                  </IconButton>
                 ) : null}
                 <span className="scope-name" title={scope}>
                   {scope}
@@ -380,10 +371,9 @@ export function StateBrowser({
                 {keys !== null && !keysError ? (
                   <span className="count">{keys.length}</span>
                 ) : null}
-                <RefreshButton
-                  onClick={loadKeys}
-                  label={`refresh keys of ${scope}`}
-                />
+                <IconButton label={`refresh keys of ${scope}`} onClick={loadKeys}>
+                  <RefreshCw size={16} aria-hidden />
+                </IconButton>
               </header>
               <ColumnBody
                 error={keysError}
@@ -394,13 +384,11 @@ export function StateBrowser({
                 flashed={keyFlash}
                 onOpen={openKey}
                 empty={
-                  <div className="state-ui-col-empty">
-                    <p>Scope is empty.</p>
-                    <p className="dim">
-                      New writes appear here live; the scope disappears once its
-                      last key is deleted.
-                    </p>
-                  </div>
+                  <EmptyState
+                    compact
+                    title="Scope is empty."
+                    description="New writes appear here live; the scope disappears once its last key is deleted."
+                  />
                 }
               />
             </>
@@ -412,20 +400,19 @@ export function StateBrowser({
         <section className="state-ui-doc" aria-label="value workspace">
           {scope === null || key === null ? (
             <div className="state-ui-hero">
-              <DatabaseIcon className="state-ui-hero-icon" />
-              <h2 className="state-ui-hero-title">Select a key</h2>
-              <p className="state-ui-hero-body">
-                Pick a scope, then a key, to view and edit its JSON value. Edits
-                save back with state::set; remote changes stream in live.
-              </p>
+              <EmptyState
+                icon={Database}
+                title="Select a key"
+                description="Pick a scope, then a key, to view and edit its JSON value. Edits save back with state::set; remote changes stream in live."
+              />
               <p className="state-ui-hero-hint">
-                <kbd>⌘S</kbd> saves
+                <KeyCombo binding="Mod+S" /> saves
               </p>
             </div>
           ) : (
             <ValueEditor
               // Remount per entry so draft/save state never leaks across keys.
-              key={`${scope}\u0000${key}`}
+              key={`${scope} ${key}`}
               host={host}
               scope={scope}
               itemKey={key}

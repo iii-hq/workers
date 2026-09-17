@@ -41,11 +41,16 @@
  */
 
 import {
+  Badge,
+  Chip,
   CodeHighlight,
+  Eyebrow,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
   type Host,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { useState } from 'react'
 import {
   asRecord,
@@ -57,7 +62,6 @@ import {
   langToPrism,
   opName,
   redactRuntimeIds,
-  unwrapEnvelope,
 } from '../lib/shared'
 
 const FUNCTION_ID = 'code-runner::register_function'
@@ -103,10 +107,10 @@ function parseRequest(input: unknown): RegisterRequest {
 function LangChip({ req }: { req: RegisterRequest }) {
   if (!req.lang) return null
   return (
-    <span className="cr-ui-chip">
-      <span className="k">lang </span>
+    <Chip>
+      <span className="cr-ui-k">lang </span>
       {req.lang}
-    </span>
+    </Chip>
   )
 }
 
@@ -176,7 +180,9 @@ function Head({
   const ns = displayId ? namespaceOf(displayId) : undefined
   return (
     <div className="cr-ui-section">
-      <div className="cr-ui-section-label">function</div>
+      <Eyebrow as="div" className="cr-ui-section-label">
+        function
+      </Eyebrow>
       <div className="cr-register-function-head">
         <span className={`cr-register-function-id${req.functionId ? '' : ' cr-ui-warn'}`}>
           {req.functionId
@@ -185,8 +191,8 @@ function Head({
               ? `${redactRuntimeIds(resId)} (from the response — the request carried no function_id)`
               : 'no function_id in the request'}
         </span>
-        {status === 'live' ? <span className="cr-register-function-status live">registered</span> : null}
-        {status === 'refused' ? <span className="cr-register-function-status refused">not registered</span> : null}
+        {status === 'live' ? <Badge variant="ok">registered</Badge> : null}
+        {status === 'refused' ? <Badge variant="warn">not registered</Badge> : null}
       </div>
       {displayId ? (
         <div className={`cr-register-function-ns${ns ? '' : ' cr-ui-warn'}`}>
@@ -234,7 +240,9 @@ function SourceSection({ source, lang, clipped }: { source: string; lang?: Lang;
 
   return (
     <div className="cr-ui-section">
-      <div className="cr-ui-section-label">{clipped ? 'source (excerpt)' : 'source'}</div>
+      <Eyebrow as="div" className="cr-ui-section-label">
+        {clipped ? 'source (excerpt)' : 'source'}
+      </Eyebrow>
       <div className="cr-ui-code">
         <CodeHighlight code={shown} language={prism ?? 'text'} />
       </div>
@@ -352,7 +360,7 @@ function PendingView({ message, running }: { message: FunctionTriggerMessage; ru
 
   return (
     <CardShell op={opName(message.functionId)} running={running} chips={<LangChip req={req} />}>
-      <div className={`cr-ui-msg-note${running ? ' pulse' : ''}`}>
+      <div className={`cr-ui-msg-note${running ? ` ${uiClasses.pulse}` : ''}`}>
         {running ? '· registering…' : '· will register this function:'}
       </div>
       {anyClipped ? (

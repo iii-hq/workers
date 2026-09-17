@@ -11,19 +11,10 @@ import {
   TableRow,
   uiClasses,
 } from '@iii-dev/console-ui'
+import { EllipsisVertical } from 'lucide-react'
 import type { SessionCronTask, SystemCronBinding } from '../lib/api'
 import { describeCron, nextCronRun, untilLabel } from '../lib/cron'
 import { statusView } from './status'
-
-export function MoreIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 16 16" className={className} aria-hidden="true" fill="currentColor">
-      <circle cx="8" cy="3.5" r="1.25" />
-      <circle cx="8" cy="8" r="1.25" />
-      <circle cx="8" cy="12.5" r="1.25" />
-    </svg>
-  )
-}
 
 /** A wake has no target function: the fire notifies the session that owns the
     schedule, which for anything created here is a session of its own. */
@@ -93,7 +84,7 @@ export function TaskRow({
               label={`Actions for ${task.label ?? task.subscriptionId}`}
               onClick={(event: React.MouseEvent) => event.stopPropagation()}
             >
-              <MoreIcon className={uiClasses.icon} />
+              <EllipsisVertical className={uiClasses.icon} aria-hidden />
             </IconButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">

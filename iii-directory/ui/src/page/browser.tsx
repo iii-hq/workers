@@ -48,7 +48,7 @@ import {
   useConfirm,
 } from '@iii-dev/console-ui'
 import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
-import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
+import { useContainerNarrow, usePaneState, useSplitDrag } from '@iii-dev/console-ui/hooks'
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { ChevronLeft, FileText, Plus } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -682,36 +682,24 @@ export function CollectionBrowser({
 
   // ── split divider ───────────────────────────────────────────────────
 
-  const draggingRef = useRef(false)
-  const applyDividerAt = (clientX: number) => {
-    const body = bodyRef.current
-    if (!body) return
-    const rect = body.getBoundingClientRect()
-    if (rect.width <= 0) return
-    setSplit(clampRatio((clientX - rect.left) / rect.width))
-  }
-  const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    e.currentTarget.setPointerCapture(e.pointerId)
-    draggingRef.current = true
-    setDragging(true)
-  }
-  const onDividerPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return
-    applyDividerAt(e.clientX)
-  }
+  const divider = useSplitDrag<{ x: number; left: number; width: number }>({
+    horizontal: true,
+    begin: (e) => {
+      const rect = bodyRef.current?.getBoundingClientRect()
+      if (!rect || rect.width <= 0) return null
+      setDragging(true)
+      return { x: e.clientX, left: rect.left, width: rect.width }
+    },
+    move: (o, delta) => setSplit(clampRatio((o.x + delta - o.left) / o.width)),
+    step: (dir) => setSplit((v) => clampRatio(v + dir * 0.05)),
+  })
   const endDividerDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current) return
-    draggingRef.current = false
+    divider.onPointerUp(e)
     setDragging(false)
-    e.currentTarget.releasePointerCapture(e.pointerId)
   }
   const onDividerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.key === 'ArrowLeft' ? -0.05 : e.key === 'ArrowRight' ? 0.05 : null
-    if (step !== null) {
-      e.preventDefault()
-      setSplit((v) => clampRatio(v + step))
-    } else if (e.key === 'Enter') {
+    divider.onKeyDown(e)
+    if (!e.defaultPrevented && e.key === 'Enter') {
       e.preventDefault()
       setSplit(0.5)
     }
@@ -1188,10 +1176,11 @@ export function CollectionBrowser({
                         aria-valuemax={75}
                         aria-valuenow={Math.round(split * 100)}
                         tabIndex={0}
-                        onPointerDown={onDividerPointerDown}
-                        onPointerMove={onDividerPointerMove}
+                        onPointerDown={divider.onPointerDown}
+                        onPointerMove={divider.onPointerMove}
                         onPointerUp={endDividerDrag}
                         onPointerCancel={endDividerDrag}
+                        onLostPointerCapture={endDividerDrag}
                         onDoubleClick={() => setSplit(0.5)}
                         onKeyDown={onDividerKeyDown}
                       />

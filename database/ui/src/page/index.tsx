@@ -4,16 +4,16 @@
  * row inspector, an ad-hoc SQL panel, a schema diagram, connection health, and
  * the writes landing in the selected table as they commit.
  *
- * Chrome is the shared page shell (PageShell/PageHeader/PageSidebar from
- * @iii-dev/console-ui): identity and database-level controls in the header, a
- * segmented panel switcher under it, then the schema tree as the navigation
- * column beside the active panel. Layout adapts to the width the
- * page HAS (a ResizeObserver on its own root, not a viewport media query — the
- * console hosts pages in panes of any size): under NARROW_BELOW px it becomes
- * a drill-in flow — the tree fills the pane, opening a table (or picking a
- * panel) swaps to the workspace with a ← back button. Panels stay MOUNTED
- * through all of it, so drilling out never destroys a sql draft, the data
- * tab's filters, the changes feed, or a hand-arranged diagram.
+ * Chrome is the shared page shell (PageShell/PageHeader/PageBody/PageSidebar/
+ * PageMain from @iii-dev/console-ui): identity and database-level controls in
+ * the header, a segmented panel switcher under it, then the schema tree as the
+ * navigation column beside the active panel. Layout adapts to the width the
+ * page HAS (`useContainerNarrow` on its own root, not a viewport media query —
+ * the console hosts pages in panes of any size): under NARROW_BELOW px it
+ * becomes a drill-in flow — the tree fills the pane, opening a table (or
+ * picking a panel) swaps to the workspace with a ← back button. Panels stay
+ * MOUNTED through all of it, so drilling out never destroys a sql draft, the
+ * data tab's filters, the changes feed, or a hand-arranged diagram.
  *
  * Nothing here computes what the worker can compute. The catalog, the filter
  * compiler, the plan parser and the diagram layout all live in `handlers/`,
@@ -31,10 +31,13 @@
 
 import {
   Badge,
+  Button,
   EmptyState,
   type Host,
   IconButton,
+  PageBody,
   PageHeader,
+  PageMain,
   type PageRenderProps,
   PageShell,
   PageSidebar,
@@ -42,8 +45,19 @@ import {
   Select,
   Skeleton,
   StatusPanel,
+  Toolbar,
+  uiClasses,
   useConfirm,
 } from '@iii-dev/console-ui'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
+import {
+  ChevronLeft,
+  ChevronRight,
+  CircleAlert,
+  Database,
+  RefreshCw,
+  Table2,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ALL,
@@ -55,6 +69,7 @@ import { DB } from '../lib/rpc'
 import { ChangesPanel } from './ChangesPanel'
 import {
   type DbInfo,
+  driverLabel,
   listDbs,
   listTables,
   PAGE_SIZE,
@@ -62,14 +77,6 @@ import {
 } from './db-data'
 import { ErdPanel } from './ErdPanel'
 import { HealthPanel } from './HealthPanel'
-import {
-  AlertCircle,
-  ChevronLeft,
-  Database,
-  type IconProps,
-  RefreshCw,
-  Table2,
-} from './icons'
 import { parseDatabasePanelContext } from './panel-context'
 import { SchemaTree } from './SchemaTree'
 import { SqlPanel, type SqlPanelHandle } from './SqlPanel'
@@ -98,17 +105,6 @@ const PANEL_LABELS: Record<PanelMode, string> = {
   changes: 'Changes',
 }
 
-const DRIVER_LABELS: Readonly<Record<string, string>> = {
-  mysql: 'MySQL',
-  postgres: 'PostgreSQL',
-  postgresql: 'PostgreSQL',
-  sqlite: 'SQLite',
-}
-
-function driverLabel(driver: string) {
-  return DRIVER_LABELS[driver.toLowerCase()] ?? driver
-}
-
 /** Container width (px) below which the page collapses to the drill-in
  * tree ⇄ panel flow. */
 const NARROW_BELOW = 850
@@ -118,60 +114,6 @@ interface Hop {
   table: string
   column: string
   value: unknown
-}
-
-const DatabaseIcon = (p: IconProps) => <Database size={28} {...p} />
-const TableIcon = (p: IconProps) => <Table2 size={28} {...p} />
-
-/** Observe the page root's own width. Returns a callback ref to put on the
- * root plus whether it is currently narrower than `threshold` —
- * container-driven, so the same page adapts inside any pane the console
- * gives it. Measures synchronously on mount to avoid a wide-mode flash;
- * zero widths (display:none) are ignored so a hidden page keeps its last
- * real layout. */
-function useContainerNarrow(
-  threshold: number,
-): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const refCb = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-  return [refCb, narrow]
-}
-
-/** ← back affordance for the drill-in flow. */
-function BackButton({
-  onClick,
-  label,
-}: {
-  onClick: () => void
-  label: string
-}) {
-  return (
-    <button
-      type="button"
-      className="db-ui-back"
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-    >
-      <ChevronLeft size={16} aria-hidden />
-    </button>
-  )
 }
 
 export function DatabasePage({
@@ -192,7 +134,7 @@ export function DatabasePage({
   // filter the current table opens with.
   const [trail, setTrail] = useState<Hop[]>([])
 
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const { ref: rootRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
   // Narrow drill-in: false shows the tree, true the active panel. Wide mode
   // shows both and ignores it.
   const [drilled, setDrilled] = useState(false)
@@ -470,29 +412,29 @@ export function DatabasePage({
       />
 
       {dbsRead.error ? (
-        <div className="db-ui-state">
+        <div className="db-pad">
           <StatusPanel
             variant="alert"
-            icon={<AlertCircle size={18} />}
+            icon={<CircleAlert size={18} />}
             headline="Database worker unavailable"
             detail={dbsRead.error}
           />
         </div>
       ) : dbsRead.loading && dbs.length === 0 ? (
-        <div className="db-ui-state">
-          <div className="db-msg db-pulse">Loading databases…</div>
+        <div className="db-pad">
+          <div className={`db-msg ${uiClasses.pulse}`}>Loading databases…</div>
         </div>
       ) : dbs.length === 0 ? (
-        <div className="db-ui-state">
+        <div className="db-pad">
           <EmptyState
-            icon={DatabaseIcon}
+            icon={Database}
             title="No databases configured"
             description="Databases are defined in the worker's configuration (databases: { name: { url } }) and appear here as soon as one connects."
           />
         </div>
       ) : (
         <div
-          className={`db-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
+          className={`db-ui-browser${narrow ? ' narrow' : ''}`}
           ref={rootRef}
         >
           <div className="db-ui-modesbar">
@@ -514,7 +456,7 @@ export function DatabasePage({
             ) : null}
           </div>
 
-          <div className="db-ui-body">
+          <PageBody side={panelSide}>
             {/* Both panes stay in the tree and hide with [hidden] — narrow
                 drill-in must not unmount the workspace (sql drafts, filters,
                 the diagram's hand-arranged nodes all live there). */}
@@ -592,43 +534,45 @@ export function DatabasePage({
               </div>
             </PageSidebar>
 
-            <section
+            <PageMain
               className="db-ui-main"
               hidden={!showMain}
               aria-label="database workspace"
             >
               {narrow ? (
-                <div className="db-ui-backbar">
-                  <BackButton
-                    onClick={() => setDrilled(false)}
+                <Toolbar aria-label="drill-in" className="db-ui-backbar">
+                  <IconButton
                     label="back to the table list"
-                  />
+                    onClick={() => setDrilled(false)}
+                  >
+                    <ChevronLeft size={16} aria-hidden />
+                  </IconButton>
                   <span className="title">
                     {mode === 'data' && selectedTable
                       ? selectedTable
                       : PANEL_LABELS[mode]}
                   </span>
-                </div>
+                </Toolbar>
               ) : null}
               {trail.length > 0 && mode === 'data' ? (
-                <nav className="db-trail" aria-label="foreign key trail">
-                  <button
-                    type="button"
-                    className="db-trail-step"
-                    onClick={() => goBackTo(0)}
-                  >
+                <nav
+                  className={`${uiClasses.toolbar} db-bar`}
+                  aria-label="foreign key trail"
+                >
+                  <Button variant="ghost" size="sm" onClick={() => goBackTo(0)}>
                     {trail[0].table === selectedTable ? 'All tables' : 'Start'}
-                  </button>
+                  </Button>
                   {trail.map((hop, i) => (
                     <span key={`${hop.table}-${i}`} className="db-trail-seg">
-                      <span className="db-trail-sep">›</span>
-                      <button
-                        type="button"
-                        className={`db-trail-step${i === trail.length - 1 ? ' current' : ''}`}
+                      <ChevronRight size={16} aria-hidden />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-current={i === trail.length - 1 ? 'step' : undefined}
                         onClick={() => goBackTo(i + 1)}
                       >
                         {hop.table}.{hop.column} = {String(hop.value)}
-                      </button>
+                      </Button>
                     </span>
                   ))}
                 </nav>
@@ -662,7 +606,7 @@ export function DatabasePage({
                     {!selectedTable ? (
                       <div className="db-pad">
                         <EmptyState
-                          icon={TableIcon}
+                          icon={Table2}
                           title="Select a table"
                           description={
                             tableCount > 0
@@ -743,8 +687,8 @@ export function DatabasePage({
                   ) : null}
                 </>
               ) : null}
-            </section>
-          </div>
+            </PageMain>
+          </PageBody>
         </div>
       )}
     </PageShell>

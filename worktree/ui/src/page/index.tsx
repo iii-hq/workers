@@ -4,10 +4,10 @@
  * worktree → session topology graph (./WorktreeGraph) and a per-worktree
  * detail column (./WorktreeDetailPanel). Data is `worktree::list
  * {include_status:true}`, refreshed on all six lifecycle trigger types
- * with a poll fallback (see useWorktreesLive). Read-only on purpose:
+ * with a poll fallback (`useWorkerLive`). Read-only on purpose:
  * create / claim / land stay in agent + CLI flows.
  *
- * Layout adapts to the width the page HAS (a ResizeObserver on its own
+ * Layout adapts to the width the page HAS (`useContainerNarrow` on its own
  * body, not a viewport media query — the console can host it in panes of
  * any size). Wide: the graph is the workspace hero with the detail as a
  * fixed-width sidebar column beside it. Under NARROW_BELOW px it becomes
@@ -26,52 +26,29 @@ import {
   PageHeader,
   type PageRenderProps,
   PageShell,
+  Skeleton,
   StatusDot,
   StatusPanel,
+  uiClasses,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, GitBranch, type IconProps, RefreshCw } from './icons'
-import { useWorktreesLive } from './useWorktreesLive'
+import { useContainerNarrow, useWorkerLive } from '@iii-dev/console-ui/hooks'
+import { CircleAlert, GitBranch, RefreshCw } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { WorktreeDetailPanel } from './WorktreeDetailPanel'
 import { WorktreeGraph } from './WorktreeGraph'
-import { cn } from './worktree-data'
+import {
+  cn,
+  listWorktrees,
+  WORKTREE_LIFECYCLE_TRIGGERS,
+  type WorktreeInfo,
+} from './worktree-data'
 
 /** Container width (px) below which the page collapses to the drill-in
  * graph ⇄ detail flow: the detail column (300) plus a usable slice of the
  * graph's repo + worktree columns. */
 const NARROW_BELOW = 860
 
-/** Observe the page body's own width. Returns a callback ref to put on
- * the body plus whether it is currently narrower than `threshold` —
- * container-driven, so the same page adapts inside any pane the console
- * gives it. Measures synchronously on mount to avoid a wide-mode flash;
- * zero widths (display:none) are ignored so a hidden page keeps its last
- * real layout. */
-function useContainerNarrow(
-  threshold: number,
-): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const refCb = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-  return [refCb, narrow]
-}
-
-const EmptyIcon = (p: IconProps) => <GitBranch size={26} {...p} />
+const NO_WORKTREES: WorktreeInfo[] = []
 
 export function WorktreesPage({
   host,
@@ -80,7 +57,15 @@ export function WorktreesPage({
   panelContext,
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
-  const { worktrees, loading, error, live, refresh } = useWorktreesLive(host)
+  // Per-tab handler id (host.iii namespaces it `::<browserId>`); the `iii::`
+  // prefix keeps the per-event invocations out of the trace feed.
+  const { data, loading, error, live, refresh } = useWorkerLive({
+    iii: host.iii,
+    triggers: WORKTREE_LIFECYCLE_TRIGGERS,
+    fetch: () => listWorktrees(host),
+    handlerId: 'iii::worktree-ui::events',
+  })
+  const worktrees = data ?? NO_WORKTREES
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selected = useMemo(
@@ -125,7 +110,7 @@ export function WorktreesPage({
     [commands, refresh, selected],
   )
 
-  const [bodyRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const { ref: bodyRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
 
   const countLabel = loading ? '...' : String(worktrees.length)
 
@@ -162,7 +147,7 @@ export function WorktreesPage({
             >
               <RefreshCw
                 size={16}
-                className={cn('wt-ui-refresh-icon', loading && 'spin')}
+                className={cn('wt-ui-refresh-icon', loading && uiClasses.spin)}
                 aria-hidden
               />
               refresh
@@ -185,19 +170,19 @@ export function WorktreesPage({
             {error ? (
               <StatusPanel
                 variant="alert"
-                icon={<AlertCircle size={18} />}
+                icon={<CircleAlert size={18} aria-hidden />}
                 headline="failed to load worktrees"
                 detail={error}
               />
             ) : loading && worktrees.length === 0 ? (
               <div className="wt-ui-skel" aria-hidden>
-                <span className="bar w40" />
-                <span className="bar w75" />
-                <span className="bar w60" />
+                <Skeleton className="bar w40" />
+                <Skeleton className="bar w75" />
+                <Skeleton className="bar w60" />
               </div>
             ) : worktrees.length === 0 ? (
               <EmptyState
-                icon={EmptyIcon}
+                icon={GitBranch}
                 title="no worktrees yet"
                 description="worktrees are isolated checkouts for parallel agent work: each agent gets its own branch and directory, then lands finished work back with worktree::land. create one from a chat's directory picker, ask an agent to call worktree::create, or run it from the CLI: iii trigger worktree::create"
               />

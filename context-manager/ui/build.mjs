@@ -1,3 +1,3 @@
 import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
 
-await buildWorkerUi({ scope: 'context-manager' })
+await buildWorkerUi({ scope: 'context-manager', lint: { strict: true } })

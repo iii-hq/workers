@@ -4,17 +4,15 @@
  * surface, so call sites keep importing from one place.
  */
 
-/** `1024` → `1.0 KiB`. Pinned to KiB/MiB/GiB so the unit matches the
- *  daemon's 1 MiB inline caps. */
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '—'
-  if (bytes < 1024) return `${bytes} B`
-  const kib = bytes / 1024
-  if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0)} KiB`
-  const mib = kib / 1024
-  if (mib < 1024) return `${mib.toFixed(mib < 10 ? 1 : 0)} MiB`
-  const gib = mib / 1024
-  return `${gib.toFixed(gib < 10 ? 1 : 0)} GiB`
+import { formatRelative } from '@iii-dev/console-ui/format'
+
+export { formatBytes } from '@iii-dev/console-ui/format'
+
+/** An age in seconds → `just now`, `42s`, `5m`, `3h`, `2d`. */
+export function formatAgeSecs(secs: number): string {
+  if (!Number.isFinite(secs) || secs < 0) return '—'
+  const now = Date.now()
+  return formatRelative(now - secs * 1000, now)
 }
 
 /** POSIX single-quote an argv slot (embedded `'` via the `'\''` dance).

@@ -1,9 +1,7 @@
 /**
- * Every rule is scoped under [data-iii-ui="canvas"].
- *
- * Injected CSS is unlayered, so one unscoped selector silently beats the
- * console's own fully-layered styles across the whole document. Colors come
- * from the console's design tokens, so both themes work without a media query.
+ * Every rule is scoped under [data-iii-ui="canvas"]: injected CSS is unlayered, so one
+ * unscoped selector would beat the console document-wide. Colors come from the console
+ * tokens, so both themes work without a media query.
  */
 
 [data-iii-ui='canvas'] .canvas-ui {
@@ -13,22 +11,11 @@
   flex: 1;
 }
 
-[data-iii-ui='canvas'] .canvas-ui__empty {
-  color: var(--color-ink-faint);
-  font-size: 0.875rem;
-  line-height: 1.5;
-}
-
 [data-iii-ui='canvas'] .canvas-trigger {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   color: var(--color-ink);
-}
-
-[data-iii-ui='canvas'] .canvas-trigger__meta {
-  color: var(--color-ink-faint);
-  font-size: 0.8125rem;
 }
 
 /* ── canvas page (src/page/**) ────────────────────────────────────────────
@@ -153,7 +140,7 @@
   padding: 0;
   background: none;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--color-ink-ghost);
   cursor: pointer;
 }
@@ -166,14 +153,6 @@
 [data-iii-ui='canvas'] .cv-item-delete:hover {
   color: var(--color-alert);
   background: var(--color-alert-muted);
-}
-
-[data-iii-ui='canvas'] .cv-dirty {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-accent);
-  flex: none;
 }
 
 [data-iii-ui='canvas'] .cv-main {
@@ -249,6 +228,11 @@
 [data-iii-ui='canvas'] .cv-split-handle {
   cursor: col-resize;
   touch-action: none;
+}
+
+[data-iii-ui='canvas'] .cv-split-handle:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -1px;
 }
 
 [data-iii-ui='canvas'] .cv-editor {
@@ -341,15 +325,12 @@
 }
 
 [data-iii-ui='canvas'] .cv-diag-line {
-  font-size: 0.6875rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 [data-iii-ui='canvas'] .cv-diag-msg {
   margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-code);
   font-size: 0.6875rem;
   line-height: 1.45;
   white-space: pre-wrap;
@@ -413,7 +394,7 @@
   color: var(--color-ink-faint);
   background: transparent;
   border: 1px solid var(--color-edge);
-  border-radius: 2px;
+  border-radius: 6px;
   padding: 2px 6px;
   cursor: pointer;
 }
@@ -454,9 +435,6 @@
 [data-iii-ui='canvas'] .canvas-trigger__pill {
   border: 1px solid var(--color-accent);
   color: var(--color-accent);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   padding: 1px 8px;
 }
 
@@ -502,29 +480,12 @@
 
 [data-iii-ui='canvas'] .canvas-trigger__tag {
   margin-left: auto;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
   color: var(--color-ink-ghost);
 }
 
 [data-iii-ui='canvas'] .canvas-trigger__note {
   font-size: 12px;
   color: var(--color-ink-faint);
-}
-
-[data-iii-ui='canvas'] .canvas-trigger__pulse {
-  animation: canvas-trigger-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes canvas-trigger-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
 }
 
 [data-iii-ui='canvas'] .canvas-trigger__diagram {

@@ -1,10 +1,7 @@
 /**
- * Every rule is scoped under [data-iii-ui="voice"]. Injected CSS is
- * unlayered, so an unscoped selector would silently beat the console's
- * own fully-layered styles document-wide. Colors and motion come from the
- * console's design tokens, so both themes and reduced motion work without
- * a duplicate ruleset. Layout responds to the pane's own width through
- * container queries, never the viewport.
+ * Every rule is scoped under [data-iii-ui="voice"]: injected CSS is unlayered, so an
+ * unscoped selector would beat the console document-wide. Colors and motion come from
+ * the console tokens; layout responds to the pane via container queries, never the viewport.
  */
 
 /* ── page chrome ─────────────────────────────────────────────────────── */
@@ -38,17 +35,6 @@
   flex-direction: column;
   gap: 1rem;
   min-width: 0;
-  animation: voice-enter var(--motion-duration-control, 160ms) var(--motion-ease-enter, ease-out) both;
-}
-
-[data-iii-ui='voice'] .voice-columns {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 1rem;
-}
-
-[data-iii-ui='voice'] .voice-spin {
-  animation: voice-spin 0.9s linear infinite;
 }
 
 /* ── cards and facts ─────────────────────────────────────────────────── */
@@ -198,7 +184,7 @@
   align-items: start;
   padding: 1rem;
   border: 1px solid var(--color-edge);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--color-panel);
 }
 
@@ -300,25 +286,7 @@
 }
 
 [data-iii-ui='voice'] .voice-language-input {
-  box-sizing: border-box;
-  width: 100%;
   max-width: 32rem;
-  min-width: 0;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--color-edge);
-  border-radius: 6px;
-  background: var(--color-panel);
-  color: var(--color-ink);
-  font: inherit;
-}
-
-[data-iii-ui='voice'] .voice-language-input:focus-visible {
-  outline: 2px solid var(--color-ink);
-  outline-offset: 2px;
-}
-
-[data-iii-ui='voice'] .voice-language-input:disabled {
-  opacity: 0.5;
 }
 
 /* ── dictate ─────────────────────────────────────────────────────────── */
@@ -340,7 +308,7 @@
   gap: 0.5rem;
   margin: 0;
   padding: 0.75rem;
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--color-panel);
   color: var(--color-ink);
   font-size: 0.9375rem;
@@ -389,7 +357,7 @@
   min-height: 4.5rem;
   padding: 0.875rem 1rem;
   border: 1px dashed var(--color-edge);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--color-panel);
   color: var(--color-ink);
   font: inherit;
@@ -470,7 +438,7 @@
   min-height: 5.5rem;
   padding: 0.625rem 0.75rem;
   border: 1px solid var(--color-edge);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--color-panel);
   color: var(--color-ink);
   font: inherit;
@@ -500,7 +468,7 @@
 [data-iii-ui='voice'] .voice-chip-copied,
 [data-iii-ui='voice'] .voice-chip-error {
   padding: 0.125rem 0.5rem;
-  border-radius: 999px;
+  border-radius: 9999px;
   background: var(--color-panel-raised);
   color: var(--color-ink-faint);
   font-size: 0.75rem;
@@ -537,15 +505,6 @@
 [data-iii-ui='voice'] .voice-live-partial {
   color: var(--color-ink-faint);
   font-style: italic;
-}
-
-[data-iii-ui='voice'] .voice-chip-dot {
-  width: 6px;
-  height: 6px;
-  flex-shrink: 0;
-  border-radius: 999px;
-  background: var(--color-accent);
-  animation: voice-pulse 1.4s ease-in-out infinite;
 }
 
 /* ── turn summary row (src/turn-summary) ─────────────────────────────── */
@@ -635,10 +594,6 @@
     flex-wrap: wrap;
   }
 
-  [data-iii-ui='voice'] .voice-columns {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   [data-iii-ui='voice'] .voice-fact {
     grid-template-columns: minmax(0, 1fr);
     gap: 0.125rem;
@@ -666,54 +621,6 @@
 @container (max-width: 30rem) {
   [data-iii-ui='voice'] .voice-main {
     padding: 0.75rem;
-  }
-}
-
-/* ── motion ──────────────────────────────────────────────────────────── */
-
-@keyframes voice-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: scale(0.85);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes voice-enter {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-}
-
-@keyframes voice-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-iii-ui='voice'] .voice-chip-dot,
-  [data-iii-ui='voice'] .voice-spin {
-    animation: none;
-  }
-
-  [data-iii-ui='voice'] .voice-section {
-    animation-name: voice-fade;
-  }
-
-  [data-iii-ui='voice'] .voice-dropzone {
-    transition: none;
-  }
-}
-
-@keyframes voice-fade {
-  from {
-    opacity: 0;
   }
 }
 

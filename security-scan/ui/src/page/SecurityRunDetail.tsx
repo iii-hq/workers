@@ -2,8 +2,18 @@ import {
   Badge,
   Button,
   CodeHighlight,
+  Eyebrow,
+  Skeleton,
   StatusPanel,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import {
+  ArrowLeft,
+  Download,
+  RefreshCw,
+  TriangleAlert,
+  WandSparkles,
+} from 'lucide-react'
 import { type RefObject, useMemo, useState } from 'react'
 import {
   canRequestPatchSuggestions,
@@ -38,7 +48,6 @@ import {
 import type { useSecurityReconciliation } from './useSecurityReconciliation'
 import type { SecurityActionsLive } from './useSecurityActions'
 import { nextVisibleFindingCount } from './view-state.js'
-import { AlertIcon, ArrowLeftIcon, DownloadIcon, RefreshIcon, WandIcon } from './icons'
 
 const INITIAL_FINDING_COUNT = 20
 const FINDING_PAGE_SIZE = 20
@@ -62,12 +71,6 @@ const SEVERITY_ORDER: Record<Severity, number> = {
 }
 
 const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info']
-
-function classNames(
-  ...values: Array<string | false | null | undefined>
-): string {
-  return values.filter(Boolean).join(' ')
-}
 
 function severityVariant(
   severity: Severity,
@@ -149,7 +152,7 @@ function SecurityOverview({
     >
       <div className="security-scan-ui-overview-head">
         <div>
-          <span className="security-scan-ui-section-label">Harness review</span>
+          <Eyebrow>Harness review</Eyebrow>
           <h3 id="security-scan-overview-title">Harness review coverage</h3>
         </div>
         <span>{findingLabel(findings.length)}</span>
@@ -163,7 +166,7 @@ function SecurityOverview({
           const remaining = categoryFindings.length - visibleRows.length
           return (
             <section
-              className="security-scan-ui-overview-category"
+              className={`${uiClasses.panel} security-scan-ui-overview-category`}
               key={category.id}
             >
               <header>
@@ -189,9 +192,9 @@ function SecurityOverview({
                 <table>
                   <thead>
                     <tr>
-                      <th scope="col">severity</th>
-                      <th scope="col">finding</th>
-                      <th scope="col">location</th>
+                      <th scope="col" className={uiClasses.eyebrow}>severity</th>
+                      <th scope="col" className={uiClasses.eyebrow}>finding</th>
+                      <th scope="col" className={uiClasses.eyebrow}>location</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -240,10 +243,10 @@ function Progression({ run }: { run: RunSummary | SecurityRun }) {
   const interrupted = run.status === 'failed' || run.status === 'cancelled'
   return (
     <section
-      className="security-scan-ui-progress"
+      className={`${uiClasses.panel} security-scan-ui-progress`}
       aria-label={`Run status: ${formatStatus(run.status)}`}
     >
-      <div className="security-scan-ui-section-label">progress</div>
+      <Eyebrow as="div">progress</Eyebrow>
       <ol>
         {PIPELINE.map((step, index) => {
           const state = completed
@@ -348,7 +351,7 @@ function FindingCard({
   const [patchOpen, setPatchOpen] = useState(false)
   const usefulRemediation = isUsefulRemediation(finding.remediation)
   return (
-    <article className="security-scan-ui-finding">
+    <article className={`${uiClasses.panel} security-scan-ui-finding`}>
       <header>
         <span className="security-scan-ui-finding-number">
           {String(index + 1).padStart(2, '0')}
@@ -374,18 +377,16 @@ function FindingCard({
         {finding.description}
       </p>
       <div
-        className={classNames(
-          'security-scan-ui-evidence-grid',
-          !usefulRemediation && 'has-one-column',
-        )}
+        className="security-scan-ui-evidence-grid"
+        data-columns={usefulRemediation ? undefined : 'one'}
       >
         <section>
-          <h4>evidence</h4>
+          <h4 className={uiClasses.eyebrow}>evidence</h4>
           <pre>{finding.evidence}</pre>
         </section>
         {usefulRemediation ? (
           <section>
-            <h4>remediation</h4>
+            <h4 className={uiClasses.eyebrow}>remediation</h4>
             <p>{finding.remediation}</p>
           </section>
         ) : null}
@@ -395,7 +396,7 @@ function FindingCard({
           className="security-scan-ui-patch"
           onToggle={(event) => setPatchOpen(event.currentTarget.open)}
         >
-          <summary>suggested patch</summary>
+          <summary className={uiClasses.eyebrow}>suggested patch</summary>
           {patchOpen ? (
             <div className="security-scan-ui-patch-content">
               <CodeHighlight
@@ -509,7 +510,7 @@ export function SecurityRunDetail({
               size="sm"
               onClick={onBack}
             >
-              <ArrowLeftIcon size={16} />
+              <ArrowLeft size={16} />
               history
             </Button>
           ) : null}
@@ -545,7 +546,7 @@ export function SecurityRunDetail({
             {sourceZipUrl ? (
               <Button asChild variant="ghost" size="sm">
                 <a href={sourceZipUrl} target="_blank" rel="noreferrer">
-                  <DownloadIcon size={16} />
+                  <Download size={16} />
                   source ZIP
                 </a>
               </Button>
@@ -556,7 +557,7 @@ export function SecurityRunDetail({
                 size="sm"
                 onClick={() => downloadSanitizedReport(run)}
               >
-                <DownloadIcon size={16} />
+                <Download size={16} />
                 report JSON
               </Button>
             ) : null}
@@ -574,9 +575,9 @@ export function SecurityRunDetail({
         </div>
       </div>
 
-      <dl className="security-scan-ui-facts">
+      <dl className={`${uiClasses.panel} security-scan-ui-facts`}>
         <div>
-          <dt>commit</dt>
+          <dt className={uiClasses.eyebrow}>commit</dt>
           <dd title={current.target_sha}>
             {current.resolved_from_head
               ? `HEAD (${current.target_sha})`
@@ -585,20 +586,20 @@ export function SecurityRunDetail({
         </div>
         {current.model ? (
           <div>
-            <dt>model</dt>
+            <dt className={uiClasses.eyebrow}>model</dt>
             <dd title={current.model}>{current.model}</dd>
           </div>
         ) : null}
         <div>
-          <dt>started</dt>
+          <dt className={uiClasses.eyebrow}>started</dt>
           <dd>{formatTimestamp(current.created_at)}</dd>
         </div>
         <div>
-          <dt>updated</dt>
+          <dt className={uiClasses.eyebrow}>updated</dt>
           <dd>{formatTimestamp(current.updated_at)}</dd>
         </div>
         <div>
-          <dt>run id</dt>
+          <dt className={uiClasses.eyebrow}>run id</dt>
           <dd title={current.run_id}>{current.run_id}</dd>
         </div>
       </dl>
@@ -610,20 +611,19 @@ export function SecurityRunDetail({
           role="status"
           aria-label="Loading run report"
         >
-          <span />
-          <span />
-          <span />
+          <Skeleton />
+          <Skeleton />
+          <Skeleton />
         </div>
       ) : null}
       {error ? (
-        <div role="alert">
-          <StatusPanel
-            variant="alert"
-            icon={<AlertIcon size={18} />}
-            headline="failed to load run details"
-            detail={error}
-          />
-        </div>
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          icon={<TriangleAlert size={16} />}
+          headline="failed to load run details"
+          detail={error}
+        />
       ) : null}
       <ActiveRunPanel
         run={current}
@@ -635,7 +635,7 @@ export function SecurityRunDetail({
         <div className="security-scan-ui-failure">
           <StatusPanel
             variant="alert"
-            icon={<AlertIcon size={18} />}
+            icon={<TriangleAlert size={16} />}
             headline={current.error?.code ?? 'scan failed'}
             detail={
               current.error?.message ??
@@ -649,9 +649,9 @@ export function SecurityRunDetail({
               onClick={onRetry}
               disabled={retrying}
             >
-              <RefreshIcon
+              <RefreshCw
                 size={16}
-                className={retrying ? 'is-spinning' : undefined}
+                className={retrying ? uiClasses.spin : undefined}
               />
               {retrying ? 'retrying' : 'retry run'}
             </Button>
@@ -669,11 +669,9 @@ export function SecurityRunDetail({
 
       {run?.report ? (
         <div className="security-scan-ui-report">
-          <section className="security-scan-ui-summary">
+          <section className={`${uiClasses.panel} security-scan-ui-summary`}>
             <div>
-              <span className="security-scan-ui-section-label">
-                Harness report summary
-              </span>
+              <Eyebrow>Harness report summary</Eyebrow>
               <h3>
                 {findings.length} Harness{' '}
                 {findings.length === 1 ? 'finding' : 'findings'}
@@ -708,11 +706,9 @@ export function SecurityRunDetail({
           ) : (
             <>
               {canRequestSuggestions ? (
-                <section className="security-scan-ui-suggestion-action">
+                <section className={`${uiClasses.panel} security-scan-ui-suggestion-action`}>
                   <div>
-                    <span className="security-scan-ui-section-label">
-                      follow-up review
-                    </span>
+                    <Eyebrow>follow-up review</Eyebrow>
                     <strong>Generate recommended fixes</strong>
                     <p>
                       Run a separate suggestion-mode review. Suggestions stay
@@ -731,7 +727,7 @@ export function SecurityRunDetail({
                     onClick={onRequestSuggestions}
                     disabled={suggesting}
                   >
-                    <WandIcon size={16} />
+                    <WandSparkles size={16} />
                     {suggesting ? 'requesting' : 'get recommended fixes'}
                   </Button>
                 </section>
@@ -742,9 +738,7 @@ export function SecurityRunDetail({
               >
                 <div className="security-scan-ui-detailed-findings-head">
                   <div>
-                    <span className="security-scan-ui-section-label">
-                      Harness evidence and guidance
-                    </span>
+                    <Eyebrow>Harness evidence and guidance</Eyebrow>
                     <h3 id="security-scan-detailed-findings-title">
                       Detailed Harness findings
                     </h3>

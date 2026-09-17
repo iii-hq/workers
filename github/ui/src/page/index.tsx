@@ -25,10 +25,15 @@
 import {
   Badge,
   Button,
+  EmptyState,
   ErrorBoundary,
   type Host,
   StatusDot,
+  Toolbar,
 } from '@iii-dev/console-ui'
+import { formatDuration, formatRelative } from '@iii-dev/console-ui/format'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
+import { Activity } from 'lucide-react'
 import {
   type KeyboardEvent,
   type MutableRefObject,
@@ -38,9 +43,6 @@ import {
   useState,
 } from 'react'
 import { type CalledEvent, useGithubCalled } from './events'
-import { formatRelative } from './format'
-import { Activity } from './icons'
-import { NARROW_BELOW, useContainerNarrow } from './narrow'
 import { ResultView } from './result-views'
 
 /** Per-tab handler id — the `iii::` prefix keeps per-event invocations
@@ -104,7 +106,7 @@ export function ActivityFeed({
 }) {
   const { entries, clear, paused, setPaused } = useCalledFeed(host)
   const [expanded, setExpanded] = useState<string | null>(null)
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const { ref: rootRef, narrow } = useContainerNarrow()
 
   // Re-render on a slow tick so "Ns ago" stays fresh without per-row timers.
   const [, forceTick] = useState(0)
@@ -132,45 +134,47 @@ export function ActivityFeed({
 
   return (
     <div className={`gh-ui-view${narrow ? ' narrow' : ''}`} ref={rootRef}>
-      <div className="gh-ui-toolbar">
+      <Toolbar
+        aria-label="Activity feed"
+        end={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-pressed={!paused}
+              onClick={() => setPaused((p) => !p)}
+            >
+              <StatusDot
+                tone={paused ? 'warn' : 'accent'}
+                pulse={!paused}
+                aria-hidden
+              />
+              {paused ? 'paused' : 'live'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={entries.length === 0}
+              onClick={clear}
+            >
+              clear
+            </Button>
+          </>
+        }
+      >
         <span className="gh-ui-toolbar-note">
           {entries.length
             ? `${entries.length} recent call${entries.length === 1 ? '' : 's'}`
             : 'live feed of github worker calls'}
         </span>
-        <span className="spacer" />
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-pressed={!paused}
-          onClick={() => setPaused((p) => !p)}
-        >
-          <StatusDot
-            tone={paused ? 'warn' : 'accent'}
-            pulse={!paused}
-            aria-hidden
-          />
-          {paused ? 'paused' : 'live'}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={entries.length === 0}
-          onClick={clear}
-        >
-          clear
-        </Button>
-      </div>
+      </Toolbar>
 
       {entries.length === 0 ? (
-        <div className="gh-ui-hero">
-          <Activity className="gh-ui-hero-icon" />
-          <h2 className="gh-ui-hero-title">Waiting for github activity</h2>
-          <p className="gh-ui-hero-body">
-            Trigger a github function and it shows here — pull requests, issues,
-            runs, releases, searches, and any gh command the agent runs.
-          </p>
-        </div>
+        <EmptyState
+          icon={Activity}
+          title="Waiting for github activity"
+          description="Trigger a github function and it shows here — pull requests, issues, runs, releases, searches, and any gh command the agent runs."
+        />
       ) : (
         <div className="gh-ui-feed" role="list">
           {entries.map((entry) => (
@@ -238,7 +242,7 @@ function ActivityRow({
           </span>
         </span>
         <span className="gh-ui-feed-time" title={entry.timestamp || undefined}>
-          {formatRelative((now - entry.receivedAt) / 1000)}
+          {formatRelative(entry.receivedAt, now)}
         </span>
       </div>
       {expanded ? (
@@ -261,9 +265,4 @@ function ActivityRow({
       ) : null}
     </div>
   )
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`
 }

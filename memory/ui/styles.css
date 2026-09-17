@@ -1,25 +1,7 @@
 /*
- * The memory worker's console stylesheet, shipped as its own `console:style`
- * asset (memory/styles.css) — the console mounts it as a <link> in
- * document.head and link-swaps it on hot reload, styles-before-scripts on
- * boot. Every rule is scoped under `[data-iii-ui="memory"]`, the wrapper the
- * console mounts around every injected render. Styling uses the console's
- * design tokens, so light/dark theming is free; component chrome (Button,
- * Input, Badge, StatusDot, CodeEditor, EmptyState, …) comes pre-styled from
- * @iii-dev/console-ui and is only given layout classes here.
- *
- * The page follows the console redesign's surface + typography roles:
- *
- *   navigation  --color-sidebar         the bank rail
- *   workspace   --color-panel           the selected bank's panels
- *   raised      --color-panel-raised    the workspace header
- *   states      --color-surface-*       hover / selected washes
- *   edges       --color-edge            hairline separation
- *
- *   sans (--font-sans)  interface prose: hints, memory text, banners,
- *                       empty states
- *   mono (--font-mono)  technical values: bank names, counts, tags,
- *                       scores, rule filenames, the prompt dry run
+ * The memory worker's console stylesheet (`console:style` asset), scoped under
+ * `[data-iii-ui="memory"]`. Layout only: chrome comes from @iii-dev/console-ui
+ * and the console's tokens; sans for prose, mono for machine values.
  */
 
 /* ── the page (#/ext/memory): application shell ─────────────────────── */
@@ -39,15 +21,6 @@
   font-size: 11px;
   color: var(--color-ink-faint);
   white-space: nowrap;
-}
-
-[data-iii-ui="memory"] .mem-ui-spin {
-  animation: mem-ui-spin 1s linear infinite;
-}
-@keyframes mem-ui-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* ── body: bank rail + workspace ────────────────────────────────────── */
@@ -73,9 +46,9 @@
   border-right: 0;
   border-left: 1px solid var(--color-edge);
 }
-/* Narrow is CONTAINER width (< 800px, the page's own ResizeObserver),
-   not the viewport: one pane at a time — the JSX renders either the bank
-   list or the opened workspace. */
+/* Narrow is CONTAINER width (< 800px, useContainerNarrow), not the
+   viewport: one pane at a time — the JSX renders either the bank list or
+   the opened workspace. */
 [data-iii-ui="memory"] .mem-ui-body.narrow .mem-ui-rail {
   border-right: 0;
   border-left: 0;
@@ -87,13 +60,6 @@
   gap: 8px;
   width: 100%;
   min-width: 0;
-}
-[data-iii-ui="memory"] .mem-ui-col-head .label {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--color-ink-faint);
 }
 [data-iii-ui="memory"] .mem-ui-col-head .spacer {
   flex: 1;
@@ -112,74 +78,7 @@
   padding: 4px 6px 12px;
 }
 
-/* bank rows — the whole row is the button */
-[data-iii-ui="memory"] .mem-ui-nav-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-[data-iii-ui="memory"] .mem-ui-nav-row {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  padding: 7px 10px 7px 14px;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-}
-[data-iii-ui="memory"] .mem-ui-nav-row:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="memory"] .mem-ui-nav-row:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-/* Selection stays neutral: wash + edge indicator + stronger name. */
-[data-iii-ui="memory"] .mem-ui-nav-row.active {
-  background: var(--color-surface-selected);
-}
-[data-iii-ui="memory"] .mem-ui-nav-row.active::before {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 7px;
-  bottom: 7px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--color-edge);
-}
-[data-iii-ui="memory"] .mem-ui-nav-row .name {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--color-ink);
-  word-break: break-all;
-}
-[data-iii-ui="memory"] .mem-ui-nav-row.active .name {
-  font-weight: 600;
-}
-[data-iii-ui="memory"] .mem-ui-nav-row .fine {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  color: var(--color-ink-ghost);
-  font-variant-numeric: tabular-nums;
-}
-/* Touch-sized targets in the drill-in flow. */
-[data-iii-ui="memory"] .mem-ui-body.narrow .mem-ui-nav-row {
-  min-height: 44px;
-  justify-content: center;
-  padding-top: 10px;
-  padding-bottom: 10px;
-}
-
-/* rail loading / empty */
+/* rail loading */
 [data-iii-ui="memory"] .mem-ui-rail-skel {
   display: flex;
   flex-direction: column;
@@ -191,51 +90,9 @@
   flex-direction: column;
   gap: 6px;
 }
-[data-iii-ui="memory"] .mem-ui-skel-row .bar {
+[data-iii-ui="memory"] .mem-ui-skel {
   display: block;
   height: 10px;
-  border-radius: 4px;
-  background: var(--color-surface);
-  animation: mem-ui-pulse 1.6s ease-in-out infinite;
-}
-@keyframes mem-ui-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-[data-iii-ui="memory"] .bar.w40 {
-  width: 40%;
-}
-[data-iii-ui="memory"] .bar.w60 {
-  width: 60%;
-}
-[data-iii-ui="memory"] .bar.w70 {
-  width: 70%;
-}
-[data-iii-ui="memory"] .bar.w80 {
-  width: 80%;
-}
-[data-iii-ui="memory"] .bar.w90 {
-  width: 90%;
-}
-[data-iii-ui="memory"] .mem-ui-rail-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 20px 14px;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--color-ink);
-}
-[data-iii-ui="memory"] .mem-ui-rail-empty p {
-  margin: 0;
-}
-[data-iii-ui="memory"] .mem-ui-rail-empty .dim {
-  color: var(--color-ink-faint);
 }
 
 [data-iii-ui="memory"] .mem-ui-rail-form {
@@ -299,7 +156,7 @@
 }
 [data-iii-ui="memory"] .mem-ui-doc-crumb {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -307,135 +164,15 @@
   white-space: nowrap;
 }
 
-/* back affordance (drill-in flow) */
-[data-iii-ui="memory"] .mem-ui-back {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-}
-[data-iii-ui="memory"] .mem-ui-back:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="memory"] .mem-ui-back:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-
-/* status banners sit directly under the header, near what they describe */
+/* status panels sit directly under the header, near what they describe */
 [data-iii-ui="memory"] .mem-ui-banner {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  padding: 8px 16px;
+  margin: 8px 16px 0;
   flex-shrink: 0;
-  font-size: 12.5px;
-  color: var(--color-ink);
-  border-bottom: 1px solid var(--color-edge);
 }
-[data-iii-ui="memory"] .mem-ui-banner.alert {
-  background: var(--color-alert-muted);
-}
-[data-iii-ui="memory"] .mem-ui-banner .detail {
-  display: block;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11.5px;
-  color: var(--color-ink-faint);
-  word-break: break-word;
-}
-[data-iii-ui="memory"] .mem-ui-linkish {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--color-accent);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-[data-iii-ui="memory"] .mem-ui-linkish:hover {
-  color: var(--color-accent-hover);
-}
-[data-iii-ui="memory"] .mem-ui-linkish.quiet {
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="memory"] .mem-ui-linkish:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: 2px;
-  border-radius: 2px;
-}
-
-/* load-failure panel */
 [data-iii-ui="memory"] .mem-ui-error-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 8px;
-  padding: 12px;
-  border: 1px solid color-mix(in oklab, var(--color-alert) 35%, transparent);
-  border-radius: 6px;
-  background: var(--color-alert-muted);
-  font-size: 12.5px;
-  color: var(--color-ink);
-}
-[data-iii-ui="memory"] .mem-ui-error-panel p {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  word-break: break-word;
-}
-[data-iii-ui="memory"] .mem-ui-error-panel .detail {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11.5px;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="memory"] .mem-ui-error-panel.grow {
   align-self: flex-start;
   margin: 16px;
   max-width: 560px;
-}
-
-/* workspace empty state — teaches the next action, not the absence */
-[data-iii-ui="memory"] .mem-ui-hero {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 48px 24px;
-  text-align: center;
-}
-[data-iii-ui="memory"] .mem-ui-hero-icon {
-  width: 28px;
-  height: 28px;
-  color: var(--color-ink-ghost);
-  margin-bottom: 8px;
-}
-[data-iii-ui="memory"] .mem-ui-hero-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--color-ink);
-}
-[data-iii-ui="memory"] .mem-ui-hero-body {
-  margin: 0;
-  max-width: 460px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--color-ink-faint);
 }
 
 /* the scrolling panel area under the workspace header */
@@ -489,11 +226,6 @@
 [data-iii-ui="memory"] .mem-ui-spacer {
   flex: 1;
 }
-[data-iii-ui="memory"] .mem-ui-gap1 {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
 [data-iii-ui="memory"] .mem-ui-hint {
   font-size: 12px;
   line-height: 1.55;
@@ -504,18 +236,7 @@
   line-height: 1.55;
   color: var(--color-ink-ghost);
 }
-[data-iii-ui="memory"] .mem-ui-caption {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--color-ink-ghost);
-}
 [data-iii-ui="memory"] .mem-ui-danger {
-  color: var(--color-alert);
-}
-[data-iii-ui="memory"] .mem-ui-error-text {
-  font-size: 12.5px;
   color: var(--color-alert);
 }
 
@@ -529,22 +250,14 @@
   max-width: 100%;
 }
 
-/* ── tag pills / buttons ────────────────────────────────────────────── */
+/* ── tag filter buttons ─────────────────────────────────────────────── */
 
-[data-iii-ui="memory"] .mem-ui-tag {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  padding: 0 4px;
-  border: 1px solid var(--color-edge);
-  border-radius: 3px;
-  color: var(--color-ink-faint);
-}
 [data-iii-ui="memory"] .mem-ui-tagbtn {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   padding: 2px 8px;
   border: 1px solid var(--color-edge);
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: var(--color-ink-faint);
   cursor: pointer;
@@ -586,7 +299,6 @@
 }
 [data-iii-ui="memory"] .mem-ui-bar {
   width: 5px;
-  border-radius: 1px;
   background: var(--color-edge);
 }
 [data-iii-ui="memory"] .mem-ui-bar.on {
@@ -601,18 +313,6 @@
   font-size: 12.5px;
   color: var(--color-ink);
   font-variant-numeric: tabular-nums;
-}
-[data-iii-ui="memory"] .mem-ui-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-}
-[data-iii-ui="memory"] .mem-ui-check input {
-  accent-color: var(--color-accent);
 }
 
 [data-iii-ui="memory"] .mem-ui-fact-list {
@@ -653,13 +353,13 @@
 }
 [data-iii-ui="memory"] .mem-ui-score {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="memory"] .mem-ui-meta-note {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
 }
 [data-iii-ui="memory"] .mem-ui-fromchat {
@@ -670,7 +370,7 @@
   border: 0;
   padding: 0;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
   cursor: pointer;
   transition: color var(--motion-duration-fast) var(--motion-ease-standard);
@@ -681,26 +381,10 @@
 [data-iii-ui="memory"] .mem-ui-fromchat:focus-visible {
   outline: 2px solid var(--color-rule-focus);
   outline-offset: 2px;
-  border-radius: 2px;
 }
 
 /* ── rules panel ────────────────────────────────────────────────────── */
 
-[data-iii-ui="memory"] .mem-ui-rule {
-  border: 1px solid var(--color-edge);
-  border-radius: 6px;
-  overflow: hidden;
-}
-[data-iii-ui="memory"] .mem-ui-rule-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 36px;
-  padding: 4px 8px 4px 12px;
-  background: var(--color-panel-raised);
-  border-bottom: 1px solid var(--color-edge);
-}
 [data-iii-ui="memory"] .mem-ui-rule-name {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12px;
@@ -715,12 +399,7 @@
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-}
-[data-iii-ui="memory"] .mem-ui-unsaved {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  color: var(--color-warn);
-  white-space: nowrap;
+  margin-left: auto;
 }
 /* Monaco grows with content — the pane scrolls past this cap. */
 [data-iii-ui="memory"] .mem-ui-rule-editor {
@@ -730,29 +409,11 @@
 
 /* ── recall / turn preview panel ────────────────────────────────────── */
 
-[data-iii-ui="memory"] .mem-ui-prompt {
-  border: 1px solid var(--color-edge);
-  border-radius: 6px;
-  overflow: hidden;
-}
 [data-iii-ui="memory"] .mem-ui-prompt-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
   padding: 8px 12px;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  font-family: inherit;
-  cursor: pointer;
-}
-[data-iii-ui="memory"] .mem-ui-prompt-head:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="memory"] .mem-ui-prompt-head:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
 }
 [data-iii-ui="memory"] .mem-ui-prompt-label {
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -781,7 +442,7 @@
 [data-iii-ui="memory"] .mem-ui-scorebar {
   height: 6px;
   flex-shrink: 0;
-  border-radius: 3px;
+  border-radius: 6px;
   background: var(--color-edge);
 }
 [data-iii-ui="memory"] .mem-ui-scorebar.on {
@@ -837,11 +498,11 @@
   gap: 4px 12px;
   padding: 4px 8px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
   background: color-mix(in srgb, var(--color-panel) 90%, transparent);
   border: 1px solid var(--color-edge);
-  border-radius: 4px;
+  border-radius: 6px;
 }
 [data-iii-ui="memory"] .mem-ui-legend-item {
   display: flex;
@@ -865,6 +526,7 @@
   border-radius: 9999px;
   background: var(--color-accent);
 }
+/* the selected memory's card floats over the canvas (Card chrome) */
 [data-iii-ui="memory"] .mem-ui-card {
   position: absolute;
   top: 8px;
@@ -875,10 +537,6 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border: 1px solid var(--color-edge);
-  border-radius: 6px;
-  background: var(--color-panel-raised);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-ink) 8%, transparent);
 }
 [data-iii-ui="memory"] .mem-ui-card-head {
   display: flex;
@@ -891,13 +549,4 @@
   font-size: 12.5px;
   color: var(--color-ink);
   line-height: 1.5;
-}
-
-/* ── motion opt-outs ────────────────────────────────────────────────── */
-
-@media (prefers-reduced-motion: reduce) {
-  [data-iii-ui="memory"] .mem-ui-spin,
-  [data-iii-ui="memory"] .mem-ui-skel-row .bar {
-    animation: none;
-  }
 }

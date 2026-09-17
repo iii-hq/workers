@@ -8,7 +8,7 @@
  * see useMemoryLive). Memory that acts visibly, not magically — watch a
  * memory appear the moment it's learned.
  *
- * Layout adapts to the width the page HAS (a ResizeObserver on its own
+ * Layout adapts to the width the page HAS (`useContainerNarrow` on its own
  * body, not a viewport media query — the console can host it in panes of
  * any size). Under NARROW_BELOW px it becomes a drill-in flow: the bank
  * list fills the width, opening a bank swaps in its workspace with a ←
@@ -24,18 +24,24 @@
 
 import {
   Button,
+  EmptyState,
   type Host,
+  IconButton,
   PageHeader,
   type PageRenderProps,
   PageShell,
   PageSidebar,
   SegmentedControl,
   StatusDot,
+  StatusPanel,
+  uiClasses,
   useConfirm,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
+import { ArrowLeft, Brain, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BankRail } from './BankRail'
-import { Brain, RefreshCw } from './icons'
 import { MemoriesPanel } from './MemoriesPanel'
 import { MemoryGraph } from './MemoryGraph'
 import {
@@ -52,7 +58,6 @@ import {
 import { RecallPanel } from './RecallPanel'
 import { RulesPanel } from './RulesPanel'
 import { useMemoryLive } from './useMemoryLive'
-import { BackButton } from './widgets'
 
 /** Container width (px) below which the page collapses to the drill-in
  * banks ⇄ workspace flow. */
@@ -71,52 +76,6 @@ const PANEL_OPTIONS: { value: Panel; label: string }[] = [
 
 const isPanel = (v: string | null): v is Panel =>
   v === 'rules' || v === 'memories' || v === 'graph' || v === 'recall'
-
-function readStored(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
-
-function writeStored(key: string, value: string) {
-  try {
-    window.localStorage.setItem(key, value)
-  } catch {
-    /* private mode / quota — persistence is best-effort */
-  }
-}
-
-/** Observe the page body's own width. Returns a callback ref to put on
- * the body plus whether it is currently narrower than `threshold` —
- * container-driven, so the same page adapts inside any pane the console
- * gives it. Measures synchronously on mount to avoid a wide-mode flash;
- * zero widths (display:none) are ignored so a hidden page keeps its last
- * real layout. */
-function useContainerNarrow(
-  threshold: number,
-): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const refCb = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-  return [refCb, narrow]
-}
 
 export function MemoryPage({
   host,
@@ -148,14 +107,15 @@ export function MemoryPage({
   } = useMemoryLive(host)
 
   const storageKey = `memory-ui:${tabId || 'page'}`
-  const [panel, setPanelState] = useState<Panel>(() => {
-    const v = readStored(`${storageKey}:panel`)
-    return isPanel(v) ? v : 'rules'
-  })
+  const [storedPanel, setPanelState] = usePaneState<string>(
+    `${storageKey}:panel`,
+    'rules',
+  )
+  const panel: Panel = isPanel(storedPanel) ? storedPanel : 'rules'
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const { ref: rootRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
   // Narrow drill-in position: the bank list until the user opens one.
   const [drilled, setDrilled] = useState(false)
 
@@ -180,7 +140,7 @@ export function MemoryPage({
         refresh()
         return true
       } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err))
+        setActionError(errorMessage(err))
         return false
       } finally {
         setBusy(false)
@@ -193,7 +153,6 @@ export function MemoryPage({
     if (next === panel) return
     if (!(await confirmDiscard())) return
     setPanelState(next)
-    writeStored(`${storageKey}:panel`, next)
   }
 
   const openBank = async (bank: string) => {
@@ -287,12 +246,11 @@ export function MemoryPage({
               size="sm"
               onClick={() => void act(() => reloadStore(host))}
               disabled={loading || busy}
-              className="mem-ui-gap1"
               title="re-read every bank from disk — picks up hand-edited rules/memories files (live events already keep this page current otherwise)"
             >
               <RefreshCw
                 size={16}
-                className={loading || busy ? 'mem-ui-spin' : undefined}
+                className={loading || busy ? uiClasses.spin : undefined}
                 aria-hidden
               />
               reload from disk
@@ -317,7 +275,7 @@ export function MemoryPage({
             className="mem-ui-rail"
             header={
               <div className="mem-ui-col-head">
-                <span className="label">Banks</span>
+                <span className={uiClasses.eyebrow}>Banks</span>
                 <span className="spacer" />
                 {loading && banks.length === 0 ? null : (
                   <span className="count">{banks.length}</span>
@@ -340,29 +298,30 @@ export function MemoryPage({
         {showDoc ? (
           <section className="mem-ui-doc" aria-label="bank workspace">
             {error ? (
-              <div className="mem-ui-error-panel grow">
-                <p>
-                  memory could not be loaded.
-                  <span className="detail">{error}</span>
-                </p>
-                <Button variant="ghost" size="sm" onClick={refresh}>
-                  retry
-                </Button>
-              </div>
+              <StatusPanel
+                variant="alert"
+                className="mem-ui-error-panel"
+                headline="memory could not be loaded."
+                detail={error}
+                action={
+                  <Button variant="ghost" size="sm" onClick={refresh}>
+                    retry
+                  </Button>
+                }
+              />
             ) : selected === null ? (
-              <div className="mem-ui-hero">
-                <Brain size={28} className="mem-ui-hero-icon" aria-hidden />
-                <h2 className="mem-ui-hero-title">No banks yet</h2>
-                <p className="mem-ui-hero-body">
-                  create one on the left, or just chat: the default bank
-                  materializes when the first memory is saved.
-                </p>
-              </div>
+              <EmptyState
+                icon={Brain}
+                title="No banks yet"
+                description="create one on the left, or just chat: the default bank materializes when the first memory is saved."
+              />
             ) : (
               <>
                 <header className="mem-ui-doc-head">
                   {narrow ? (
-                    <BackButton onClick={backToBanks} label="back to banks" />
+                    <IconButton label="back to banks" onClick={backToBanks}>
+                      <ArrowLeft size={16} aria-hidden />
+                    </IconButton>
                   ) : null}
                   <div className="mem-ui-doc-identity">
                     <span className="mem-ui-doc-name" title={selected}>
@@ -384,19 +343,22 @@ export function MemoryPage({
                 </header>
 
                 {actionError ? (
-                  <div className="mem-ui-banner alert" role="alert">
-                    <span>
-                      the last action failed.
-                      <span className="detail">{actionError}</span>
-                    </span>
-                    <button
-                      type="button"
-                      className="mem-ui-linkish quiet"
-                      onClick={() => setActionError(null)}
-                    >
-                      dismiss
-                    </button>
-                  </div>
+                  <StatusPanel
+                    variant="alert"
+                    role="alert"
+                    className="mem-ui-banner"
+                    headline="the last action failed."
+                    detail={actionError}
+                    action={
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setActionError(null)}
+                      >
+                        dismiss
+                      </Button>
+                    }
+                  />
                 ) : null}
 
                 <div className="mem-ui-doc-scroll">

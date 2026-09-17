@@ -30,6 +30,7 @@ import {
   Badge,
   Button,
   EmptyState,
+  Eyebrow,
   type Host,
   JsonHighlight,
   type PageCommandsApi,
@@ -39,7 +40,10 @@ import {
   TabsList,
   TabsTrigger,
   SearchField,
+  StatusDot,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { SquareFunction } from 'lucide-react'
 import {
   type MutableRefObject,
   useCallback,
@@ -48,7 +52,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { ActivityFeed, formatDuration } from './ActivityFeed'
+import { ActivityFeed, agoLabel, formatDuration } from './ActivityFeed'
 import { nextCronRun, untilLabel } from './cron'
 import {
   type FunctionDetail,
@@ -62,7 +66,7 @@ import {
   useResource,
 } from './engine'
 import { InvokePanel } from './InvokePanel'
-import { agoLabel, LastCallMeta, useLiveActivity } from './live'
+import { LastCallMeta, useLiveActivity } from './live'
 import { SchemaTable } from './SchemaTable'
 import { pretty } from './schema'
 import { cronExpression, familyOf, summarize } from './trigger-kinds'
@@ -243,7 +247,7 @@ export function FunctionsPage({
       hasSelection={selected !== null}
       header={
         <PageHeader
-          icon={<span aria-hidden>ƒ</span>}
+          icon={<SquareFunction />}
           title="Functions"
           description={
             <span className="console-catalog-header-desc">
@@ -649,7 +653,7 @@ function FunctionContext({
             className="console-catalog-context-activity"
             onClick={onShowActivity}
           >
-            <span className="dot" data-ok={lastCall.ok} />
+            <StatusDot tone={lastCall.ok ? 'ok' : 'alert'} />
             <span className="activity-copy">
               <span>{agoLabel(lastCall.atMs, Date.now())}</span>
               <span>{lastCall.ok ? 'successful call' : 'failed call'}</span>
@@ -689,19 +693,19 @@ function FunctionOverview({ detail }: { detail: FunctionDetail }) {
 
   return (
     <div className="console-catalog-overview">
-      <span className="console-catalog-field-label">Input schema</span>
+      <Eyebrow className="console-catalog-field-label">Input schema</Eyebrow>
       <SchemaTable
         schema={detail.request_schema}
         empty="This function registered no input schema."
       />
-      <span className="console-catalog-field-label">Output schema</span>
+      <Eyebrow className="console-catalog-field-label">Output schema</Eyebrow>
       <SchemaTable
         schema={detail.response_schema}
         empty="This function registered no output schema."
       />
       {hasMetadata ? (
         <>
-          <span className="console-catalog-field-label">Metadata</span>
+          <Eyebrow className="console-catalog-field-label">Metadata</Eyebrow>
           <JsonHighlight
             code={pretty(detail.metadata)}
             className="console-catalog-json"
@@ -751,7 +755,10 @@ function FunctionTriggers({ detail }: { detail: FunctionDetail }) {
             <div className="copy">
               <div className="line1">
                 <span className="name">{summarize(binding)}</span>
-                <span className="console-catalog-tag" data-tone={spec.tone}>
+                <span
+                  className={`${uiClasses.eyebrow} console-catalog-tag`}
+                  data-tone={spec.tone}
+                >
                   {spec.label}
                 </span>
               </div>

@@ -3,11 +3,12 @@
  * ade/web/src/components/chat/sandbox/ErrorView.tsx with two
  * family upgrades: the S003 card carries a `slots busy` chip (the
  * daemon serialises execs one-at-a-time per sandbox), and S200's
- * partial exec streams render through the SGR-aware `AnsiOutput`.
+ * partial exec streams render through the console's `TerminalStream`.
  */
 
-import { Badge } from '@iii-dev/console-ui'
-import { AnsiOutput } from './ansi'
+import { Badge, Chip, StatusPanel } from '@iii-dev/console-ui'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
+import { ExternalLink } from 'lucide-react'
 import {
   execResponseSchema,
   type SandboxDispatchDenial,
@@ -16,6 +17,7 @@ import {
   type SandboxInvocationError,
   safeParseResponse,
 } from './parsers'
+import { cx, Streams } from './shared'
 
 /**
  * Visualises the flat `{ type, code, message, docs_url, retryable,
@@ -55,32 +57,37 @@ function ErrorView({ error }: { error: SandboxErrorWire }) {
   const docsUrl = safeDocsUrl(error.docs_url)
   return (
     <div className="cr-fam-card">
-      <div className="cr-fam-err">
-        <div className="cr-fam-err-head">
-          <Badge variant="warn">{error.code}</Badge>
-          <span className="cr-fam-err-type">{error.type}</span>
-          {error.code === 'S003' ? <span className="cr-fam-chip warn">slots busy</span> : null}
-          {retryable ? <Badge variant="accent">retryable</Badge> : null}
-        </div>
-
-        <pre className="cr-fam-err-msg">
-          <code>{error.message}</code>
-        </pre>
-
-        {error.fix_note ? <div className="cr-fam-err-fix">{error.fix_note}</div> : null}
-
-        {docsUrl ? (
-          <a href={docsUrl} target="_blank" rel="noreferrer noopener" className="cr-fam-err-docs">
-            docs ↗
-          </a>
-        ) : null}
-
-        {streams ? (
-          <div className="cr-fam-err-streams">
-            <AnsiOutput stdout={streams.stdout} stderr={streams.stderr} />
-          </div>
-        ) : null}
-      </div>
+      <StatusPanel
+        variant="alert"
+        className="cr-fam-err"
+        headline={
+          <span className="cr-fam-err-head">
+            <Badge variant="warn">{error.code}</Badge>
+            <span className={uiClasses.eyebrow}>{error.type}</span>
+            {error.code === 'S003' ? <Chip tone="warning">slots busy</Chip> : null}
+            {retryable ? <Badge variant="accent">retryable</Badge> : null}
+          </span>
+        }
+        detail={
+          <>
+            <pre className="cr-fam-err-msg">
+              <code>{error.message}</code>
+            </pre>
+            {error.fix_note ? <div className="cr-fam-err-fix">{error.fix_note}</div> : null}
+            {docsUrl ? (
+              <a
+                href={docsUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className={cx('cr-fam-err-docs', uiClasses.eyebrow)}
+              >
+                docs <ExternalLink size={16} aria-hidden />
+              </a>
+            ) : null}
+            {streams ? <Streams stdout={streams.stdout} stderr={streams.stderr} /> : null}
+          </>
+        }
+      />
     </div>
   )
 }
@@ -91,28 +98,33 @@ function InvocationErrorView({ error }: { error: SandboxInvocationError }) {
 
   return (
     <div className="cr-fam-card">
-      <div className="cr-fam-err">
-        <div className="cr-fam-err-head">
-          <Badge variant="warn">{badge}</Badge>
-          <span className="cr-fam-err-type">{error.title}</span>
-        </div>
-
-        {error.functionId ? (
-          <div className="cr-fam-err-fn">
-            <span className="k">function</span> <code>{error.functionId}</code>
-          </div>
-        ) : null}
-
-        <pre className="cr-fam-err-msg">
-          <code>{error.message}</code>
-        </pre>
-
-        {showDetailText ? (
-          <pre className="cr-fam-err-detail">
-            <code>{error.detailText}</code>
-          </pre>
-        ) : null}
-      </div>
+      <StatusPanel
+        variant="warn"
+        className="cr-fam-err"
+        headline={
+          <span className="cr-fam-err-head">
+            <Badge variant="warn">{badge}</Badge>
+            <span className={uiClasses.eyebrow}>{error.title}</span>
+          </span>
+        }
+        detail={
+          <>
+            {error.functionId ? (
+              <div className="cr-fam-err-fn">
+                <span className={uiClasses.eyebrow}>function</span> <code>{error.functionId}</code>
+              </div>
+            ) : null}
+            <pre className="cr-fam-err-msg">
+              <code>{error.message}</code>
+            </pre>
+            {showDetailText ? (
+              <pre className="cr-fam-err-detail">
+                <code>{error.detailText}</code>
+              </pre>
+            ) : null}
+          </>
+        }
+      />
     </div>
   )
 }
@@ -128,42 +140,49 @@ function DispatchDeniedView({ denial }: { denial: SandboxDispatchDenial }) {
   const fn = denial.functionId
   return (
     <div className="cr-fam-card">
-      <div className="cr-fam-err">
-        <div className="cr-fam-err-head">
-          <Badge variant="warn">denied</Badge>
-          <span className="cr-fam-err-type">dispatch policy</span>
-        </div>
+      <StatusPanel
+        variant="warn"
+        className="cr-fam-err"
+        headline={
+          <span className="cr-fam-err-head">
+            <Badge variant="warn">denied</Badge>
+            <span className={uiClasses.eyebrow}>dispatch policy</span>
+          </span>
+        }
+        detail={
+          <>
+            {fn ? (
+              <div className="cr-fam-err-fn">
+                <span className={uiClasses.eyebrow}>blocked</span> <code>{fn}</code>
+              </div>
+            ) : null}
 
-        {fn ? (
-          <div className="cr-fam-err-fn">
-            <span className="k">blocked</span> <code>{fn}</code>
-          </div>
-        ) : null}
+            <div className="cr-fam-err-body">
+              {fn ? (
+                <>
+                  This agent's allow-list doesn't include <code>{fn}</code>. Grant it where the agent is defined:
+                </>
+              ) : (
+                <>This function isn't in the agent's allow-list. Grant it where the agent is defined:</>
+              )}
+              <ul className="cr-fam-err-list">
+                <li>
+                  <span className="strong">workflow node</span> — its <code>agent.functions</code> (or the def's{' '}
+                  <code>default_functions</code>) narrows it out. Widen that, or drop the narrowing — nodes inherit the
+                  run's full reach by default.
+                </li>
+                <li>
+                  <span className="strong">chat / session</span> — add it to <code>options.functions.allow</code>.
+                </li>
+              </ul>
+            </div>
 
-        <div className="cr-fam-err-body">
-          {fn ? (
-            <>
-              This agent's allow-list doesn't include <code>{fn}</code>. Grant it where the agent is defined:
-            </>
-          ) : (
-            <>This function isn't in the agent's allow-list. Grant it where the agent is defined:</>
-          )}
-          <ul className="cr-fam-err-list">
-            <li>
-              <span className="strong">workflow node</span> — its <code>agent.functions</code> (or the def's{' '}
-              <code>default_functions</code>) narrows it out. Widen that, or drop the narrowing — nodes inherit the
-              run's full reach by default.
-            </li>
-            <li>
-              <span className="strong">chat / session</span> — add it to <code>options.functions.allow</code>.
-            </li>
-          </ul>
-        </div>
-
-        <pre className="cr-fam-err-detail">
-          <code>{denial.message}</code>
-        </pre>
-      </div>
+            <pre className="cr-fam-err-detail">
+              <code>{denial.message}</code>
+            </pre>
+          </>
+        }
+      />
     </div>
   )
 }

@@ -11,6 +11,44 @@ import { describe, expect, it, vi } from 'vitest'
 import { createTeardownRenderer } from './teardown'
 
 vi.mock('@iii-dev/console-ui', () => ({
+  Badge: ({ children, variant }: { children?: React.ReactNode; variant?: string }) => (
+    <span data-stub="badge" data-variant={variant ?? 'default'}>
+      {children}
+    </span>
+  ),
+  Chip: ({ children, tone }: { children?: React.ReactNode; tone?: string }) => (
+    <span data-stub="chip" data-tone={tone}>
+      {children}
+    </span>
+  ),
+  StatusPanel: ({
+    headline,
+    detail,
+    variant,
+  }: {
+    headline?: React.ReactNode
+    detail?: React.ReactNode
+    variant?: string
+  }) => (
+    <div data-stub="status-panel" data-variant={variant}>
+      {headline}
+      {detail}
+    </div>
+  ),
+  TerminalStream: ({
+    label,
+    text,
+    tone,
+  }: {
+    label: string
+    text: string
+    tone?: string
+  }) =>
+    text.length === 0 ? null : (
+      <pre data-stub="terminal-stream" data-label={label} data-tone={tone}>
+        {text}
+      </pre>
+    ),
   Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   TooltipTrigger: ({ children }: { children?: React.ReactNode }) => (
     <>{children}</>
@@ -142,7 +180,7 @@ describe('teardown card', () => {
     )
     expect(out).not.toContain(ID)
     expect(out).toContain('unknown runtime_id rt-3f9a…')
-    expect(out).toContain('cr-ui-alert')
+    expect(out).toContain('data-variant="alert"')
   })
 
   it('redacts the Expired message shape too', () => {
@@ -186,7 +224,7 @@ describe('teardown card', () => {
     expect(out).toContain('denied at the gate')
     expect(out).toContain('never ran')
     expect(out).toContain('user')
-    expect(out).not.toContain('cr-ui-alert')
+    expect(out).not.toContain('data-variant="alert"')
     expect(out).not.toContain(ID)
     // No RuntimeChip — a call the gate denied never touched a runtime.
     expect(out).not.toContain('rt-3f9a…')

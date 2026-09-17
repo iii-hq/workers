@@ -1,12 +1,20 @@
 import {
   Button,
+  Chip,
   type Host,
+  Input,
   PageHeader,
   PageMain,
   type PageRenderProps,
   PageShell,
+  Skeleton,
+  StatusDot,
+  StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { ChevronRight } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bindCondition, type Condition, type Fired } from './conditions'
 import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from './spotlight'
@@ -14,15 +22,10 @@ import { disposeSpotlight, hideSpotlight, showSpotlight, waitForAnchor } from '.
 /**
  * One list, one open step.
  *
- * Styling is the console's own: its utility classes and the `uiClasses`
- * recipes (`card`, `listItem`, `chip`), so the page inherits the house
- * spacing, edges and hover states. The stylesheet next door carries only what
- * those cannot express — the spotlight box, the status dot, the progress bar,
- * and the caret.
- *
- * The MARKUP is hand-rolled rather than built from shared components: the page
- * has to render on whatever console build is in front of the operator,
- * including ones older than a component it would otherwise import.
+ * Built from the shared components and the `uiClasses` recipes (`card`,
+ * `listItem*`, `motionPanel`), so the page inherits the house spacing, edges
+ * and hover states. The stylesheet next door carries only what those cannot
+ * express — the spotlight box, the progress bar, and the tour's own layout.
  */
 
 /**
@@ -48,14 +51,6 @@ const OPEN_TIMEOUT_MS = 8_000
 
 /** How long the box stays on what a step's `on_closed` note points at. */
 const HINT_SPOTLIGHT_MS = 5_000
-
-/** Console class recipes, with a literal fallback for an older build that
-    does not publish them. */
-const ui = uiClasses ?? {
-  card: 'iii-ui-card',
-  listItem: 'iii-ui-list-item',
-  chip: 'iii-ui-chip',
-}
 
 interface Step {
   id: string
@@ -92,6 +87,8 @@ interface ProgressResponse {
 }
 
 type StepState = 'complete' | 'active' | 'pending'
+
+const DOT_TONE: Record<StepState, 'ok' | 'accent' | 'ink'> = { complete: 'ok', active: 'accent', pending: 'ink' }
 
 export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
@@ -132,7 +129,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         setRecords(stored)
         setOpen(firstIncomplete(loaded, stored)?.id ?? loaded.steps[0]?.id ?? null)
       } catch (cause) {
-        if (live) setError(cause instanceof Error ? cause.message : String(cause))
+        if (live) setError(errorMessage(cause))
       }
     })()
     return () => {
@@ -166,7 +163,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
             return next
           })
         })
-        .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+        .catch((cause: unknown) => setError(errorMessage(cause)))
     },
     [host, tour],
   )
@@ -357,20 +354,22 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         setRecords({})
         setOpen(tour.steps[0]?.id ?? null)
       })
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .catch((cause: unknown) => setError(errorMessage(cause)))
   }, [host, tour])
 
   if (error) {
     return (
       <Frame onClose={onRequestClose}>
-        <p className="m-0 text-base text-alert">{error}</p>
+        <StatusPanel variant="alert" headline={error} role="alert" />
       </Frame>
     )
   }
   if (!tour) {
     return (
       <Frame onClose={onRequestClose}>
-        <p className="m-0 text-base text-ink-faint">Loading onboarding…</p>
+        <Skeleton className="ob-skeleton" />
+        <Skeleton className="ob-skeleton" />
+        <Skeleton className="ob-skeleton" />
       </Frame>
     )
   }
@@ -380,7 +379,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
 
   return (
     <Frame title={tour.title} description={tour.description} onClose={onRequestClose}>
-      <div className="flex items-center gap-4">
+      <div className="ob-progress">
         <div
           className="ob-bar"
           role="progressbar"
@@ -390,7 +389,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         >
           <span style={{ width: `${(done / tour.steps.length) * 100}%` }} />
         </div>
-        <span className="shrink-0 text-base text-ink-faint tabular-nums">
+        <span className="ob-count">
           {done} of {tour.steps.length} done
         </span>
         <Button variant="ghost" size="sm" onClick={reset} disabled={done === 0}>
@@ -398,7 +397,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         </Button>
       </div>
 
-      <ol className="ob-steps m-0 flex list-none flex-col gap-2 p-0">
+      <ol className="ob-steps">
         {tour.steps.map((step, index) => {
           const record = records[step.id]
           const state: StepState =
@@ -408,50 +407,57 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
           const locked = state === 'pending'
           const isOpen = open === step.id
           return (
-            <li key={step.id} className={`ob-step ${ui.card}`} data-state={state} data-open={isOpen || undefined}>
+            <li
+              key={step.id}
+              className={`ob-step ${uiClasses.card}`}
+              data-state={state}
+              data-selected={state === 'active' || undefined}
+            >
               <button
                 type="button"
-                className={`${ui.listItem} px-4 py-3 hover:bg-surface-hover`}
+                className={uiClasses.listItem}
                 aria-expanded={isOpen}
                 disabled={locked}
                 onClick={() => setOpen(isOpen ? null : step.id)}
               >
-                <span className="ob-dot shrink-0" data-state={state} aria-hidden="true" />
-                <span className="shrink-0 font-mono text-base text-ink-faint tabular-nums">{index + 1}</span>
-                <span className="min-w-0 flex-1 text-lg font-medium">{step.title}</span>
-                <span className="shrink-0 text-sm text-ink-faint">{stateLabel(state, step)}</span>
+                <StatusDot className="ob-dot" tone={DOT_TONE[state]} pulse={state === 'active'} data-state={state} />
+                <span className="ob-index">{index + 1}</span>
+                <span className={uiClasses.listItemContent}>
+                  <span className={uiClasses.listItemTitle}>{step.title}</span>
+                </span>
+                <span className={uiClasses.listItemMeta}>{stateLabel(state, step)}</span>
               </button>
               {isOpen ? (
-                <div className="ob-open flex flex-col gap-3 px-4 pb-4 pl-11">
-                  <p className="m-0 text-base leading-relaxed text-ink text-pretty">{step.body}</p>
+                <div className={`ob-open ${uiClasses.motionPanel}`}>
+                  <p className="ob-body">{step.body}</p>
                   {step.condition?.prompt && state !== 'complete' ? (
                     <Copyable label="or ask the agent" text={step.condition.prompt} />
                   ) : null}
                   {step.id === 'stay-in-touch' ? <StayInTouch host={host} /> : null}
                   {step.on_closed && closed === step.on_closed.screen ? (
-                    <p className="m-0 text-base leading-relaxed text-ink-faint text-pretty" role="status">
+                    <p className="ob-note" role="status">
                       {step.on_closed.body}
                     </p>
                   ) : null}
                   {step.ask && state !== 'complete' ? (
-                    <div className="flex flex-col gap-2">
-                      <Button className="self-start" onClick={() => ask(step)}>
+                    <div className="ob-stack">
+                      <Button className="ob-start" onClick={() => ask(step)}>
                         {step.ask.label}
                       </Button>
-                      <p className="ob-pre m-0">{step.ask.text}</p>
+                      <pre className="ob-pre">{step.ask.text}</pre>
                     </div>
                   ) : null}
                   {state !== 'complete' && !step.condition && !step.ask ? (
                     step.screen && opened !== step.id ? (
-                      <Button className="self-start" disabled={opening === step.id} onClick={() => openScreen(step)}>
+                      <Button className="ob-start" disabled={opening === step.id} onClick={() => openScreen(step)}>
                         {opening === step.id ? 'Opening…' : `Open ${step.screen}`}
                       </Button>
                     ) : (
-                      // Once the panel is up, the button changes colour and
-                      // pulls a few beats of attention, so the operator sees
-                      // that it is now the way onward and not the way back.
+                      // Once the panel is up, the button changes colour, so
+                      // the operator sees that it is now the way onward and
+                      // not the way back.
                       <Button
-                        className={`self-start${step.screen ? ' ob-continue' : ''}`}
+                        className={`ob-start${step.screen ? ' ob-continue' : ''}`}
                         onClick={() => complete(step.id)}
                       >
                         {step.screen ? 'Continue' : 'Got it'}
@@ -464,7 +470,7 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
                   after it is done. Ahead of the front it is hidden: the row
                   would give away what the step is about to ask for. */}
               {step.condition && state !== 'pending' ? (
-                <ol className="m-0 list-none px-4 pb-4 pl-11">
+                <ol className="ob-conditions">
                   <ConditionRow
                     condition={step.condition}
                     fired={record?.fired ?? null}
@@ -499,43 +505,31 @@ function ConditionRow({
 }) {
   const hasConfig = Object.keys(condition.config ?? {}).length > 0
   return (
-    <li className={`ob-sub ${ui.card}`} data-state={fired ? 'fired' : 'waiting'}>
-      <button
-        type="button"
-        className={`${ui.listItem} px-3 py-2 hover:bg-surface-hover`}
-        aria-expanded={open}
-        onClick={onToggle}
-      >
-        <span className="ob-caret shrink-0 text-ink-faint" data-open={open || undefined} aria-hidden="true">
-          ›
-        </span>
-        <span className={`${ui.chip} shrink-0 ${fired ? 'bg-ok-muted text-ok' : 'bg-accent-muted text-accent'}`}>
-          {fired ? 'trigger fired' : <span className="ob-pulse" aria-hidden="true" />}
-          {fired ? null : 'waiting'}
-        </span>
-        <code className="shrink-0 rounded-sm bg-panel px-2 py-1 font-mono text-sm">
-          {fired?.trigger_type ?? condition.type}
-        </code>
-        <span className="min-w-0 flex-1 truncate text-sm text-ink-faint">
-          {fired ? when(fired.at) : condition.label}
+    <li className={uiClasses.card}>
+      <button type="button" className={uiClasses.listItem} aria-expanded={open} onClick={onToggle}>
+        <ChevronRight className={`ob-caret ${uiClasses.icon}`} data-open={open || undefined} aria-hidden="true" />
+        <Chip tone={fired ? 'success' : 'accent'}>
+          {fired ? null : <StatusDot tone="accent" pulse />}
+          {fired ? 'trigger fired' : 'waiting'}
+        </Chip>
+        <code className="ob-code">{fired?.trigger_type ?? condition.type}</code>
+        <span className={uiClasses.listItemContent}>
+          <span className={uiClasses.listItemDescription}>{fired ? when(fired.at) : condition.label}</span>
         </span>
       </button>
       {open ? (
-        <div className="ob-open flex flex-col gap-2 px-3 pb-3 pl-8">
+        <div className={`ob-open ${uiClasses.motionPanel}`}>
           {hasConfig ? (
-            <p className="m-0 text-sm text-ink-faint">
-              binding{' '}
-              <code className="rounded-sm bg-panel px-2 py-1 font-mono text-sm">
-                {JSON.stringify(condition.config)}
-              </code>
+            <p className="ob-note">
+              binding <code className="ob-code">{JSON.stringify(condition.config)}</code>
             </p>
           ) : null}
           {fired ? (
             <pre className="ob-pre">{format(fired.payload)}</pre>
           ) : (
             <>
-              <p className="m-0 text-base text-ink-faint">{condition.label}</p>
-              {condition.hint ? <pre className="ob-pre select-all text-ink">{condition.hint}</pre> : null}
+              <p className="ob-note">{condition.label}</p>
+              {condition.hint ? <pre className="ob-pre">{condition.hint}</pre> : null}
             </>
           )}
         </div>
@@ -598,52 +592,43 @@ function StayInTouch({ host }: { host: Host }) {
   )
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="ob-stack">
       {status === 'done' ? (
-        <p className="m-0 text-base text-ok">{message}</p>
+        <StatusPanel variant="success" headline={message} role="status" />
       ) : (
-        <form className="flex flex-wrap items-center gap-2" onSubmit={submit}>
-          <input
+        <form className="ob-form" onSubmit={submit}>
+          <Input
             type="email"
             required
             value={email}
-            onChange={(event) => setEmail(event.target.value)}
+            onChange={setEmail}
             placeholder="you@example.com"
             aria-label="Email address for product updates"
-            className="ob-input min-w-0 flex-1"
+            className="ob-grow"
           />
           <Button type="submit" disabled={status === 'sending'}>
             {status === 'sending' ? 'Sending…' : 'Keep me posted'}
           </Button>
         </form>
       )}
-      {status === 'failed' ? <p className="m-0 text-sm text-alert">{message}</p> : null}
-      <div className="flex items-center gap-2">
+      {status === 'failed' ? <StatusPanel variant="alert" headline={message} role="alert" /> : null}
+      <div className="ob-row">
         {SOCIALS.map((social) => (
-          <a
-            key={social.label}
-            href={social.href}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={social.label}
-            title={social.label}
-            className="ob-social"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="size-4">
-              <path d={social.path} />
-            </svg>
-            <span className="sr-only">{social.label}</span>
-          </a>
+          <Button key={social.label} asChild variant="icon" size="icon">
+            <a href={social.href} target="_blank" rel="noreferrer" aria-label={social.label} title={social.label}>
+              {/* Brand marks lucide does not ship. lint-allow no-inline-svg */}
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={uiClasses.icon}>
+                <path d={social.path} />
+              </svg>
+            </a>
+          </Button>
         ))}
       </div>
-      <a
-        href="https://iii.dev/docs"
-        target="_blank"
-        rel="noreferrer"
-        className="self-start text-base text-accent underline underline-offset-2"
-      >
-        Read the docs
-      </a>
+      <Button asChild variant="ghost" size="sm" className="ob-start">
+        <a href="https://iii.dev/docs" target="_blank" rel="noreferrer">
+          Read the docs
+        </a>
+      </Button>
     </div>
   )
 }
@@ -651,27 +636,16 @@ function StayInTouch({ host }: { host: Host }) {
 /** A block the operator can copy in one click — the fallback is the text
     itself, which is selectable either way. */
 function Copyable({ label, text }: { label: string; text: string }) {
-  // The clipboard write is the event; there is no timer winding the label
-  // back. It says `copied` until the text itself changes, which is the only
-  // thing that makes the old label wrong.
-  const [copied, setCopied] = useState<string | null>(null)
-  // A denied clipboard permission leaves the label alone: the text below is
-  // selectable, which is the fallback either way.
-  const copy = useCallback(() => {
-    void navigator.clipboard
-      ?.writeText(text)
-      .then(() => setCopied(text))
-      .catch(() => setCopied(null))
-  }, [text])
+  const { state, copy } = useCopyFlash(text)
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-ink-faint">{label}</span>
+    <div className="ob-stack">
+      <div className="ob-row">
+        <span className="ob-note">{label}</span>
         <Button variant="ghost" size="sm" onClick={copy}>
-          {copied === text ? 'copied' : 'copy'}
+          {state === 'copied' ? 'copied' : 'copy'}
         </Button>
       </div>
-      <pre className="ob-pre select-all text-ink">{text}</pre>
+      <pre className="ob-pre">{text}</pre>
     </div>
   )
 }
@@ -690,20 +664,20 @@ function Frame({
   children: React.ReactNode
 }) {
   return (
-    <PageShell className="ob-page">
+    <PageShell>
       <PageHeader title={title} description={description} onClose={onClose} />
-      <PageMain className="ob-page">
+      <PageMain>
         {/* `PageMain` is `overflow-hidden`, and so is every other piece of the
             page chrome — a page that wants to scroll has to say so. Without
             this the tour is simply cut off at the bottom of the pane, with no
             way to reach the last steps. The scroller sits OUTSIDE the centred
             column so the scrollbar rides the pane's edge rather than the
             text's. */}
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="ob-scroll">
           {/* Centred column: the pane is often narrow beside a chat, but a
               page wide enough to be a whole tab should not leave the list
               stranded on one edge. */}
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-6">{children}</div>
+          <div className="ob-column">{children}</div>
         </div>
       </PageMain>
     </PageShell>

@@ -1,4 +1,5 @@
 import { Button, type Host, type ProviderConfigFormProps } from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
 import { useEffect, useState } from 'react'
 import { useCodexAuth, type LoginStartResponse } from './src/use-codex-auth'
 
@@ -40,14 +41,9 @@ function LoginInstructions({
   async function copyCode() {
     setCopying(true)
     setClipboard(null)
-    try {
-      await navigator.clipboard.writeText(login.user_code)
-      setClipboard('Code copied.')
-    } catch {
-      setClipboard('Could not copy. Select and copy the code manually.')
-    } finally {
-      setCopying(false)
-    }
+    const ok = await copyText(login.user_code)
+    setClipboard(ok ? 'Code copied.' : 'Could not copy. Select and copy the code manually.')
+    setCopying(false)
   }
   return (
     <div className="codex-provider-login">

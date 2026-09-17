@@ -2,7 +2,7 @@
  * The worktree worker in the command palette, before its page is even open.
  *
  * A worktrees source answers any query with the live registry —
- * `worktree::list`, the same read useWorktreesLive bootstraps from — each
+ * `worktree::list`, the same read the page's `useWorkerLive` bootstraps from — each
  * row opening the worktrees page with that worktree selected. Registered
  * from setup, so it exists only while the worker is connected; older
  * consoles without host.palette / host.commands simply get nothing.

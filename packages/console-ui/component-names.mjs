@@ -27,6 +27,7 @@ export const componentNames = [
   'CardBody',
   'CardHighlight',
   'CardHeader',
+  'Checkbox',
   'Chip',
   'CodeEditor',
   'CodeHighlight',

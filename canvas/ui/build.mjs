@@ -118,4 +118,4 @@ if (overCap) {
   process.exit(1)
 }
 
-await buildWorkerUi({ scope: 'canvas' })
+await buildWorkerUi({ scope: 'canvas', lint: { strict: true } })

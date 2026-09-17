@@ -6,21 +6,22 @@
 
 import {
   Button,
+  Checkbox,
+  Chip,
   type ConfigFormProps,
+  Eyebrow,
+  IconButton,
   Input,
   type JsonValue,
+  List,
+  ListItem,
+  Select,
   StatusPanel,
   useConfirm,
 } from '@iii-dev/console-ui'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
+import { Archive, ChevronLeft, Database, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import {
-  BackIcon,
-  BucketIcon,
-  ChevronIcon,
-  StorageIcon,
-  TrashIcon,
-  useContainerNarrow,
-} from '../widgets'
 
 type JsonObject = { [key: string]: JsonValue }
 type ProviderName = 'local' | 's3' | 'gcs' | 'r2'
@@ -137,7 +138,6 @@ function TextField({
         <Input
           id={id}
           data-field={path}
-          className="storage-cfg-input"
           name={id}
           type={secret && !revealed ? 'password' : 'text'}
           value={value}
@@ -148,14 +148,12 @@ function TextField({
           onChange={onChange}
         />
         {secret ? (
-          <button
-            type="button"
-            className="storage-cfg-reveal"
-            aria-label={`${revealed ? 'Hide' : 'Show'} ${label}`}
+          <IconButton
+            label={`${revealed ? 'Hide' : 'Show'} ${label}`}
             onClick={() => setRevealed((current) => !current)}
           >
-            {revealed ? 'hide' : 'show'}
-          </button>
+            {revealed ? <EyeOff /> : <Eye />}
+          </IconButton>
         ) : null}
       </div>
     </Field>
@@ -183,21 +181,7 @@ function SelectField({
 }) {
   return (
     <Field label={<label htmlFor={id}>{label}</label>} hint={hint} error={error}>
-      <div className="storage-cfg-select-wrap">
-        <select
-          id={id}
-          data-field={path}
-          className="storage-cfg-select"
-          name={id}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        >
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <ChevronIcon className="storage-cfg-select-icon" />
-      </div>
+      <Select id={id} data-field={path} name={id} value={value} options={options} onChange={onChange} />
     </Field>
   )
 }
@@ -219,17 +203,14 @@ function CheckField({
 }) {
   return (
     <div className="storage-cfg-check-field">
-      <label className="storage-cfg-check-row" htmlFor={id}>
-        <input
-          id={id}
-          data-field={path}
-          name={id}
-          type="checkbox"
-          checked={checked}
-          onChange={(event) => onChange(event.target.checked)}
-        />
-        <span>{label}</span>
-      </label>
+      <Checkbox
+        id={id}
+        data-field={path}
+        name={id}
+        label={label}
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
       {hint ? <p className="storage-cfg-hint">{hint}</p> : null}
     </div>
   )
@@ -252,56 +233,45 @@ function ConfigNav({
   return (
     <nav className="storage-cfg-nav" aria-label="Storage configuration sections">
       <div className="storage-cfg-nav-group">
-        <p className="storage-cfg-nav-label">runtime</p>
-        <button
-          type="button"
-          className={`storage-cfg-nav-row${selection.kind === 'local' ? ' active' : ''}`}
+        <Eyebrow as="div" className="storage-cfg-nav-label">runtime</Eyebrow>
+        <ListItem
+          selected={selection.kind === 'local'}
           aria-current={selection.kind === 'local' ? 'page' : undefined}
+          leading={<Database />}
+          label="local storage"
+          description={`HTTP ${localHttpEnabled ? 'enabled' : 'disabled'}`}
           onClick={() => onSelect({ kind: 'local' })}
-        >
-          <StorageIcon className="storage-cfg-nav-icon" />
-          <span className="storage-cfg-nav-copy">
-            <span className="storage-cfg-nav-name">local storage</span>
-            <span className="storage-cfg-nav-meta">HTTP {localHttpEnabled ? 'enabled' : 'disabled'}</span>
-          </span>
-          <ChevronIcon className="storage-cfg-nav-chevron" />
-        </button>
+        />
       </div>
       <div className="storage-cfg-nav-group buckets">
         <div className="storage-cfg-nav-heading">
-          <p className="storage-cfg-nav-label">buckets</p>
+          <Eyebrow as="div" className="storage-cfg-nav-label">buckets</Eyebrow>
           <span>{names.length}</span>
         </div>
         {names.length === 0 ? (
           <p className="storage-cfg-nav-empty">No buckets configured.</p>
         ) : (
-          <ul role="list" className="storage-cfg-nav-list">
+          <List>
             {names.map((name) => {
               const provider = providerOf(asObject(buckets[name]))
               const active = selection.kind === 'bucket' && selection.name === name
               return (
-                <li key={name}>
-                  <button
-                    type="button"
-                    className={`storage-cfg-nav-row${active ? ' active' : ''}`}
-                    aria-current={active ? 'page' : undefined}
-                    onClick={() => onSelect({ kind: 'bucket', name })}
-                  >
-                    <BucketIcon className="storage-cfg-nav-icon" />
-                    <span className="storage-cfg-nav-copy">
-                      <span className="storage-cfg-nav-name">{name}</span>
-                      <span className="storage-cfg-nav-meta">{provider}</span>
-                    </span>
-                    <ChevronIcon className="storage-cfg-nav-chevron" />
-                  </button>
-                </li>
+                <ListItem
+                  key={name}
+                  selected={active}
+                  aria-current={active ? 'page' : undefined}
+                  leading={<Archive />}
+                  label={name}
+                  description={provider}
+                  onClick={() => onSelect({ kind: 'bucket', name })}
+                />
               )
             })}
-          </ul>
+          </List>
         )}
       </div>
       <div className="storage-cfg-nav-action">
-        <Button variant="ghost" size="sm" onClick={onAdd}>+ add bucket</Button>
+        <Button variant="ghost" size="sm" onClick={onAdd}><Plus /> add bucket</Button>
       </div>
     </nav>
   )
@@ -325,9 +295,9 @@ function EditorHeader({
   return (
     <header className="storage-cfg-editor-head">
       {narrow ? (
-        <button type="button" className="storage-cfg-back" onClick={onBack} aria-label="Back to configuration sections">
-          <BackIcon />
-        </button>
+        <IconButton label="Back to configuration sections" onClick={onBack}>
+          <ChevronLeft />
+        </IconButton>
       ) : null}
       <span className="storage-cfg-editor-icon">{icon}</span>
       <div className="storage-cfg-editor-title">
@@ -384,7 +354,7 @@ function LocalEditor({
   return (
     <section className="storage-cfg-editor" data-section="providers/local" tabIndex={-1}>
       <EditorHeader
-        icon={<StorageIcon />}
+        icon={<Database />}
         title="local storage"
         description="Filesystem persistence and direct browser transfers."
         narrow={narrow}
@@ -601,14 +571,14 @@ function BucketEditor({
   return (
     <section className="storage-cfg-editor" data-section={`buckets/${name}`} tabIndex={-1}>
       <EditorHeader
-        icon={<BucketIcon />}
+        icon={<Archive />}
         title={name}
         description={`${provider} bucket exposed to workers as bucket:${name}.`}
         narrow={narrow}
         onBack={onBack}
         actions={(
           <Button variant="ghost" size="sm" onClick={onRemove} aria-label={`Remove ${name}`}>
-            <TrashIcon className="storage-cfg-button-icon" /> remove
+            <Trash2 /> remove
           </Button>
         )}
       />
@@ -629,7 +599,6 @@ function BucketEditor({
               <Input
                 id={`storage-cfg-${name}-name`}
                 data-field={`buckets/${name}`}
-                className="storage-cfg-input"
                 name={`storage-cfg-${name}-name`}
                 value={nameDraft}
                 preserveCase
@@ -674,7 +643,7 @@ function BucketEditor({
                 <h4>Native local bucket</h4>
                 <p>This bucket uses the filesystem and HTTP settings from local storage.</p>
               </div>
-              <span className="storage-cfg-provider">local</span>
+              <Chip>local</Chip>
             </div>
             <div className="storage-cfg-info-note">
               Direct upload and download URLs are available only when the local HTTP transfer server is enabled in the runtime section.
@@ -687,7 +656,7 @@ function BucketEditor({
             <section className="storage-cfg-section">
               <div className="storage-cfg-section-head">
                 <div><h4>Connection</h4><p>AWS defaults apply when endpoint and static credentials are omitted.</p></div>
-                <span className="storage-cfg-provider">s3</span>
+                <Chip>s3</Chip>
               </div>
               <TextField
                 id={`storage-cfg-${name}-region`}
@@ -763,7 +732,7 @@ function BucketEditor({
             <section className="storage-cfg-section">
               <div className="storage-cfg-section-head">
                 <div><h4>Connection</h4><p>Application Default Credentials are used when no file is configured.</p></div>
-                <span className="storage-cfg-provider">gcs</span>
+                <Chip>gcs</Chip>
               </div>
               <TextField
                 id={`storage-cfg-${name}-credentials-file`}
@@ -793,7 +762,7 @@ function BucketEditor({
             <section className="storage-cfg-section">
               <div className="storage-cfg-section-head">
                 <div><h4>Connection</h4><p>The standard endpoint is derived from the Cloudflare account ID.</p></div>
-                <span className="storage-cfg-provider">r2</span>
+                <Chip>r2</Chip>
               </div>
               <TextField
                 id={`storage-cfg-${name}-account-id`}
@@ -850,7 +819,7 @@ export function StorageConfigForm(props: ConfigFormProps) {
   const local = asObject(providers.local)
   const buckets = asObject(value.buckets)
   const names = Object.keys(buckets).sort((left, right) => left.localeCompare(right))
-  const [rootRef, narrow] = useContainerNarrow(CONFIG_NARROW_BELOW)
+  const { ref: rootRef, narrow } = useContainerNarrow({ below: CONFIG_NARROW_BELOW })
   const [selection, setSelection] = useState<Selection>({ kind: 'local' })
   const [narrowPane, setNarrowPane] = useState<'nav' | 'editor'>('nav')
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({})

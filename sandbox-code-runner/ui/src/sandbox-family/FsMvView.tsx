@@ -1,5 +1,6 @@
 /** `sandbox::fs::mv` — src → dst. */
 
+import { ArrowRight } from 'lucide-react'
 import { fsMvRequestSchema, fsMvResponseSchema, safeParseResponse } from './parsers'
 import { Chip, SandboxIdChip } from './shared'
 
@@ -21,7 +22,7 @@ export function FsMvView({ input, output }: FsMvViewProps) {
         <div className="cr-fam-line">
           <span className={moved ? 'cr-fam-accent' : 'faint'}>{moved ? 'mv' : '·'}</span>
           <span>{req.data.src}</span>
-          <span className="ghost">→</span>
+          <ArrowRight size={16} aria-hidden className="ghost" />
           <span>{req.data.dst}</span>
         </div>
         <div className="cr-fam-chips">

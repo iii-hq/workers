@@ -37,11 +37,14 @@
  */
 
 import {
+  Badge,
+  Chip,
   CodeHighlight,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
   type Host,
 } from '@iii-dev/console-ui'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import { useState } from 'react'
 import {
   asRecord,
@@ -100,10 +103,10 @@ function parseRequest(input: unknown): RegisterRequest {
 function LangChip({ req }: { req: RegisterRequest }) {
   if (!req.lang) return null
   return (
-    <span className="cr-ui-chip">
-      <span className="k">lang </span>
+    <Chip>
+      <span className={uiClasses.eyebrow}>lang</span>
       {req.lang}
-    </span>
+    </Chip>
   )
 }
 
@@ -176,7 +179,7 @@ function Head({
   const ns = displayId ? namespaceOf(displayId) : undefined
   return (
     <div className="cr-ui-section">
-      <div className="cr-ui-section-label">function</div>
+      <div className={uiClasses.eyebrow}>function</div>
       <div className="cr-register-function-head">
         <span
           className={`cr-register-function-id${req.functionId ? '' : ' cr-ui-warn'}`}
@@ -187,13 +190,9 @@ function Head({
               ? `${redactRuntimeIds(resId)} (from the response — the request carried no function_id)`
               : 'no function_id in the request'}
         </span>
-        {status === 'live' ? (
-          <span className="cr-register-function-status live">registered</span>
-        ) : null}
+        {status === 'live' ? <Badge variant="ok">registered</Badge> : null}
         {status === 'refused' ? (
-          <span className="cr-register-function-status refused">
-            not registered
-          </span>
+          <Badge variant="warn">not registered</Badge>
         ) : null}
       </div>
       {displayId ? (
@@ -256,7 +255,7 @@ function SourceSection({
 
   return (
     <div className="cr-ui-section">
-      <div className="cr-ui-section-label">
+      <div className={uiClasses.eyebrow}>
         {clipped ? 'source (excerpt)' : 'source'}
       </div>
       <div className="cr-ui-code">
@@ -413,7 +412,7 @@ function PendingView({
       running={running}
       chips={<LangChip req={req} />}
     >
-      <div className={`cr-ui-msg-note${running ? ' pulse' : ''}`}>
+      <div className={`cr-ui-msg-note${running ? ` ${uiClasses.pulse}` : ''}`}>
         {running ? '· registering…' : '· will register this function:'}
       </div>
       {anyClipped ? (

@@ -66,46 +66,46 @@ migration recipe and order: `docs/plans/2026-09-16-worker-ui-migration.md`.
 
 ## Injectable worker sweep
 
-All 33 checked-in injectable UI packages (`ls -d */ui/package.json`) are
-listed. "Domain adapter" means a local component still adds information
+All 32 checked-in injectable UI packages (`ls -d */ui/package.json`) are
+listed; every one builds with strict lint since 2026-09-17. "Domain adapter" means a local component still adds information
 architecture or semantics; it must compose shared controls/tokens and is not
 permission to fork base hover, selection, tooltip, or selector behavior.
 "Strict" is `lint: { strict: true }` in the worker's `build.mjs`.
 
 | Worker UI | Strict | Shared/conformance result | Retained domain surface |
 |---|---|---|---|
-| `a2ui` | no | Shared page chrome, sidebar, lists, overlays, controls, and neutral selection; lint clean | Validated A2UI component graph rendering and workspace export |
-| `ade` (scope `console`) | no | Trigger/function filters and rows use public list/chip recipes; neutral selected names and edges; first in the migration order (token-value fallbacks, local `LiveDot`/`errorMessage`, raw clipboard) | Key/value catalog chips, trigger metadata, injectable-UI toggle board |
+| `a2ui` | yes | Shared page chrome, sidebar, lists, overlays, controls, and neutral selection; `unwrapEnvelope` from the format subpath | Validated A2UI component graph rendering and workspace export |
+| `ade` (scope `console`) | yes | Migrated: format/hooks subpaths (`errorMessage`, `unwrapEnvelope`, `useCopyFlash`, `formatRelative`), `StatusDot`, `StatusPanel`, `Skeleton`, `EmptyState`, `Badge`/`Chip`/`Eyebrow`, `lucide-react`; token-value fallbacks dropped; sans root, mono on machine values | Key/value catalog chips, trigger metadata, injectable-UI toggle board |
 | `browser` | yes | Migrated: shared hooks/format/`lucide-react`, `Toolbar`/`StatusBar`, `Eyebrow`, `MetaRow`/`ActionLine`, `BottomSheet`, `host.overlays` live preview; neutral rail/config selection | Browser feed, device toolbar, annotations, element references |
-| `canvas` | no | Shared controls and token styling audited; own `build.mjs` for the mermaid/excalidraw vendor bundles plus the shared driver | Infinite canvas gestures and graph semantics |
-| `claude-code` | no | Thin wrapper over the shared `@iii-workers/agent-terminal-ui` page (same page as `pi`); no local CSS; lint clean | Agent terminal bound to a `shell::pty` session |
-| `code-runner` | no | Shared tooltip and terminal contracts audited; `lib/shared.tsx` terminal chrome still to swap for the package's terminal atoms | Execution-result composition |
-| `compose-ui` | no | Shared page chrome with `PageSidebar` section navigation, `ListItem` rows, `IconButton` row actions, ghost `Button` refresh with a live `StatusDot`, `Input`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `TerminalStream` log tails, `ConfirmDialog`; neutral selection; local `icons.tsx` to swap | Topology graph, project health stats, container table with log tails, worker package declaration, daemon projects table |
-| `computer` | no | Shared finite selects; neutral session rail; shared motion tokens; local `useContainerNarrow`/`useSessionsLive` copies to replace | Remote-session viewport and controls |
-| `context-manager` | no | Minimal shared renderer audited; no selectable navigation; lint clean | Context accounting payload |
-| `cron` | no | Shared page chrome with `PageSidebar`, `List`/`ListItem`, `Tabs`, `Table` family, `Select`/`SegmentedControl`, `IconButton`, `Dialog`/`DropdownMenu`, settings primitives with `RawValueInput`; canonical trigger-activity renderer and small settings form; inline `<svg>` and viewport media queries to replace | Schedule composer and run history |
-| `database` | no | Shared line tabs with default icons, icon-only header actions, selects, and tooltips; neutral tree/ERD selection; canonical `SettingsDeck` form; local `useContainerNarrow`, `icons.tsx`, toolbars and formatters to replace | Data grid, query plan, ERD, health metrics, multi-filter chips |
-| `eval` | no | Shared selects/tabs; neutral history/session/run selection; hand-written tablist to replace with `Tabs` | Session comparison is intentionally multi-select |
-| `github` | no | Shared line tabs; neutral graph/list selection; local narrow hook, `icons.tsx` and formatters to replace | Commit graph and repository status semantics |
-| `harness` | no | Shared controls and token styling audited; `context-chip` popover with its own portal and media query to move onto `Dialog`/`Tooltip` | Harness run/approval payloads |
+| `canvas` | yes | Migrated: `formatRelative`/`errorMessage`/`unwrapEnvelope`, `lucide-react`, `useSplitDrag` on the editor/preview separator (keyboard resize), `usePaneState`, `StatusDot`, eyebrows, `uiClasses.pulse`; own `build.mjs` keeps the mermaid/excalidraw vendor bundles | Infinite canvas gestures and graph semantics |
+| `claude-code` | yes | Thin wrapper over the shared `@iii-workers/agent-terminal-ui` page (same page as `pi`); no local CSS | Agent terminal bound to a `shell::pty` session |
+| `code-runner` | yes | Migrated: `TerminalStream`, `MetaRow`/`Badge`/`Chip`/`Eyebrow`, `StatusPanel`, `Input`/`Checkbox` config form, `unwrapEnvelope`/`useCopyFlash`/`formatDuration` | Execution-result composition |
+| `compose-ui` | yes | Shared page chrome with `PageSidebar`, `ListItem`, `IconButton`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `TerminalStream`, `ConfirmDialog`; `lucide-react`, `uiClasses.spin`, `--shadow-floating`; topology edge `<svg>` allowlisted | Topology graph, project health stats, container table with log tails, worker package declaration, daemon projects table |
+| `computer` | yes | Migrated: `useContainerNarrow`, `useWorkerLive` for lifecycle events, `StatusDot`, `IconButton`, `StatusPanel`, `EmptyState`, `Skeleton`, `StatusBar`, `Eyebrow`, `lucide-react`; `useLiveFrames` stays local (stream-fed frames) | Remote-session viewport and controls |
+| `context-manager` | yes | Minimal shared renderer; no selectable navigation | Context accounting payload |
+| `cron` | yes | Shared page chrome with `PageSidebar`, `List`/`ListItem`, `Tabs`, `Table` family, `Select`/`SegmentedControl`, `IconButton`, `Dialog`/`DropdownMenu`, `RawValueInput`; `SearchField`, `lucide-react`, `uiClasses.spin`, `useContainerNarrow`, `copyText`/`errorMessage`, container queries | Schedule composer and run history |
+| `database` | yes | Migrated: `useContainerNarrow`, `IconButton`, `lucide-react`, `useCopyFlash`, format subpath, `MetaRow`, `Toolbar`/`StatusBar`, `PageBody`/`PageMain`, `Panel`, `Table` family, `SearchField`, `Select`, `Badge`/`Eyebrow`, `uiClasses.pulse`, `--color-*-strong` status text; `result-grid.tsx` stays; ERD edge `<svg>` allowlisted | Data grid, query plan, ERD, health metrics, multi-filter chips |
+| `eval` | yes | Migrated: `Tabs`, `SearchField`, `Checkbox`, `Button`/`IconButton` + `useCopyFlash`, `StatusDot pulse`, `StatusPanel`, `Eyebrow`, field recipes, format subpath, `lucide-react`; mono only on values | Session comparison is intentionally multi-select |
+| `github` | yes | Migrated: hooks/format subpaths, `lucide-react`, `Toolbar`, `IconButton`, `EmptyState`, `Skeleton`, `Eyebrow`; lane palette on `--color-glyph-*`; commit DAG `<svg>` and the GitHub mark allowlisted | Commit graph and repository status semantics |
+| `harness` | yes | Migrated: context-chip popover → `Dialog` (desktop) / `BottomSheet` (phone), `useCopyFlash`, `MetaRow`/`Badge`/`Table` family in the metrics card, `unwrapEnvelope` | Harness run/approval payloads |
 | `ide` (scope `shell`) | yes | Migrated: shared tooltips, `CodeEditor`/`FileDiff`, terminal atoms, `DirectoryPicker`, shared hooks/format/icons; `.xterm` vendor CSS allowlisted via `allowUnscopedSelectors`; neutral editor/terminal tabs | Terminal, filesystem, source control, timeline |
 | `iii-directory` | yes | Migrated: `SearchField`, `MetaRow`/`ActionLine`, `Kbd`/`KeyCombo`, `CollapsibleCard`, shared hooks/format/icons; neutral navigation selection | Registry/document editing workflows |
-| `kanban` | no | Shared page chrome, `List`/`ListItem`, `Card`, `Tabs`, `Selector`/`Select`, `ConfirmDialog`, `CodeEditor`, `Markdown`, `SettingsDeck` form; its local `usePaneState`/`useContainerNarrow` seeded the package hooks and should now import them | Board columns, ticket detail, function and trigger renderers |
-| `llm-router` | no | Shared finite selects and configuration controls audited | Provider/model configuration semantics |
-| `memory` | no | Local mode toggle removed for shared line tabs; neutral nav/tag selection; local narrow hook, live hook and `icons.tsx` to replace | Memory graph and recall rules |
-| `onboarding` | no | Shared page chrome and `Button`; the body-mounted spotlight stamps `data-iii-ui` itself; Tailwind utility strings in injected markup still to replace | Guided tour spotlight over the console |
-| `pdf` | no | Shared tooltip; shared motion tokens | Page rendering and document navigation |
-| `pi` | no | Thin wrapper over the shared `@iii-workers/agent-terminal-ui` page (same page as `claude-code`); no local CSS; lint clean | Agent terminal bound to a `shell::pty` session |
-| `provider-openai-codex` | no | Shared provider-form controls audited; no selectable list shell | OAuth/device authentication flow |
-| `sandbox-code-runner` | no | Shared terminal/tooltip contracts and motion tokens audited; local ANSI parser and terminal chrome to swap for `AnsiText`/`TerminalStream`/`TerminalCommandLine` | Sandbox lifecycle, file tree, and execution streams |
-| `security-scan` | no | Shared page chrome with `PageSidebar`, `Badge`/`StatusDot`/`StatusPanel`, `Select`, `CodeHighlight`; local narrow hook, live hook, formatters and `icons.tsx` to replace | Scan runs and findings with severity semantics |
-| `state` | no | Neutral hierarchy navigation; shared motion tokens; the minimal delivery template; local narrow hook and skeleton to replace | Progressive scope/key/value browser |
-| `storage` | no | Neutral object/config navigation; shared motion tokens; local narrow hooks, formatters and inline `<svg>` to replace | Bucket/object browser |
-| `tailscale` | no | Shared page chrome with `PageSidebar` section navigation, `ListItem` rows, `IconButton` header and row actions, shared `Input`/`Select`/`SegmentedControl`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `ConfirmDialog`; neutral selection; local `icons.tsx` to swap | Tailnet device table with ping paths, QR link card, netcheck and DNS facts, preference rows |
-| `voice` | no | Shared page chrome, `IconButton` for the header mic chip and copy actions, `Button`, `Badge`, `StatusPanel`, `Input`, `Table` family; chat-slot registrations (`registerSessionChip`, `registerTurnSummary`); reduced-motion guard on the listening pulse | Microphone capture, live partial transcript pill, segment timestamps |
-| `vscode` | no | Shared page chrome, `List`/`ListItem`, `IconButton`, `StatusPanel`; lint clean; local `icons.tsx` to swap for `lucide-react` | Embedded VS Code workbench frame |
-| `web` | no | Minimal shared renderer audited; no selectable navigation | HTTP response payload |
-| `worktree` | no | Neutral graph node/edge selection; shared motion tokens; its local live hook became `useWorkerLive` and should now import it | Worktree ownership and graph semantics |
+| `kanban` | yes | Shared page chrome, `List`/`ListItem`, `Card`, `Tabs`, `Selector`/`Select`, `ConfirmDialog`, `CodeEditor`, `Markdown`, `SettingsDeck` form; imports `usePaneState`/`useContainerNarrow`/`errorMessage`/`formatRelative`/`unwrapEnvelope` from the package, `lucide-react` | Board columns, ticket detail, function and trigger renderers |
+| `llm-router` | yes | Shared finite selects and configuration controls; tokens only | Provider/model configuration semantics |
+| `memory` | yes | Migrated: `useWorkerLive`, `usePaneState`, `useContainerNarrow`, `List`/`ListItem`, `IconButton`, `lucide-react`, `Skeleton`, `EmptyState`, `StatusPanel`, `Chip`/`Badge`/`Checkbox`, `Panel`, `CollapsibleCard`, `Card`, eyebrows, format subpath; graph canvas `<svg>` allowlisted | Memory graph and recall rules |
+| `onboarding` | yes | Migrated: Tailwind strings → scoped `ob-*` rules + `uiClasses`, `StatusDot`, `Chip`, `Input`, `Button asChild`, `StatusPanel`, `Skeleton`, `useCopyFlash`/`errorMessage`; brand-mark `<svg>` allowlisted | Guided tour spotlight over the console |
+| `pdf` | yes | Shared tooltip and motion tokens; `unwrapEnvelope`, eyebrow recipe, 6px radii | Page rendering and document navigation |
+| `pi` | yes | Thin wrapper over the shared `@iii-workers/agent-terminal-ui` page (same page as `claude-code`); no local CSS | Agent terminal bound to a `shell::pty` session |
+| `provider-openai-codex` | yes | Shared provider-form controls; `copyText`, container query, `--color-rule-focus` | OAuth/device authentication flow |
+| `sandbox-code-runner` | yes | Migrated: `TerminalStream ansi`/`AnsiText`, `TerminalCommandLine`, `Chip`/`Badge`, `StatusPanel`, `DropdownMenu`, `Table` family, `Checkbox`, `IconButton`, `useCopyFlash`, format subpath, `lucide-react`; local ANSI parser and clipboard deleted | Sandbox lifecycle, file tree, and execution streams |
+| `security-scan` | yes | Migrated: `useContainerNarrow`, `useWorkerLive` (stream trigger via `{ type, config }`), `errorMessage`/`formatRelative`, `lucide-react`, `Skeleton`, `SearchField`, `StatusPanel`, `EmptyState`, `Eyebrow`, `SegmentedControl`, `uiClasses.panel`; state as `data-*` | Scan runs and findings with severity semantics |
+| `state` | yes | Migrated: `useContainerNarrow`, `StatusDot`, `IconButton`, `lucide-react`, `Skeleton`, `List`/`ListItem`, `EmptyState` + `KeyCombo`, `StatusPanel`, `StatusBar`, `MetaRow`/`Eyebrow`, `formatBytes`/`errorMessage`/`unwrapEnvelope` | Progressive scope/key/value browser |
+| `storage` | yes | Migrated: `useContainerNarrow`, format subpath, `lucide-react`, `PageBody`/`PageMain`, `List`/`ListItem`, `IconButton`, `Eyebrow`, `Toolbar`/`StatusBar`, `Skeleton`, `StatusPanel`, `EmptyState`, `Checkbox`, `Select`, `Chip` | Bucket/object browser |
+| `tailscale` | yes | Shared page chrome with `PageSidebar`, `ListItem`, `IconButton`, `Input`/`Select`/`SegmentedControl`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `ConfirmDialog`; `lucide-react`, `useCopyFlash`, `errorMessage`/`formatBytes`, `uiClasses.spin` | Tailnet device table with ping paths, QR link card, netcheck and DNS facts, preference rows |
+| `voice` | yes | Shared page chrome, `IconButton`, `Button`, `Badge`, `StatusPanel`, `Input`, `Table` family; chat-slot registrations; `lucide-react`, format subpath (`formatBytes`, `errorMessage`), `useCopyFlash`/`copyText`, `StatusDot pulse`, `uiClasses.spin`/`motionPanel` | Microphone capture, live partial transcript pill, segment timestamps |
+| `vscode` | yes | Shared page chrome, `List`/`ListItem`, `IconButton`, `StatusPanel`; `lucide-react` | Embedded VS Code workbench frame |
+| `web` | yes | Minimal shared renderer; container query | HTTP response payload |
+| `worktree` | yes | Migrated: `useWorkerLive`, `useContainerNarrow`, `lucide-react`, `useCopyFlash`, `IconButton`, `Skeleton`, `uiClasses.spin`, `Eyebrow`, `--color-*-strong`; graph `<svg>` and 10px edge labels allowlisted | Worktree ownership and graph semantics |
 
 ## Native Console sweep
 
@@ -128,8 +128,9 @@ permission to fork base hover, selection, tooltip, or selector behavior.
 A page's primary verbs are palette rows (`PageRenderProps.commands`, or
 `host.commands` for a page not yet open), each with a key where one is
 natural, scoped to the page's pane. No page listens for a key the console
-owns; the registry refuses those at registration. See the injectable-UI SOP,
-"Commands: the keyboard reaches every page".
+owns; the registry refuses those at registration. See
+`ade/skills/injectable-ui.md` › Slots (`host.commands`, `host.palette`,
+`PageRenderProps.commands`).
 
 | Page | Commands (render time unless noted) | Keys | Palette source |
 |---|---|---|---|

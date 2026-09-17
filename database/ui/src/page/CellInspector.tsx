@@ -12,11 +12,13 @@
  * and "why did this fail to insert" usually ends here.
  */
 
-import { Badge, Button } from '@iii-dev/console-ui'
+import { Badge, Button, MetaRow } from '@iii-dev/console-ui'
+import { copyText } from '@iii-dev/console-ui/format'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { Check, Copy, Link2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { cellText } from '../lib/grid-cursor'
 import type { ForeignKeyRef } from '../lib/rpc'
-import { Check, Copy, Link2 } from './icons'
 import { JsonTree } from './JsonTree'
 
 const ENCODER = new TextEncoder()
@@ -44,19 +46,13 @@ export function CellInspector({
   foreignKey?: ForeignKeyRef
   onFollow?: (fk: ForeignKeyRef, value: unknown) => void
 }) {
-  const [copied, setCopied] = useState<string | null>(null)
   const [wrap, setWrap] = useState(true)
 
   const text = useMemo(() => cellText(value), [value])
   const isNull = value === null || value === undefined
   const json = useMemo(() => asJson(value), [value])
-
-  const copy = (what: string, payload: string) => {
-    void navigator.clipboard?.writeText(payload)
-    setCopied(what)
-    // Recolour briefly rather than raising a toast — the house pattern.
-    setTimeout(() => setCopied(null), 1200)
-  }
+  // Recolour briefly rather than raising a toast — the house pattern.
+  const valueCopy = useCopyFlash(text, 1200)
 
   const codePoints = isNull ? 0 : [...text].length
   const bytes = isNull ? 0 : ENCODER.encode(text).length
@@ -74,14 +70,13 @@ export function CellInspector({
         Row {row + 1} of {rowCount} · Column {col + 1} of {colCount}
       </div>
 
-      <dl className="db-kv">
-        <dt>Kind</dt>
-        <dd>{kindOf(value)}</dd>
-        <dt>Characters</dt>
-        <dd className="db-num">{codePoints.toLocaleString()}</dd>
-        <dt>Bytes</dt>
-        <dd className="db-num">{bytes.toLocaleString()}</dd>
-      </dl>
+      <MetaRow
+        items={[
+          { label: 'Kind', value: kindOf(value) },
+          { label: 'Characters', value: codePoints.toLocaleString() },
+          { label: 'Bytes', value: bytes.toLocaleString() },
+        ]}
+      />
 
       {foreignKey && onFollow && !isNull ? (
         <Button
@@ -101,7 +96,7 @@ export function CellInspector({
           // Distinct from NULL, and from an empty box.
           <span className="db-cell-null">'' (empty string)</span>
         ) : json !== undefined ? (
-          <JsonTree value={json} onCopy={(t) => copy('json', t)} />
+          <JsonTree value={json} onCopy={(t) => void copyText(t)} />
         ) : (
           <pre className={`db-inspect-pre${wrap ? ' wrap' : ''}`}>{text}</pre>
         )}
@@ -111,24 +106,24 @@ export function CellInspector({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => copy('value', text)}
+          onClick={() => valueCopy.copy()}
           disabled={isNull}
         >
-          {copied === 'value' ? (
+          {valueCopy.state === 'copied' ? (
             <Check size={16} aria-hidden />
           ) : (
             <Copy size={16} aria-hidden />
           )}
-          {copied === 'value' ? 'Copied' : 'Copy value'}
+          {valueCopy.state === 'copied' ? 'Copied' : 'Copy value'}
         </Button>
         {json === undefined && text.length > 80 ? (
-          <button
-            type="button"
-            className="db-linkish"
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setWrap((w) => !w)}
           >
             {wrap ? 'No wrap' : 'Wrap'}
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>

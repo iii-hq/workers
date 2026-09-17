@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  errorMessage,
-  exportFilename,
-  familyBadgeLabel,
-  relativeTime,
-} from './helpers'
+import { exportFilename, familyBadgeLabel } from './helpers'
 
 describe('familyBadgeLabel', () => {
   it('maps known mermaid families to short labels', () => {
@@ -64,41 +59,5 @@ describe('exportFilename', () => {
     const file = exportFilename(name, 'svg')
     expect(file.endsWith('.svg')).toBe(true)
     expect(file.length).toBeLessThanOrEqual(64 + '.svg'.length)
-  })
-})
-
-describe('relativeTime', () => {
-  const now = 1_700_000_000
-
-  it('reads recent times as just now', () => {
-    expect(relativeTime(now - 10, now)).toBe('just now')
-  })
-
-  it('clamps future timestamps instead of going negative', () => {
-    expect(relativeTime(now + 500, now)).toBe('just now')
-  })
-
-  it('scales through minutes, hours and days', () => {
-    expect(relativeTime(now - 120, now)).toBe('2m ago')
-    expect(relativeTime(now - 7200, now)).toBe('2h ago')
-    expect(relativeTime(now - 172_800, now)).toBe('2d ago')
-  })
-
-  it('falls back to the date past 30 days', () => {
-    expect(relativeTime(0, 86_400 * 100)).toBe('1970-01-01')
-  })
-})
-
-describe('errorMessage', () => {
-  it('reads Errors, strings and message-shaped objects', () => {
-    expect(errorMessage(new Error('boom'))).toBe('boom')
-    expect(errorMessage('plain')).toBe('plain')
-    expect(errorMessage({ message: 'wire error' })).toBe('wire error')
-  })
-
-  it('serializes other objects and stringifies primitives', () => {
-    expect(errorMessage({ code: 7 })).toBe('{"code":7}')
-    expect(errorMessage(42)).toBe('42')
-    expect(errorMessage(undefined)).toBe('undefined')
   })
 })

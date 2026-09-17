@@ -1,23 +1,7 @@
 /*
- * The state worker's console stylesheet, shipped as its own `console:style`
- * asset (state/styles.css) — the console mounts it as a <link> in
- * document.head and link-swaps it on hot reload, styles-before-scripts on
- * boot. Every rule is scoped under `[data-iii-ui="state"]`, the wrapper the
- * console mounts around every injected render — page, function-trigger
- * message, and config form alike. Styling uses the console's design tokens,
- * so light/dark theming is free.
- *
- * The page follows the console redesign's surface + typography roles:
- *
- *   navigation  --color-sidebar         the scope / key columns
- *   workspace   --color-panel           the value being edited
- *   raised      --color-panel-raised    headers, status bar, controls
- *   states      --color-surface-*       hover / selected washes
- *   edges       --color-edge            hairline separation
- *
- *   sans (--font-sans)  interface text: banners, empty states, hints
- *   mono (--font-mono)  technical values: scopes, keys, counts, the
- *                       editor, and the status bar
+ * The state worker's console stylesheet (`console:style` asset), scoped under
+ * `[data-iii-ui="state"]` — page, function-trigger message and config form.
+ * Layout only: chrome comes from @iii-dev/console-ui and the console's tokens.
  */
 
 /* ── the page (#/ext/state-manager): application shell ──────────────── */
@@ -29,28 +13,13 @@
 }
 
 [data-iii-ui="state"] .state-ui-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   color: var(--color-ink-ghost);
   white-space: nowrap;
-}
-[data-iii-ui="state"] .state-ui-live .dot {
-  color: var(--color-ok);
-  animation: state-ui-live-pulse 2.4s ease-in-out infinite;
-}
-@keyframes state-ui-live-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-iii-ui="state"] .state-ui-live .dot {
-    animation: none;
-  }
 }
 
 /* ── browser: columns + workspace ───────────────────────────────────── */
@@ -84,9 +53,9 @@
   border-right: 0;
   border-left: 1px solid var(--color-edge);
 }
-/* Narrow is CONTAINER width (< 800px, the browser's own ResizeObserver),
-   not the viewport: one pane at a time — the JSX renders exactly one of
-   scopes, keys, or the opened value. */
+/* Narrow is CONTAINER width (< 800px, useContainerNarrow), not the
+   viewport: one pane at a time — the JSX renders exactly one of scopes,
+   keys, or the opened value. */
 [data-iii-ui="state"] .state-ui-browser.narrow .state-ui-col {
   width: 100%;
   border-right: 0;
@@ -109,13 +78,6 @@
   padding: 0;
   border-bottom: 0;
 }
-[data-iii-ui="state"] .state-ui-col-head .label {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--color-ink-faint);
-}
 [data-iii-ui="state"] .state-ui-col-head .scope-name {
   min-width: 0;
   overflow: hidden;
@@ -136,32 +98,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-[data-iii-ui="state"] .state-ui-iconbtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-ink-ghost);
-  cursor: pointer;
-}
-[data-iii-ui="state"] .state-ui-iconbtn:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="state"] .state-ui-iconbtn:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-[data-iii-ui="state"] .state-ui-iconbtn-icon {
-  width: 16px;
-  height: 16px;
-}
-
 [data-iii-ui="state"] .state-ui-col-scroll {
   flex: 1;
   min-height: 0;
@@ -169,60 +105,15 @@
   padding: 4px 6px 12px;
 }
 
-/* entry rows — the whole row is the button */
-[data-iii-ui="state"] .state-ui-nav-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-[data-iii-ui="state"] .state-ui-nav-row {
-  position: relative;
-  display: flex;
-  width: 100%;
-  padding: 7px 10px 7px 14px;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-}
-[data-iii-ui="state"] .state-ui-nav-row:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="state"] .state-ui-nav-row:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-/* Selection stays neutral: wash + edge indicator + stronger name. */
-[data-iii-ui="state"] .state-ui-nav-row.active {
-  background: var(--color-surface-selected);
-}
-[data-iii-ui="state"] .state-ui-nav-row.active::before {
-  content: "";
-  position: absolute;
-  left: 4px;
-  top: 7px;
-  bottom: 7px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--color-edge);
-}
-[data-iii-ui="state"] .state-ui-nav-row .name {
+/* entry rows: scope / key names are identifiers */
+[data-iii-ui="state"] .state-ui-name {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--color-ink);
   word-break: break-all;
 }
-[data-iii-ui="state"] .state-ui-nav-row.active .name {
-  font-weight: 600;
-}
 /* Live-arrived rows flash with an accent wash that fades out. */
-[data-iii-ui="state"] .state-ui-nav-row.flash {
-  animation: state-ui-flash 1.4s ease-out;
+[data-iii-ui="state"] .state-ui-flash {
+  /* an attention cue, longer than any control token. lint-allow motion-literal */
+  animation: state-ui-flash 1.4s var(--motion-ease-exit);
 }
 @keyframes state-ui-flash {
   from {
@@ -232,34 +123,12 @@
     background: transparent;
   }
 }
-/* Touch-sized targets in the drill-in flow. */
-[data-iii-ui="state"] .state-ui-browser.narrow .state-ui-nav-row {
-  min-height: 44px;
-  align-items: center;
-  padding-top: 10px;
-  padding-bottom: 10px;
-}
 
-/* column hint / empty / loading / error */
+/* column hint / loading */
 [data-iii-ui="state"] .state-ui-col-hint {
   padding: 16px 14px;
   font-size: 12.5px;
   line-height: 1.5;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="state"] .state-ui-col-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 20px 14px;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--color-ink);
-}
-[data-iii-ui="state"] .state-ui-col-empty p {
-  margin: 0;
-}
-[data-iii-ui="state"] .state-ui-col-empty .dim {
   color: var(--color-ink-faint);
 }
 [data-iii-ui="state"] .state-ui-col-skel {
@@ -268,81 +137,9 @@
   gap: 14px;
   padding: 14px 10px;
 }
-[data-iii-ui="state"] .state-ui-col-skel .bar,
-[data-iii-ui="state"] .state-ui-doc-loading .bar {
+[data-iii-ui="state"] .state-ui-skel {
   display: block;
   height: 10px;
-  border-radius: 4px;
-  background: var(--color-surface);
-  animation: state-ui-pulse 1.6s ease-in-out infinite;
-}
-@keyframes state-ui-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-iii-ui="state"] .state-ui-col-skel .bar,
-  [data-iii-ui="state"] .state-ui-doc-loading .bar,
-  [data-iii-ui="state"] .state-ui-nav-row.flash {
-    animation: none;
-  }
-}
-[data-iii-ui="state"] .bar.w30 {
-  width: 30%;
-}
-[data-iii-ui="state"] .bar.w40 {
-  width: 40%;
-}
-[data-iii-ui="state"] .bar.w60 {
-  width: 60%;
-}
-[data-iii-ui="state"] .bar.w70 {
-  width: 70%;
-}
-[data-iii-ui="state"] .bar.w75 {
-  width: 75%;
-}
-[data-iii-ui="state"] .bar.w80 {
-  width: 80%;
-}
-[data-iii-ui="state"] .bar.w90 {
-  width: 90%;
-}
-
-[data-iii-ui="state"] .state-ui-error-panel {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 8px;
-  padding: 12px;
-  border: 1px solid color-mix(in oklab, var(--color-alert) 35%, transparent);
-  border-radius: 6px;
-  background: var(--color-alert-muted);
-  font-size: 12.5px;
-  color: var(--color-ink);
-}
-[data-iii-ui="state"] .state-ui-error-panel p {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  word-break: break-word;
-}
-[data-iii-ui="state"] .state-ui-error-panel .detail {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11.5px;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="state"] .state-ui-error-panel.grow {
-  align-self: flex-start;
-  margin: 16px;
-  max-width: 560px;
 }
 
 /* ── value workspace ────────────────────────────────────────────────── */
@@ -399,18 +196,11 @@
 }
 [data-iii-ui="state"] .state-ui-doc-crumb {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-[data-iii-ui="state"] .state-ui-dirty-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--color-accent);
-  flex-shrink: 0;
 }
 [data-iii-ui="state"] .state-ui-save-area {
   display: flex;
@@ -425,79 +215,15 @@
   white-space: nowrap;
 }
 
-/* status banners sit directly under the header, near what they describe */
+/* status panels sit directly under the header, near what they describe */
 [data-iii-ui="state"] .state-ui-banner {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  padding: 8px 16px;
+  margin: 8px 16px 0;
   flex-shrink: 0;
-  font-size: 12.5px;
-  color: var(--color-ink);
-  border-bottom: 1px solid var(--color-edge);
 }
-[data-iii-ui="state"] .state-ui-banner.warn {
-  background: var(--color-warn-muted);
-}
-[data-iii-ui="state"] .state-ui-banner.alert {
-  background: var(--color-alert-muted);
-}
-[data-iii-ui="state"] .state-ui-banner .detail {
-  display: block;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11.5px;
-  color: var(--color-ink-faint);
-  word-break: break-word;
-}
-[data-iii-ui="state"] .state-ui-linkish {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--color-accent);
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-[data-iii-ui="state"] .state-ui-linkish:hover {
-  color: var(--color-accent-hover);
-}
-[data-iii-ui="state"] .state-ui-linkish.quiet {
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="state"] .state-ui-linkish:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: 2px;
-  border-radius: 2px;
-}
-
-/* back affordance (drill-in flow) */
-[data-iii-ui="state"] .state-ui-back {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-}
-[data-iii-ui="state"] .state-ui-back:hover {
-  color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="state"] .state-ui-back:focus-visible {
-  outline: 2px solid var(--color-rule-focus);
-  outline-offset: -2px;
-}
-[data-iii-ui="state"] .state-ui-back-icon {
-  width: 16px;
-  height: 16px;
+[data-iii-ui="state"] .state-ui-error-panel {
+  align-self: flex-start;
+  margin: 16px;
+  max-width: 560px;
 }
 
 /* the editor pane — Monaco grows with content, the pane scrolls */
@@ -521,32 +247,22 @@
 
 /* status bar */
 [data-iii-ui="state"] .state-ui-statusbar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  min-height: 26px;
-  padding: 4px 16px;
-  flex-shrink: 0;
-  background: var(--color-panel-raised);
+  padding: 0 16px;
   border-top: 1px solid var(--color-edge);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  color: var(--color-ink-ghost);
-  font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="state"] .state-ui-statusbar .spacer {
-  flex: 1;
-}
-[data-iii-ui="state"] .state-ui-statusbar .status {
+[data-iii-ui="state"] .state-ui-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="state"] .state-ui-statusbar .status.alert {
-  color: var(--color-alert);
+[data-iii-ui="state"] .state-ui-status.alert {
+  color: var(--color-alert-strong);
 }
-[data-iii-ui="state"] .state-ui-statusbar .status.ok {
+[data-iii-ui="state"] .state-ui-status.ok {
   color: var(--color-ok);
 }
 
@@ -557,92 +273,30 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 12px;
   padding: 48px 24px;
-  text-align: center;
-}
-[data-iii-ui="state"] .state-ui-hero-icon {
-  width: 28px;
-  height: 28px;
-  color: var(--color-ink-ghost);
-  margin-bottom: 8px;
-}
-[data-iii-ui="state"] .state-ui-hero-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--color-ink);
-}
-[data-iii-ui="state"] .state-ui-hero-body {
-  margin: 0;
-  max-width: 460px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--color-ink-faint);
 }
 [data-iii-ui="state"] .state-ui-hero-hint {
-  margin: 8px 0 0;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11px;
   color: var(--color-ink-ghost);
-}
-[data-iii-ui="state"] .state-ui-hero-hint kbd {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-edge);
-  border-radius: 4px;
-  padding: 1px 5px;
 }
 
 /* --- function-trigger message (chat / traces card) ------------------- */
 [data-iii-ui="state"] .state-ui-msg {
-  border-top: 1px solid var(--color-rule-2);
   background: var(--color-bg);
-  font-family: var(--font-mono, ui-monospace, monospace);
-}
-[data-iii-ui="state"] .state-ui-msg-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  flex-wrap: wrap;
-}
-[data-iii-ui="state"] .state-ui-pill {
-  border: 1px solid var(--color-accent);
-  color: var(--color-accent);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 1px 8px;
-}
-[data-iii-ui="state"] .state-ui-pill.quiet {
-  border-color: var(--color-rule);
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="state"] .state-ui-chip {
-  border: 1px solid var(--color-rule);
-  color: var(--color-ink);
-  font-size: 11.5px;
-  padding: 1px 8px;
-}
-[data-iii-ui="state"] .state-ui-chip .k {
-  color: var(--color-ink-ghost);
 }
 [data-iii-ui="state"] .state-ui-msg-tag {
   margin-left: auto;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-ink-ghost);
 }
 [data-iii-ui="state"] .state-ui-msg-note {
   padding: 0 12px 10px;
   font-size: 12px;
   color: var(--color-ink-faint);
-}
-[data-iii-ui="state"] .state-ui-msg-note.pulse {
-  animation: state-ui-live-pulse 1.6s ease-in-out infinite;
 }
 
 /* --- configuration form ---------------------------------------------- */
@@ -665,11 +319,4 @@
 }
 [data-iii-ui="state"] .state-ui-config-number {
   max-width: 180px;
-}
-[data-iii-ui="state"] .state-ui-error {
-  padding: 10px 12px;
-  border-left: 2px solid var(--color-alert);
-  background: color-mix(in srgb, var(--color-alert) 8%, transparent);
-  color: var(--color-alert);
-  font: 400 12px/1.5 var(--font-sans, system-ui, sans-serif);
 }

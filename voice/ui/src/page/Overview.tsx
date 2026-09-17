@@ -22,10 +22,10 @@ import {
   TableRow,
   TableViewport,
 } from '@iii-dev/console-ui'
+import { Mic } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { modelsDownload } from '../lib/client'
 import { NONE, patchConfig, readConfig, setPath, stringAt } from '../lib/config'
-import { MicIcon } from '../lib/icons'
 import { ModelDownload } from '../lib/ModelDownload'
 import { PiperVoicePicker } from '../lib/PiperVoicePicker'
 import { modelOptions } from '../lib/models'
@@ -360,7 +360,7 @@ export function Overview({
       >
         {sessions.length === 0 ? (
           <EmptyState
-            icon={MicIcon}
+            icon={Mic}
             title="No dictation running"
             description="Hold the mic in the chat composer to talk, or start a session here to watch the recognizer work."
             action={{ label: 'Start dictation', onClick: onDictate }}

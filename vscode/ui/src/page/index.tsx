@@ -12,7 +12,7 @@ import {
   PageShell,
   StatusPanel,
 } from '@iii-dev/console-ui';
-import { ExternalLink, Folder, FolderOpen, RefreshCw, Square, SquareCode } from './icons';
+import { ExternalLink, Folder, FolderOpen, RefreshCw, Square, SquareCode } from 'lucide-react';
 
 type Props = PageRenderProps & { host: Host };
 
@@ -194,7 +194,7 @@ export function VscodePage({ host, onRequestClose, workingDir, panelContext, com
                 {recent.map((dir, index) => (
                   <ListItem
                     key={dir}
-                    leading={<Folder />}
+                    leading={<Folder size={16} />}
                     label={<span className="vscode-path">{dir}</span>}
                     data-autofocus={index === 0 ? '' : undefined}
                     onClick={() => setChosen(dir)}
@@ -238,7 +238,7 @@ export function VscodePage({ host, onRequestClose, workingDir, panelContext, com
   return (
     <PageShell>
       <PageHeader
-        icon={<SquareCode />}
+        icon={<SquareCode size={16} />}
         title="VS Code"
         description={
           workspace ? (
@@ -255,7 +255,7 @@ export function VscodePage({ host, onRequestClose, workingDir, panelContext, com
             onClick={onClick}
             disabled={!running}
           >
-            <Icon />
+            <Icon size={16} />
           </IconButton>
         ))}
         onClose={onRequestClose}

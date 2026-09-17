@@ -1,3 +1,3 @@
 import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
 
-await buildWorkerUi({ scope: 'pdf' })
+await buildWorkerUi({ scope: 'pdf', lint: { strict: true } })

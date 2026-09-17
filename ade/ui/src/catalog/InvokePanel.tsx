@@ -18,8 +18,11 @@
 import {
   Button,
   CodeEditor,
+  Eyebrow,
   type Host,
   JsonHighlight,
+  StatusDot,
+  StatusPanel,
 } from '@iii-dev/console-ui'
 import {
   type MutableRefObject,
@@ -28,6 +31,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { formatDuration } from './ActivityFeed'
 import { type InvokeOutcome, invoke } from './engine'
 import { schemaFieldNames } from './SchemaTable'
 import { pretty, templateFromSchema } from './schema'
@@ -202,7 +206,7 @@ export function InvokePanel({
         </Button>
       </div>
       {hint ? <div className="console-catalog-note">{hint}</div> : null}
-      <span className="console-catalog-field-label">Input payload (JSON)</span>
+      <Eyebrow className="console-catalog-field-label">Input payload (JSON)</Eyebrow>
       <CodeEditor
         value={body}
         onChange={setBody}
@@ -233,7 +237,7 @@ export function InvokePanel({
                 outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
               }
             >
-              <span className="dot" />
+              <StatusDot tone={outcome.ok ? 'ok' : 'alert'} />
               {outcome.ok ? 'success' : 'error'}
             </span>
             <span className="result-meta">
@@ -242,11 +246,11 @@ export function InvokePanel({
                     hour12: false,
                   })
                 : null}
-              <span>{formatMilliseconds(outcome.durationMs)}</span>
+              <span>{formatDuration(outcome.durationMs)}</span>
             </span>
           </div>
           {outcome.error ? (
-            <div className="console-catalog-error">{outcome.error}</div>
+            <StatusPanel variant="alert" headline={outcome.error} />
           ) : (
             <JsonHighlight
               code={pretty(outcome.data) || 'null'}
@@ -259,7 +263,7 @@ export function InvokePanel({
 
       {attempts.length > 1 ? (
         <div className="console-catalog-attempts">
-          <span className="console-catalog-field-label">This session</span>
+          <Eyebrow className="console-catalog-field-label">This session</Eyebrow>
           {attempts.slice(1).map((attempt) => (
             <button
               key={attempt.id}
@@ -268,7 +272,7 @@ export function InvokePanel({
               onClick={() => setBody(attempt.body)}
               title="put this body back in the editor"
             >
-              <span className="dot" data-ok={attempt.outcome.ok} />
+              <StatusDot tone={attempt.outcome.ok ? 'ok' : 'alert'} />
               <span className="body">{oneLine(attempt.body)}</span>
               <span className="duration">
                 {Math.round(attempt.outcome.durationMs)}ms
@@ -279,12 +283,6 @@ export function InvokePanel({
       ) : null}
     </div>
   )
-}
-
-function formatMilliseconds(ms: number): string {
-  if (ms < 1) return `${Math.round(ms * 1000)}µs`
-  if (ms < 1000) return `${ms.toFixed(1)}ms`
-  return `${(ms / 1000).toFixed(2)}s`
 }
 
 function safeJson(text: string): unknown {

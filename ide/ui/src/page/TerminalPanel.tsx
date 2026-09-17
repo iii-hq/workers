@@ -24,7 +24,7 @@ import type {
 } from './terminal-layout'
 import type { TerminalOutputRouter } from './terminal-output-router'
 import type { TerminalConnectionCoordinator } from './terminal-session-state'
-import { useSplitDrag } from './use-split-drag'
+import { useSplitDrag } from '@iii-dev/console-ui/hooks'
 
 interface ResizeState {
   startSize: number

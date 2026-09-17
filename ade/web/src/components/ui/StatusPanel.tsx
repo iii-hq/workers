@@ -29,20 +29,29 @@ const variantTone: Record<
   },
 }
 
-interface StatusPanelProps {
+interface StatusPanelProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: StatusVariant
   icon?: React.ReactNode
   headline: React.ReactNode
   detail?: React.ReactNode
-  className?: string
+  /** Trailing slot for a retry/dismiss `Button`; never text. */
+  action?: React.ReactNode
 }
 
+/**
+ * The one way to show a status with copy: a tinted block, headline in the
+ * status colour, detail in faint ink, an optional action at the end. `role`
+ * passes through — `alert` for an error the user must see now, `status`
+ * for the rest.
+ */
 export function StatusPanel({
   variant = 'info',
   icon,
   headline,
   detail,
+  action,
   className,
+  ...props
 }: StatusPanelProps) {
   const tone = variantTone[variant]
   return (
@@ -52,6 +61,7 @@ export function StatusPanel({
         tone.fill,
         className,
       )}
+      {...props}
     >
       {icon ? (
         <span aria-hidden className={cn('size-[18px] shrink-0', tone.icon)}>
@@ -68,6 +78,11 @@ export function StatusPanel({
           <div className="font-sans text-[12px] text-ink-faint">{detail}</div>
         ) : null}
       </div>
+      {action ? (
+        <div className="ml-auto flex shrink-0 items-center gap-1.5 self-center">
+          {action}
+        </div>
+      ) : null}
     </div>
   )
 }

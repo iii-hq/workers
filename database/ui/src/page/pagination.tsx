@@ -1,11 +1,10 @@
 /**
- * Pagination bar for the table data panel — ported from the console's
- * `ui/Pagination`. Prev/next use the shared `Button` (icon variant); the
- * page-size select is a raw `<select>` styled from design tokens.
+ * Pagination bar for the table data panel: prev/next as the shared icon
+ * buttons, the page-size picker as the shared `Select`.
  */
 
-import { Button } from '@iii-dev/console-ui'
-import { ChevronLeft, ChevronRight } from './icons'
+import { IconButton, Select } from '@iii-dev/console-ui'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 
 interface PaginationProps {
   currentPage: number
@@ -32,43 +31,37 @@ export function Pagination({
     <div className="db-pager">
       <div className="db-pager-group">
         <span className="db-pager-cap">Show</span>
-        <select
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(Number(e.target.value))}
+        <Select
+          value={String(pageSize)}
+          onChange={(next) => onPageSizeChange(Number(next))}
+          options={pageSizeOptions.map((opt) => ({
+            value: String(opt),
+            label: String(opt),
+          }))}
           aria-label="rows per page"
-        >
-          {pageSizeOptions.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </select>
+        />
       </div>
       <div className="db-pager-group">
         <span>
           {start}–{end} of {totalItems}
         </span>
-        <Button
-          variant="icon"
-          size="icon"
-          aria-label="previous page"
+        <IconButton
+          label="previous page"
           disabled={currentPage <= 1}
           onClick={() => onPageChange(currentPage - 1)}
         >
           <ChevronLeft size={16} />
-        </Button>
+        </IconButton>
         <span>
           Page {currentPage} of {totalPages}
         </span>
-        <Button
-          variant="icon"
-          size="icon"
-          aria-label="next page"
+        <IconButton
+          label="next page"
           disabled={currentPage >= totalPages}
           onClick={() => onPageChange(currentPage + 1)}
         >
           <ChevronRight size={16} />
-        </Button>
+        </IconButton>
       </div>
     </div>
   )

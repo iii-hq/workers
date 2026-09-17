@@ -1,3 +1,5 @@
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
+
 export type JsonValue =
   | null
   | boolean
@@ -94,26 +96,6 @@ export interface SurfaceExport {
   surface_id: string
   title: string
   messages: JsonValue[]
-}
-
-export function unwrapEnvelope(value: unknown): unknown {
-  if (value == null || typeof value !== 'object') return value
-  const record = value as Record<string, unknown>
-  if (record.details != null) return record.details
-  if (Array.isArray(record.content) && record.content.length === 1) {
-    const block = record.content[0]
-    if (block != null && typeof block === 'object') {
-      const text = (block as Record<string, unknown>).text
-      if (typeof text === 'string') {
-        try {
-          return JSON.parse(text)
-        } catch {
-          return value
-        }
-      }
-    }
-  }
-  return value
 }
 
 export function parseReceipt(value: unknown): SurfaceReceipt | null {

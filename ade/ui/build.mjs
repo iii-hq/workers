@@ -4,4 +4,5 @@ import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
 await buildWorkerUi({
   scope: 'console',
   entryPoints: ['config-form.tsx', 'catalog-page.tsx', 'workspace-proposal.tsx', 'styles.css'],
+  lint: { strict: true },
 })

@@ -1,6 +1,6 @@
 import type { JsonObject } from './config'
 import { setPath } from './config'
-import { formatBytes } from './format'
+import { formatBytes } from '@iii-dev/console-ui/format'
 import type { ModelInfo } from './types'
 
 export function modelOptions(models: readonly ModelInfo[], selected: string) {

@@ -21,9 +21,12 @@ import {
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  StatusDot,
   StatusPanel,
   useConfirm,
 } from '@iii-dev/console-ui'
+import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
+import { CircleAlert, Plus, Shapes, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FreeformPane, type FreeformPaneHandle } from '../freeform'
 import { useCanvasStateEvents } from '../lib/live'
@@ -35,14 +38,7 @@ import {
   listCanvases,
   updateCanvas,
 } from './data'
-import {
-  errorMessage,
-  familyBadgeLabel,
-  NEW_CANVAS_NAME,
-  relativeTime,
-  STARTER_FLOWCHART,
-} from './helpers'
-import { AlertCircle, Plus, Shapes, Trash2 } from './icons'
+import { familyBadgeLabel, NEW_CANVAS_NAME, STARTER_FLOWCHART } from './helpers'
 import { type DraftCache, MermaidPane } from './MermaidPane'
 
 type ListState =
@@ -53,6 +49,12 @@ type ListState =
 const SIDEBAR_DEFAULT_WIDTH = 248
 const SIDEBAR_MIN_WIDTH = 190
 const SIDEBAR_MAX_WIDTH = 440
+
+/** `5m ago` / `just now` for the sidebar rows. */
+function ago(unixSecs: number): string {
+  const rel = formatRelative(unixSecs)
+  return rel && rel !== 'just now' ? `${rel} ago` : rel
+}
 
 /** Most recently touched first; name breaks timestamp ties stably. */
 function byRecency(a: CanvasRecord, b: CanvasRecord): number {
@@ -395,7 +397,6 @@ export function CanvasPage({
     ],
   )
 
-  const nowSecs = Math.floor(Date.now() / 1000)
 
   return (
     <PageShell className="canvas-ui">
@@ -476,7 +477,7 @@ export function CanvasPage({
                     <span className="cv-item-name">
                       <span className="cv-item-label">{c.name}</span>
                       {dirtyIds.has(c.id) ? (
-                        <span className="cv-dirty" title="unsaved changes" />
+                        <StatusDot tone="accent" title="unsaved changes" />
                       ) : null}
                     </span>
                     <span className="cv-item-meta">
@@ -486,7 +487,7 @@ export function CanvasPage({
                         {familyBadgeLabel(c.format, c.family)}
                       </Badge>
                       <span className="cv-item-time">
-                        {relativeTime(c.updated_at, nowSecs)}
+                        {ago(c.updated_at)}
                       </span>
                     </span>
                   </button>
@@ -524,7 +525,7 @@ export function CanvasPage({
           ) : recordError ? (
             <StatusPanel
               variant="alert"
-              icon={<AlertCircle size={16} />}
+              icon={<CircleAlert size={16} />}
               headline="could not load the canvas"
               detail={recordError}
             />

@@ -68,6 +68,22 @@ export function formatBytes(n) {
   return `${value.toFixed(1)} ${BYTE_UNITS[unit]}`
 }
 
+/* ── harness envelope ───────────────────────────────────────────────── */
+
+/**
+ * The harness wraps every tool result in `{ content: ContentBlock[],
+ * details, terminate }` before relaying it; the console sees the same
+ * shape on the function_call output stream. This peels the wrapper so a
+ * renderer works on the flat response. Idempotent: an already-flat payload
+ * comes back unchanged. The discriminator is `Array.isArray(content)` plus
+ * a `details` key — what the harness sets unconditionally.
+ */
+export function unwrapEnvelope(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  if (Array.isArray(value.content) && 'details' in value) return value.details
+  return value
+}
+
 /* ── errors ─────────────────────────────────────────────────────────── */
 
 /** Codes that only say "the call failed" — never worth showing. */

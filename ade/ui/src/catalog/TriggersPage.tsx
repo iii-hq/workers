@@ -34,6 +34,7 @@ import {
   TabsTrigger,
   SearchField,
 } from '@iii-dev/console-ui'
+import { Zap } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { describeCron, nextCronRun, untilLabel } from './cron'
 import {
@@ -95,21 +96,6 @@ type Selection =
 interface TypeGroup {
   type: TriggerTypeSummary
   bindings: RegisteredTrigger[]
-}
-
-function BoltIcon() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M8.75 1.5L3.5 9H7l-.75 5.5L11.5 7H8z" />
-    </svg>
-  )
 }
 
 export function TriggersPage({
@@ -315,7 +301,7 @@ export function TriggersPage({
       hasSelection={selected !== null}
       header={
         <PageHeader
-          icon={<BoltIcon />}
+          icon={<Zap />}
           title="Triggers"
           description={
             <span className="console-catalog-header-desc">

@@ -15,8 +15,9 @@
  * `@iii-dev/console-ui` is imported type-only on purpose: its runtime entry
  * throws by design (the real module arrives via the console's import map),
  * and keeping this module value-free of it lets vitest import the renderer
- * directly. Chips, pills, and tables are plain elements styled by the
- * chat-card section of ../../styles.css.
+ * directly (the `/format` and `/ui-classes` subpaths are pure and bundle).
+ * Chips, pills, and tables are plain elements styled by the chat-card
+ * section of ../../styles.css.
  */
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -26,10 +27,12 @@ import type {
   FunctionTriggerRenderer,
   Host,
 } from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 
 import { animateSvgDrawIn } from '../lib/draw'
 import { loadMermaid, mermaidInitConfig } from '../lib/loaders'
-import { CANVAS_FUNCTION_IDS, unwrapEnvelope } from '../lib/types'
+import { CANVAS_FUNCTION_IDS } from '../lib/types'
 import {
   CANVAS_PREFIX,
   type CanvasRecordView,
@@ -307,12 +310,12 @@ function CardShell({
     <div className="canvas-trigger">
       <div className="canvas-trigger__head">
         <span
-          className={`canvas-trigger__pill${running ? ' canvas-trigger__pill--quiet' : ''}`}
+          className={`${uiClasses.eyebrow} canvas-trigger__pill${running ? ' canvas-trigger__pill--quiet' : ''}`}
         >
           {opLabel}
         </span>
         {head}
-        <span className="canvas-trigger__tag">canvas ui</span>
+        <span className={`${uiClasses.eyebrow} canvas-trigger__tag`}>canvas ui</span>
       </div>
       {children}
     </div>
@@ -342,7 +345,7 @@ function OpenLink() {
 
 function RunningNote() {
   return (
-    <div className="canvas-trigger__note canvas-trigger__pulse">running…</div>
+    <div className={`canvas-trigger__note ${uiClasses.pulse}`}>running…</div>
   )
 }
 
@@ -433,7 +436,7 @@ function MermaidDiagram({ host, source }: { host: Host; source: string }) {
 
   if (state.status === 'loading') {
     return (
-      <div className="canvas-trigger__diagram canvas-trigger__diagram--loading canvas-trigger__pulse">
+      <div className={`canvas-trigger__diagram canvas-trigger__diagram--loading ${uiClasses.pulse}`}>
         rendering…
       </div>
     )

@@ -18,7 +18,13 @@
  * payload can never break the feed.
  */
 
-import { Badge, type BadgeProps, JsonHighlight } from '@iii-dev/console-ui'
+import {
+  Badge,
+  type BadgeProps,
+  Eyebrow,
+  JsonHighlight,
+} from '@iii-dev/console-ui'
+import { formatBytes } from '@iii-dev/console-ui/format'
 import type { ReactNode } from 'react'
 
 /** The renderer keys the worker emits; unknown values fall back to `object`. */
@@ -120,7 +126,11 @@ function IssueRow({ r }: { r: Record<string, unknown> }) {
         ) : (
           title
         )}
-        {draft ? <span className="gh-ui-rv-flag">Draft</span> : null}
+        {draft ? (
+          <Eyebrow as="span" className="gh-ui-rv-flag">
+            Draft
+          </Eyebrow>
+        ) : null}
       </td>
       <td className="gh-ui-rv-state">
         {state ? (
@@ -143,7 +153,7 @@ function ContentsRow({ r }: { r: Record<string, unknown> }) {
     <tr className="gh-ui-rv-row">
       <td className="gh-ui-rv-ctype">{type ? <Badge>{type}</Badge> : null}</td>
       <td className="gh-ui-rv-cname">{name}</td>
-      <td className="gh-ui-rv-csize">{size != null ? humanBytes(size) : ''}</td>
+      <td className="gh-ui-rv-csize">{size != null ? formatBytes(size) : ''}</td>
     </tr>
   )
 }
@@ -271,13 +281,13 @@ function OutcomeView({ preview }: { preview: unknown }) {
       </div>
       {stdout ? (
         <div className="gh-ui-rv-stream">
-          <div className="gh-ui-rv-slabel">stdout</div>
+          <Eyebrow as="div">stdout</Eyebrow>
           <div className="gh-ui-rv-text">{stdout}</div>
         </div>
       ) : null}
       {stderr ? (
         <div className="gh-ui-rv-stream">
-          <div className="gh-ui-rv-slabel">stderr</div>
+          <Eyebrow as="div">stderr</Eyebrow>
           <div className="gh-ui-rv-text gh-ui-rv-errtext">{stderr}</div>
         </div>
       ) : null}
@@ -354,10 +364,4 @@ function stateVariant(state: string): NonNullable<BadgeProps['variant']> {
   if (s === 'OPEN' || s === 'MERGED') return 'accent'
   if (s === 'CLOSED') return 'alert'
   return 'default'
-}
-
-function humanBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }

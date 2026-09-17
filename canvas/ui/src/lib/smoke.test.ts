@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { unwrapEnvelope } from './types'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 
 describe('unwrapEnvelope', () => {
   it('unwraps the harness content/details envelope', () => {

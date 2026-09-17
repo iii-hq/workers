@@ -19,18 +19,20 @@ import {
   PageShell,
   PageSidebar,
   StatusDot,
+  StatusPanel,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
 } from '@iii-dev/console-ui'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
+import { Box, Play, Plus, RefreshCw } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { onSandboxSelected, takeSelectedSandbox } from '../lib/selection'
 import { ConsoleTab } from './ConsoleTab'
 import { CreateDialog } from './CreateDialog'
 import { FilesTab } from './FilesTab'
 import { FleetRail } from './FleetRail'
-import { BoxIcon, PlayIcon, PlusIcon, RefreshIcon } from './icons'
 import { OverviewTab } from './OverviewTab'
 import { RunCodeDialog } from './RunCodeDialog'
 import { useExecRecords } from './records'
@@ -151,21 +153,24 @@ export function SandboxPage({
   function renderMain(): ReactNode {
     if (state.error && !state.daemonAbsent && state.sandboxes.length === 0) {
       return (
-        <div className="cr-page-main-error" role="alert">
-          <p>
-            the fleet could not be read.
-            <span className="cr-page-faint"> {state.error}</span>
-          </p>
-          <Button variant="ghost" size="sm" onClick={refresh}>
-            retry
-          </Button>
-        </div>
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          className="cr-page-main-error"
+          headline="the fleet could not be read."
+          detail={state.error}
+          action={
+            <Button variant="ghost" size="sm" onClick={refresh}>
+              retry
+            </Button>
+          }
+        />
       )
     }
     if (state.daemonAbsent) {
       return (
         <EmptyState
-          icon={BoxIcon}
+          icon={Box}
           title="no sandbox daemon on this engine"
           description="sandbox::list is not registered. Add the iii-sandbox daemon (`iii trigger compose::add worker=iii-sandbox`) and the fleet appears here — this page keeps checking."
         />
@@ -175,7 +180,7 @@ export function SandboxPage({
       if (state.sandboxes.length === 0 && !state.loading) {
         return (
           <EmptyState
-            icon={BoxIcon}
+            icon={Box}
             title="no sandboxes running"
             description="create a microVM from a catalog image, or let an agent's next sandbox::create populate the fleet."
             action={{
@@ -187,7 +192,7 @@ export function SandboxPage({
       }
       return (
         <EmptyState
-          icon={BoxIcon}
+          icon={Box}
           title="pick a sandbox"
           description="select a sandbox in the rail to inspect it, exec into it, or browse its files."
         />
@@ -235,7 +240,7 @@ export function SandboxPage({
   return (
     <PageShell className="cr-page-shell">
       <PageHeader
-        icon={<BoxIcon size={16} />}
+        icon={<Box size={16} />}
         title="Sandbox"
         description="MicroVM fleet · exec console · files"
         actions={
@@ -257,14 +262,15 @@ export function SandboxPage({
               onClick={refresh}
               disabled={state.loading}
             >
-              <RefreshIcon
-                className={state.loading ? 'cr-page-spin' : undefined}
+              <RefreshCw
+                size={16}
+                className={state.loading ? uiClasses.spin : undefined}
                 aria-hidden
               />{' '}
               refresh
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setRunOpen(true)}>
-              <PlayIcon aria-hidden /> run code
+              <Play size={16} aria-hidden /> run code
             </Button>
             <Button
               variant="primary"
@@ -273,7 +279,7 @@ export function SandboxPage({
               disabled={state.daemonAbsent}
               data-autofocus=""
             >
-              <PlusIcon aria-hidden /> new sandbox
+              <Plus size={16} aria-hidden /> new sandbox
             </Button>
           </>
         }

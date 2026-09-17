@@ -7,11 +7,14 @@
  * cards use — a runtime id is a capability and never prints in full.
  */
 
-import type {
-  FunctionTriggerMessage,
-  FunctionTriggerRenderer,
-  Host,
+import {
+  Chip,
+  type FunctionTriggerMessage,
+  type FunctionTriggerRenderer,
+  type Host,
 } from '@iii-dev/console-ui'
+import { formatRelative } from '@iii-dev/console-ui/format'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import {
   asRecord,
   CardShell,
@@ -61,35 +64,28 @@ function parseRuntimes(output: unknown): RuntimeRow[] | null {
   return rows
 }
 
-function formatAge(createdAtMs: number | undefined): string | null {
-  if (createdAtMs === undefined) return null
-  const secs = Math.max(0, Math.floor((Date.now() - createdAtMs) / 1000))
-  if (secs < 60) return `${secs}s`
-  if (secs < 3600) return `${Math.floor(secs / 60)}m`
-  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
-}
-
 function RuntimeRowView({ row }: { row: RuntimeRow }) {
-  const age = formatAge(row.created_at_ms)
+  const age =
+    row.created_at_ms === undefined ? null : formatRelative(row.created_at_ms)
   return (
     <div className="cr-lsrt-row">
       <div className="cr-lsrt-head">
         <RuntimeChip runtimeId={row.runtime_id} />
-        <span className="cr-ui-chip">{row.lang}</span>
+        <Chip>{row.lang}</Chip>
         {row.sandbox_id ? (
-          <span className="cr-ui-chip" title={row.sandbox_id}>
-            <span className="k">vm </span>
+          <Chip title={row.sandbox_id}>
+            <span className={uiClasses.eyebrow}>vm</span>
             {row.sandbox_id.slice(0, 8)}…
-          </span>
+          </Chip>
         ) : null}
-        {age ? <span className="cr-ui-chip">{age}</span> : null}
+        {age ? <Chip>{age}</Chip> : null}
         {row.vm_gone ? (
-          <span
-            className="cr-ui-chip cr-lsrt-gone"
+          <Chip
+            tone="warning"
             title="the backing VM left sandbox::list — idle-reaped or stopped"
           >
             vm gone
-          </span>
+          </Chip>
         ) : null}
         <span className="cr-lsrt-count">
           {row.registered_functions.length === 0

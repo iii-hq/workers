@@ -4,12 +4,13 @@
  *
  * Wire shapes tolerated (per ade/docs/custom-function-call-message.md §4):
  * raw handler JSON, the harness `{content, details}` envelope (unwrapped via
- * ../lib/types), and the `{error: {...}}` transport wrapper. Anything
+ * @iii-dev/console-ui/format), and the `{error: {...}}` transport wrapper. Anything
  * unrecognizable parses to "nothing" so the renderer returns null and falls
  * through to the console's own card instead of showing an empty one.
  */
 
-import { unwrapEnvelope, type CanvasFormat } from '../lib/types'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
+import type { CanvasFormat } from '../lib/types'
 
 export const CANVAS_PREFIX = 'canvas::'
 

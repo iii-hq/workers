@@ -1,9 +1,12 @@
 import {
   Button,
+  Card,
+  CardBody,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
   type Host,
 } from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { useState } from 'react'
 
 const PROPOSE_ID = 'console::working-directory::propose'
@@ -12,14 +15,6 @@ interface WorkingDirectoryProposal {
   sessionId: string
   path: string
   reason?: string
-}
-
-function unwrapEnvelope(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const object = value as Record<string, unknown>
-  return Array.isArray(object.content) && 'details' in object
-    ? object.details
-    : value
 }
 
 function parseProposal(value: unknown): WorkingDirectoryProposal | null {
@@ -65,56 +60,29 @@ function ProposalCard({
   }
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        padding: '10px 12px',
-        border: '1px solid var(--color-edge)',
-        borderRadius: 8,
-        background: 'var(--color-panel-raised)',
-      }}
-    >
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ color: 'var(--color-ink)', fontWeight: 500 }}>
-          Switch working directory?
-        </div>
-        <div
-          title={proposal.path}
-          style={{
-            marginTop: 3,
-            overflow: 'hidden',
-            color: 'var(--color-ink-faint)',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 12,
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {proposal.path}
-        </div>
-        {proposal.reason ? (
-          <div
-            style={{
-              marginTop: 3,
-              color: 'var(--color-ink-faint)',
-              fontSize: 12,
-            }}
-          >
-            {proposal.reason}
+    <Card>
+      <CardBody className="console-wd-proposal">
+        <div className="console-wd-proposal-copy">
+          <div className="console-wd-proposal-title">
+            Switch working directory?
           </div>
-        ) : null}
-      </div>
-      <Button
-        size="sm"
-        variant={applied ? 'ghost' : 'primary'}
-        disabled={applied || !canApply}
-        onClick={apply}
-      >
-        {applied ? 'Using for chat' : 'Use for chat'}
-      </Button>
-    </div>
+          <div className="console-wd-proposal-path" title={proposal.path}>
+            {proposal.path}
+          </div>
+          {proposal.reason ? (
+            <div className="console-wd-proposal-reason">{proposal.reason}</div>
+          ) : null}
+        </div>
+        <Button
+          size="sm"
+          variant={applied ? 'ghost' : 'primary'}
+          disabled={applied || !canApply}
+          onClick={apply}
+        >
+          {applied ? 'Using for chat' : 'Use for chat'}
+        </Button>
+      </CardBody>
+    </Card>
   )
 }
 

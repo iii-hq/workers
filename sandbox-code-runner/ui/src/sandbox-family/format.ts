@@ -4,10 +4,11 @@
    (ade/web/src/components/chat/sandbox/format.ts) with the
    exit-reason verdict and the 1 MiB truncation detection added. */
 
-import { formatBytes, quoteShellArg } from '../lib/format'
+import { formatRelative } from '@iii-dev/console-ui/format'
+import { quoteShellArg } from '../lib/format'
 import type { EnvShape } from './parsers'
 
-export { formatBytes }
+export { formatAgeSecs, formatBytes } from '../lib/format'
 
 /** Octal mode string `"0755"` → POSIX `"rwxr-xr-x"`. For directories
     the caller can prepend the leading `d` (e.g. `${isDir ? 'd' : '-'}${formatMode(mode)}`). */
@@ -30,19 +31,8 @@ export function formatMode(mode: string): string {
 
 /** Unix seconds → short relative time ("3m ago", "2d ago"). `mtime`
     from the daemon is seconds since epoch (or 0 for unset/unknown). */
-export function formatMtime(unixSecs: number, now = Date.now()): string {
-  if (!unixSecs || unixSecs <= 0) return '—'
-  const deltaSecs = Math.max(0, Math.floor(now / 1000 - unixSecs))
-  if (deltaSecs < 60) return deltaSecs <= 1 ? 'just now' : `${deltaSecs}s ago`
-  const mins = Math.floor(deltaSecs / 60)
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
-  const months = Math.floor(days / 30)
-  if (months < 12) return `${months}mo ago`
-  return `${Math.floor(months / 12)}y ago`
+export function formatMtime(unixSecs: number): string {
+  return !unixSecs || unixSecs <= 0 ? '—' : formatRelative(unixSecs)
 }
 
 /** Truncate the middle of a long path/identifier so head and tail stay
@@ -55,16 +45,6 @@ export function truncateMiddle(value: string, maxLen = 28): string {
 }
 
 /** Humanize an age in seconds. Used by `sandbox::list`. */
-export function formatAgeSecs(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) return '—'
-  if (secs < 60) return `${secs}s`
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h`
-  const days = Math.floor(hours / 24)
-  return `${days}d`
-}
 
 /* --- exit-reason verdict ------------------------------------------------ */
 

@@ -1,5 +1,7 @@
 import { Card, Chip, Markdown, Table, TableBody, TableCell, TableFrame, TableHead, TableHeader, TableRow, TableViewport, type FunctionTriggerMessage, type Host, type TriggerActivityMessage } from '@iii-dev/console-ui'
-import { ChevronRightIcon, CommentIcon, TICKET_PAGE_ID, priorityTone, relativeTime, type Ticket, type TicketSummary } from './shared'
+import { formatRelative, unwrapEnvelope } from '@iii-dev/console-ui/format'
+import { ChevronRight, MessageCircle } from 'lucide-react'
+import { TICKET_PAGE_ID, priorityTone, type Ticket, type TicketSummary } from './shared'
 
 const TICKET_FUNCTIONS = [
   'kanban::ticket::get',
@@ -17,11 +19,8 @@ const TICKET_FUNCTIONS = [
 ]
 
 function unwrapDetails(output: unknown): unknown {
-  if (!output || typeof output !== 'object') return output
-  const record = output as Record<string, unknown>
-  if (record.error) return undefined
-  if (!('details' in record)) return output
-  const details = record.details
+  if (output && typeof output === 'object' && (output as Record<string, unknown>).error) return undefined
+  const details = unwrapEnvelope(output)
   if (typeof details === 'string') {
     try {
       return JSON.parse(details)
@@ -138,15 +137,15 @@ function TicketCard({
         )}
         {comments > 0 ? (
           <span className="kanban-chat-card__comments">
-            <CommentIcon />
+            <MessageCircle size={16} />
             {comments}
           </span>
         ) : null}
-        <span className="kanban-chat-card__time">updated {relativeTime(ticket.updated_at)}</span>
+        <span className="kanban-chat-card__time">updated {formatRelative(ticket.updated_at)}</span>
         {interactive ? (
           <span className="kanban-chat-card__open">
             Open ticket
-            <ChevronRightIcon />
+            <ChevronRight size={16} />
           </span>
         ) : null}
       </div>

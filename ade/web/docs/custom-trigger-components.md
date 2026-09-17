@@ -234,7 +234,8 @@ my-worker/
 Keep React, `react-dom`, `react-dom/client`, `react/jsx-runtime`, and
 `@iii-dev/console-ui` external in the ESM build. Rust workers can embed and
 register the script and stylesheet with the shared `iii-console-ui` crate.
-The full delivery workflow lives in
+The delivery contract lives in
+[`ade/skills/injectable-ui.md`](../../skills/injectable-ui.md); the Rust wiring in
 [`docs/sops/injectable-console-ui.md`](../../../docs/sops/injectable-console-ui.md).
 
 ## Test matrix

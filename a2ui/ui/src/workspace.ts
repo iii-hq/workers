@@ -1,6 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import type { CodeExport } from './types'
-import { unwrapEnvelope } from './types'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 
 interface CreateFileResult {
   path: string

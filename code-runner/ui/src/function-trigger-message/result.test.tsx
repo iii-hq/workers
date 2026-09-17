@@ -35,6 +35,23 @@ import { createRunRenderer } from './run'
 // Hoisted above the imports by vitest, so the renderer module resolves the
 // stub, never the real package's throwing JS entry.
 vi.mock('@iii-dev/console-ui', () => ({
+  Badge: ({ children }: { children?: React.ReactNode }) => <span data-stub="badge">{children}</span>,
+  Chip: ({ children }: { children?: React.ReactNode }) => <span data-stub="chip">{children}</span>,
+  Eyebrow: ({ children }: { children?: React.ReactNode }) => <span data-stub="eyebrow">{children}</span>,
+  MetaRow: ({ children }: { children?: React.ReactNode }) => <div data-stub="meta-row">{children}</div>,
+  StatusPanel: ({ headline, detail }: { headline?: React.ReactNode; detail?: React.ReactNode }) => (
+    <div data-stub="status-panel">
+      {headline}
+      {detail}
+    </div>
+  ),
+  TerminalStream: ({ label, text }: { label: string; text: string }) => (
+    <pre data-stub="terminal-stream">
+      {label}
+      {text}
+    </pre>
+  ),
+  uiClasses: { pulse: 'iii-ui-pulse' },
   Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   TooltipTrigger: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   TooltipContent: ({ children }: { children?: React.ReactNode }) => <span data-stub="tooltip-content">{children}</span>,

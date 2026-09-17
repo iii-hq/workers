@@ -1,5 +1,6 @@
 import type { ReactNode, TextareaHTMLAttributes } from 'react'
-import { Badge } from '@iii-dev/console-ui'
+import { Badge, uiClasses } from '@iii-dev/console-ui'
+import { formatDuration } from '@iii-dev/console-ui/format'
 import type { EvalStatus } from './types'
 
 export function Field({
@@ -16,13 +17,13 @@ export function Field({
   className?: string
 }) {
   return (
-    <label className={`eval-ui-field ${className}`}>
-      {label ? <span className="eval-ui-label">{label}</span> : null}
+    <label className={`${uiClasses.field} ${className}`}>
+      {label ? <span className={uiClasses.fieldLabel}>{label}</span> : null}
       {children}
       {error ? (
-        <span className="eval-ui-field-error">{error}</span>
+        <span className={uiClasses.fieldError}>{error}</span>
       ) : hint ? (
-        <span className="eval-ui-hint">{hint}</span>
+        <span className={uiClasses.fieldDescription}>{hint}</span>
       ) : null}
     </label>
   )
@@ -38,7 +39,7 @@ export function TextArea({
 export function StatusBadge({ status }: { status: EvalStatus }) {
   const variant =
     status === 'completed'
-      ? 'accent'
+      ? 'ok'
       : status === 'failed'
         ? 'alert'
         : status === 'cancelled'
@@ -58,11 +59,7 @@ export function formatMetric(
 ): string {
   if (value === undefined || !Number.isFinite(value)) return '—'
   if (kind === 'percent') return `${(value * 100).toFixed(1)}%`
-  if (kind === 'duration') {
-    return Math.abs(value) >= 1000
-      ? `${(value / 1000).toFixed(2)}s`
-      : `${value.toFixed(0)}ms`
-  }
+  if (kind === 'duration') return formatDuration(value)
   if (kind === 'cost') return `$${value.toFixed(6)}`
   return new Intl.NumberFormat().format(value)
 }

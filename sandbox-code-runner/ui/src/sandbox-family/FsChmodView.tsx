@@ -1,5 +1,6 @@
 /** `sandbox::fs::chmod` — mode change with the decoded rwx string. */
 
+import { ArrowRight } from 'lucide-react'
 import { formatMode } from './format'
 import { fsChmodRequestSchema, fsChmodResponseSchema, safeParseResponse } from './parsers'
 import { Chip, SandboxIdChip } from './shared'
@@ -25,7 +26,7 @@ export function FsChmodView({ input, output }: FsChmodViewProps) {
         <div className="cr-fam-line">
           <span className="faint">chmod</span>
           <span>{req.data.path}</span>
-          <span className="ghost">→</span>
+          <ArrowRight size={16} aria-hidden className="ghost" />
           <span className="num">{req.data.mode}</span>
           <span className="faint">({formatMode(req.data.mode)})</span>
         </div>

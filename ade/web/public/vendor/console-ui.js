@@ -25,6 +25,7 @@ export const {
   CardBody,
   CardHighlight,
   CardHeader,
+  Checkbox,
   Chip,
   CodeEditor,
   CodeHighlight,

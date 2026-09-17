@@ -13,6 +13,7 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 export interface FunctionSummary {
@@ -105,47 +106,6 @@ function triggerRef(row: unknown): RegisteredTriggerRef | null {
   const trigger_type = str(row.trigger_type)
   if (!id || !trigger_type) return null
   return { id, trigger_type, config: row.config }
-}
-
-export function errorMessage(err: unknown): string {
-  const seen = new Set<object>()
-  const describe = (value: unknown): string => {
-    if (value === null || value === undefined) return 'unknown error'
-    if (value instanceof Error) return value.message || value.name
-    if (typeof value !== 'object') return String(value)
-    if (seen.has(value)) return 'unknown error'
-    seen.add(value)
-
-    const record = value as Record<string, unknown>
-    const code = typeof record.code === 'string' ? record.code : undefined
-    const candidates = [
-      record.message,
-      record.error,
-      record.reason,
-      record.detail,
-    ]
-    for (const candidate of candidates) {
-      if (typeof candidate === 'string' && candidate.trim()) {
-        return code ? `${code}: ${candidate}` : candidate
-      }
-      if (candidate && typeof candidate === 'object') {
-        const nested = describe(candidate)
-        if (nested !== 'unknown error') {
-          return code ? `${code}: ${nested}` : nested
-        }
-      }
-    }
-
-    try {
-      const serialized = JSON.stringify(value)
-      if (serialized && serialized !== '{}') return serialized
-    } catch {
-      // Cyclic or otherwise non-serializable errors fall through to a stable
-      // message instead of leaking the unhelpful default object coercion.
-    }
-    return code || 'unknown error'
-  }
-  return describe(err)
 }
 
 export async function listFunctions(

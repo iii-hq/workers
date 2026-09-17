@@ -2,11 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Badge,
   Button,
+  Eyebrow,
+  IconButton,
   JsonHighlight,
   Markdown,
   Skeleton,
+  StatusDot,
   StatusPanel,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { ArrowRight, Check, Copy } from 'lucide-react'
 import { formatDate, formatMetric, shortId, StatusBadge } from '../components'
 import { isTerminal } from '../api'
 import type {
@@ -43,20 +49,11 @@ export function EvaluationDetail({
   const progress = status ?? summary
   const report = result?.report
   const request = result?.request
-  const [copied, setCopied] = useState(false)
-
-  useEffect(() => {
-    if (!copied) return
-    const timer = window.setTimeout(() => setCopied(false), 1_200)
-    return () => window.clearTimeout(timer)
-  }, [copied])
-
-  const copyEvaluationId = async () => {
-    try {
-      await copyText(summary.evaluation_id)
-      setCopied(true)
-    } catch {}
-  }
+  const { state: copyState, copy: copyEvaluationId } = useCopyFlash(
+    summary.evaluation_id,
+    1_200,
+  )
+  const copied = copyState === 'copied'
 
   return (
     <div className="eval-ui-detail">
@@ -69,7 +66,7 @@ export function EvaluationDetail({
             </h1>
             <StatusBadge status={currentStatus} />
             {report?.eligible !== undefined ? (
-              <Badge variant={report.eligible ? 'accent' : 'warn'}>
+              <Badge variant={report.eligible ? 'ok' : 'warn'}>
                 {report.eligible
                   ? 'candidate eligible'
                   : 'candidate not eligible'}
@@ -82,18 +79,20 @@ export function EvaluationDetail({
             {summary.dimension.replace('_', ' ')}
           </p>
           <div className="eval-ui-id">
-            <span className="eval-ui-label">evaluation id</span>
+            <Eyebrow>evaluation id</Eyebrow>
             <code title={summary.evaluation_id}>
               {shortId(summary.evaluation_id)}
             </code>
-            <button
-              type="button"
-              onClick={() => void copyEvaluationId()}
-              aria-label={copied ? 'copied' : 'copy evaluation id'}
-              title={copied ? 'copied' : 'copy'}
+            <IconButton
+              label={copied ? 'copied' : 'copy evaluation id'}
+              onClick={copyEvaluationId}
             >
-              {copied ? <CheckIcon /> : <CopyIcon />}
-            </button>
+              {copied ? (
+                <Check className={uiClasses.icon} aria-hidden />
+              ) : (
+                <Copy className={uiClasses.icon} aria-hidden />
+              )}
+            </IconButton>
             <span className="eval-ui-sr-only" aria-live="polite">
               {copied ? 'Evaluation ID copied to clipboard.' : ''}
             </span>
@@ -227,7 +226,7 @@ function Definition({ result }: { result: EvalResultResponse }) {
       : request.control.prompt
   return (
     <section className="eval-ui-panel">
-      <div className="eval-ui-panel-title">definition</div>
+      <Eyebrow as="div">definition</Eyebrow>
       <div className="eval-ui-definition-meta">
         <span>{request.runs} runs per variant</span>
         <span>{orderLabel(request.execution_order)}</span>
@@ -247,8 +246,8 @@ function Definition({ result }: { result: EvalResultResponse }) {
         ) : null}
       </div>
       <div className="eval-ui-order">
-        <span className="eval-ui-label">execution sequence</span>
-        <span className="eval-ui-hint">
+        <Eyebrow>execution sequence</Eyebrow>
+        <span className={uiClasses.fieldDescription}>
           Runs execute from left to right. A is the baseline; B is the
           candidate.
         </span>
@@ -265,9 +264,10 @@ function Definition({ result }: { result: EvalResultResponse }) {
                 key={`${value}-${index}`}
               >
                 {index > 0 ? (
-                  <span className="eval-ui-order-arrow" aria-hidden="true">
-                    →
-                  </span>
+                  <ArrowRight
+                    className={`${uiClasses.icon} eval-ui-order-arrow`}
+                    aria-hidden
+                  />
                 ) : null}
                 <div className="eval-ui-order-item" title={value}>
                   <strong>{step.marker}</strong>
@@ -279,11 +279,11 @@ function Definition({ result }: { result: EvalResultResponse }) {
         </div>
       </div>
       <div className="eval-ui-shared">
-        <span>
+        <Eyebrow>
           {request.dimension === 'prompt'
             ? 'shared system prompt'
             : 'shared prompt'}
-        </span>
+        </Eyebrow>
         <pre>
           {request.dimension === 'prompt' && shared === null
             ? '— no system prompt —'
@@ -297,10 +297,10 @@ function Definition({ result }: { result: EvalResultResponse }) {
         ].map(({ marker, role, variant }) => {
           return (
             <div className="eval-ui-variant readonly" key={role}>
-              <div className="eval-ui-variant-title">
+              <Eyebrow as="div" className="eval-ui-variant-title">
                 {marker} · {variant.label ?? role}
-              </div>
-              <span className="eval-ui-label">{varied}</span>
+              </Eyebrow>
+              <Eyebrow>{varied}</Eyebrow>
               <pre>
                 {request.dimension === 'prompt'
                   ? variant.prompt
@@ -328,9 +328,9 @@ function Report({
   const progress = result.progress
   return (
     <section className="eval-ui-panel">
-      <div className="eval-ui-panel-title">report</div>
+      <Eyebrow as="div">report</Eyebrow>
       <div className="eval-ui-report-section">
-        <div className="eval-ui-label">runs</div>
+        <Eyebrow as="div">runs</Eyebrow>
         <Runs
           runs={progress.runs}
           controlLabel={result.request.control.label ?? 'baseline'}
@@ -340,7 +340,7 @@ function Report({
         />
       </div>
       <div className="eval-ui-report-section">
-        <div className="eval-ui-label">summary</div>
+        <Eyebrow as="div">summary</Eyebrow>
         <div className="eval-ui-report-note">
           A is the baseline. B is the candidate. Delta is B − A.
         </div>
@@ -566,7 +566,9 @@ function Runs({
             className={`eval-ui-run-pair${orderSensitive ? ' order-sensitive' : ''}`}
             key={iteration}
           >
-            <div className="eval-ui-run-pair-head">iteration {iteration}</div>
+            <Eyebrow as="div" className="eval-ui-run-pair-head">
+              iteration {iteration}
+            </Eyebrow>
             <div className="eval-ui-run-pair-grid">
               {pair.control ? (
                 <RunCard
@@ -624,10 +626,11 @@ function RunCard({
   return (
     <button
       type="button"
-      className={`eval-ui-run-card${active ? ' running' : ''}${selected ? ' selected' : ''}`}
+      className={`eval-ui-run-card${selected ? ' selected' : ''}`}
       onClick={() => onSelect(run.run_id)}
     >
       <span className="eval-ui-run-card-title">
+        {active ? <StatusDot pulse /> : null}
         {marker} · {label}
       </span>
       <span>{runStatus(run)}</span>
@@ -669,13 +672,13 @@ function RunDetail({ run }: { run: EvalRun }) {
           ))}
         </div>
       ) : null}
-      <div className="eval-ui-label">output</div>
+      <Eyebrow as="div">output</Eyebrow>
       <Markdown className="eval-ui-markdown-output">
         {outputAsMarkdown(run.output)}
       </Markdown>
       {run.evaluation?.details !== undefined ? (
         <>
-          <div className="eval-ui-label">evaluator details</div>
+          <Eyebrow as="div">evaluator details</Eyebrow>
           <JsonHighlight
             code={JSON.stringify(run.evaluation.details, null, 2)}
             wrap
@@ -707,55 +710,6 @@ function executionStep(
     return { marker: 'B', label: treatmentLabel }
   }
   return { marker: '?', label: role || value }
-}
-
-function CopyIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      aria-hidden
-    >
-      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  )
-}
-
-function CheckIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      aria-hidden
-    >
-      <path d="m20 6-11 11-5-5" />
-    </svg>
-  )
-}
-
-async function copyText(value: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value)
-    return
-  }
-  const input = document.createElement('textarea')
-  input.value = value
-  input.style.position = 'fixed'
-  input.style.opacity = '0'
-  document.body.appendChild(input)
-  input.select()
-  const copied = document.execCommand('copy')
-  input.remove()
-  if (!copied) throw new Error('copy command failed')
 }
 
 function ArtifactHashes({

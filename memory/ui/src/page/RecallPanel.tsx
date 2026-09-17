@@ -1,12 +1,18 @@
-import { useMemo, useState } from 'react'
 import {
   Badge,
   Button,
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
   EmptyState,
   type Host,
   Input,
+  StatusPanel,
+  uiClasses,
 } from '@iii-dev/console-ui'
-import { ChevronDown, ChevronRight, Search } from './icons'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { ChevronDown, ChevronRight, Search } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { type MemoryItem, preview, type TurnPreview } from './memory-data'
 
 /**
@@ -67,7 +73,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
     try {
       setResult(await preview(host, bank, trimmed))
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(errorMessage(err))
       setResult(null)
     } finally {
       setRunning(false)
@@ -104,7 +110,6 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
           variant="primary"
           size="sm"
           disabled={!query.trim() || running}
-          className="mem-ui-gap1"
         >
           <Search size={16} aria-hidden />
           preview turn
@@ -113,7 +118,7 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
 
       {result === null && !error ? (
         <div className="mem-ui-row wrap">
-          <span className="mem-ui-caption">Try</span>
+          <span className={uiClasses.eyebrow}>Try</span>
           {examples.map((example) => (
             <button
               key={example}
@@ -130,16 +135,14 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
         </div>
       ) : null}
 
-      {error ? <p className="mem-ui-error-text">{error}</p> : null}
+      {error ? (
+        <StatusPanel variant="alert" headline="the preview failed." detail={error} />
+      ) : null}
 
       {result !== null && !error ? (
         <div className="mem-ui-stack">
-          <div className="mem-ui-prompt">
-            <button
-              type="button"
-              onClick={() => setShowPrompt((v) => !v)}
-              className="mem-ui-prompt-head"
-            >
+          <CollapsibleCard open={showPrompt} onOpenChange={setShowPrompt}>
+            <CollapsibleCardTrigger className="mem-ui-prompt-head">
               {showPrompt ? (
                 <ChevronDown size={16} style={ghost} aria-hidden />
               ) : (
@@ -152,13 +155,13 @@ export function RecallPanel({ host, bank, memories, tags }: RecallPanelProps) {
               </span>
               <span className="mem-ui-spacer" />
               <span className="mem-ui-subhint">Every turn, guaranteed</span>
-            </button>
-            {showPrompt ? (
+            </CollapsibleCardTrigger>
+            <CollapsibleCardContent>
               <pre className="mem-ui-prompt-body">
                 {result.systemPromptSection.trim()}
               </pre>
-            ) : null}
-          </div>
+            </CollapsibleCardContent>
+          </CollapsibleCard>
 
           {result.memories.length === 0 ? (
             <EmptyState

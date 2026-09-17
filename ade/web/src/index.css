@@ -87,6 +87,10 @@
   --color-alert-muted: rgba(255, 0, 38, 0.08);
   --color-warn: #a87a00;
   --color-warn-muted: rgba(168, 122, 0, 0.12);
+  /* Status as small text (11–12px): the same hues pushed to AA on the
+     surface ramp. A dot, a mark or a badge keeps the base tone. */
+  --color-alert-strong: #c60021;
+  --color-warn-strong: #7a5700;
   /* Diff additions (coder update-file echoes) — the palette's only green.
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
   --color-ok: #356f3d;
@@ -253,6 +257,8 @@
   --color-alert-muted: rgba(240, 93, 104, 0.12);
   --color-warn: #f5a524;
   --color-warn-muted: rgba(245, 165, 36, 0.12);
+  --color-alert-strong: #ff4d63;
+  --color-warn-strong: #d49b00;
   --color-ok: #36c98f;
   --color-ok-muted: rgba(54, 201, 143, 0.12);
   --color-workdir: #0ea5e9;

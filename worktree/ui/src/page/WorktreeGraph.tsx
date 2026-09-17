@@ -1,6 +1,6 @@
 import { StatusDot } from '@iii-dev/console-ui'
 import { useMemo } from 'react'
-import { FolderGit2, GitBranch, GitMerge } from './icons'
+import { FolderGit2, GitBranch, GitMerge } from 'lucide-react'
 import { layoutWorktreeGraph } from './layout'
 import {
   cn,
@@ -17,10 +17,9 @@ import {
  * and worktree on top of a single SVG carrying the orthogonal edges, all
  * sized by the pure layout in `layout.ts`. No graph dependency; the
  * schematic feel comes from hairline edges, elbow paths, and the lifecycle
- * dot. Ported from the console page — the layout math is verbatim;
- * Tailwind utilities became scoped `wt-ui-*` classes (see styles.css) and
- * lucide icons became the inline set in icons.tsx. Selection follows the
- * redesign rule: wash + 2px accent bar + stronger branch, not color alone.
+ * dot. Ported from the console page — the layout math is verbatim. Selection
+ * follows the redesign rule: wash + 2px edge rail + stronger branch, not
+ * color alone.
  */
 
 interface WorktreeGraphProps {
@@ -42,6 +41,7 @@ export function WorktreeGraph({
       className="wt-ui-graph"
       style={{ width: layout.width, height: layout.height }}
     >
+      {/* the edge diagram itself, not an icon. lint-allow no-inline-svg */}
       <svg
         aria-hidden="true"
         role="presentation"

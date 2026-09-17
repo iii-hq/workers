@@ -4,9 +4,9 @@
  * suite can cover them without a renderer.
  */
 
-import { formatBytes } from '../lib/format'
+import { formatDuration } from '@iii-dev/console-ui/format'
 
-export { formatBytes }
+export { formatAgeSecs, formatBytes } from '../lib/format'
 
 /** The three states a fleet row can be in, derived from `sandbox::list`.
  *  Busy wins over running; stopped wins over both. */
@@ -22,15 +22,6 @@ export function sandboxState(sandbox: {
 }
 
 /** Humanize an age in seconds, mirroring `sandbox::list`'s `age_secs`. */
-export function formatAgeSecs(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) return '—'
-  if (secs < 60) return `${Math.floor(secs)}s`
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return `${mins}m`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
 
 /** Age to display NOW: the wire's `age_secs` plus the seconds since the
  *  snapshot carrying it landed — fleet events are change-only, so ages
@@ -61,20 +52,9 @@ export function reapCountdownSecs(
 
 /** `300000` → `5m`, `90500` → `1m 30s`, `800.7` → `800ms` — sub-second
  *  values floor to whole ms, everything else to whole seconds. */
-export function formatMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return '—'
-  if (ms < 1000) return `${Math.floor(ms)}ms`
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  const rest = s % 60
-  return rest ? `${m}m ${rest}s` : `${m}m`
-}
-
-/** `900` → `15m`, `45` → `45s`. Seconds-denominated config knobs. */
 export function formatSecs(secs: number): string {
   if (!Number.isFinite(secs) || secs < 0) return '—'
-  return formatMs(secs * 1000)
+  return formatDuration(secs * 1000)
 }
 
 /** `sbx-3f9a2c1e-…` → `sbx-3f9a2c1e…` — enough head to tell rows apart. */

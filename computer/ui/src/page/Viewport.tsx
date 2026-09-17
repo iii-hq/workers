@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { cn } from '../lib/cn'
 import type { LiveFrame } from './useLiveFrames'
 
 /**
@@ -240,7 +239,7 @@ export function Viewport({
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
-      className={cn('cp-ui-vp', interactive && 'is-live')}
+      className={`cp-ui-vp${interactive ? ' is-live' : ''}`}
     >
       {frame ? (
         <img

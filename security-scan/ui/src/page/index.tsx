@@ -1,34 +1,34 @@
 import {
   Button,
   EmptyState,
+  Eyebrow,
   type Host,
-  Input,
   PageBody,
   PageHeader,
   PageMain,
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  SearchField,
   Select,
+  Skeleton,
   StatusDot,
+  StatusPanel,
+  uiClasses,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { errText } from './errors.js'
-import { AlertIcon, ChatIcon, RefreshIcon, SearchIcon, ShieldIcon } from './icons'
+import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
+import { MessageSquare, RefreshCw, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ScanRequestForm } from './ScanRequestForm'
 import { buildStatusOptions } from './security-dashboard.js'
 import { SecurityRunDetail } from './SecurityRunDetail'
 import {
-  formatRelativeTime,
   formatStatus,
   formatTimestamp,
   ensureAnalysisConversation,
-  isSafeGitHubHttpsUrl,
   isTerminal,
   listAnalysisConversations,
-  loadComposerModel,
-  loadScanFormDefaults,
-  normalizeCommitSha,
   openAnalysisConversation,
   RUN_STATUSES,
   type RunFilters,
@@ -56,34 +56,6 @@ type SuggestionState = {
   message: string | null
 }
 
-function classNames(...values: Array<string | false | null | undefined>): string {
-  return values.filter(Boolean).join(' ')
-}
-
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-
-  const ref = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-
-  return [ref, narrow]
-}
-
 function statusTone(status: RunStatus): 'accent' | 'alert' | 'warn' | 'ink' {
   if (status === 'failed') return 'alert'
   if (status === 'cancelling') return 'warn'
@@ -93,6 +65,11 @@ function statusTone(status: RunStatus): 'accent' | 'alert' | 'warn' | 'ink' {
 
 function findingLabel(count: number): string {
   return `${count} ${count === 1 ? 'finding' : 'findings'}`
+}
+
+function ago(timestamp: number): string {
+  const relative = formatRelative(timestamp)
+  return relative === 'just now' ? relative : `${relative} ago`
 }
 
 function RunListRow({
@@ -119,7 +96,8 @@ function RunListRow({
     <li className="security-scan-ui-run-item">
       <button
         type="button"
-        className={classNames('security-scan-ui-run', selected && 'is-selected')}
+        className="security-scan-ui-run"
+        data-selected={selected ? 'true' : undefined}
         aria-current={selected ? 'true' : undefined}
         aria-label={`${run.repository} ${commitScopeLabel(run)}, ${formatStatus(run.status)}, ${findingLabel(run.finding_count)}`}
         data-run-id={run.run_id}
@@ -142,7 +120,7 @@ function RunListRow({
           ) : null}
         </span>
         <span className="security-scan-ui-run-meta">
-          <span title={formatTimestamp(run.updated_at)}>{formatRelativeTime(run.updated_at)}</span>
+          <span title={formatTimestamp(run.updated_at)}>{ago(run.updated_at)}</span>
           <span className="security-scan-ui-run-result">
             <span className="security-scan-ui-run-status">{formatStatus(run.status)}</span>
             <span className="security-scan-ui-run-count">{findingLabel(run.finding_count)}</span>
@@ -164,7 +142,7 @@ function RunListRow({
                 onOpenChat()
               }}
             >
-              <ChatIcon size={16} />
+              <MessageSquare size={16} />
             </Button>
           ) : null}
           {stoppable || run.status === 'cancelling' ? (
@@ -188,8 +166,6 @@ function RunListRow({
   )
 }
 
-const EmptyShield = () => <ShieldIcon size={28} />
-
 export function SecurityScanPage({
   host,
   panelSide = 'left',
@@ -210,7 +186,7 @@ export function SecurityScanPage({
   const [followStartConversationId, setFollowStartConversationId] = useState<string | null>(null)
   const [cancelStates, setCancelStates] = useState<RetryStates>({})
   const [analysisSessionIds, setAnalysisSessionIds] = useState<Record<string, string>>({})
-  const [bodyRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const { ref: shellRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
   const detailBackRef = useRef<HTMLButtonElement | null>(null)
   const repositoryFilterRef = useRef<HTMLInputElement | null>(null)
   const runButtonRefs = useRef(new Map<string, HTMLButtonElement>())
@@ -365,7 +341,7 @@ export function SecurityScanPage({
         retryError = 'Cleanup is still pending. Retry again shortly.'
       }
     } catch (error) {
-      retryError = errText(error)
+      retryError = errorMessage(error)
     } finally {
       setRetryStates((current) => settleRetry(current, runId, retryError))
     }
@@ -378,7 +354,7 @@ export function SecurityScanPage({
       await cancelRun(host, runId)
       if (followRunId === runId) setFollowRunId(null)
     } catch (error) {
-      cancelError = errText(error)
+      cancelError = errorMessage(error)
     } finally {
       setCancelStates((current) => settleRetry(current, runId, cancelError))
     }
@@ -411,7 +387,7 @@ export function SecurityScanPage({
       setSuggestionState({
         runId,
         pending: false,
-        error: errText(error),
+        error: errorMessage(error),
         message: null,
       })
     }
@@ -427,9 +403,9 @@ export function SecurityScanPage({
   const filtersActive = Boolean(filters.repository.trim() || filters.status)
 
   return (
-    <PageShell className={classNames('security-scan-ui-shell', narrow && 'is-narrow')}>
+    <PageShell ref={shellRef} className="security-scan-ui-shell" data-narrow={narrow ? 'true' : undefined}>
       <PageHeader
-        icon={<ShieldIcon />}
+        icon={<ShieldCheck />}
         title="security scans"
         description={
           loading ? (narrow ? 'loading' : 'loading review history') : scanHistoryDescription(totalRuns, narrow)
@@ -457,7 +433,7 @@ export function SecurityScanPage({
               onClick={refresh}
               disabled={loading}
             >
-              <RefreshIcon size={16} className={refreshing ? 'is-spinning' : undefined} />
+              <RefreshCw size={16} className={refreshing ? uiClasses.spin : undefined} />
               <span>refresh</span>
             </Button>
           </>
@@ -465,170 +441,173 @@ export function SecurityScanPage({
         onClose={onRequestClose}
       />
 
-      <div ref={bodyRef} className="security-scan-ui-body-observer">
-        <PageBody side={panelSide} className={classNames('security-scan-ui-body', narrow && 'is-narrow')}>
-          {showSidebar ? (
-            <PageSidebar width={320} className="security-scan-ui-sidebar">
-              <div className="security-scan-ui-history-head">
-                <div>
-                  <span className="security-scan-ui-section-label">history</span>
-                  <strong>Scan runs</strong>
-                </div>
-                <span aria-live="polite">
-                  {runs.length === totalRuns ? totalRuns : `${runs.length} of ${totalRuns}`}
-                </span>
+      <PageBody side={panelSide} className="security-scan-ui-body">
+        {showSidebar ? (
+          <PageSidebar width={320} className="security-scan-ui-sidebar">
+            <div className="security-scan-ui-history-head">
+              <div>
+                <Eyebrow>history</Eyebrow>
+                <strong>Scan runs</strong>
               </div>
-              <ScanRequestForm
-                host={host}
-                conversationId={conversationId}
-                onStarted={(runId) => {
-                  setFilters({ repository: '', status: '' })
-                  setPendingNewRunId(runId)
-                  beginFollow(runId)
-                  refresh()
-                }}
-              />
-              <div className="security-scan-ui-filters">
-                <div className="security-scan-ui-filter-head">
-                  <span>filter history</span>
-                  {filtersActive ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setFilters({ repository: '', status: '' })
-                        setNarrowDetailOpen(false)
-                      }}
-                    >
-                      clear
-                    </Button>
-                  ) : null}
-                </div>
-                <div className="security-scan-ui-filter">
-                  <label htmlFor="security-scan-repository-filter">repository</label>
-                  <div className="security-scan-ui-input-wrap">
-                    <SearchIcon size={16} />
-                    <Input
-                      ref={repositoryFilterRef}
-                      id="security-scan-repository-filter"
-                      value={filters.repository}
-                      onChange={(repository) => {
-                        setFilters((current) => ({ ...current, repository }))
-                        setNarrowDetailOpen(false)
-                      }}
-                      placeholder="all repository IDs"
-                      preserveCase
-                      spellCheck={false}
-                    />
-                  </div>
-                </div>
-                <div className="security-scan-ui-filter">
-                  <span id="security-scan-status-label">status</span>
-                  <Select
-                    value={filters.status || 'all'}
-                    options={statusOptions}
-                    onChange={(status) => {
-                      setFilters((current) => ({
-                        ...current,
-                        status: status === 'all' ? '' : status,
-                      }))
+              <span aria-live="polite">{runs.length === totalRuns ? totalRuns : `${runs.length} of ${totalRuns}`}</span>
+            </div>
+            <ScanRequestForm
+              host={host}
+              conversationId={conversationId}
+              onStarted={(runId) => {
+                setFilters({ repository: '', status: '' })
+                setPendingNewRunId(runId)
+                beginFollow(runId)
+                refresh()
+              }}
+            />
+            <div className="security-scan-ui-filters">
+              <div className="security-scan-ui-filter-head">
+                <Eyebrow>filter history</Eyebrow>
+                {filtersActive ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setFilters({ repository: '', status: '' })
                       setNarrowDetailOpen(false)
                     }}
-                    aria-label="Filter runs by status"
-                  />
-                </div>
+                  >
+                    clear
+                  </Button>
+                ) : null}
               </div>
+              <div className="security-scan-ui-filter">
+                <label htmlFor="security-scan-repository-filter" className={uiClasses.eyebrow}>
+                  repository
+                </label>
+                <SearchField
+                  ref={repositoryFilterRef}
+                  id="security-scan-repository-filter"
+                  value={filters.repository}
+                  onChange={(repository) => {
+                    setFilters((current) => ({ ...current, repository }))
+                    setNarrowDetailOpen(false)
+                  }}
+                  placeholder="all repository IDs"
+                  aria-label="repository"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="security-scan-ui-filter">
+                <span id="security-scan-status-label" className={uiClasses.eyebrow}>
+                  status
+                </span>
+                <Select
+                  value={filters.status || 'all'}
+                  options={statusOptions}
+                  onChange={(status) => {
+                    setFilters((current) => ({
+                      ...current,
+                      status: status === 'all' ? '' : status,
+                    }))
+                    setNarrowDetailOpen(false)
+                  }}
+                  aria-label="Filter runs by status"
+                />
+              </div>
+            </div>
 
-              <div className="security-scan-ui-run-scroll">
-                {listError ? (
-                  <div className="security-scan-ui-list-error" role="alert">
-                    <AlertIcon size={18} />
-                    <p>{listError}</p>
+            <div className="security-scan-ui-run-scroll">
+              {listError ? (
+                <StatusPanel
+                  variant="alert"
+                  role="alert"
+                  icon={<TriangleAlert size={16} />}
+                  headline="failed to load runs"
+                  detail={listError}
+                  action={
                     <Button variant="ghost" size="sm" onClick={refresh}>
                       retry
                     </Button>
-                  </div>
-                ) : loading && runs.length === 0 ? (
-                  <div className="security-scan-ui-list-skeleton" role="status" aria-label="Loading security runs">
-                    <span />
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                ) : runs.length === 0 ? (
-                  <div className="security-scan-ui-list-empty">
-                    <ShieldIcon size={22} />
-                    <strong>no matching runs</strong>
-                    <span>Start a scan above, or adjust the filters.</span>
-                  </div>
-                ) : (
-                  <ul className="security-scan-ui-run-list" aria-label="Security scan runs">
-                    {runs.map((run) => (
-                      <RunListRow
-                        key={run.run_id}
-                        run={run}
-                        selected={run.run_id === selectedId}
-                        cancelling={cancelStates[run.run_id]?.pending ?? false}
-                        analysisSessionId={analysisSessionIds[run.run_id]}
-                        onSelect={() => selectRun(run.run_id)}
-                        onCancel={() => void performCancel(run.run_id)}
-                        onOpenChat={() => openAnalysisChat(run.run_id)}
-                        buttonRef={(node) => {
-                          if (node) runButtonRefs.current.set(run.run_id, node)
-                          else runButtonRefs.current.delete(run.run_id)
-                        }}
-                      />
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </PageSidebar>
-          ) : null}
-
-          {showMain ? (
-            <PageMain className="security-scan-ui-main">
-              {selected ? (
-                <SecurityRunDetail
-                  key={selected.run_id}
-                  run={detail}
-                  summary={selected}
-                  loading={detailLoading}
-                  error={detailError}
-                  narrow={narrow}
-                  retrying={retryStates[selected.run_id]?.pending ?? false}
-                  retryError={retryStates[selected.run_id]?.error ?? null}
-                  suggesting={suggestionState?.runId === selected.run_id && suggestionState.pending}
-                  suggestionError={suggestionState?.runId === selected.run_id ? suggestionState.error : null}
-                  suggestionMessage={suggestionState?.runId === selected.run_id ? suggestionState.message : null}
-                  reconciliation={reconciliation}
-                  actions={actions}
-                  backButtonRef={detailBackRef}
-                  onBack={leaveNarrowDetail}
-                  onRetry={performRetry}
-                  onCancel={() => void performCancel(selected.run_id)}
-                  onRequestSuggestions={performSuggestionRequest}
-                  analysisSessionId={analysisSessionIds[selected.run_id]}
-                  onOpenAnalysisChat={() => openAnalysisChat(selected.run_id)}
-                  cancelling={cancelStates[selected.run_id]?.pending ?? false}
-                  cancelError={cancelStates[selected.run_id]?.error ?? null}
+                  }
                 />
+              ) : loading && runs.length === 0 ? (
+                <div className="security-scan-ui-list-skeleton" role="status" aria-label="Loading security runs">
+                  <Skeleton />
+                  <Skeleton />
+                  <Skeleton />
+                  <Skeleton />
+                </div>
               ) : runs.length === 0 ? (
                 <EmptyState
-                  icon={EmptyShield}
-                  title="start a security scan"
-                  description="Use the sidebar form with an allowlisted repository. Leave the SHA blank to analyze the entire repository at HEAD, or paste a 40-character commit SHA. The scan uses the open chat composer model when Console exposes that selection; otherwise it uses the operator default."
+                  compact
+                  icon={ShieldCheck}
+                  title="no matching runs"
+                  description="Start a scan above, or adjust the filters."
                 />
               ) : (
-                <EmptyState
-                  icon={EmptyShield}
-                  title="select a security run"
-                  description="Choose a run to inspect its commit, progress, security overview, evidence, and available guidance."
-                />
+                <ul className="security-scan-ui-run-list" aria-label="Security scan runs">
+                  {runs.map((run) => (
+                    <RunListRow
+                      key={run.run_id}
+                      run={run}
+                      selected={run.run_id === selectedId}
+                      cancelling={cancelStates[run.run_id]?.pending ?? false}
+                      analysisSessionId={analysisSessionIds[run.run_id]}
+                      onSelect={() => selectRun(run.run_id)}
+                      onCancel={() => void performCancel(run.run_id)}
+                      onOpenChat={() => openAnalysisChat(run.run_id)}
+                      buttonRef={(node) => {
+                        if (node) runButtonRefs.current.set(run.run_id, node)
+                        else runButtonRefs.current.delete(run.run_id)
+                      }}
+                    />
+                  ))}
+                </ul>
               )}
-            </PageMain>
-          ) : null}
-        </PageBody>
-      </div>
+            </div>
+          </PageSidebar>
+        ) : null}
+
+        {showMain ? (
+          <PageMain className="security-scan-ui-main">
+            {selected ? (
+              <SecurityRunDetail
+                key={selected.run_id}
+                run={detail}
+                summary={selected}
+                loading={detailLoading}
+                error={detailError}
+                narrow={narrow}
+                retrying={retryStates[selected.run_id]?.pending ?? false}
+                retryError={retryStates[selected.run_id]?.error ?? null}
+                suggesting={suggestionState?.runId === selected.run_id && suggestionState.pending}
+                suggestionError={suggestionState?.runId === selected.run_id ? suggestionState.error : null}
+                suggestionMessage={suggestionState?.runId === selected.run_id ? suggestionState.message : null}
+                reconciliation={reconciliation}
+                actions={actions}
+                backButtonRef={detailBackRef}
+                onBack={leaveNarrowDetail}
+                onRetry={performRetry}
+                onCancel={() => void performCancel(selected.run_id)}
+                onRequestSuggestions={performSuggestionRequest}
+                analysisSessionId={analysisSessionIds[selected.run_id]}
+                onOpenAnalysisChat={() => openAnalysisChat(selected.run_id)}
+                cancelling={cancelStates[selected.run_id]?.pending ?? false}
+                cancelError={cancelStates[selected.run_id]?.error ?? null}
+              />
+            ) : runs.length === 0 ? (
+              <EmptyState
+                icon={ShieldCheck}
+                title="start a security scan"
+                description="Use the sidebar form with an allowlisted repository. Leave the SHA blank to analyze the entire repository at HEAD, or paste a 40-character commit SHA. The scan uses the open chat composer model when Console exposes that selection; otherwise it uses the operator default."
+              />
+            ) : (
+              <EmptyState
+                icon={ShieldCheck}
+                title="select a security run"
+                description="Choose a run to inspect its commit, progress, security overview, evidence, and available guidance."
+              />
+            )}
+          </PageMain>
+        ) : null}
+      </PageBody>
     </PageShell>
   )
 }

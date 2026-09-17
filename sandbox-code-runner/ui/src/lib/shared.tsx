@@ -17,12 +17,19 @@
  * result — stdout, stderr, exit code — not a completion value plus captured
  * console lines. A non-zero exit is a normal response carrying the user's own
  * compiler or runtime message; errors are reserved for infrastructure
- * failures. `Stream` and `ExitStatus` exist to keep that distinction visible.
+ * failures. `ExitStatus` exists to keep that distinction visible.
  */
 
-import { Tooltip, TooltipContent, TooltipTrigger } from '@iii-dev/console-ui'
-import { useState } from 'react'
-import { useCopyFlash } from './clipboard'
+import {
+  Badge,
+  Chip,
+  StatusPanel,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
 import { asRecord, unwrapEnvelope } from './payload'
 
 /* --- payload helpers -------------------------------------------------- */
@@ -148,11 +155,11 @@ export function RuntimeChip({ runtimeId }: { runtimeId: string }) {
           // it aloud, which is exactly the exposure the truncation prevents.
           aria-label="copy the full runtime id"
         >
-          <span className="k">runtime </span>
+          <span className={uiClasses.eyebrow}>runtime</span>
           {truncateRuntimeId(runtimeId)}
           {state === 'idle' ? null : (
-            <span className="cr-ui-rt-flash">
-              {state === 'copied' ? ' copied' : ' copy failed'}
+            <span className={uiClasses.eyebrow}>
+              {state === 'copied' ? 'copied' : 'copy failed'}
             </span>
           )}
         </button>
@@ -188,67 +195,11 @@ export function CardShell({
   return (
     <div className="cr-ui-msg">
       <div className="cr-ui-msg-head">
-        <span className={`cr-ui-pill${running ? ' quiet' : ''}`}>{op}</span>
+        <Badge variant={running ? 'default' : 'accent'}>{op}</Badge>
         {chips}
-        <span className="cr-ui-msg-tag">{tag}</span>
+        <span className={`cr-ui-msg-tag ${uiClasses.eyebrow}`}>{tag}</span>
       </div>
       {children}
-    </div>
-  )
-}
-
-/* --- terminal streams --------------------------------------------------- */
-
-/** Lines of a stream shown before it collapses behind a toggle. */
-const STREAM_CLAMP_LINES = 12
-/** …and a character ceiling, for the one 400 KB line a minifier emits. */
-const STREAM_CLAMP_CHARS = 2000
-
-/**
- * `stdout` / `stderr` as terminal output: monospace, whitespace preserved,
- * clamped so a chatty script cannot flood the chat (the CSS caps the height
- * and scrolls; this caps what is in the DOM at all). `null` for an empty
- * string — the caller decides what "no output" should say, if anything.
- *
- * `tone="err"` tints the stream, and nothing more: stderr on a non-zero exit
- * is the user's own compiler or runtime message, not a system error.
- */
-export function Stream({
-  label,
-  text,
-  tone = 'out',
-}: {
-  label: string
-  text: string
-  tone?: 'out' | 'err'
-}) {
-  const [expanded, setExpanded] = useState(false)
-  if (text.length === 0) return null
-
-  const safe = redactRuntimeIds(text)
-  const lines = safe.split('\n')
-  const long =
-    lines.length > STREAM_CLAMP_LINES || safe.length > STREAM_CLAMP_CHARS
-  const collapsed = long && !expanded
-  const shown = collapsed
-    ? lines.slice(0, STREAM_CLAMP_LINES).join('\n').slice(0, STREAM_CLAMP_CHARS)
-    : safe
-
-  return (
-    <div className={`cr-ui-stream ${tone}`}>
-      <div className="cr-ui-stream-label">{label}</div>
-      <pre className="cr-ui-stream-body">{shown}</pre>
-      {long ? (
-        <button
-          type="button"
-          className="cr-ui-toggle"
-          onClick={() => setExpanded((v) => !v)}
-        >
-          {collapsed
-            ? `expand · ${lines.length} lines, ${safe.length} chars`
-            : 'collapse'}
-        </button>
-      ) : null}
     </div>
   )
 }
@@ -291,9 +242,9 @@ export function ExitStatus({
 
   return (
     <div className="cr-ui-exit">
-      <span className={`cr-ui-exit-code${ok ? ' ok' : ' failed'}`}>
+      <Badge variant={ok ? 'ok' : 'warn'}>
         {exitCode === undefined ? 'exit ?' : `exit ${exitCode}`}
-      </span>
+      </Badge>
       <span className="cr-ui-exit-note">{note}</span>
       {durationMs === undefined ? null : (
         <span className="cr-ui-exit-dur">{durationMs}ms</span>
@@ -330,10 +281,10 @@ export function RegisteredIds({ ids }: { ids: readonly string[] }) {
 export function TimeoutChip({ ms }: { ms?: number }) {
   if (ms === undefined) return null
   return (
-    <span className="cr-ui-chip">
-      <span className="k">timeout </span>
+    <Chip>
+      <span className={uiClasses.eyebrow}>timeout</span>
       {ms}ms
-    </span>
+    </Chip>
   )
 }
 
@@ -390,9 +341,11 @@ export function ErrorCard({
       op={op}
       chips={runtimeId ? <RuntimeChip runtimeId={runtimeId} /> : null}
     >
-      <div className="cr-ui-msg-note cr-ui-alert">
-        {redactRuntimeIds(message)}
-      </div>
+      <StatusPanel
+        variant="alert"
+        className="cr-ui-msg-panel"
+        headline={redactRuntimeIds(message)}
+      />
     </CardShell>
   )
 }
@@ -471,11 +424,12 @@ export function DeniedCard({
 }) {
   return (
     <CardShell op={op}>
-      <div className="cr-ui-msg-note cr-ui-warn">
-        · denied at the gate — this never ran
-        {deniedBy ? ` · denied by ${deniedBy}` : ''}
-      </div>
-      <div className="cr-ui-msg-note">{redactRuntimeIds(reason)}</div>
+      <StatusPanel
+        variant="warn"
+        className="cr-ui-msg-panel"
+        headline={`denied at the gate — this never ran${deniedBy ? ` · denied by ${deniedBy}` : ''}`}
+        detail={redactRuntimeIds(reason)}
+      />
     </CardShell>
   )
 }

@@ -5,9 +5,9 @@
  */
 
 import { Button, Chip, type Host, StatusPanel } from '@iii-dev/console-ui'
+import { Square, Volume2 } from 'lucide-react'
 import { useState } from 'react'
 import { speak } from '../lib/client'
-import { SpeakerIcon, StopIcon } from '../lib/icons'
 import { useBrowserPlayback } from '../lib/playback'
 import type { DoctorResponse } from '../lib/types'
 import { Fact, Facts, SectionCard } from './shared'
@@ -51,7 +51,7 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
         <div className="voice-inline-actions">
           {busy ? (
             <Button variant="primary" onClick={stop}>
-              <StopIcon />
+              <Square />
               Stop
             </Button>
           ) : (
@@ -60,7 +60,7 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
               onClick={onSpeak}
               disabled={disabled || !text.trim()}
             >
-              <SpeakerIcon />
+              <Volume2 />
               {selectedText ? 'Read selection' : 'Speak'}
             </Button>
           )}

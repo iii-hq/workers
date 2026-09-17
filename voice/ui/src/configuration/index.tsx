@@ -19,11 +19,11 @@ import {
   SettingsSection,
   StatusPanel,
 } from '@iii-dev/console-ui'
+import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useState } from 'react'
 import { modelsDownload, modelsList } from '../lib/client'
 import { ModelDownload } from '../lib/ModelDownload'
 import { PiperVoicePicker } from '../lib/PiperVoicePicker'
-import { errorMessage } from '../lib/format'
 import { modelOptions } from '../lib/models'
 import { useModelProgress } from '../lib/progress'
 import { DEFAULTS, NONE, numberAt, setPath, stringAt } from '../lib/config'
@@ -31,11 +31,7 @@ import { routerModelOptions, useRouterSpeechModels } from '../lib/router'
 import type { ModelInfo } from '../lib/types'
 
 function describeModel(m: ModelInfo): string {
-  const size =
-    m.size_bytes >= 1_000_000_000
-      ? `${(m.size_bytes / 1_000_000_000).toFixed(1)} GB`
-      : `${Math.round(m.size_bytes / 1_000_000)} MB`
-  return `${m.name} · ${size} · ${m.installed ? 'installed' : 'not downloaded'}`
+  return `${m.name} · ${formatBytes(m.size_bytes)} · ${m.installed ? 'installed' : 'not downloaded'}`
 }
 
 export function createVoiceConfigForm(host: Host) {

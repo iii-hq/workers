@@ -7,9 +7,14 @@
  * bar + stronger id, never color alone.
  */
 
-import { Badge, Button, StatusDot } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Skeleton,
+  StatusDot,
+} from '@iii-dev/console-ui'
 import type { KeyboardEvent } from 'react'
-import { cn } from '../lib/cn'
 import type { ComputerSessionInfo } from '../lib/computer'
 import { formatAge, shortEndpoint } from '../lib/format'
 
@@ -34,22 +39,25 @@ export function SessionRail({
     if (loading) {
       return (
         <div className="cp-ui-rail-skel" aria-hidden>
-          {[0, 1, 2].map((i) => (
+          {[
+            [60, 90],
+            [75, 85],
+            [40, 70],
+          ].map(([id, meta], i) => (
             <div key={i} className="cp-ui-skel-row">
-              <span className={`bar w${[60, 75, 40][i]}`} />
-              <span className={`bar w${[90, 85, 70][i]}`} />
+              <Skeleton style={{ width: `${id}%` }} />
+              <Skeleton style={{ width: `${meta}%` }} />
             </div>
           ))}
         </div>
       )
     }
     return (
-      <div className="cp-ui-rail-empty">
-        <p>No sessions yet.</p>
-        <p className="dim">
-          Desktops started here or from chat appear in this list live.
-        </p>
-      </div>
+      <EmptyState
+        compact
+        title="No sessions yet."
+        description="Desktops started here or from chat appear in this list live."
+      />
     )
   }
 
@@ -74,7 +82,7 @@ export function SessionRail({
         const selected = session.session_id === selectedId
         return (
           <li key={session.session_id}>
-            <div className={cn('cp-ui-rail-row', selected && 'active')}>
+            <div className={`cp-ui-rail-row${selected ? ' active' : ''}`}>
               <button
                 type="button"
                 className="cp-ui-rail-pick"
@@ -88,9 +96,7 @@ export function SessionRail({
                     aria-hidden
                   />
                   <span className="cp-ui-rail-id">{session.session_id}</span>
-                  <Badge variant="default" className="cp-ui-pill">
-                    {session.os}
-                  </Badge>
+                  <Badge variant="default">{session.os}</Badge>
                 </span>
                 <span className="cp-ui-rail-meta">
                   {shortEndpoint(session.endpoint)} · {session.screen.width}x

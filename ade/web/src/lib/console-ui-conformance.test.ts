@@ -37,6 +37,7 @@ import {
   BottomSheetTrigger,
 } from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
+import { Checkbox } from '@/components/ui/Checkbox'
 import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
 import {
@@ -162,6 +163,7 @@ const conformance: {
   CardBody: typeof ConsoleUi.CardBody
   CardHighlight: typeof ConsoleUi.CardHighlight
   CardHeader: typeof ConsoleUi.CardHeader
+  Checkbox: typeof ConsoleUi.Checkbox
   Chip: typeof ConsoleUi.Chip
   CodeEditor: typeof ConsoleUi.CodeEditor
   CodeHighlight: typeof ConsoleUi.CodeHighlight
@@ -264,6 +266,7 @@ const conformance: {
   CardBody,
   CardHighlight,
   CardHeader,
+  Checkbox,
   Chip,
   CodeEditor,
   CodeHighlight,

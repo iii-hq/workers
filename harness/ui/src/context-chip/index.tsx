@@ -1,24 +1,32 @@
 /**
  * The `context` session chip — a live view of the session's context window
- * matching the console's ContextUsage aesthetic (`ctx` label, bordered bar,
- * percent, `12.3k/200k` counts). Hydrates from the stored snapshot
- * (`state::get` on `harness_context/<session id>`) on mount and per session
- * change; stays live over the state worker's own `state` trigger for that
- * key (Message-path binding, GC'd with the tab), which fires on every
- * generate step. Click toggles an anchored popover breaking the window down
- * by category with a stacked segment bar, legend, and last-turn actuals.
+ * matching the console's ContextUsage aesthetic (`ctx` label, bar, `12.3k/200k`
+ * counts). Hydrates from the stored snapshot (`state::get` on
+ * `harness_context/<session id>`) on mount and per session change; stays live
+ * over the state worker's own `state` trigger for that key (Message-path
+ * binding, GC'd with the tab), which fires on every generate step. Click opens
+ * the breakdown — a `Dialog` on desktop, a `BottomSheet` on phones — with a
+ * stacked segment bar, legend, and last-turn actuals.
  */
 
-import type { Host } from '@iii-dev/console-ui'
-import type { CSSProperties, ReactNode, RefObject } from 'react'
 import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from 'react'
-import { createPortal } from 'react-dom'
+  Badge,
+  BottomSheet,
+  BottomSheetContent,
+  BottomSheetTrigger,
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  DialogTrigger,
+  type Host,
+  uiClasses,
+} from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { ChevronDown } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { formatCost, formatTokens } from '../lib/format'
 import {
   type ContextSnapshot,
@@ -29,7 +37,8 @@ import { TONE_COLOR, toneFor } from '../lib/tone'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
-const MOBILE_CONTEXT_QUERY = '(max-width: 767px)'
+/** Phone chrome only (sheet vs dialog), the console's one viewport breakpoint. */
+const PHONE_QUERY = '(max-width: 639px)'
 
 export interface SessionChipProps {
   sessionId: string
@@ -47,23 +56,19 @@ interface StateEvent {
   new_value?: unknown
 }
 
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() =>
-    typeof window === 'undefined' || typeof window.matchMedia !== 'function'
-      ? false
-      : window.matchMedia(query).matches,
+function usePhone(): boolean {
+  const [phone, setPhone] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia?.(PHONE_QUERY).matches === true,
   )
-
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
-    const media = window.matchMedia(query)
-    const update = () => setMatches(media.matches)
+    const media = window.matchMedia(PHONE_QUERY)
+    const update = () => setPhone(media.matches)
     update()
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
-  }, [query])
-
-  return matches
+  }, [])
+  return phone
 }
 
 const ink = (opacity: number) =>
@@ -249,98 +254,38 @@ function LegendRow({
         style={color ? { background: color } : { visibility: 'hidden' }}
       />
       <span className="harness-ui-legend-label">{label}</span>
-      {badge ? <span className="harness-ui-badge">{badge}</span> : null}
+      {badge ? <Badge variant="warn">{badge}</Badge> : null}
       <span className="harness-ui-legend-val">{formatTokens(tokens)}</span>
       <span className="harness-ui-legend-pct">{pct}%</span>
     </div>
   )
 }
 
-/** Clipboard write that survives http://<LAN-IP> (insecure context, where
- *  navigator.clipboard is undefined) — the console's lib/clipboard strategy,
- *  inlined because injected bundles only get components from
- *  @iii-dev/console-ui, not its libs. */
-async function copyText(text: string): Promise<boolean> {
-  if (typeof navigator !== 'undefined' && navigator.clipboard) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return true
-    } catch {
-      // Permissions can reject even on secure origins — try the fallback.
-    }
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.setAttribute('readonly', '')
-  textarea.style.position = 'fixed'
-  textarea.style.left = '-9999px'
-  document.body.appendChild(textarea)
-  textarea.select()
-  let ok = false
-  try {
-    ok = document.execCommand('copy')
-  } catch {
-    ok = false
-  }
-  textarea.remove()
-  return ok
-}
-
 /** Footer row: the session id (the `state::get` / session-store key),
-    truncated to fit the 300px popover, with a copy affordance. */
+    truncated to fit the popover, with a copy affordance. */
 function SessionIdRow({ sessionId }: { sessionId: string }) {
-  const [copied, setCopied] = useState(false)
-  const handleCopy = useCallback(() => {
-    void copyText(sessionId).then((ok) => {
-      if (!ok) return
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
-    })
-  }, [sessionId])
+  const { state, copy } = useCopyFlash(sessionId, 1200)
   return (
     <span className="harness-ui-pop-session">
       <span className="harness-ui-pop-session-id" title={sessionId}>
         session {sessionId}
       </span>
-      <button
-        type="button"
-        className="harness-ui-pop-copy"
-        onClick={handleCopy}
-        data-copied={copied || undefined}
-        aria-label="copy session id"
-      >
-        {copied ? 'copied' : 'copy'}
-      </button>
+      <Button variant="ghost" size="sm" onClick={copy} aria-label="copy session id">
+        {state === 'copied' ? 'copied' : 'copy'}
+      </Button>
     </span>
   )
 }
 
-function ContextCloseButton({
-  onClose,
-  buttonRef,
-}: {
-  onClose: () => void
-  buttonRef: RefObject<HTMLButtonElement | null>
-}) {
+/** The dialog's title and one-line descriptor: model, then usage. */
+function PopoverHead({ model, usage }: { model: string; usage: string }) {
   return (
-    <button
-      ref={buttonRef}
-      type="button"
-      className="harness-ui-pop-close"
-      onClick={onClose}
-      aria-label="close context breakdown"
-    >
-      <svg
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        aria-hidden
-      >
-        <path d="M18 6 6 18M6 6l12 12" />
-      </svg>
-    </button>
+    <div className="harness-ui-pop-head">
+      <DialogTitle>Context breakdown</DialogTitle>
+      <DialogDescription className="harness-ui-pop-usage">
+        {model} · {usage}
+      </DialogDescription>
+    </div>
   )
 }
 
@@ -348,16 +293,10 @@ function ContextPopover({
   snapshot,
   modelId,
   sessionId,
-  modal,
-  onClose,
-  closeButtonRef,
 }: {
   snapshot: ContextSnapshot
   modelId?: string
   sessionId: string
-  modal: boolean
-  onClose: () => void
-  closeButtonRef: RefObject<HTMLButtonElement | null>
 }) {
   const usable = snapshot.usable
   const pct =
@@ -368,26 +307,11 @@ function ContextPopover({
     usage != null && (usage.input != null || usage.cache_read != null)
   const cache = cacheSummary(usage)
   return (
-    <div
-      className="harness-ui-pop"
-      role="dialog"
-      aria-label="context breakdown"
-      aria-modal={modal || undefined}
-    >
-      <div className="harness-ui-pop-head">
-        <span className="harness-ui-pop-head-copy">
-          <span className="harness-ui-pop-model">
-            {snapshot.model || modelId || 'model'}
-          </span>
-          <span className="harness-ui-pop-usage">
-            {pct}% of {formatTokens(usable)}
-          </span>
-        </span>
-        <ContextCloseButton
-          onClose={onClose}
-          buttonRef={closeButtonRef}
-        />
-      </div>
+    <div className="harness-ui-pop">
+      <PopoverHead
+        model={snapshot.model || modelId || 'model'}
+        usage={`${pct}% of ${formatTokens(usable)}`}
+      />
       <div className="harness-ui-stack">
         {cats
           .filter((segment) => segment.tokens > 0)
@@ -467,35 +391,15 @@ function EmptyContextPopover({
   modelId,
   contextWindow,
   sessionId,
-  modal,
-  onClose,
-  closeButtonRef,
 }: {
   modelId?: string
   contextWindow?: number
   sessionId: string
-  modal: boolean
-  onClose: () => void
-  closeButtonRef: RefObject<HTMLButtonElement | null>
 }) {
   const hasWindow = contextWindow !== undefined && contextWindow > 0
   return (
-    <div
-      className="harness-ui-pop"
-      role="dialog"
-      aria-label="context breakdown"
-      aria-modal={modal || undefined}
-    >
-      <div className="harness-ui-pop-head">
-        <span className="harness-ui-pop-head-copy">
-          <span className="harness-ui-pop-model">{modelId || 'model'}</span>
-          <span className="harness-ui-pop-usage">waiting for usage</span>
-        </span>
-        <ContextCloseButton
-          onClose={onClose}
-          buttonRef={closeButtonRef}
-        />
-      </div>
+    <div className="harness-ui-pop">
+      <PopoverHead model={modelId || 'model'} usage="waiting for usage" />
       {hasWindow ? (
         <>
           <div className="harness-ui-stack" />
@@ -521,233 +425,43 @@ function EmptyContextPopover({
   )
 }
 
-function ContextCaret() {
-  return (
-    <svg
-      className="harness-ui-chip-caret"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <title>Show context details</title>
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  )
-}
-
-interface ContextSurfaceRenderProps {
-  modal: boolean
-  onClose: () => void
-  closeButtonRef: RefObject<HTMLButtonElement | null>
-}
-
 interface ContextChipSurfaceProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   triggerLabel: string
   trigger: ReactNode
-  renderPopover: (props: ContextSurfaceRenderProps) => ReactNode
+  popover: ReactNode
 }
 
 /**
- * One responsive surface for every context-chip state. The desktop trigger
- * becomes its popover; mobile keeps the compact trigger in place and portals
- * the same content into a modal bottom sheet.
+ * One surface for every context-chip state: the chip is the trigger, the
+ * breakdown opens as a `Dialog` on desktop and a `BottomSheet` on phones.
+ * Focus, Escape, outside click and scroll locking are the dialog's.
  */
 function ContextChipSurface({
   open,
   onOpenChange,
   triggerLabel,
   trigger,
-  renderPopover,
+  popover,
 }: ContextChipSurfaceProps) {
-  const mobileSheet = useMediaQuery(MOBILE_CONTEXT_QUERY)
-  const rootRef = useRef<HTMLDivElement | null>(null)
-  const triggerRef = useRef<HTMLButtonElement | null>(null)
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
-  const sheetRef = useRef<HTMLDivElement | null>(null)
-  const morphMenuRef = useRef<HTMLDivElement | null>(null)
-  const wasOpenRef = useRef(false)
-  const [morphOpenHeight, setMorphOpenHeight] = useState(280)
-
-  useLayoutEffect(() => {
-    if (mobileSheet) return
-    const panel = morphMenuRef.current?.querySelector<HTMLElement>(
-      '.harness-ui-pop',
-    )
-    if (!panel) return
-    const updateHeight = () =>
-      setMorphOpenHeight(Math.max(120, Math.ceil(panel.scrollHeight)))
-    updateHeight()
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(updateHeight)
-    observer.observe(panel)
-    return () => observer.disconnect()
-  }, [mobileSheet])
-
-  useEffect(() => {
-    if (!open) return
-    const onPointerDown = (event: MouseEvent) => {
-      const target = event.target as Node
-      if (
-        !rootRef.current?.contains(target) &&
-        !sheetRef.current?.contains(target)
-      ) {
-        onOpenChange(false)
-      }
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onOpenChange(false)
-        return
-      }
-      if (event.key !== 'Tab' || !mobileSheet || !sheetRef.current) return
-      const focusable = Array.from(
-        sheetRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
-      )
-      if (focusable.length === 0) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-    document.addEventListener('mousedown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [mobileSheet, onOpenChange, open])
-
-  useEffect(() => {
-    let focusFrame: number | undefined
-    if (open) {
-      focusFrame = window.requestAnimationFrame(() => {
-        closeButtonRef.current?.focus({ preventScroll: true })
-      })
-    } else if (wasOpenRef.current) {
-      triggerRef.current?.focus({ preventScroll: true })
-    }
-    wasOpenRef.current = open
-    return () => {
-      if (focusFrame !== undefined) window.cancelAnimationFrame(focusFrame)
-    }
-  }, [mobileSheet, open])
-
-  useEffect(() => {
-    if (!mobileSheet || !open) return
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      document.body.style.overflow = previousOverflow
-    }
-  }, [mobileSheet, open])
-
-  const close = useCallback(() => onOpenChange(false), [onOpenChange])
-
-  if (mobileSheet) {
-    return (
-      <div className="harness-ui-chip" ref={rootRef}>
-        <button
-          ref={triggerRef}
-          type="button"
-          className="harness-ui-chip-btn"
-          onClick={() => onOpenChange(!open)}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          aria-label={triggerLabel}
-        >
-          {trigger}
-        </button>
-        {typeof document !== 'undefined'
-          ? createPortal(
-              <div
-                data-iii-ui="harness"
-                className="harness-ui-context-portal"
-                style={{ display: 'contents' }}
-              >
-                <button
-                  type="button"
-                  className="harness-ui-sheet-backdrop"
-                  data-open={open}
-                  onClick={close}
-                  tabIndex={-1}
-                  aria-hidden="true"
-                />
-                <div
-                  ref={sheetRef}
-                  className="harness-ui-context-sheet t-panel-slide"
-                  data-open={open}
-                  aria-hidden={!open}
-                  inert={!open}
-                >
-                  <div className="harness-ui-sheet-handle" aria-hidden>
-                    <span />
-                  </div>
-                  {renderPopover({
-                    modal: true,
-                    onClose: close,
-                    closeButtonRef,
-                  })}
-                </div>
-              </div>,
-              document.body,
-            )
-          : null}
-      </div>
-    )
-  }
-
-  const morphStyle = {
-    '--morph-open-height': `${morphOpenHeight}px`,
-  } as CSSProperties
-
+  const phone = usePhone()
+  const Root = phone ? BottomSheet : Dialog
+  const Trigger = phone ? BottomSheetTrigger : DialogTrigger
   return (
-    <div className="harness-ui-chip" ref={rootRef}>
-      <span className="harness-ui-chip-sizer" aria-hidden="true">
-        {trigger}
-      </span>
-      <div
-        className="harness-ui-context-morph t-morph"
-        data-open={open}
-        style={morphStyle}
-      >
-        <div
-          ref={morphMenuRef}
-          className="harness-ui-morph-menu t-morph-menu"
-          aria-hidden={!open}
-          inert={!open}
-        >
-          {renderPopover({
-            modal: false,
-            onClose: close,
-            closeButtonRef,
-          })}
-        </div>
-        <button
-          ref={triggerRef}
-          type="button"
-          className="harness-ui-chip-btn harness-ui-morph-trigger t-morph-plus"
-          onClick={() => onOpenChange(!open)}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          aria-label={triggerLabel}
-          tabIndex={open ? -1 : 0}
-        >
-          {trigger}
-        </button>
-      </div>
+    <div className="harness-ui-chip">
+      <Root open={open} onOpenChange={onOpenChange}>
+        <Trigger asChild>
+          <button type="button" className="harness-ui-chip-btn" aria-label={triggerLabel}>
+            {trigger}
+          </button>
+        </Trigger>
+        {phone ? (
+          <BottomSheetContent className="harness-ui-sheet">{popover}</BottomSheetContent>
+        ) : (
+          <DialogContent className="harness-ui-dialog">{popover}</DialogContent>
+        )}
+      </Root>
     </div>
   )
 }
@@ -817,6 +531,9 @@ export function createContextChip(host: Host) {
       }
     }, [host, sessionId])
 
+    const caret = <ChevronDown className="harness-ui-chip-caret" size={16} aria-hidden />
+    const label = <span className={uiClasses.eyebrow}>ctx</span>
+
     if (!snapshot || snapshot.usable <= 0) {
       if (contextWindow && contextWindow > 0) {
         return (
@@ -826,7 +543,7 @@ export function createContextChip(host: Host) {
             triggerLabel={`context: waiting for usage, ${contextWindow.toLocaleString()} token window — click for the breakdown`}
             trigger={
               <>
-                <span>ctx</span>
+                {label}
                 <span
                   className="harness-ui-chip-bar"
                   role="progressbar"
@@ -840,17 +557,16 @@ export function createContextChip(host: Host) {
                 <span className="harness-ui-chip-counts">
                   0/{formatTokens(contextWindow)}
                 </span>
-                <ContextCaret />
+                {caret}
               </>
             }
-            renderPopover={(surface) => (
+            popover={
               <EmptyContextPopover
-                {...surface}
                 modelId={modelId}
                 contextWindow={contextWindow}
                 sessionId={sessionId}
               />
-            )}
+            }
           />
         )
       }
@@ -861,18 +577,12 @@ export function createContextChip(host: Host) {
           triggerLabel="context: waiting for usage — click for the breakdown"
           trigger={
             <>
-              <span>ctx</span>
+              {label}
               <span className="harness-ui-chip-empty">—</span>
-              <ContextCaret />
+              {caret}
             </>
           }
-          renderPopover={(surface) => (
-            <EmptyContextPopover
-              {...surface}
-              modelId={modelId}
-              sessionId={sessionId}
-            />
-          )}
+          popover={<EmptyContextPopover modelId={modelId} sessionId={sessionId} />}
         />
       )
     }
@@ -888,7 +598,7 @@ export function createContextChip(host: Host) {
         triggerLabel={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%) — click for the breakdown`}
         trigger={
           <>
-            <span>ctx</span>
+            {label}
             <span
               className="harness-ui-chip-bar"
               role="progressbar"
@@ -912,19 +622,16 @@ export function createContextChip(host: Host) {
             >
               {formatTokens(snapshot.total)}/{formatTokens(snapshot.usable)}
             </span>
-            {/* Says "this opens something": drawn at lucide's `chevron-down`
-                geometry, since an injected bundle has no icon dependency. */}
-            <ContextCaret />
+            {caret}
           </>
         }
-        renderPopover={(surface) => (
+        popover={
           <ContextPopover
-            {...surface}
             snapshot={snapshot}
             modelId={modelId}
             sessionId={sessionId}
           />
-        )}
+        }
       />
     )
   }

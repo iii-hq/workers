@@ -9,7 +9,16 @@
  * state; the rail never renders a bare nothing.
  */
 
-import { Badge, EmptyState, type Host, StatusDot } from '@iii-dev/console-ui'
+import {
+  Badge,
+  EmptyState,
+  type Host,
+  StatusDot,
+  StatusPanel,
+} from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { uiClasses } from '@iii-dev/console-ui/ui-classes'
+import { Box, ChevronRight } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { useState } from 'react'
 import {
@@ -21,7 +30,6 @@ import {
   sandboxState,
 } from './format'
 import { InvokeDialog } from './InvokeDialog'
-import { BoxIcon, ChevronIcon } from './icons'
 import type {
   CatalogImage,
   FleetTombstone,
@@ -119,7 +127,7 @@ function RuntimeRow({
   const [confirming, setConfirming] = useState(false)
   const count = runtime.registered_functions.length
   return (
-    <div className="cr-page-rt">
+    <div>
       <div className="cr-page-rt-head">
         <button
           type="button"
@@ -129,21 +137,22 @@ function RuntimeRow({
           disabled={count === 0}
           title={count === 0 ? 'no functions registered' : 'show functions'}
         >
-          <ChevronIcon
+          <ChevronRight
+            size={16}
             className={expanded ? 'cr-page-chev open' : 'cr-page-chev'}
             aria-hidden
           />
-          <span className="cr-page-rt-lang">{runtime.lang}</span>
+          <span>{runtime.lang}</span>
           <span className="cr-page-rt-count">
             {count} fn{count === 1 ? '' : 's'}
           </span>
           {runtime.vm_gone ? (
-            <span
-              className="cr-page-rt-gone"
+            <Badge
+              variant="warn"
               title="the backing VM left sandbox::list (idle-reaped or stopped); teardown cleans this record up"
             >
               vm gone
-            </span>
+            </Badge>
           ) : null}
         </button>
         {confirming ? (
@@ -240,9 +249,7 @@ export function FleetRail({
     host.iii
       .trigger('sandbox-code-runner::teardown', { runtime_id: runtimeId })
       .then(() => onRefresh())
-      .catch((err: unknown) =>
-        setTeardownError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => setTeardownError(errorMessage(err)))
       .finally(() => setTeardownBusy(false))
   }
 
@@ -251,7 +258,7 @@ export function FleetRail({
       {daemonAbsent ? (
         <div className="cr-page-rail-empty">
           <EmptyState
-            icon={BoxIcon}
+            icon={Box}
             title="no sandbox daemon"
             description="sandbox::list is not on this engine — add it with `iii trigger compose::add worker=iii-sandbox`, then sandboxes appear here."
           />
@@ -294,7 +301,7 @@ export function FleetRail({
 
       {runtimes.length > 0 ? (
         <>
-          <div className="cr-page-rail-label">runtimes</div>
+          <div className={`cr-page-rail-label ${uiClasses.eyebrow}`}>runtimes</div>
           <div className="cr-page-rts">
             {runtimes.map((runtime) => (
               <RuntimeRow
@@ -306,9 +313,12 @@ export function FleetRail({
               />
             ))}
             {teardownError ? (
-              <div className="cr-page-inline-error" role="alert">
-                teardown failed: {teardownError}
-              </div>
+              <StatusPanel
+                variant="alert"
+                role="alert"
+                headline="teardown failed"
+                detail={teardownError}
+              />
             ) : null}
           </div>
         </>
@@ -316,7 +326,7 @@ export function FleetRail({
 
       {images.length > 0 ? (
         <>
-          <div className="cr-page-rail-label">catalog</div>
+          <div className={`cr-page-rail-label ${uiClasses.eyebrow}`}>catalog</div>
           <ul className="cr-page-catalog">
             {images.map((image) => (
               <li

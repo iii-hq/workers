@@ -58,7 +58,17 @@ export function compactActivityId(id: string): string {
 export interface MetaRowItem {
   label: React.ReactNode
   value: React.ReactNode
+  /** Colour of the value: status inks, or `ink` (default). */
+  tone?: 'ink' | 'ok' | 'warn' | 'alert' | 'accent'
 }
+
+const META_TONE = {
+  ink: 'text-ink',
+  ok: 'text-ok',
+  warn: 'text-warn',
+  alert: 'text-alert',
+  accent: 'text-accent',
+} as const
 
 export interface MetaRowProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Label/value pairs, values in mono; free-form children (chips) follow. */
@@ -87,7 +97,9 @@ export function MetaRow({
           className="inline-flex items-center gap-1 font-sans text-xs text-ink-faint"
         >
           <span>{item.label}</span>
-          <span className="font-mono text-ink">{item.value}</span>
+          <span className={cn('font-mono', META_TONE[item.tone ?? 'ink'])}>
+            {item.value}
+          </span>
         </span>
       ))}
       {children}

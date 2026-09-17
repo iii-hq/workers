@@ -51,7 +51,8 @@ directly instead.
   commits, or pull request text. No code comments unless asked. No issue numbers in
   code or test names.
 - Never touch `console/` or `packages/`. Worker UI lives in `<slug>/ui/` and follows
-  `docs/sops/injectable-console-ui.md` and `docs/sops/console-ui-conformance.md`
+  `ade/skills/injectable-ui.md`, `ade/skills/design-console-ui.md`, `ade/skills/design-system.md`
+  and `docs/sops/console-ui-conformance.md` (Rust wiring: `docs/sops/injectable-console-ui.md`)
   (PageShell/PageHeader/PageMain, IconButton for icon-only actions, ConfirmDialog never
   window.confirm, shared ImageViewer, hand-rolled 16px icons, container queries,
   design tokens only, `data-autofocus` instead of manual focus).
@@ -102,7 +103,8 @@ directly instead.
   `docs/sops/configuration.md`, `docs/architecture/iii-worker-yaml.md`,
   `docs/architecture/skills-and-permissions.md`, `docs/architecture/testing-and-ci.md`,
   `worker-readme.md`, `DOCUMENTATION_GUIDELINES.md`, and for UI
-  `docs/sops/injectable-console-ui.md` + `docs/sops/console-ui-conformance.md`.
+  the three `ade/skills/` files + `docs/sops/console-ui-conformance.md` (Rust wiring:
+  `docs/sops/injectable-console-ui.md`).
   On conflict with workflow YAML under `.github/`, the workflow wins.
 - Fetch the SDK reference for the implementation language with `web::fetch`
   (`https://iii.dev/docs/reference/sdk-rust.md`, `sdk-node.md`, `sdk-python.md`).

@@ -3,6 +3,7 @@
 import {
   Button,
   type ConfigFormProps,
+  EmptyState,
   type Host,
   Input,
   type JsonValue,
@@ -11,8 +12,12 @@ import {
   SettingsList,
   SettingsRow,
   SettingsSection,
+  Skeleton,
+  StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   activeTraceViewId,
@@ -157,7 +162,7 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
       })
       .catch((error) => {
         if (!cancelled) {
-          setLoadError(error instanceof Error ? error.message : String(error))
+          setLoadError(errorMessage(error))
         }
       })
     return () => {
@@ -361,17 +366,15 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
       >
         {rows === null && loadError === null ? (
           <div className="console-ui-toggle-list" aria-hidden="true">
-            <div className="console-ui-toggle-skeleton" />
-            <div className="console-ui-toggle-skeleton" />
+            <Skeleton className="console-ui-toggle-skeleton" />
+            <Skeleton className="console-ui-toggle-skeleton" />
           </div>
         ) : null}
         {loadError ? (
-          <div className="console-ui-form-error" role="alert">
-            Could not load the worker list: {loadError}
-          </div>
+          <StatusPanel variant="alert" role="alert" headline="Could not load the worker list" detail={loadError} />
         ) : null}
         {rows?.length === 0 ? (
-          <div className="console-ui-form-empty">No worker is currently registering ADE assets.</div>
+          <EmptyState compact title="No worker interfaces" description="No worker is currently registering ADE assets." />
         ) : null}
         {rows && rows.length > 0 ? (
           <SettingsList>
@@ -435,7 +438,7 @@ function StringListEditor({
                 onClick={() => onChange(values.filter((item) => item !== entry))}
                 aria-label={`Remove ${entry} from ${label}`}
               >
-                ×
+                <X className="iii-ui-icon" />
               </button>
             </li>
           ))}
@@ -465,13 +468,16 @@ function StringListEditor({
 function ConfigurationErrors({ errors }: { errors: ReadonlyMap<string, string> | undefined }) {
   if (!errors || errors.size === 0) return null
   return (
-    <div className="console-ui-form-error" role="alert">
-      {[...errors.entries()].map(([pointer, message]) => (
+    <StatusPanel
+      variant="alert"
+      role="alert"
+      headline={`${errors.size} configuration error${errors.size === 1 ? '' : 's'}`}
+      detail={[...errors.entries()].map(([pointer, message]) => (
         <div key={pointer}>
           {pointer ? `${pointer}: ` : ''}
           {message}
         </div>
       ))}
-    </div>
+    />
   )
 }

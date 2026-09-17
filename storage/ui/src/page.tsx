@@ -1,34 +1,46 @@
 import {
   Button,
   EmptyState,
+  Eyebrow,
   type Host,
+  IconButton,
+  List,
+  ListItem,
+  PageBody,
   type PageCommandsApi,
   PageHeader,
+  PageMain,
   type PageRenderProps,
   PageShell,
   PageSidebar,
   type PanelContextEvent,
+  Skeleton,
+  StatusBar,
   StatusPanel,
+  Toolbar,
   useConfirm,
 } from '@iii-dev/console-ui'
+import {
+  copyText,
+  errorMessage,
+  formatBytes,
+} from '@iii-dev/console-ui/format'
+import { useContainerNarrow } from '@iii-dev/console-ui/hooks'
+import {
+  Archive,
+  ChevronLeft,
+  ChevronRight,
+  Database,
+  Download,
+  File,
+  Folder,
+  RefreshCw,
+  Trash2,
+  Upload,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { parseStoragePanelContext } from './panel-context'
-import {
-  BackIcon,
-  BucketIcon,
-  ChevronIcon,
-  DownloadIcon,
-  FileIcon,
-  FolderIcon,
-  formatBytes,
-  leafName,
-  parentPrefix,
-  RefreshIcon,
-  StorageIcon,
-  TrashIcon,
-  UploadIcon,
-  useContainerNarrow,
-} from './widgets'
+import { leafName, parentPrefix } from './widgets'
 
 const NARROW_BELOW = 760
 const LIST_LIMIT = 250
@@ -76,25 +88,22 @@ function readPersisted(tabId: string): PersistedState {
   }
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
-}
-
 function StorageExplorer({
   host,
   panelSide,
   tabId,
   panelContext,
   commands,
+  narrow,
 }: {
   host: Host
   panelSide: 'left' | 'right'
   tabId: string
   panelContext?: PanelContextEvent
   commands?: PageCommandsApi
+  narrow: boolean
 }) {
   const persisted = useMemo(() => readPersisted(tabId), [tabId])
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
   const [buckets, setBuckets] = useState<BucketSummary[] | null>(null)
   const [bucketError, setBucketError] = useState<string | null>(null)
   const { confirm, dialog } = useConfirm()
@@ -439,430 +448,397 @@ function StorageExplorer({
     (listing?.common_prefixes.length ?? 0) + (listing?.objects.length ?? 0)
 
   return (
-    <div
-      ref={rootRef}
-      className={`storage-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
-    >
+    <>
       {dialog}
-      {showBuckets ? (
-        <PageSidebar
-          label="buckets"
-          side={panelSide}
-          collapsible
-          storageKey="storage:buckets"
-          defaultWidth={204}
-          narrow={narrow}
-          className="storage-ui-buckets"
-          data-autofocus=""
-          tabIndex={-1}
-          header={
-            <div className="storage-ui-column-head storage-ui-primary-head">
-              <span className="storage-ui-column-label">buckets</span>
-              <span className="storage-ui-spacer" />
-              {buckets ? (
-                <span className="storage-ui-count">{buckets.length}</span>
-              ) : null}
-              <button
-                type="button"
-                className="storage-ui-icon-button"
-                onClick={loadBuckets}
-                aria-label="Refresh buckets"
-              >
-                <RefreshIcon />
-              </button>
-            </div>
-          }
-        >
-          <div className="storage-ui-scroll">
-            {buckets === null ? (
-              <div className="storage-ui-skeleton" aria-label="Loading buckets">
-                <span />
-                <span />
-                <span />
+      <PageBody side={panelSide}>
+        {showBuckets ? (
+          <PageSidebar
+            label="buckets"
+            side={panelSide}
+            collapsible
+            storageKey="storage:buckets"
+            defaultWidth={204}
+            narrow={narrow}
+            data-autofocus=""
+            tabIndex={-1}
+            header={
+              <div className="storage-ui-head">
+                <Eyebrow>buckets</Eyebrow>
+                <span className="storage-ui-spacer" />
+                {buckets ? (
+                  <span className="storage-ui-count">{buckets.length}</span>
+                ) : null}
+                <IconButton label="Refresh buckets" onClick={loadBuckets}>
+                  <RefreshCw />
+                </IconButton>
               </div>
-            ) : bucketError ? (
-              <div className="storage-ui-inline-error">
-                <p>Could not load buckets.</p>
-                <Button variant="ghost" size="sm" onClick={loadBuckets}>
-                  retry
-                </Button>
-              </div>
-            ) : buckets.length === 0 ? (
-              <div className="storage-ui-column-empty">
-                <p>No buckets configured.</p>
-                <p>Add one in the storage worker configuration.</p>
-              </div>
-            ) : (
-              <ul className="storage-ui-nav-list" role="list">
-                {buckets.map((bucket) => (
-                  <li key={bucket.name}>
-                    <button
-                      type="button"
-                      className={`storage-ui-bucket-row${bucket.name === bucketName ? ' active' : ''}`}
+            }
+          >
+            <div className="storage-ui-scroll">
+              {buckets === null ? (
+                <div
+                  className="storage-ui-skeleton"
+                  aria-label="Loading buckets"
+                >
+                  <Skeleton />
+                  <Skeleton />
+                  <Skeleton />
+                </div>
+              ) : bucketError ? (
+                <StatusPanel
+                  variant="alert"
+                  headline="Could not load buckets"
+                  detail={bucketError}
+                  className="storage-ui-status"
+                  action={
+                    <Button variant="ghost" size="sm" onClick={loadBuckets}>
+                      retry
+                    </Button>
+                  }
+                />
+              ) : buckets.length === 0 ? (
+                <EmptyState
+                  compact
+                  title="No buckets configured"
+                  description="Add one in the storage worker configuration."
+                  className="storage-ui-status"
+                />
+              ) : (
+                <List className="storage-ui-list">
+                  {buckets.map((bucket) => (
+                    <ListItem
+                      key={bucket.name}
+                      selected={bucket.name === bucketName}
                       aria-current={
                         bucket.name === bucketName ? 'true' : undefined
                       }
+                      leading={<Archive />}
+                      label={bucket.name}
+                      description={bucket.provider}
+                      trailing={<ChevronRight className="iii-ui-icon" />}
                       onClick={() => openBucket(bucket.name)}
-                    >
-                      <BucketIcon className="storage-ui-row-icon" />
-                      <span className="storage-ui-row-copy">
-                        <span className="storage-ui-row-name">
-                          {bucket.name}
-                        </span>
-                        <span className="storage-ui-row-meta">
-                          {bucket.provider}
-                        </span>
-                      </span>
-                      <ChevronIcon className="storage-ui-chevron" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </PageSidebar>
-      ) : null}
+                    />
+                  ))}
+                </List>
+              )}
+            </div>
+          </PageSidebar>
+        ) : null}
 
-      {showContents ? (
-        <section className="storage-ui-contents" aria-label="Bucket contents">
-          {bucketName === null ? (
-            <>
-              <header className="storage-ui-column-head">
-                <span className="storage-ui-column-label">objects</span>
-              </header>
-              <div className="storage-ui-column-empty roomy">
-                <p>Select a bucket to browse its objects.</p>
-              </div>
-            </>
-          ) : (
-            <>
-              <header className="storage-ui-path-head">
-                {narrow || prefix ? (
-                  <button
-                    type="button"
-                    className="storage-ui-back-button"
-                    onClick={goBack}
-                    aria-label={
-                      prefix ? 'Go to parent folder' : 'Back to buckets'
-                    }
-                  >
-                    <BackIcon />
-                  </button>
-                ) : null}
-                <div className="storage-ui-path-copy">
-                  <span className="storage-ui-path-bucket">{bucketName}</span>
-                  <span
-                    className="storage-ui-path-prefix"
-                    title={prefix || '/'}
-                  >
-                    {prefix || '/'}
-                  </span>
-                </div>
-                <span className="storage-ui-spacer" />
-                {listing ? (
-                  <span className="storage-ui-count">{rowCount}</span>
-                ) : null}
-                <button
-                  type="button"
-                  className="storage-ui-icon-button"
-                  onClick={() => loadListing()}
-                  aria-label="Refresh folder"
-                >
-                  <RefreshIcon />
-                </button>
-              </header>
-              <div className="storage-ui-work-toolbar">
-                <div
-                  className="storage-ui-breadcrumb"
-                  aria-label="Current folder"
-                >
-                  <button type="button" onClick={() => openFolder('')}>
-                    {bucketName}
-                  </button>
-                  {prefix
-                    .split('/')
-                    .filter(Boolean)
-                    .map((segment, index, parts) => {
-                      const value = `${parts.slice(0, index + 1).join('/')}/`
-                      return (
-                        <span key={value}>
-                          <span aria-hidden="true">/</span>
-                          <button
-                            type="button"
-                            onClick={() => openFolder(value)}
-                          >
-                            {segment}
-                          </button>
-                        </span>
-                      )
-                    })}
-                </div>
-                <input
-                  ref={fileInputRef}
-                  className="storage-ui-file-input"
-                  type="file"
-                  name="storage-upload"
-                  aria-label="Choose a file to upload"
-                  onChange={(event) => {
-                    const file = event.currentTarget.files?.[0]
-                    if (file) void upload(file)
-                  }}
-                />
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={transfer !== null}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <UploadIcon className="storage-ui-button-icon" /> upload
-                </Button>
-              </div>
-              {actionError && !objectKey ? (
-                <StatusPanel
-                  variant="alert"
-                  headline="Transfer failed"
-                  detail={actionError}
+        {showContents ? (
+          <section
+            className={`storage-ui-contents${narrow ? ' narrow' : ''}`}
+            aria-label="Bucket contents"
+          >
+            {bucketName === null ? (
+              <>
+                <Toolbar as="header" aria-label="Objects">
+                  <Eyebrow>objects</Eyebrow>
+                </Toolbar>
+                <EmptyState
+                  compact
+                  title="No bucket selected"
+                  description="Select a bucket to browse its objects."
                   className="storage-ui-status"
                 />
-              ) : null}
-              <div className="storage-ui-scroll">
-                {listing === null ? (
-                  <div
-                    className="storage-ui-skeleton listing"
-                    aria-label="Loading objects"
-                  >
-                    <span />
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                ) : listingError ? (
-                  <div className="storage-ui-inline-error">
-                    <p>Could not load this folder.</p>
-                    <span>{listingError}</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => loadListing()}
+              </>
+            ) : (
+              <>
+                <Toolbar
+                  as="header"
+                  aria-label="Folder"
+                  end={
+                    <>
+                      {listing ? (
+                        <span className="storage-ui-count">{rowCount}</span>
+                      ) : null}
+                      <IconButton
+                        label="Refresh folder"
+                        onClick={() => loadListing()}
+                      >
+                        <RefreshCw />
+                      </IconButton>
+                    </>
+                  }
+                >
+                  {narrow || prefix ? (
+                    <IconButton
+                      label={prefix ? 'Go to parent folder' : 'Back to buckets'}
+                      onClick={goBack}
                     >
-                      retry
-                    </Button>
+                      <ChevronLeft />
+                    </IconButton>
+                  ) : null}
+                  <div className="storage-ui-path">
+                    <span className="storage-ui-path-bucket">{bucketName}</span>
+                    <span
+                      className="storage-ui-path-prefix"
+                      title={prefix || '/'}
+                    >
+                      {prefix || '/'}
+                    </span>
                   </div>
-                ) : rowCount === 0 ? (
-                  <EmptyState
-                    icon={FolderIcon}
-                    title="This folder is empty"
-                    description="Upload a file here, or choose another bucket or folder."
-                    action={{
-                      label: 'upload file',
-                      onClick: () => fileInputRef.current?.click(),
+                </Toolbar>
+                <Toolbar
+                  aria-label="Folder actions"
+                  end={
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={transfer !== null}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <Upload /> upload
+                    </Button>
+                  }
+                >
+                  <div
+                    className="storage-ui-breadcrumb"
+                    aria-label="Current folder"
+                  >
+                    <button type="button" onClick={() => openFolder('')}>
+                      {bucketName}
+                    </button>
+                    {prefix
+                      .split('/')
+                      .filter(Boolean)
+                      .map((segment, index, parts) => {
+                        const value = `${parts.slice(0, index + 1).join('/')}/`
+                        return (
+                          <span key={value}>
+                            <span aria-hidden="true">/</span>
+                            <button
+                              type="button"
+                              onClick={() => openFolder(value)}
+                            >
+                              {segment}
+                            </button>
+                          </span>
+                        )
+                      })}
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    className="storage-ui-file-input"
+                    type="file"
+                    name="storage-upload"
+                    aria-label="Choose a file to upload"
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0]
+                      if (file) void upload(file)
                     }}
                   />
-                ) : (
-                  <ul className="storage-ui-object-list" role="list">
-                    {listing.common_prefixes.map((folder) => (
-                      <li key={`folder:${folder}`}>
-                        <button
-                          type="button"
-                          className="storage-ui-object-row"
-                          onClick={() => openFolder(folder)}
+                </Toolbar>
+                {actionError && !objectKey ? (
+                  <StatusPanel
+                    variant="alert"
+                    headline="Transfer failed"
+                    detail={actionError}
+                    className="storage-ui-status"
+                  />
+                ) : null}
+                <div className="storage-ui-scroll">
+                  {listing === null ? (
+                    <div
+                      className="storage-ui-skeleton listing"
+                      aria-label="Loading objects"
+                    >
+                      <Skeleton />
+                      <Skeleton />
+                      <Skeleton />
+                      <Skeleton />
+                    </div>
+                  ) : listingError ? (
+                    <StatusPanel
+                      variant="alert"
+                      headline="Could not load this folder"
+                      detail={listingError}
+                      className="storage-ui-status"
+                      action={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => loadListing()}
                         >
-                          <FolderIcon className="storage-ui-row-icon folder" />
-                          <span className="storage-ui-row-copy">
-                            <span className="storage-ui-row-name">
-                              {leafName(folder)}
-                            </span>
-                            <span className="storage-ui-row-meta">folder</span>
-                          </span>
-                          <ChevronIcon className="storage-ui-chevron" />
-                        </button>
-                      </li>
-                    ))}
-                    {listing.objects.map((object) => (
-                      <li key={`object:${object.key}`}>
-                        <button
-                          type="button"
-                          className={`storage-ui-object-row${object.key === objectKey ? ' active' : ''}`}
+                          retry
+                        </Button>
+                      }
+                    />
+                  ) : rowCount === 0 ? (
+                    <EmptyState
+                      icon={Folder}
+                      title="This folder is empty"
+                      description="Upload a file here, or choose another bucket or folder."
+                      action={{
+                        label: 'upload file',
+                        onClick: () => fileInputRef.current?.click(),
+                      }}
+                    />
+                  ) : (
+                    <List className="storage-ui-list">
+                      {listing.common_prefixes.map((folder) => (
+                        <ListItem
+                          key={`folder:${folder}`}
+                          leading={<Folder className="storage-ui-folder" />}
+                          label={leafName(folder)}
+                          description="folder"
+                          trailing={<ChevronRight className="iii-ui-icon" />}
+                          onClick={() => openFolder(folder)}
+                        />
+                      ))}
+                      {listing.objects.map((object) => (
+                        <ListItem
+                          key={`object:${object.key}`}
+                          selected={object.key === objectKey}
                           aria-current={
                             object.key === objectKey ? 'true' : undefined
                           }
+                          leading={<File />}
+                          label={leafName(object.key)}
+                          description={`${formatBytes(object.size)} · ${new Date(
+                            object.last_modified,
+                          ).toLocaleDateString()}`}
+                          trailing={<ChevronRight className="iii-ui-icon" />}
                           onClick={() => setObjectKey(object.key)}
-                        >
-                          <FileIcon className="storage-ui-row-icon" />
-                          <span className="storage-ui-row-copy">
-                            <span className="storage-ui-row-name">
-                              {leafName(object.key)}
-                            </span>
-                            <span className="storage-ui-row-meta">
-                              {formatBytes(object.size)} ·{' '}
-                              {new Date(
-                                object.last_modified,
-                              ).toLocaleDateString()}
-                            </span>
-                          </span>
-                          <ChevronIcon className="storage-ui-chevron" />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {listing?.next_cursor ? (
-                  <div className="storage-ui-load-more">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={loadingMore}
-                      onClick={() =>
-                        loadListing(listing.next_cursor ?? undefined, true)
-                      }
-                    >
-                      {loadingMore ? 'loading…' : 'load more'}
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-              {transfer && !objectKey ? (
-                <div className="storage-ui-transfer" role="status">
-                  {transfer}…
+                        />
+                      ))}
+                    </List>
+                  )}
+                  {listing?.next_cursor ? (
+                    <div className="storage-ui-load-more">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={loadingMore}
+                        onClick={() =>
+                          loadListing(listing.next_cursor ?? undefined, true)
+                        }
+                      >
+                        {loadingMore ? 'loading…' : 'load more'}
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </>
-          )}
-        </section>
-      ) : null}
+                {transfer && !objectKey ? (
+                  <StatusBar role="status">{transfer}…</StatusBar>
+                ) : null}
+              </>
+            )}
+          </section>
+        ) : null}
 
-      {showDetail ? (
-        <main className="storage-ui-detail" aria-label="Object details">
-          {bucketName === null || objectKey === null ? (
-            <div className="storage-ui-hero">
-              <StorageIcon className="storage-ui-hero-icon" />
-              <h2>Select an object</h2>
-              <p>
-                Browse a bucket and its folders, then select a file to inspect
-                its metadata or create a signed download.
-              </p>
-              <div
-                className="storage-ui-hero-flow"
-                aria-label="Navigation levels"
-              >
-                <span>bucket</span>
-                <ChevronIcon />
-                <span>folder</span>
-                <ChevronIcon />
-                <span>object</span>
-              </div>
-            </div>
-          ) : (
-            <div className="storage-ui-inspector">
-              <header className="storage-ui-inspector-head">
-                {narrow ? (
-                  <button
-                    type="button"
-                    className="storage-ui-back-button"
-                    onClick={goBack}
-                    aria-label="Back to folder"
+        {showDetail ? (
+          <PageMain aria-label="Object details">
+            {bucketName === null || objectKey === null ? (
+              <EmptyState
+                icon={Database}
+                title="Select an object"
+                description="Browse a bucket and its folders, then select a file to inspect its metadata or create a signed download."
+                className="storage-ui-status"
+              />
+            ) : (
+              <div className="storage-ui-inspector">
+                <header className="storage-ui-inspector-head">
+                  {narrow ? (
+                    <IconButton label="Back to folder" onClick={goBack}>
+                      <ChevronLeft />
+                    </IconButton>
+                  ) : null}
+                  <File className="storage-ui-inspector-icon" />
+                  <div className="storage-ui-inspector-title">
+                    <h2>{leafName(objectKey)}</h2>
+                    <p title={objectKey}>{objectKey}</p>
+                  </div>
+                </header>
+                <Toolbar aria-label="Object actions">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={transfer !== null}
+                    onClick={() => void download()}
                   >
-                    <BackIcon />
-                  </button>
+                    <Download /> download
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={transfer !== null}
+                    onClick={() => void copyText(objectKey)}
+                  >
+                    copy key
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={transfer !== null}
+                    onClick={() => void remove()}
+                  >
+                    <Trash2 /> delete
+                  </Button>
+                </Toolbar>
+                {actionError ? (
+                  <StatusPanel
+                    variant="alert"
+                    headline="Action failed"
+                    detail={actionError}
+                    className="storage-ui-status"
+                  />
                 ) : null}
-                <FileIcon className="storage-ui-inspector-icon" />
-                <div className="storage-ui-inspector-title">
-                  <h2>{leafName(objectKey)}</h2>
-                  <p title={objectKey}>{objectKey}</p>
-                </div>
-              </header>
-              <div className="storage-ui-inspector-actions">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={transfer !== null}
-                  onClick={() => void download()}
-                >
-                  <DownloadIcon className="storage-ui-button-icon" /> download
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={transfer !== null}
-                  onClick={() => void navigator.clipboard.writeText(objectKey)}
-                >
-                  copy key
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={transfer !== null}
-                  onClick={() => void remove()}
-                >
-                  <TrashIcon className="storage-ui-button-icon" /> delete
-                </Button>
-              </div>
-              {actionError ? (
+                {metadataError ? (
+                  <StatusPanel
+                    variant="alert"
+                    headline="Metadata unavailable"
+                    detail={metadataError}
+                    className="storage-ui-status"
+                  />
+                ) : metadata === null ? (
+                  <div
+                    className="storage-ui-skeleton"
+                    aria-label="Loading metadata"
+                  >
+                    <Skeleton />
+                    <Skeleton />
+                    <Skeleton />
+                    <Skeleton />
+                  </div>
+                ) : (
+                  <dl className="storage-ui-facts">
+                    <div>
+                      <dt>Size</dt>
+                      <dd>{formatBytes(metadata.size)}</dd>
+                    </div>
+                    <div>
+                      <dt>Content type</dt>
+                      <dd>{metadata.content_type}</dd>
+                    </div>
+                    <div>
+                      <dt>Last modified</dt>
+                      <dd>{new Date(metadata.last_modified).toLocaleString()}</dd>
+                    </div>
+                    <div>
+                      <dt>ETag</dt>
+                      <dd title={metadata.etag}>{metadata.etag}</dd>
+                    </div>
+                    <div>
+                      <dt>Provider</dt>
+                      <dd>{selectedBucket?.provider ?? 'unknown'}</dd>
+                    </div>
+                  </dl>
+                )}
                 <StatusPanel
-                  variant="alert"
-                  headline="Action failed"
-                  detail={actionError}
+                  headline="Direct transfer"
+                  detail="Downloads use a short-lived signed URL, so file bytes bypass the inline worker RPC limit."
                   className="storage-ui-status"
                 />
-              ) : null}
-              {metadataError ? (
-                <StatusPanel
-                  variant="alert"
-                  headline="Metadata unavailable"
-                  detail={metadataError}
-                  className="storage-ui-status"
-                />
-              ) : metadata === null ? (
-                <div
-                  className="storage-ui-detail-skeleton"
-                  aria-label="Loading metadata"
-                >
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              ) : (
-                <dl className="storage-ui-facts">
-                  <div>
-                    <dt>Size</dt>
-                    <dd>{formatBytes(metadata.size)}</dd>
-                  </div>
-                  <div>
-                    <dt>Content type</dt>
-                    <dd>{metadata.content_type}</dd>
-                  </div>
-                  <div>
-                    <dt>Last modified</dt>
-                    <dd>{new Date(metadata.last_modified).toLocaleString()}</dd>
-                  </div>
-                  <div>
-                    <dt>ETag</dt>
-                    <dd title={metadata.etag}>{metadata.etag}</dd>
-                  </div>
-                  <div>
-                    <dt>Provider</dt>
-                    <dd>{selectedBucket?.provider ?? 'unknown'}</dd>
-                  </div>
-                </dl>
-              )}
-              <div className="storage-ui-transfer-note">
-                <h3>Direct transfer</h3>
-                <p>
-                  Downloads use a short-lived signed URL, so file bytes bypass
-                  the inline worker RPC limit.
-                </p>
+                {transfer ? (
+                  <StatusBar role="status">{transfer}…</StatusBar>
+                ) : null}
               </div>
-              {transfer ? (
-                <div className="storage-ui-transfer" role="status">
-                  {transfer}…
-                </div>
-              ) : null}
-            </div>
-          )}
-        </main>
-      ) : null}
-    </div>
+            )}
+          </PageMain>
+        ) : null}
+      </PageBody>
+    </>
   )
 }
 
@@ -874,10 +850,11 @@ export function StoragePage({
   panelContext,
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
+  const { ref: rootRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
   return (
-    <PageShell className="storage-ui-shell">
+    <PageShell ref={rootRef} className="storage-ui-shell">
       <PageHeader
-        icon={<StorageIcon />}
+        icon={<Database />}
         title="Storage"
         description="Buckets, folders, and objects"
         onClose={onRequestClose}
@@ -888,6 +865,7 @@ export function StoragePage({
         tabId={tabId}
         panelContext={panelContext}
         commands={commands}
+        narrow={narrow}
       />
     </PageShell>
   )

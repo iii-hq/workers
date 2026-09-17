@@ -8,10 +8,32 @@
  * teaches you to distrust it.
  */
 
-import { Button, type Host, Select, StatusPanel } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  type Host,
+  MetaRow,
+  Panel,
+  PanelBody,
+  PanelHeader,
+  Select,
+  StatusPanel,
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+  Toolbar,
+  uiClasses,
+} from '@iii-dev/console-ui'
+import { formatBytes, formatDuration } from '@iii-dev/console-ui/format'
+import { CircleAlert, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { type HealthReport, health } from '../lib/rpc'
-import { AlertCircle, RefreshCw } from './icons'
+import { driverLabel } from './db-data'
 import { useDatabaseRead } from './useDatabaseRead'
 
 type Probe<T> =
@@ -25,17 +47,6 @@ const INTERVALS = [
   { value: '15', label: 'Every 15s' },
   { value: '60', label: 'Every 60s' },
 ]
-
-const DRIVER_LABELS: Readonly<Record<string, string>> = {
-  mysql: 'MySQL',
-  postgres: 'PostgreSQL',
-  postgresql: 'PostgreSQL',
-  sqlite: 'SQLite',
-}
-
-function driverLabel(driver: string) {
-  return DRIVER_LABELS[driver.toLowerCase()] ?? driver
-}
 
 function intervalKey(db: string): string {
   return `iii-console:database:health-interval:${db}`
@@ -96,14 +107,16 @@ export function HealthPanel({
     return (
       <StatusPanel
         variant="alert"
-        icon={<AlertCircle size={18} />}
+        icon={<CircleAlert size={18} />}
         headline="Could not read connection health"
         detail={read.error}
       />
     )
   }
   if (!read.data) {
-    return <div className="db-msg db-pulse">Probing the connection…</div>
+    return (
+      <div className={`db-msg ${uiClasses.pulse}`}>Probing the connection…</div>
+    )
   }
 
   const h: HealthReport = read.data
@@ -113,7 +126,29 @@ export function HealthPanel({
 
   return (
     <div className="db-health">
-      <div className="db-health-bar db-toolbar">
+      <Toolbar
+        aria-label="connection health"
+        className="db-bar"
+        end={
+          <>
+            <Select
+              value={every}
+              onChange={setEvery}
+              options={INTERVALS}
+              aria-label="refresh interval"
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={refresh}
+              disabled={read.loading}
+            >
+              <RefreshCw size={16} aria-hidden />
+              Refresh
+            </Button>
+          </>
+        }
+      >
         <span className="db-health-driver">{driverLabel(h.driver)}</span>
         <span className="db-health-ver">Worker {h.worker_version}</span>
         {asOf ? (
@@ -126,33 +161,19 @@ export function HealthPanel({
             })}
           </span>
         ) : null}
-        <div className="db-toolbar-spacer" />
-        <Select
-          value={every}
-          onChange={setEvery}
-          options={INTERVALS}
-          aria-label="refresh interval"
-        />
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={refresh}
-          disabled={read.loading}
-        >
-          <RefreshCw size={16} aria-hidden />
-          Refresh
-        </Button>
-      </div>
+      </Toolbar>
 
       <div className={`db-health-cards${read.loading ? ' stale' : ''}`}>
         <Card title="Pool">
-          <dl className="db-kv">
-            <Stat label="Max" value={pool.max} />
-            <Stat label="Open" value={pool.size} />
-            <Stat label="Idle" value={pool.idle} />
-            <Stat label="In use" value={inUse} />
-            <Stat label="Waiting" value={pool.waiting} />
-          </dl>
+          <MetaRow
+            items={[
+              { label: 'Max', value: formatCount(pool.max) },
+              { label: 'Open', value: formatCount(pool.size) },
+              { label: 'Idle', value: formatCount(pool.idle) },
+              { label: 'In use', value: formatCount(inUse) },
+              { label: 'Waiting', value: formatCount(pool.waiting) },
+            ]}
+          />
           {pool.waiting != null && pool.waiting > 0 ? (
             <p className="db-health-note warn">
               {pool.waiting} caller{pool.waiting === 1 ? '' : 's'} waiting for a
@@ -181,15 +202,13 @@ export function HealthPanel({
                     >
                       <div className="db-health-query-head">
                         <span className="db-health-id">{q.id}</span>
-                        {isReplication(q) ? (
-                          <span className="db-health-daemon">Replication</span>
-                        ) : null}
+                        {isReplication(q) ? <Badge>Replication</Badge> : null}
                         {q.state ? (
                           <span className="db-health-state">{q.state}</span>
                         ) : null}
                         {q.duration_ms != null ? (
                           <span className="db-num">
-                            {formatMs(q.duration_ms)}
+                            {formatDuration(q.duration_ms)}
                           </span>
                         ) : null}
                         {q.user ? (
@@ -214,10 +233,7 @@ export function HealthPanel({
             render={(rows: HealthLock[]) => (
               <ul className="db-health-list">
                 {rows.map((l) => (
-                  <li
-                    key={`${l.blocked_id}-${l.blocking_id}`}
-                    className="db-health-lock"
-                  >
+                  <li key={`${l.blocked_id}-${l.blocking_id}`}>
                     <div className="db-health-query-head">
                       <span className="db-health-id">{l.blocked_id}</span>
                       <span className="db-health-blocked">Blocked by</span>
@@ -243,10 +259,12 @@ export function HealthPanel({
             render={(c: HealthCache) => (
               <>
                 <Bar label="Hit ratio" ratio={c.hit_ratio} />
-                <dl className="db-kv">
-                  <Stat label="Blocks hit" value={c.blocks_hit} />
-                  <Stat label="Blocks read" value={c.blocks_read} />
-                </dl>
+                <MetaRow
+                  items={[
+                    { label: 'Blocks hit', value: formatCount(c.blocks_hit) },
+                    { label: 'Blocks read', value: formatCount(c.blocks_read) },
+                  ]}
+                />
               </>
             )}
           />
@@ -262,37 +280,47 @@ export function HealthPanel({
                 1,
               )
               return (
-                <table className="db-health-table">
-                  <thead>
-                    <tr>
-                      <th>Table</th>
-                      <th className="num">Rows</th>
-                      <th className="num">Indexes</th>
-                      <th className="num">Total</th>
-                      <th className="share">Share</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((r) => (
-                      <tr key={`${r.schema ?? ''}.${r.table}`}>
-                        <td>{r.table}</td>
-                        <td className="num">{formatCount(r.row_estimate)}</td>
-                        <td className="num">{formatBytes(r.index_bytes)}</td>
-                        <td className="num">{formatBytes(r.total_bytes)}</td>
-                        <td className="share">
-                          <span className="db-track">
-                            <span
-                              className="db-track-fill"
-                              style={{
-                                width: `${((r.total_bytes ?? 0) / largest) * 100}%`,
-                              }}
-                            />
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <TableViewport>
+                  <TableFrame>
+                    <Table density="compact" className="db-health-table">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Table</TableHead>
+                          <TableHead className="num">Rows</TableHead>
+                          <TableHead className="num">Indexes</TableHead>
+                          <TableHead className="num">Total</TableHead>
+                          <TableHead className="share">Share</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {rows.map((r) => (
+                          <TableRow key={`${r.schema ?? ''}.${r.table}`}>
+                            <TableCell>{r.table}</TableCell>
+                            <TableCell className="num">
+                              {formatCount(r.row_estimate)}
+                            </TableCell>
+                            <TableCell className="num">
+                              {formatBytes(r.index_bytes)}
+                            </TableCell>
+                            <TableCell className="num">
+                              {formatBytes(r.total_bytes)}
+                            </TableCell>
+                            <TableCell className="share">
+                              <span className="db-track">
+                                <span
+                                  className="db-track-fill"
+                                  style={{
+                                    width: `${((r.total_bytes ?? 0) / largest) * 100}%`,
+                                  }}
+                                />
+                              </span>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableFrame>
+                </TableViewport>
               )
             }}
           />
@@ -345,10 +373,10 @@ function Card({
   children: React.ReactNode
 }) {
   return (
-    <section className={`db-health-card${wide ? ' wide' : ''}`}>
-      <h3>{title}</h3>
-      {children}
-    </section>
+    <Panel className={`db-health-card${wide ? ' wide' : ''}`}>
+      <PanelHeader>{title}</PanelHeader>
+      <PanelBody>{children}</PanelBody>
+    </Panel>
   )
 }
 
@@ -377,21 +405,6 @@ function ProbeBody<T>({
   return <>{render(probe.data)}</>
 }
 
-function Stat({
-  label,
-  value,
-}: {
-  label: string
-  value: number | null | undefined
-}) {
-  return (
-    <>
-      <dt>{label}</dt>
-      <dd className="db-num">{value == null ? '—' : value.toLocaleString()}</dd>
-    </>
-  )
-}
-
 function Bar({ label, ratio }: { label: string; ratio: number }) {
   const pct = Math.max(0, Math.min(1, ratio))
   return (
@@ -405,30 +418,6 @@ function Bar({ label, ratio }: { label: string; ratio: number }) {
   )
 }
 
-function formatBytes(n: number | null | undefined): string {
-  if (n == null) return '—'
-  const units = ['b', 'kb', 'mb', 'gb', 'tb']
-  let v = n
-  let u = 0
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024
-    u += 1
-  }
-  return `${u === 0 ? v : v.toFixed(1)}${units[u]}`
-}
-
 function formatCount(n: number | null | undefined): string {
   return n == null ? '—' : n.toLocaleString()
-}
-
-function formatMs(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  const s = ms / 1000
-  // Roll up: "13233.0s" is a number you have to do arithmetic on; "3h 40m"
-  // is a fact.
-  if (s < 120) return `${s.toFixed(1)}s`
-  const m = Math.floor(s / 60)
-  if (m < 120) return `${m}m ${Math.round(s % 60)}s`
-  const h = Math.floor(m / 60)
-  return `${h}h ${m % 60}m`
 }

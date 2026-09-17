@@ -13,12 +13,18 @@
  * chrome noise in every chat.
  */
 
-import type {
-  Host,
-  SessionChipProps,
-  SessionChipRegistration,
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  type Host,
+  type SessionChipProps,
+  type SessionChipRegistration,
+  StatusDot,
 } from '@iii-dev/console-ui'
-import { useEffect, useRef, useState } from 'react'
+import { Box } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { jumpToSandbox } from '../lib/selection'
 import { formatAgeSecs, truncateId } from './format'
 import { parseSandboxList, type SandboxSummary } from './store'
@@ -29,8 +35,6 @@ const CHIP_EVENT_TRIGGER_TYPE = 'sandbox-code-runner::event'
 export function createSandboxSessionChip(host: Host): SessionChipRegistration {
   function SandboxChip(_props: SessionChipProps) {
     const [sandboxes, setSandboxes] = useState<SandboxSummary[] | null>(null)
-    const [open, setOpen] = useState(false)
-    const rootRef = useRef<HTMLSpanElement | null>(null)
 
     useEffect(() => {
       let cancelled = false
@@ -70,67 +74,43 @@ export function createSandboxSessionChip(host: Host): SessionChipRegistration {
       }
     }, [])
 
-    useEffect(() => {
-      if (!open) return
-      const onPointerDown = (event: MouseEvent) => {
-        const root = rootRef.current
-        if (root && !root.contains(event.target as Node)) setOpen(false)
-      }
-      const onKeyDown = (event: KeyboardEvent) => {
-        if (event.key === 'Escape') setOpen(false)
-      }
-      document.addEventListener('mousedown', onPointerDown)
-      document.addEventListener('keydown', onKeyDown)
-      return () => {
-        document.removeEventListener('mousedown', onPointerDown)
-        document.removeEventListener('keydown', onKeyDown)
-      }
-    }, [open])
-
     if (sandboxes === null) return null
     const running = sandboxes.filter((s) => !s.stopped)
 
     return (
-      <span className="cr-page-chip-root" ref={rootRef}>
-        <button
-          type="button"
-          className="cr-page-chip-btn"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          title={`${running.length} sandbox${running.length === 1 ? '' : 'es'} running`}
-        >
-          ⬚ {running.length}
-        </button>
-        {open ? (
-          <div className="cr-page-chip-pop" role="dialog" aria-label="sandbox fleet">
-            {sandboxes.length === 0 ? (
-              <div className="cr-page-chip-empty">no sandboxes</div>
-            ) : (
-              sandboxes.map((sandbox) => (
-                <button
-                  key={sandbox.sandbox_id}
-                  type="button"
-                  className="cr-page-chip-row"
-                  onClick={() => {
-                    setOpen(false)
-                    jumpToSandbox(sandbox.sandbox_id)
-                  }}
-                >
-                  <span className={`cr-page-chip-dot${sandbox.stopped ? ' stopped' : ''}`} />
-                  <span className="cr-page-chip-id">
-                    {sandbox.name || truncateId(sandbox.sandbox_id)}
-                  </span>
-                  <span className="cr-page-chip-meta">
-                    {sandbox.image} · {formatAgeSecs(sandbox.age_secs)}
-                  </span>
-                </button>
-              ))
-            )}
-          </div>
-        ) : null}
-      </span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="cr-page-chip-btn"
+            title={`${running.length} sandbox${running.length === 1 ? '' : 'es'} running`}
+          >
+            <Box size={16} aria-hidden /> {running.length}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" aria-label="sandbox fleet">
+          {sandboxes.length === 0 ? (
+            <DropdownMenuItem disabled>no sandboxes</DropdownMenuItem>
+          ) : (
+            sandboxes.map((sandbox) => (
+              <DropdownMenuItem
+                key={sandbox.sandbox_id}
+                className="cr-page-chip-row"
+                onSelect={() => jumpToSandbox(sandbox.sandbox_id)}
+              >
+                <StatusDot tone={sandbox.stopped ? 'ink' : 'ok'} />
+                <span className="cr-page-chip-id">
+                  {sandbox.name || truncateId(sandbox.sandbox_id)}
+                </span>
+                <span className="cr-page-chip-meta">
+                  {sandbox.image} · {formatAgeSecs(sandbox.age_secs)}
+                </span>
+              </DropdownMenuItem>
+            ))
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
     )
   }
-
   return { id: 'sandbox-fleet', render: SandboxChip }
 }

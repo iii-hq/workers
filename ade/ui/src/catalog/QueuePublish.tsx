@@ -12,6 +12,7 @@ import {
   CodeEditor,
   type Host,
   JsonHighlight,
+  StatusPanel,
 } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import { type InvokeOutcome, invoke } from './engine'
@@ -109,7 +110,7 @@ export function QueuePublish({ host, topic }: { host: Host; topic: string }) {
         ) : null}
       </div>
       {outcome?.error ? (
-        <div className="console-catalog-error">{outcome.error}</div>
+        <StatusPanel variant="alert" headline={outcome.error} />
       ) : null}
       {outcome?.ok && outcome.data !== null && outcome.data !== undefined ? (
         <JsonHighlight

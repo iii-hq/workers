@@ -6,12 +6,12 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import {
   type CanvasDeleteResponse,
   type CanvasFormat,
   type CanvasListResponse,
   type CanvasRecord,
-  unwrapEnvelope,
 } from '../lib/types'
 
 async function call<T>(

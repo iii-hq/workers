@@ -16,24 +16,18 @@ import {
   type PageRenderProps,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
+import { Columns2, Maximize2, MessageCircle, Plus, RefreshCw, TriangleAlert } from 'lucide-react'
 import { CreateTicketDialog } from './overlays'
 import { TicketScreen } from './ticket'
 import {
-  AlertIcon,
-  CommentIcon,
-  ColumnsIcon,
-  ExpandIcon,
-  PlusIcon,
-  RefreshIcon,
   TICKET_PAGE_ID,
   api,
-  errorMessage,
   priorityTone,
   subscribeChanges,
   summarizeTicket,
   upsertSummary,
-  useContainerNarrow,
-  usePaneState,
   type AgentProfile,
   type BoardColumn,
   type BoardData,
@@ -59,7 +53,7 @@ export function BoardPage({
   const [inlineTicketId, setInlineTicketId] = useState<string | null>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
   const [dropTarget, setDropTarget] = useState<{ status: string; index: number } | null>(null)
-  const [narrowRef, narrow] = useContainerNarrow(760)
+  const { ref: narrowRef, narrow } = useContainerNarrow({ below: 760 })
   const laneKey = `kanban:lane:${paneId ?? tabId ?? 'default'}`
   const [activeLane, setActiveLane] = usePaneState<string>(laneKey, 'backlog')
   const dragRef = useRef<DragState | null>(null)
@@ -285,7 +279,7 @@ export function BoardPage({
             onClick={() => setCreating(column.id)}
             variant="ghost"
           >
-            <PlusIcon />
+            <Plus size={16} />
           </IconButton>
         </header>
         <div className="kanban-lane__body">
@@ -339,7 +333,7 @@ export function BoardPage({
                       onKeyDown={(event) => event.stopPropagation()}
                       variant="ghost"
                     >
-                      <ExpandIcon />
+                      <Maximize2 size={16} />
                     </IconButton>
                   ) : null}
                 </div>
@@ -355,7 +349,7 @@ export function BoardPage({
                   )}
                   {ticket.comment_count > 0 ? (
                     <span className="kanban-card__meta">
-                      <CommentIcon />
+                      <MessageCircle size={16} />
                       {ticket.comment_count}
                     </span>
                   ) : null}
@@ -377,16 +371,16 @@ export function BoardPage({
         actions={
           <>
             <IconButton label="Refresh board" onClick={() => void load()} variant="ghost">
-              <RefreshIcon />
+              <RefreshCw size={16} />
             </IconButton>
             <Button onClick={() => setCreating(data?.default_status ?? 'backlog')} variant="primary">
-              <PlusIcon />
+              <Plus size={16} />
               New ticket
             </Button>
           </>
         }
         description={headerDescription}
-        icon={<ColumnsIcon />}
+        icon={<Columns2 size={16} />}
         onClose={onRequestClose}
         title="Kanban"
       />
@@ -397,7 +391,7 @@ export function BoardPage({
               <StatusPanel
                 detail={loadError}
                 headline="The board could not be read"
-                icon={<AlertIcon />}
+                icon={<TriangleAlert size={16} />}
                 variant="alert"
               />
               <Button onClick={() => void load()} variant="pill">
@@ -411,7 +405,7 @@ export function BoardPage({
               <StatusPanel
                 detail={actionError}
                 headline="That change was not saved"
-                icon={<AlertIcon />}
+                icon={<TriangleAlert size={16} />}
                 variant="alert"
               />
             </div>
@@ -438,7 +432,7 @@ export function BoardPage({
               <EmptyState
                 action={{ label: 'New ticket', onClick: () => setCreating(data.default_status) }}
                 description="The kanban configuration declares no columns yet. Add one in settings."
-                icon={ColumnsIcon}
+                icon={Columns2}
                 title="No columns configured"
               />
             </div>

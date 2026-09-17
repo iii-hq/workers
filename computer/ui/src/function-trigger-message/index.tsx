@@ -47,14 +47,6 @@ function FunctionIdLabel({ functionId }: { functionId: string }) {
   )
 }
 
-function formatJson(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
 function renderBody(message: FunctionTriggerMessage): React.ReactNode | null {
   const { input, output } = message
   switch (message.functionId) {
@@ -110,7 +102,7 @@ function ComputerCallView({ message }: { message: FunctionTriggerMessage }) {
         body
       ) : fallback != null ? (
         <div className="cp-ui-json">
-          <JsonHighlight code={formatJson(fallback)} />
+          <JsonHighlight code={JSON.stringify(fallback, null, 2)} />
         </div>
       ) : (
         <p className="cp-ui-line">no result</p>

@@ -1,6 +1,6 @@
 /**
  * The shell's own checks: the pieces with logic in them (id redaction,
- * language mapping, stream clamping, exit tone) rendered for real through
+ * language mapping, exit tone) rendered for real through
  * `react-dom/server`.
  *
  * The per-card redaction suite lives beside the renderers
@@ -19,11 +19,48 @@ import {
   langToPrism,
   RuntimeChip,
   redactRuntimeIds,
-  Stream,
   truncateRuntimeId,
 } from './shared'
 
 vi.mock('@iii-dev/console-ui', () => ({
+  Badge: ({ children, variant }: { children?: React.ReactNode; variant?: string }) => (
+    <span data-stub="badge" data-variant={variant ?? 'default'}>
+      {children}
+    </span>
+  ),
+  Chip: ({ children, tone }: { children?: React.ReactNode; tone?: string }) => (
+    <span data-stub="chip" data-tone={tone}>
+      {children}
+    </span>
+  ),
+  StatusPanel: ({
+    headline,
+    detail,
+    variant,
+  }: {
+    headline?: React.ReactNode
+    detail?: React.ReactNode
+    variant?: string
+  }) => (
+    <div data-stub="status-panel" data-variant={variant}>
+      {headline}
+      {detail}
+    </div>
+  ),
+  TerminalStream: ({
+    label,
+    text,
+    tone,
+  }: {
+    label: string
+    text: string
+    tone?: string
+  }) =>
+    text.length === 0 ? null : (
+      <pre data-stub="terminal-stream" data-label={label} data-tone={tone}>
+        {text}
+      </pre>
+    ),
   Tooltip: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   TooltipTrigger: ({ children }: { children?: React.ReactNode }) => (
     <>{children}</>
@@ -116,47 +153,13 @@ describe('langToPrism', () => {
   })
 })
 
-describe('Stream', () => {
-  it('renders nothing for an empty stream', () => {
-    expect(html(<Stream label="stdout" text="" />)).toBe('')
-  })
-
-  it('shows short output whole, with no expand affordance', () => {
-    const out = html(<Stream label="stdout" text={'a\nb\nc'} />)
-    expect(out).toContain('a\nb\nc')
-    expect(out).not.toContain('expand')
-  })
-
-  /** A chatty script must not flood the chat: clamp, and say so. */
-  it('clamps long output and offers expansion', () => {
-    const text = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n')
-    const out = html(<Stream label="stdout" text={text} />)
-    expect(out).toContain('line 0')
-    expect(out).not.toContain('line 199')
-    expect(out).toContain('expand')
-    expect(out).toContain('200 lines')
-  })
-
-  /** One 400 KB line has one newline and still has to be clamped. */
-  it('clamps on characters too, not just newlines', () => {
-    const out = html(<Stream label="stdout" text={'x'.repeat(50_000)} />)
-    expect(out.length).toBeLessThan(10_000)
-    expect(out).toContain('expand')
-  })
-
-  it('redacts a runtime id that reaches program output', () => {
-    const out = html(<Stream label="stderr" text={`boom ${RUNTIME_ID}`} />)
-    expect(out).not.toContain(RUNTIME_ID)
-  })
-})
-
 describe('ExitStatus', () => {
   it('reads a zero exit as clean', () => {
     const out = html(<ExitStatus exitCode={0} success durationMs={42} />)
     expect(out).toContain('exit 0')
     expect(out).toContain('clean exit')
     expect(out).toContain('42ms')
-    expect(out).toContain('cr-ui-exit-code ok')
+    expect(out).toContain('data-variant="ok"')
   })
 
   /**
@@ -167,8 +170,8 @@ describe('ExitStatus', () => {
     const out = html(<ExitStatus exitCode={1} success={false} />)
     expect(out).toContain('exit 1')
     expect(out).toContain('stderr')
-    expect(out).toContain('cr-ui-exit-code failed')
-    expect(out).not.toContain('cr-ui-alert')
+    expect(out).toContain('data-variant="warn"')
+    expect(out).not.toContain('data-variant="alert"')
   })
 
   it('says so rather than inventing one when the exit code is missing', () => {
@@ -187,7 +190,7 @@ describe('ExitStatus', () => {
   it('does not contradict itself on a 0 exit code paired with success: false', () => {
     const out = html(<ExitStatus exitCode={0} success={false} />)
     expect(out).toContain('exit 0')
-    expect(out).toContain('cr-ui-exit-code failed')
+    expect(out).toContain('data-variant="warn"')
     expect(out).not.toContain('exited non-zero')
     expect(out).toContain('success: false')
   })
@@ -197,6 +200,6 @@ describe('ExitStatus', () => {
   it('reads a 0 exit with no success field as clean', () => {
     const out = html(<ExitStatus exitCode={0} />)
     expect(out).toContain('clean exit')
-    expect(out).toContain('cr-ui-exit-code ok')
+    expect(out).toContain('data-variant="ok"')
   })
 })

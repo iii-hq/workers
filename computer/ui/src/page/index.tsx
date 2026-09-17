@@ -10,7 +10,7 @@
  * Layout adapts to the width the page HAS (a ResizeObserver on its own body
  * row, not a viewport media query — the console can host it in panes of any
  * size). Wide: the rail (start form + session list) is a collapsible navigation
- * column beside the desktop workspace. Under NARROW_BELOW px it becomes a
+ * column beside the desktop workspace. Under 720px (useContainerNarrow) it becomes a
  * drill-in flow: the session list fills the width, and opening a session
  * swaps it for the full-width viewport with a ← back button. The screencast
  * subscription only runs while the viewport is actually visible, so a
@@ -18,67 +18,48 @@
  */
 
 import {
+  Button,
+  EmptyState,
+  Eyebrow,
   type Host,
+  IconButton,
   PageHeader,
   type PageRenderProps,
   PageShell,
   PageSidebar,
+  StatusBar,
+  StatusDot,
+  StatusPanel,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { useContainerNarrow, useWorkerLive } from '@iii-dev/console-ui/hooks'
+import { ChevronLeft, Monitor } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type ActPayload,
   act,
   type ComputerDisplay,
+  type ComputerSessionInfo,
+  LIFECYCLE_TRIGGERS,
   listDisplays,
+  listSessions,
   type StartSessionInput,
   startSession,
   stopSession,
 } from '../lib/computer'
-import { errorMessage } from '../lib/errors'
 import { formatAge, shortEndpoint } from '../lib/format'
-import { BackButton, LivePill, MonitorIcon } from '../lib/widgets'
 import { SessionRail } from './SessionRail'
 import {
   StartSessionForm,
   type StartSessionFormHandle,
 } from './StartSessionForm'
 import { useLiveFrames } from './useLiveFrames'
-import { useSessionsLive } from './useSessionsLive'
 import { Viewport } from './Viewport'
 
-/** Container width (px) below which the page collapses to the drill-in
- * session-list ⇄ viewport flow. */
-const NARROW_BELOW = 720
-
-/** Observe the page body's own width. Returns a callback ref to put on the
- * body row plus whether it is currently narrower than `threshold` —
- * container-driven, so the same page adapts inside any pane the console
- * gives it. Measures synchronously on mount to avoid a wide-mode flash;
- * zero widths (display:none) are ignored so a hidden page keeps its last
- * real layout. */
-function useContainerNarrow(
-  threshold: number,
-): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const refCb = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-  return [refCb, narrow]
-}
+/** Poll cadence while the lifecycle trigger bindings are unavailable (SDK
+ * hiccup, races around worker restart); skipped while the tab is hidden. */
+const SESSIONS_POLL_MS = 10_000
+const NO_SESSIONS: ComputerSessionInfo[] = []
 
 export function ComputerPage({
   host,
@@ -87,17 +68,22 @@ export function ComputerPage({
   panelContext,
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
-  const { sessions, loading, error, live, refresh } = useSessionsLive(
-    host,
-    true,
-  )
+  // `computer::sessions::list`, re-read on session-started / session-stopped.
+  const { data, loading, error, live, refresh } = useWorkerLive({
+    iii: host.iii,
+    triggers: LIFECYCLE_TRIGGERS,
+    fetch: () => listSessions(host.iii),
+    pollMs: SESSIONS_POLL_MS,
+    handlerId: 'iii::computer-ui::lifecycle',
+  })
+  const sessions = data ?? NO_SESSIONS
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [displays, setDisplays] = useState<ComputerDisplay[]>([])
   const [starting, setStarting] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const { ref: rootRef, narrow } = useContainerNarrow()
   // Narrow-mode drill-in: true once a session was explicitly opened (row
   // click or a start), false after ← back. Wide mode renders both panes
   // regardless, so the flag is harmless there.
@@ -257,27 +243,44 @@ export function ComputerPage({
   return (
     <PageShell className="cp-ui-shell">
       <PageHeader
-        icon={<MonitorIcon />}
+        icon={<Monitor size={16} aria-hidden />}
         title="Computer"
         description="Live desktops you can watch and drive"
-        actions={<LivePill live={live} />}
+        actions={
+          <span
+            className="cp-ui-live"
+            title={
+              live
+                ? 'live — subscribed to the session lifecycle triggers; the rail updates as sessions start and stop'
+                : 'polling — lifecycle trigger bindings unavailable; the session list refreshes every 10s'
+            }
+          >
+            <StatusDot tone={live ? 'ok' : 'ink'} pulse={live} aria-hidden />
+            {live ? 'live' : 'polling'}
+          </span>
+        }
         onClose={onRequestClose}
       />
 
       {problem ? (
-        <div className="cp-ui-banner alert" role="alert">
-          <span>{problem}</span>
-          <button
-            type="button"
-            className="cp-ui-linkish"
-            onClick={() => {
-              setActionError(null)
-              refresh()
-            }}
-          >
-            dismiss
-          </button>
-        </div>
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          className="cp-ui-problem"
+          headline={problem}
+          action={
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setActionError(null)
+                refresh()
+              }}
+            >
+              dismiss
+            </Button>
+          }
+        />
       ) : null}
 
       <div
@@ -295,8 +298,7 @@ export function ComputerPage({
             className="cp-ui-rail"
             header={
               <div className="cp-ui-col-head">
-                <span className="label">sessions</span>
-                <span className="spacer" />
+                <Eyebrow as="span">sessions</Eyebrow>
                 {loading && sessions.length === 0 ? null : (
                   <span className="count">{sessions.length}</span>
                 )}
@@ -304,7 +306,7 @@ export function ComputerPage({
             }
           >
             <div className="cp-ui-rail-top">
-              <div className="cp-ui-rail-caption">start a session</div>
+              <Eyebrow as="div">start a session</Eyebrow>
               <StartSessionForm
                 ref={startFormRef}
                 displays={displays}
@@ -331,10 +333,12 @@ export function ComputerPage({
               <>
                 <header className="cp-ui-doc-head">
                   {narrow ? (
-                    <BackButton
-                      onClick={() => setDrilled(false)}
+                    <IconButton
                       label="back to session list"
-                    />
+                      onClick={() => setDrilled(false)}
+                    >
+                      <ChevronLeft size={16} aria-hidden />
+                    </IconButton>
                   ) : null}
                   <div className="cp-ui-doc-identity">
                     <span
@@ -373,32 +377,35 @@ export function ComputerPage({
                     onPressKeys={(keys) => runAct({ action: 'press', keys })}
                   />
                 </div>
-                <footer className="cp-ui-statusbar">
-                  <span className="fact">
+                <StatusBar
+                  as="footer"
+                  className="cp-ui-status"
+                  end={
+                    <>
+                      <span className="cp-ui-hint">
+                        click to focus — clicks, scroll, typing and shortcuts
+                        forward as act
+                      </span>
+                      <span className="cp-ui-hint">
+                        shift+esc leaves the surface
+                      </span>
+                    </>
+                  }
+                >
+                  <span className="cp-ui-fact">
                     {selected.screen.width}x{selected.screen.height}
                   </span>
-                  <span className="fact">
+                  <span className="cp-ui-fact">
                     {formatAge(selected.last_used_ms)}
                   </span>
-                  <span className="spacer" />
-                  <span className="fact hint">
-                    click to focus — clicks, scroll, typing and shortcuts
-                    forward as act
-                  </span>
-                  <span className="fact hint">
-                    shift+esc leaves the surface
-                  </span>
-                </footer>
+                </StatusBar>
               </>
             ) : (
-              <div className="cp-ui-hero">
-                <MonitorIcon className="cp-ui-hero-icon" />
-                <h2 className="cp-ui-hero-title">no desktop yet</h2>
-                <p className="cp-ui-hero-body">
-                  start a session to drive this machine, a sandboxed desktop, or
-                  a remote one.
-                </p>
-              </div>
+              <EmptyState
+                icon={Monitor}
+                title="no desktop yet"
+                description="start a session to drive this machine, a sandboxed desktop, or a remote one."
+              />
             )}
           </section>
         ) : null}

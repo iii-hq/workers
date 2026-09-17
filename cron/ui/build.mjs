@@ -1,3 +1,3 @@
 import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
 
-await buildWorkerUi({ scope: 'cron' })
+await buildWorkerUi({ scope: 'cron', lint: { strict: true } })

@@ -1,11 +1,14 @@
-import { useMemo, useState } from 'react'
 import {
   Badge,
   Button,
+  Checkbox,
+  Chip,
   EmptyState,
   type Host,
   Input,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { formatRelative } from '@iii-dev/console-ui/format'
 import {
   ChevronLeft,
   ChevronRight,
@@ -16,7 +19,8 @@ import {
   Search,
   Trash2,
   X,
-} from './icons'
+} from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { type MemoryItem, recall } from './memory-data'
 import { useDirtyDelta } from './widgets'
 
@@ -29,16 +33,6 @@ import { useDirtyDelta } from './widgets'
  * and the new-memory draft report into the page-level dirty guard; rows
  * are keyed by memory id, so an open edit survives live refreshes.
  */
-
-/** "2h ago" style relative time; day precision past a week. */
-export function timeAgo(ms: number, now = Date.now()): string {
-  const s = Math.max(0, Math.floor((now - ms) / 1000))
-  if (s < 60) return 'just now'
-  if (s < 3_600) return `${Math.floor(s / 60)}m ago`
-  if (s < 86_400) return `${Math.floor(s / 3_600)}h ago`
-  if (s < 7 * 86_400) return `${Math.floor(s / 86_400)}d ago`
-  return new Date(ms).toLocaleDateString()
-}
 
 /** Per-day capture counts for the last `days`, oldest first. */
 export function activityBuckets(
@@ -149,12 +143,10 @@ function FactRow({
           <Badge key={entity}>{entity}</Badge>
         ))}
         {memory.tags.map((tag) => (
-          <span key={tag} className="mem-ui-tag">
-            #{tag}
-          </span>
+          <Chip key={tag}>#{tag}</Chip>
         ))}
         <span className="mem-ui-meta-note">
-          {timeAgo(memory.created_at)}
+          {formatRelative(memory.created_at)}
           {memory.corroboration > 0 && ` · seen ×${memory.corroboration + 1}`}
           {memory.confidence === 'stated' && ' · saved explicitly'}
           {superseded && ' · superseded'}
@@ -369,7 +361,6 @@ export function MemoriesPanel({
           variant="ghost"
           size="sm"
           disabled={!query.trim() || searching}
-          className="mem-ui-gap1"
         >
           <Search size={16} aria-hidden />
           search
@@ -383,7 +374,6 @@ export function MemoriesPanel({
               setQuery('')
               setResults(null)
             }}
-            className="mem-ui-gap1"
           >
             <X size={16} aria-hidden />
             clear
@@ -393,7 +383,7 @@ export function MemoriesPanel({
 
       {tags.length > 0 ? (
         <div className="mem-ui-row wrap">
-          <span className="mem-ui-caption">Tags</span>
+          <span className={uiClasses.eyebrow}>Tags</span>
           {tags.map(({ tag: t, count }) => (
             <button
               key={t}
@@ -405,13 +395,9 @@ export function MemoriesPanel({
             </button>
           ))}
           {tag ? (
-            <button
-              type="button"
-              onClick={() => onTagChange(null)}
-              className="mem-ui-linkish quiet"
-            >
+            <Button variant="ghost" size="sm" onClick={() => onTagChange(null)}>
               clear
-            </button>
+            </Button>
           ) : null}
         </div>
       ) : null}
@@ -445,14 +431,11 @@ export function MemoriesPanel({
               </Button>
             </span>
           ) : null}
-          <label className="mem-ui-check">
-            <input
-              type="checkbox"
-              checked={includeSuperseded}
-              onChange={(e) => onToggleSuperseded(e.target.checked)}
-            />
-            show history
-          </label>
+          <Checkbox
+            label="show history"
+            checked={includeSuperseded}
+            onChange={(e) => onToggleSuperseded(e.target.checked)}
+          />
         </div>
       </div>
 

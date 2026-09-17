@@ -8,6 +8,8 @@ export declare function formatRelative(input: number | string | Date, now?: numb
 export declare function formatDuration(ms: number): string
 /** Binary units with a space: `512 B`, `1.0 KiB`, `3.2 MiB`; `—` for null. */
 export declare function formatBytes(n: number | null | undefined): string
+/** `{ content: [...], details }` harness result envelope → `details`; a flat payload passes through. */
+export declare function unwrapEnvelope(value: unknown): unknown
 /** The innermost error code a rejected `iii.trigger` carries. */
 export declare function errorCode(err: unknown): string | undefined
 /** One readable string out of whatever a rejected `iii.trigger` throws — never `[object Object]`. */

@@ -18,26 +18,16 @@ import {
   type Host,
   type PageRenderProps,
 } from '@iii-dev/console-ui'
+import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
+import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
+import { ArrowLeft, Clock, Columns2, MessageCircle, Pencil, RefreshCw, Ticket as TicketIcon, Trash2, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
-  AlertIcon,
-  BackIcon,
-  ClockIcon,
-  ColumnsIcon,
-  EditIcon,
-  MessageIcon,
-  RefreshIcon,
   TICKET_PAGE_ID,
-  TicketIcon,
-  TrashIcon,
   api,
-  errorMessage,
   priorityTone,
-  relativeTime,
   statusLabel,
   subscribeChanges,
-  useContainerNarrow,
-  usePaneState,
   type Activity,
   type AgentProfile,
   type Change,
@@ -184,7 +174,7 @@ export function TicketScreen({
   const [titleDraft, setTitleDraft] = useState('')
   const [replyTo, setReplyTo] = useState<{ id: string; author: string } | null>(null)
   const [busy, setBusy] = useState(false)
-  const [narrowRef, narrow] = useContainerNarrow(880)
+  const { ref: narrowRef, narrow } = useContainerNarrow({ below: 880 })
   const requestRef = useRef(0)
 
   const load = useCallback(async () => {
@@ -358,7 +348,7 @@ export function TicketScreen({
   if (loading && !ticket) {
     return (
       <PageShell className="kanban-shell">
-        <PageHeader icon={<TicketIcon />} onClose={onRequestClose} title="Ticket" />
+        <PageHeader icon={<TicketIcon size={16} />} onClose={onRequestClose} title="Ticket" />
         <PageMain>
           <div className="kanban-record" ref={narrowRef}>
             <div className="kanban-record__grid">
@@ -382,11 +372,11 @@ export function TicketScreen({
           actions={
             onBack ? (
               <IconButton label="Back to the board" onClick={onBack} variant="ghost">
-                <BackIcon />
+                <ArrowLeft size={16} />
               </IconButton>
             ) : null
           }
-          icon={<TicketIcon />}
+          icon={<TicketIcon size={16} />}
           onClose={onRequestClose}
           title="Ticket"
         />
@@ -395,7 +385,7 @@ export function TicketScreen({
             <StatusPanel
               detail={error ?? `No ticket matches ${ticketId}.`}
               headline="That ticket could not be opened"
-              icon={<AlertIcon />}
+              icon={<TriangleAlert size={16} />}
               variant="alert"
             />
             <Button onClick={() => void load()} variant="pill">
@@ -416,7 +406,7 @@ export function TicketScreen({
           <>
             {onBack ? (
               <IconButton label="Back to the board" onClick={onBack} variant="ghost">
-                <BackIcon />
+                <ArrowLeft size={16} />
               </IconButton>
             ) : null}
             {onBack && host.panels?.open ? (
@@ -428,11 +418,11 @@ export function TicketScreen({
                 }}
                 variant="ghost"
               >
-                <ColumnsIcon />
+                <Columns2 size={16} />
               </IconButton>
             ) : null}
             <IconButton label="Refresh ticket" onClick={() => void load()} variant="ghost">
-              <RefreshIcon />
+              <RefreshCw size={16} />
             </IconButton>
             <IconButton
               className="kanban-danger"
@@ -440,12 +430,12 @@ export function TicketScreen({
               onClick={() => setConfirming(true)}
               variant="ghost"
             >
-              <TrashIcon />
+              <Trash2 size={16} />
             </IconButton>
           </>
         }
         description={`${ticket.key} · ${ticket.title}`}
-        icon={<TicketIcon />}
+        icon={<TicketIcon size={16} />}
         onClose={onRequestClose}
         title="Ticket"
       />
@@ -496,16 +486,16 @@ export function TicketScreen({
                   <h1 className="kanban-record__title">{ticket.title}</h1>
                   {deleted ? null : (
                     <IconButton label="Edit title" onClick={startEditingTitle} variant="ghost">
-                      <EditIcon />
+                      <Pencil size={16} />
                     </IconButton>
                   )}
                 </div>
               )}
               <div className="kanban-record__meta">
-                <ClockIcon />
-                <span title={new Date(ticket.updated_at).toLocaleString()}>updated {relativeTime(ticket.updated_at)}</span>
+                <Clock size={16} />
+                <span title={new Date(ticket.updated_at).toLocaleString()}>updated {formatRelative(ticket.updated_at)}</span>
                 <span className="kanban-dot" />
-                <span>created {relativeTime(ticket.created_at)} by {ticket.created_by}</span>
+                <span>created {formatRelative(ticket.created_at)} by {ticket.created_by}</span>
               </div>
             </div>
 
@@ -569,7 +559,7 @@ export function TicketScreen({
                   className="kanban-record__banner"
                   detail="It is hidden from the board but the row is still in the board file."
                   headline="This ticket was deleted"
-                  icon={<AlertIcon />}
+                  icon={<TriangleAlert size={16} />}
                   variant="warn"
                 />
               ) : null}
@@ -578,7 +568,7 @@ export function TicketScreen({
                   className="kanban-record__banner"
                   detail={actionError}
                   headline="That change was not saved"
-                  icon={<AlertIcon />}
+                  icon={<TriangleAlert size={16} />}
                   variant="alert"
                 />
               ) : null}
@@ -668,7 +658,7 @@ export function TicketScreen({
                               dateTime={comment.created_at}
                               title={new Date(comment.created_at).toLocaleString()}
                             >
-                              {relativeTime(comment.created_at)}
+                              {formatRelative(comment.created_at)}
                             </time>
                             <Button
                               className="kanban-comment__reply"
@@ -689,7 +679,7 @@ export function TicketScreen({
                     return (
                       <li className="kanban-event" key={entry.id}>
                         <span className="kanban-event__icon">
-                          <MessageIcon />
+                          <MessageCircle size={16} />
                         </span>
                         <span className="kanban-event__text">
                           <strong>{entry.actor}</strong> {activitySentence(entry, columns)}
@@ -699,7 +689,7 @@ export function TicketScreen({
                           dateTime={entry.at}
                           title={new Date(entry.at).toLocaleString()}
                         >
-                          {relativeTime(entry.at)}
+                          {formatRelative(entry.at)}
                         </time>
                       </li>
                     )
@@ -783,7 +773,7 @@ export function TicketPage({
   if (!id) {
     return (
       <PageShell className="kanban-shell">
-        <PageHeader icon={<TicketIcon />} onClose={onRequestClose} title="Ticket" />
+        <PageHeader icon={<TicketIcon size={16} />} onClose={onRequestClose} title="Ticket" />
         <PageMain>
           <div className="kanban-pad">
             <EmptyState

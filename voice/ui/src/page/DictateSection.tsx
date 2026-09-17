@@ -6,10 +6,11 @@
  */
 
 import { Button, Chip, EmptyState, type Host, IconButton, StatusDot } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { Copy, Mic, Send, Square, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { DictationController } from '../lib/dictation'
 import { useDictation } from '../lib/dictation'
-import { CopyIcon, MicIcon, SendIcon, StopIcon, TrashIcon } from '../lib/icons'
 import { SectionCard } from './shared'
 
 const COPIED_MS = 2000
@@ -26,7 +27,6 @@ export function DictateSection({
   const { state, start, stop, cancel } = useDictation(controller)
   const [draft, setDraft] = useState<string[]>([])
   const [cleared, setCleared] = useState(false)
-  const [copied, setCopied] = useState(false)
   const appliedSignalRef = useRef(0)
 
   useEffect(() => {
@@ -46,6 +46,7 @@ export function DictateSection({
   })()
   const text = [...entries.map((entry) => entry.text), listening ? state.partial : ''].filter(Boolean).join(' ')
   const hasText = text.trim().length > 0
+  const { state: copyState, copy } = useCopyFlash(text.trim(), COPIED_MS)
 
   const onStop = async () => {
     const result = (await stop()).trim()
@@ -62,17 +63,6 @@ export function DictateSection({
   const sendToChat = () => {
     if (!hasText) return
     host.chat?.compose?.({ text: `${text.trim()} ` })
-  }
-
-  const copy = () => {
-    if (!hasText) return
-    navigator.clipboard
-      .writeText(text.trim())
-      .then(() => {
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), COPIED_MS)
-      })
-      .catch(() => {})
   }
 
   const clear = () => {
@@ -115,7 +105,7 @@ export function DictateSection({
         <div className="voice-hero">
           {listening ? (
             <Button variant="primary" size="lg" className="voice-hero-btn" onClick={onStop}>
-              <StopIcon />
+              <Square />
               Stop and keep text
             </Button>
           ) : (
@@ -126,7 +116,7 @@ export function DictateSection({
               onClick={onStart}
               disabled={state.status === 'stopping'}
             >
-              <MicIcon />
+              <Mic />
               Start dictation
             </Button>
           )}
@@ -142,16 +132,16 @@ export function DictateSection({
         title="Transcript"
         actions={
           <span className="voice-card-actions">
-            {copied ? <Chip tone="success">copied</Chip> : null}
+            {copyState === 'copied' ? <Chip tone="success">copied</Chip> : null}
             <IconButton label="Copy transcript" variant="ghost" onClick={copy} disabled={!hasText}>
-              <CopyIcon />
+              <Copy />
             </IconButton>
             <IconButton label="Clear" variant="ghost" onClick={clear} disabled={!hasText && !listening}>
-              <TrashIcon />
+              <Trash2 />
             </IconButton>
             {host.chat?.compose ? (
               <Button variant="primary" size="sm" onClick={sendToChat} disabled={!hasText}>
-                <SendIcon />
+                <Send />
                 Send to chat
               </Button>
             ) : null}
@@ -160,7 +150,7 @@ export function DictateSection({
       >
         {!hasText ? (
           <EmptyState
-            icon={MicIcon}
+            icon={Mic}
             title={listening ? 'Listening' : 'Nothing dictated yet'}
             description={
               listening

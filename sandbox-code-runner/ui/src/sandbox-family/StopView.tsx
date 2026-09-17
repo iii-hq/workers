@@ -4,8 +4,10 @@
  * to open.
  */
 
+import { Badge } from '@iii-dev/console-ui'
+import { X } from 'lucide-react'
 import { safeParseResponse, stopRequestSchema, stopResponseSchema } from './parsers'
-import { Chip, FooterPill, SandboxIdChip } from './shared'
+import { Chip, SandboxIdChip } from './shared'
 
 interface StopViewProps {
   input: unknown
@@ -22,16 +24,14 @@ export function StopView({ input, output, running }: StopViewProps) {
     <div className="cr-fam-card">
       <div className="cr-fam-slab warn">
         <div className="cr-fam-line">
-          <span className="cr-fam-warn">×</span>
+          <X size={16} aria-hidden className="cr-fam-warn" />
           <span>{running ? 'stopping sandbox…' : 'stopped sandbox'}</span>
           <SandboxIdChip sandboxId={respData?.sandbox_id ?? req.data.sandbox_id} jump={false} />
         </div>
         <div className="cr-fam-chips">
           {req.data.wait ? <Chip label="wait">true</Chip> : null}
           {respData ? (
-            <FooterPill tone={respData.stopped ? 'ok' : 'warn'}>
-              {respData.stopped ? 'stopped' : 'not stopped'}
-            </FooterPill>
+            <Badge variant={respData.stopped ? 'ok' : 'warn'}>{respData.stopped ? 'stopped' : 'not stopped'}</Badge>
           ) : null}
         </div>
       </div>

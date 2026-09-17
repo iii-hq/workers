@@ -1,4 +1,5 @@
 [data-iii-ui='provider-openai-codex'] .codex-provider-form {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -10,7 +11,7 @@
   color: var(--color-ink);
   background: var(--color-surface, var(--color-panel));
   border: 1px solid var(--color-edge, var(--color-rule));
-  border-radius: 8px;
+  border-radius: 6px;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
@@ -46,7 +47,7 @@
   color: var(--color-ink);
   background: var(--color-panel-raised, var(--color-bg));
   border: 1px solid var(--color-edge, var(--color-rule));
-  border-radius: 2px;
+  border-radius: 6px;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-status,
@@ -60,8 +61,6 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--color-ink-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-dot {
@@ -69,7 +68,7 @@
   height: 8px;
   flex: 0 0 auto;
   background: var(--color-ink-ghost);
-  border-radius: 999px;
+  border-radius: 9999px;
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-dot[data-active='true'] {
@@ -111,7 +110,7 @@
 }
 
 [data-iii-ui='provider-openai-codex'] .codex-provider-card a:focus-visible {
-  outline: 2px solid var(--color-accent, var(--color-ink));
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: 3px;
 }
 
@@ -123,7 +122,7 @@
   margin-top: 16px;
 }
 
-@media (min-width: 640px) {
+@container (min-width: 640px) {
   [data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
     font-size: 14px;
   }

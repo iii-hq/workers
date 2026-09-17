@@ -1,10 +1,10 @@
 /** Read the last assistant reply in this browser, never on the worker's host. */
 
 import type { Host, SessionTurnSummaryProps, SessionTurnSummaryRegistration } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { Volume2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { speak } from '../lib/client'
-import { errorMessage } from '../lib/format'
-import { SpeakerIcon } from '../lib/icons'
 import { useBrowserPlayback } from '../lib/playback'
 import { fetchSpokenReply, selectedChatText, subscribeAutoReplies, type SpokenReply } from '../lib/voice-chat'
 
@@ -86,14 +86,14 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
         <button type="button" className="voice-turn-action" aria-pressed={autoRead}
           title="Read assistant text as it arrives, sentence by sentence, in this browser. Does not send messages or keep the microphone open."
           onClick={() => { setAutoError(null); setAutoSession(autoRead ? null : sessionId); if (autoRead) onStop() }}>
-          <SpeakerIcon />
+          <Volume2 size={16} />
           {autoRead ? 'Voice chat on' : 'Voice chat'}
         </button>
         {selected && !busy ? <button type="button" className="voice-turn-action"
           onPointerDown={(event) => event.preventDefault()}
           onClick={() => { const text = selected; void play(() => speak(host.iii, { text, text_format: 'plain' })) }}
           title={`Read only the selected passage (${selected.length} characters)`}>
-          <SpeakerIcon />Read selection
+          <Volume2 size={16} />Read selection
         </button> : null}
         <button
           type="button"
@@ -103,7 +103,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
           aria-label={busy ? 'Stop reading aloud' : 'Read aloud'}
           onClick={busy ? () => { setAutoSession(null); onStop() } : onReadAloud}
         >
-          <SpeakerIcon />
+          <Volume2 size={16} />
           <span>{busy ? 'Stop' : 'Read aloud'}</span>
         </button>
         {autoError ? <span className="voice-turn-error" role="alert">{autoError}</span> : null}

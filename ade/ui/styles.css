@@ -1,11 +1,7 @@
-/*
- * The console worker's own console stylesheet, shipped as its own
- * `console:style` asset (console/styles.css). Every rule is scoped under
- * `[data-iii-ui="console"]`, the wrapper the console mounts around every
- * injected render — the worker settings inside Configuration and
- * the two engine-catalogue pages (functions, triggers).
- * Styling uses the console's design tokens, so light/dark theming is free.
- */
+/* The console worker's own stylesheet (`console:style`, console/styles.css):
+ * the console entry's settings form, the declarative worker configuration
+ * forms, the working-directory proposal card and the two engine-catalogue
+ * pages. Every rule is scoped under [data-iii-ui="console"]; tokens only. */
 
 [data-iii-ui="console"] .console-ui-form {
   container-type: inline-size;
@@ -16,43 +12,14 @@
   font-family: var(--font-sans);
   color: var(--color-ink);
 }
-[data-iii-ui="console"] .console-ui-form-caption {
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="console"] .console-ui-form-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-[data-iii-ui="console"] .console-ui-form-title {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  color: var(--color-ink-faint);
-  font-weight: 600;
-}
-[data-iii-ui="console"] .console-ui-form-hint {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-ink-faint);
-  max-width: 60ch;
-}
 [data-iii-ui="console"] .console-ui-port-input {
   width: min(100%, 180px);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 [data-iii-ui="console"] .console-ui-select-control {
   width: min(100%, 280px);
 }
-[data-iii-ui="console"] .console-ui-form-field-hint {
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--color-ink-ghost);
-}
-
-/* ── the toggle board: one bordered card per worker ─────────────────── */
 
 [data-iii-ui="console"] .console-ui-toggle-list {
   display: flex;
@@ -60,132 +27,13 @@
   gap: 8px;
   margin-top: 4px;
 }
-[data-iii-ui="console"] .console-ui-toggle-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  width: 100%;
-  text-align: left;
-  padding: 12px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
-  font: inherit;
-  color: var(--color-ink);
-  cursor: pointer;
-  transition:
-    border-color 0.15s ease,
-    opacity 0.15s ease,
-    background-color 0.15s ease;
-}
-[data-iii-ui="console"] .console-ui-toggle-card:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
-}
-[data-iii-ui="console"] .console-ui-toggle-card:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 1px;
-}
-/* active ⇒ accent border; inactive ⇒ dimmed card */
-[data-iii-ui="console"] .console-ui-toggle-card[data-active="true"] {
-}
-[data-iii-ui="console"] .console-ui-toggle-card[data-active="false"] {
-  opacity: 0.55;
-}
 
-[data-iii-ui="console"] .console-ui-toggle-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-[data-iii-ui="console"] .console-ui-toggle-title {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 13px;
-  font-weight: 600;
-}
-[data-iii-ui="console"] .console-ui-toggle-meta {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--color-ink-ghost);
-  white-space: nowrap;
-}
-[data-iii-ui="console"] .console-ui-toggle-description {
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--color-ink-faint);
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-/* ── the switch (pure CSS, driven by the card's data-active) ────────── */
-
-[data-iii-ui="console"] .console-ui-switch {
-  position: relative;
-  flex: none;
-  width: 34px;
-  height: 20px;
-  border-radius: 999px;
-  background: var(--color-rule-2);
-  transition: background-color 0.15s ease;
-}
-[data-iii-ui="console"] .console-ui-switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--color-bg);
-  transition: transform 0.15s ease;
-}
-[data-iii-ui="console"]
-  .console-ui-toggle-card[data-active="true"]
-  .console-ui-switch {
-  background: var(--color-accent);
-}
-[data-iii-ui="console"]
-  .console-ui-toggle-card[data-active="true"]
-  .console-ui-switch::after {
-  transform: translateX(14px);
-}
 
 /* ── loading / empty / error states ─────────────────────────────────── */
 
 [data-iii-ui="console"] .console-ui-toggle-skeleton {
+  display: block;
   height: 58px;
-  border-radius: 8px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
-  cursor: default;
-  animation: console-ui-skeleton-pulse 1.6s ease-in-out infinite;
-}
-@keyframes console-ui-skeleton-pulse {
-  0%,
-  100% {
-    opacity: 0.7;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-[data-iii-ui="console"] .console-ui-form-empty {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-ink-faint);
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
-  border-radius: 8px;
-  padding: 14px;
-  max-width: 60ch;
-}
-[data-iii-ui="console"] .console-ui-form-error {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-alert);
 }
 
 [data-iii-ui="console"] .console-ui-string-list {
@@ -208,11 +56,10 @@
   gap: 4px;
   min-width: 0;
   padding: 4px 4px 4px 9px;
-  border: 1px solid var(--color-rule);
-  border-radius: 999px;
+  border-radius: 9999px;
   background: var(--color-panel);
   color: var(--color-ink-faint);
-  font: 500 11.5px/1.2 var(--font-mono, ui-monospace, monospace);
+  font: 500 11.5px/1.2 var(--font-mono);
 }
 [data-iii-ui="console"] .console-ui-string-chip > span {
   overflow: hidden;
@@ -225,17 +72,17 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: 9999px;
   background: transparent;
   color: var(--color-ink-ghost);
   cursor: pointer;
 }
 [data-iii-ui="console"] .console-ui-string-chip button:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  background: var(--color-surface-hover);
   color: var(--color-ink);
 }
 [data-iii-ui="console"] .console-ui-string-chip button:focus-visible {
-  outline: 2px solid var(--color-ring);
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: 1px;
 }
 [data-iii-ui="console"] .console-ui-string-list-add {
@@ -308,9 +155,9 @@
 [data-iii-ui="console"] .console-worker-config-template-kind {
   padding: 2px 6px;
   border: 1px solid var(--color-edge);
-  border-radius: 999px;
+  border-radius: 9999px;
   color: var(--color-ink-faint);
-  font: 500 10.5px/1.4 var(--font-sans);
+  font: 500 11px/1.4 var(--font-sans);
   white-space: nowrap;
 }
 [data-iii-ui="console"] .console-worker-config-template-input {
@@ -320,7 +167,7 @@
 }
 [data-iii-ui="console"] .console-worker-config-error {
   font: 400 11.5px/1.45 var(--font-sans);
-  color: var(--color-alert);
+  color: var(--color-alert-strong);
 }
 [data-iii-ui="console"] .console-worker-config-preserved {
   color: var(--color-ink-ghost);
@@ -411,7 +258,6 @@
   gap: 7px;
   color: var(--color-ink-faint);
   font: 500 12px/1.4 var(--font-sans);
-  text-transform: capitalize;
 }
 [data-iii-ui="console"] .console-worker-config-constraint-control {
   display: flex;
@@ -618,6 +464,36 @@
   }
 }
 
+/* ── the working-directory proposal card (chat) ─────────────────────── */
+
+[data-iii-ui="console"] .console-wd-proposal {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+[data-iii-ui="console"] .console-wd-proposal-copy {
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-wd-proposal-title {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+[data-iii-ui="console"] .console-wd-proposal-path {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-wd-proposal-reason {
+  margin-top: 3px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
 /* ── the engine catalogue pages (functions, triggers) ───────────────────
  *
  * Layout: PageShell > PageHeader > now-strip > PageBody (PageSidebar |
@@ -629,9 +505,9 @@
 
 [data-iii-ui="console"] .console-catalog {
   container-type: inline-size;
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--font-sans);
   color: var(--color-ink);
-  background: var(--color-bg, var(--color-panel));
+  background: var(--color-bg);
 }
 [data-iii-ui="console"] .console-catalog *,
 [data-iii-ui="console"] .console-catalog *::before,
@@ -643,13 +519,13 @@
 [data-iii-ui="console"] .console-catalog-strip {
   flex: none;
   padding: 5px 14px;
-  background: var(--color-panel-raised, var(--color-paper-2));
+  background: var(--color-panel-raised);
 }
 
 [data-iii-ui="console"] .console-catalog-body {
   gap: 6px;
   padding: 6px;
-  background: var(--color-bg, var(--color-panel));
+  background: var(--color-bg);
 }
 [data-iii-ui="console"] .console-catalog-side,
 [data-iii-ui="console"] .console-catalog-main {
@@ -674,7 +550,7 @@
 [data-iii-ui="console"] .console-catalog-side-footer {
   flex: none;
   padding: 9px 12px;
-  background: var(--color-panel-raised, var(--color-paper-2));
+  background: var(--color-panel-raised);
 }
 [data-iii-ui="console"] .console-catalog-count {
   font-size: 11px;
@@ -714,7 +590,7 @@
   justify-content: center;
   width: 28px;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: var(--color-ink-ghost);
   font: inherit;
@@ -722,12 +598,12 @@
 }
 [data-iii-ui="console"] .console-catalog-group .twist:hover {
   color: var(--color-ink);
-  background: var(--color-surface-hover, var(--color-paper-2));
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="console"] .console-catalog-group .chevron {
   flex: none;
   color: var(--color-ink-ghost);
-  transition: transform 0.12s ease;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="console"] .console-catalog-group .chevron[data-open="true"] {
   transform: rotate(90deg);
@@ -741,7 +617,7 @@
   gap: 3px 8px;
   padding: 7px 8px;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: var(--color-ink);
   font: inherit;
@@ -749,13 +625,10 @@
   cursor: pointer;
 }
 [data-iii-ui="console"] .console-catalog-group .pick:hover {
-  background: var(--color-surface-hover, var(--color-paper-2));
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="console"] .console-catalog-group[data-selected="true"] .pick {
-  background: var(
-    --color-surface-active,
-    var(--color-surface, rgba(0, 0, 0, 0.05))
-  );
+  background: var(--color-surface-selected);
 }
 [data-iii-ui="console"] .console-catalog-group .group-label-line {
   min-width: 0;
@@ -764,6 +637,7 @@
   gap: 7px;
 }
 [data-iii-ui="console"] .console-catalog-group .group-name {
+  font-family: var(--font-mono);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -776,10 +650,10 @@
   flex: none;
   min-width: 20px;
   padding: 2px 5px;
-  border-radius: 4px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
+  border-radius: 6px;
+  background: var(--color-surface);
   color: var(--color-ink-faint);
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
@@ -789,13 +663,14 @@
   color: var(--color-ink);
 }
 [data-iii-ui="console"] .console-catalog-group .detail {
+  font-family: var(--font-mono);
   grid-column: 1;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 5px;
   overflow: hidden;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
 }
 [data-iii-ui="console"] .console-catalog-group .count {
@@ -825,21 +700,17 @@
   border-radius: 6px;
   color: var(--color-ink);
   font: inherit;
-  font-family: var(--font-mono, ui-monospace, monospace);
   cursor: pointer;
 }
 [data-iii-ui="console"] .console-catalog-row:hover {
-  background: var(--color-surface-hover, var(--color-paper-2));
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="console"] .console-catalog-row:focus-visible {
-  outline: 2px solid var(--color-ink);
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: 1px;
 }
 [data-iii-ui="console"] .console-catalog-row[data-selected="true"] {
-  background: var(
-    --color-surface-active,
-    var(--color-surface, rgba(0, 0, 0, 0.05))
-  );
+  background: var(--color-surface-selected);
   box-shadow: inset 0 0 0 1px var(--color-edge);
 }
 [data-iii-ui="console"] .console-catalog-row .row-glyph {
@@ -861,6 +732,7 @@
   min-width: 0;
 }
 [data-iii-ui="console"] .console-catalog-row .primary {
+  font-family: var(--font-mono);
   min-width: 0;
   font-size: 12.5px;
   overflow: hidden;
@@ -890,8 +762,8 @@
   width: 34px;
   height: 34px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
-  color: var(--color-accent);
+  background: var(--color-surface);
+  color: var(--color-glyph-purple);
   font-size: 17px;
   font-style: italic;
   font-weight: 600;
@@ -920,20 +792,19 @@
   width: 20px;
   height: 20px;
 }
+[data-iii-ui="console"] .console-catalog-glyph[data-tone="accent"] {
+  color: var(--color-glyph-blue);
+}
 [data-iii-ui="console"] .console-catalog-glyph[data-tone="warn"] {
-  background: color-mix(in srgb, var(--color-warn) 12%, transparent);
-  color: var(--color-warn);
+  color: var(--color-glyph-amber);
 }
 [data-iii-ui="console"] .console-catalog-glyph[data-tone="ok"] {
-  background: color-mix(in srgb, var(--color-ok) 12%, transparent);
-  color: var(--color-ok);
+  color: var(--color-glyph-green);
 }
 [data-iii-ui="console"] .console-catalog-glyph[data-tone="alert"] {
-  background: color-mix(in srgb, var(--color-alert) 12%, transparent);
-  color: var(--color-alert);
+  color: var(--color-glyph-rose);
 }
 [data-iii-ui="console"] .console-catalog-glyph[data-tone="ink"] {
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
   color: var(--color-ink-faint);
 }
 
@@ -965,7 +836,7 @@
   gap: 8px;
   overflow-y: auto;
   padding: 8px;
-  background: var(--color-sidebar, var(--color-panel-raised));
+  background: var(--color-sidebar);
 }
 [data-iii-ui="console"] .console-catalog-context-panel {
   flex: none;
@@ -996,7 +867,7 @@
 [data-iii-ui="console"] .console-catalog-context-panel .context-heading p {
   margin: 0;
   color: var(--color-ink-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.45;
 }
 [data-iii-ui="console"] .console-catalog-context-panel .context-body {
@@ -1014,7 +885,7 @@
   padding: 9px;
   border: 0;
   border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
   color: var(--color-ink);
   font: inherit;
   text-align: left;
@@ -1023,7 +894,7 @@
   cursor: pointer;
 }
 [data-iii-ui="console"] button.console-catalog-context-item:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="console"] .console-catalog-context-item .context-item-glyph {
   flex: none;
@@ -1036,6 +907,7 @@
   gap: 2px;
 }
 [data-iii-ui="console"] .console-catalog-context-item .context-item-title {
+  font-family: var(--font-mono);
   overflow: hidden;
   color: var(--color-ink);
   font-size: 11.5px;
@@ -1046,11 +918,12 @@
 [data-iii-ui="console"] .console-catalog-context-item .context-item-description,
 [data-iii-ui="console"] .console-catalog-context-item .context-item-meta {
   color: var(--color-ink-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
 [data-iii-ui="console"] .console-catalog-context-item .context-item-meta {
+  font-family: var(--font-mono);
   color: var(--color-ink-ghost);
 }
 [data-iii-ui="console"] .console-catalog-context-item .context-item-arrow {
@@ -1072,26 +945,14 @@
   padding: 9px;
   border: 0;
   border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
   color: var(--color-ink);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 [data-iii-ui="console"] .console-catalog-context-activity:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
-}
-[data-iii-ui="console"] .console-catalog-context-activity .dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-ok);
-}
-[data-iii-ui="console"]
-  .console-catalog-context-activity
-  .dot[data-ok="false"] {
-  background: var(--color-alert);
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="console"] .console-catalog-context-activity .activity-copy {
   flex: 1;
@@ -1099,7 +960,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 10.5px;
+  font-size: 11px;
 }
 [data-iii-ui="console"]
   .console-catalog-context-activity
@@ -1108,9 +969,10 @@
   color: var(--color-ink-faint);
 }
 [data-iii-ui="console"] .console-catalog-context-activity .duration {
+  font-family: var(--font-mono);
   flex: none;
   color: var(--color-ink-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1139,12 +1001,6 @@
   flex-direction: column;
   gap: 7px;
 }
-[data-iii-ui="console"] .console-catalog-hero .eyebrow {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--color-accent);
-}
 [data-iii-ui="console"] .console-catalog-hero .title {
   margin: 0;
   max-width: 28ch;
@@ -1165,7 +1021,7 @@
   margin: 2px 0 0;
   padding: 4px;
   border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
 }
 [data-iii-ui="console"] .console-catalog-hero .guide-row {
   display: grid;
@@ -1188,6 +1044,7 @@
 }
 
 [data-iii-ui="console"] .console-catalog-crumb {
+  font-family: var(--font-mono);
   flex: none;
   display: flex;
   align-items: center;
@@ -1211,15 +1068,15 @@
   width: 22px;
   height: 22px;
   border: 0;
-  border-radius: 4px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
+  border-radius: 6px;
+  background: var(--color-surface);
   color: var(--color-ink-faint);
   font: inherit;
   cursor: pointer;
 }
 [data-iii-ui="console"] .console-catalog-back:hover {
   color: var(--color-ink);
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  background: var(--color-surface-hover);
 }
 
 [data-iii-ui="console"] .console-catalog-ident {
@@ -1243,19 +1100,11 @@
   flex-wrap: wrap;
 }
 [data-iii-ui="console"] .console-catalog-ident .ident-title {
+  font-family: var(--font-mono);
   margin: 0;
   font-size: 17px;
   font-weight: 600;
   overflow-wrap: anywhere;
-}
-[data-iii-ui="console"] .console-catalog-ident .ident-status {
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--color-ok-muted, rgba(53, 111, 61, 0.12));
-  color: var(--color-ok);
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 [data-iii-ui="console"] .console-catalog-ident .ident-desc {
   margin: 0;
@@ -1278,21 +1127,12 @@
   gap: 6px;
 }
 
-[data-iii-ui="console"] .console-catalog-desc {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-ink-faint);
-}
 [data-iii-ui="console"] .console-catalog-chip {
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
-  border-radius: 4px;
-  font-size: 11.5px;
-  padding: 3px 8px;
+  font-family: var(--font-mono);
   white-space: nowrap;
 }
 [data-iii-ui="console"] .console-catalog-chip .k {
   color: var(--color-ink-ghost);
-  margin-right: 6px;
 }
 [data-iii-ui="console"] .console-catalog-tabs {
   padding: 14px 20px 24px;
@@ -1312,12 +1152,6 @@
   gap: 10px;
   padding-top: 10px;
 }
-[data-iii-ui="console"] .console-catalog-doc-desc {
-  margin: 0;
-  max-width: 64ch;
-  font-size: 13px;
-  line-height: 1.6;
-}
 
 [data-iii-ui="console"] .console-catalog-facts {
   width: 100%;
@@ -1325,7 +1159,7 @@
   margin: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
   border-radius: 6px;
   padding: 2px 0;
 }
@@ -1363,7 +1197,7 @@
   gap: 10px;
   padding: 10px 12px;
   border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
 }
 [data-iii-ui="console"] .console-catalog-trigcard .copy {
   flex: 1;
@@ -1379,17 +1213,19 @@
   flex-wrap: wrap;
 }
 [data-iii-ui="console"] .console-catalog-trigcard .name {
+  font-family: var(--font-mono);
   font-size: 12.5px;
   overflow-wrap: anywhere;
 }
 [data-iii-ui="console"] .console-catalog-trigcard .type {
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--color-ink-ghost);
   overflow-wrap: anywhere;
 }
 [data-iii-ui="console"] .console-catalog-trigcard .fine {
   font-size: 11px;
-  color: var(--color-warn);
+  color: var(--color-warn-strong);
 }
 
 /* --- invoke panel ---------------------------------------------------- */
@@ -1400,7 +1236,7 @@
   margin-top: 10px;
   padding: 14px;
   border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
   box-shadow: inset 0 0 0 1px var(--color-edge);
 }
 [data-iii-ui="console"] .console-catalog-invoke-head {
@@ -1449,12 +1285,12 @@
   color: var(--color-ok);
 }
 [data-iii-ui="console"] .console-catalog-invalid {
-  color: var(--color-alert);
+  color: var(--color-alert-strong);
 }
 [data-iii-ui="console"] .console-catalog-result,
 [data-iii-ui="console"] .console-catalog-json {
   display: block;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
   border-radius: 6px;
   padding: 10px 12px;
   font-size: 12px;
@@ -1474,7 +1310,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 9px 11px;
-  background: var(--color-panel-raised, var(--color-paper-2));
+  background: var(--color-panel-raised);
   font-size: 11px;
 }
 [data-iii-ui="console"] .console-catalog-result-head > :first-child {
@@ -1482,13 +1318,8 @@
   align-items: center;
   gap: 6px;
 }
-[data-iii-ui="console"] .console-catalog-result-head .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
 [data-iii-ui="console"] .console-catalog-result-head .result-meta {
+  font-family: var(--font-mono);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1508,37 +1339,6 @@
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--color-ink-faint);
-}
-[data-iii-ui="console"] .console-catalog-error {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  background: var(--color-alert-muted, rgba(255, 0, 38, 0.08));
-  color: var(--color-alert);
-  border-radius: 6px;
-  padding: 10px 12px;
-  overflow-wrap: anywhere;
-}
-[data-iii-ui="console"] .console-catalog-error .error-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-[data-iii-ui="console"] .console-catalog-error .error-title {
-  color: var(--color-alert);
-  font-size: 12.5px;
-  font-weight: 600;
-}
-[data-iii-ui="console"] .console-catalog-error .error-detail {
-  color: var(--color-ink-faint);
-  font-size: 11px;
-  line-height: 1.5;
-}
-[data-iii-ui="console"] .console-catalog-result-shell > .console-catalog-error {
-  border-radius: 0;
-  background: var(--color-alert-muted, rgba(255, 0, 38, 0.08));
 }
 /* Loading/error states sit directly in the document column, outside the
  * padded tab region — give them the document's own gutters. */
@@ -1562,9 +1362,6 @@
 [data-iii-ui="console"] .console-catalog-skeleton .skeleton-heading,
 [data-iii-ui="console"] .console-catalog-skeleton .skeleton-row {
   display: block;
-  border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
-  animation: console-catalog-skeleton 1.5s ease-in-out infinite;
 }
 [data-iii-ui="console"] .console-catalog-skeleton .skeleton-heading {
   width: 54%;
@@ -1576,52 +1373,35 @@
 [data-iii-ui="console"] .console-catalog-skeleton .skeleton-row.short {
   width: 84%;
 }
-@keyframes console-catalog-skeleton {
-  0%,
-  100% {
-    opacity: 0.45;
-  }
-  50% {
-    opacity: 0.85;
-  }
-}
-
 /* --- family tags, filter chips, stat tiles --------------------------- */
 
 /* One tone scale for every family marker: the group tag, the detail chip,
  * and the tile value all read from these. */
 [data-iii-ui="console"] .console-catalog-tag,
-[data-iii-ui="console"] .console-catalog-chip[data-tone],
 [data-iii-ui="console"] .console-catalog-tile .value[data-tone] {
   color: var(--color-ink-faint);
 }
 [data-iii-ui="console"] .console-catalog-tag[data-tone="accent"],
-[data-iii-ui="console"] .console-catalog-chip[data-tone="accent"],
 [data-iii-ui="console"] .console-catalog-tile .value[data-tone="accent"] {
   color: var(--color-accent);
 }
 [data-iii-ui="console"] .console-catalog-tag[data-tone="ok"],
-[data-iii-ui="console"] .console-catalog-chip[data-tone="ok"],
 [data-iii-ui="console"] .console-catalog-tile .value[data-tone="ok"] {
   color: var(--color-ok);
 }
 [data-iii-ui="console"] .console-catalog-tag[data-tone="warn"],
-[data-iii-ui="console"] .console-catalog-chip[data-tone="warn"],
 [data-iii-ui="console"] .console-catalog-tile .value[data-tone="warn"] {
-  color: var(--color-warn);
+  color: var(--color-warn-strong);
 }
 [data-iii-ui="console"] .console-catalog-tag[data-tone="alert"],
-[data-iii-ui="console"] .console-catalog-chip[data-tone="alert"],
 [data-iii-ui="console"] .console-catalog-tile .value[data-tone="alert"] {
-  color: var(--color-alert);
+  color: var(--color-alert-strong);
 }
 
+/* The family tag is the eyebrow recipe on a surface pill. */
 [data-iii-ui="console"] .console-catalog-tag {
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
-  border-radius: 4px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  background: var(--color-surface);
+  border-radius: 6px;
   padding: 1px 6px;
   white-space: nowrap;
 }
@@ -1634,7 +1414,7 @@
 [data-iii-ui="console"] .console-catalog-filter {
   border: 0;
   border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
+  background: var(--color-surface);
   color: var(--color-ink-faint);
   font: inherit;
   font-size: 11px;
@@ -1643,14 +1423,11 @@
 }
 [data-iii-ui="console"] .console-catalog-filter:hover {
   color: var(--color-ink);
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="console"] .console-catalog-filter[data-selected="true"] {
   color: var(--color-ink);
-  background: var(
-    --color-surface-active,
-    var(--color-surface, rgba(0, 0, 0, 0.05))
-  );
+  background: var(--color-surface-selected);
 }
 [data-iii-ui="console"] .console-catalog-filter .count {
   font-variant-numeric: tabular-nums;
@@ -1669,17 +1446,12 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
+  background: var(--color-surface);
   border-radius: 6px;
   padding: 8px 10px;
 }
-[data-iii-ui="console"] .console-catalog-tile .label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-ink-ghost);
-}
 [data-iii-ui="console"] .console-catalog-tile .value {
+  font-family: var(--font-mono);
   font-size: 13px;
   overflow-wrap: anywhere;
 }
@@ -1694,7 +1466,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  background: var(--color-warn-muted, rgba(168, 122, 0, 0.12));
+  background: var(--color-warn-muted);
   border-radius: 6px;
   padding: 10px 12px;
   margin-top: 12px;
@@ -1718,11 +1490,11 @@
   grid-template-columns: 92px minmax(0, 1fr);
   gap: 8px;
   padding: 6px 4px;
-  font-size: 10.5px;
+  font-size: 11px;
 }
 [data-iii-ui="console"] .console-catalog-context .console-catalog-facts dt {
   width: auto;
-  font-size: 10px;
+  font-size: 11px;
 }
 [data-iii-ui="console"] .console-catalog-context .console-catalog-tiles {
   margin: 0;
@@ -1735,10 +1507,11 @@
 }
 
 [data-iii-ui="console"] .console-catalog-endpoint {
+  font-family: var(--font-mono);
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--color-accent-muted, rgba(184, 66, 15, 0.1));
+  background: var(--color-accent-muted);
   border-radius: 6px;
   padding: 8px 10px;
   overflow: hidden;
@@ -1763,10 +1536,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-ink-ghost);
 }
 [data-iii-ui="console"] .console-catalog-field-row {
   display: flex;
@@ -1778,8 +1547,9 @@
   min-width: 0;
 }
 [data-iii-ui="console"] .console-catalog-key {
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--color-warn);
+  color: var(--color-warn-strong);
   min-width: 88px;
 }
 [data-iii-ui="console"] .console-catalog-method {
@@ -1787,28 +1557,17 @@
   flex: none;
 }
 [data-iii-ui="console"] .console-catalog-path {
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--color-ink-faint);
   overflow-wrap: anywhere;
 }
 [data-iii-ui="console"] .console-catalog-hint {
+  font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--color-ink-ghost);
 }
 
-[data-iii-ui="console"] .console-catalog-target {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
-  border-radius: 6px;
-  margin-bottom: 12px;
-}
-[data-iii-ui="console"] .console-catalog-target code {
-  font-size: 12.5px;
-  overflow-wrap: anywhere;
-}
 
 /* --- live marker + arrival flash ------------------------------------- */
 
@@ -1819,17 +1578,13 @@
   font-size: 11px;
   color: var(--color-ink-ghost);
 }
-[data-iii-ui="console"] .console-catalog-live .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-ok);
-}
 [data-iii-ui="console"] .console-catalog-header-toggle[aria-pressed="true"] {
   color: var(--color-ink);
   background: var(--color-surface-selected);
 }
 [data-iii-ui="console"] .console-catalog-row.flash {
+  /* A 2s arrival highlight that fades out: longer than any motion token by
+   * design, so the change stays legible. lint-allow motion-literal */
   animation: console-catalog-flash 2s ease-out;
 }
 @keyframes console-catalog-flash {
@@ -1895,7 +1650,7 @@
 [data-iii-ui="console"] .console-catalog-schema .field {
   display: inline-block;
   color: var(--color-ink);
-  font-family: var(--font-code, var(--font-mono));
+  font-family: var(--font-code);
   font-weight: 500;
   overflow-wrap: anywhere;
   padding-left: var(--schema-indent);
@@ -1914,7 +1669,7 @@
   border-color: var(--color-edge);
   background: var(--color-surface);
   color: var(--color-ink-faint);
-  font-family: var(--font-code, var(--font-mono));
+  font-family: var(--font-code);
   font-size: 0.75rem;
   white-space: nowrap;
 }
@@ -1946,9 +1701,10 @@
   border-radius: 6px;
 }
 [data-iii-ui="console"] .console-catalog-call[data-open="true"] {
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
 }
 [data-iii-ui="console"] .console-catalog-call-head {
+  font-family: var(--font-mono);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1963,17 +1719,7 @@
   cursor: pointer;
 }
 [data-iii-ui="console"] .console-catalog-call-head:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
-}
-[data-iii-ui="console"] .console-catalog-call-head .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-ok);
-  flex: none;
-}
-[data-iii-ui="console"] .console-catalog-call-head .dot[data-ok="false"] {
-  background: var(--color-alert);
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="console"] .console-catalog-call-head .ago,
 [data-iii-ui="console"] .console-catalog-call-head .worker {
@@ -2000,6 +1746,7 @@
   gap: 4px;
 }
 [data-iii-ui="console"] .console-catalog-attempt {
+  font-family: var(--font-mono);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -2007,7 +1754,7 @@
   padding: 5px 8px;
   border: 0;
   border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface);
   color: var(--color-ink-faint);
   font: inherit;
   font-size: 11.5px;
@@ -2015,18 +1762,8 @@
   cursor: pointer;
 }
 [data-iii-ui="console"] .console-catalog-attempt:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  background: var(--color-surface-hover);
   color: var(--color-ink);
-}
-[data-iii-ui="console"] .console-catalog-attempt .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-ok);
-  flex: none;
-}
-[data-iii-ui="console"] .console-catalog-attempt .dot[data-ok="false"] {
-  background: var(--color-alert);
 }
 [data-iii-ui="console"] .console-catalog-attempt .body {
   flex: 1;
@@ -2049,10 +1786,6 @@
 }
 [data-iii-ui="console"] .console-catalog-nowstrip-label {
   flex: none;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: var(--color-ok);
 }
 [data-iii-ui="console"] .console-catalog-nowstrip[data-empty="true"] .quiet {
   font-size: 11.5px;
@@ -2065,23 +1798,25 @@
   mask-image: linear-gradient(to right, black 85%, transparent);
 }
 [data-iii-ui="console"] .console-catalog-nowentry {
+  font-family: var(--font-mono);
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex: none;
   border: 0;
   border-radius: 6px;
-  background: var(--color-surface, rgba(0, 0, 0, 0.05));
+  background: var(--color-surface);
   color: var(--color-ink);
   font: inherit;
   font-size: 11.5px;
   padding: 2px 10px 2px 7px;
   cursor: pointer;
   /* New entries land at the head of the strip: slide in, ease-out, brief. */
-  animation: console-catalog-nowentry-in 220ms cubic-bezier(0.23, 1, 0.32, 1);
+  animation: console-catalog-nowentry-in var(--motion-duration-panel)
+    var(--motion-ease-enter);
 }
 [data-iii-ui="console"] .console-catalog-nowentry:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  background: var(--color-surface-hover);
 }
 [data-iii-ui="console"] .console-catalog-nowentry .fn {
   max-width: 30ch;
@@ -2104,25 +1839,22 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  [data-iii-ui="console"] .console-catalog-skeleton .skeleton-heading,
-  [data-iii-ui="console"] .console-catalog-skeleton .skeleton-row,
-  [data-iii-ui="console"] .console-catalog-nowentry {
-    animation: none;
-  }
+  [data-iii-ui="console"] .console-catalog-nowentry,
   [data-iii-ui="console"] .console-catalog-row.flash {
     animation: none;
   }
 }
 
 [data-iii-ui="console"] .console-catalog-lastcall {
+  font-family: var(--font-mono);
   flex: none;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-ink-ghost);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 [data-iii-ui="console"] .console-catalog-lastcall[data-ok="false"] {
-  color: var(--color-alert);
+  color: var(--color-alert-strong);
 }
 
 /* --- plumbing section: present, quiet, out of the way ----------------- */
@@ -2151,7 +1883,7 @@
     .console-catalog-call-head,
     .console-catalog-attempt
   ):focus-visible {
-  outline: 2px solid var(--color-rule-focus, var(--color-ring));
+  outline: 2px solid var(--color-rule-focus);
   outline-offset: 1px;
 }
 

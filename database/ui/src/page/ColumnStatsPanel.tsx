@@ -8,10 +8,18 @@
  * number: it reads exactly like a measurement.
  */
 
-import { Badge, Button, type Host, StatusPanel } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  Eyebrow,
+  type Host,
+  MetaRow,
+  StatusPanel,
+  uiClasses,
+} from '@iii-dev/console-ui'
+import { CircleAlert } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { type ColumnStat, columnStats } from '../lib/rpc'
-import { AlertCircle } from './icons'
 import { useDatabaseRead } from './useDatabaseRead'
 
 export function ColumnStatsPanel({
@@ -36,14 +44,16 @@ export function ColumnStatsPanel({
     return (
       <StatusPanel
         variant="alert"
-        icon={<AlertCircle size={18} />}
+        icon={<CircleAlert size={18} />}
         headline="Could not profile this column"
         detail={read.error}
       />
     )
   }
   if (!read.data) {
-    return <div className="db-msg db-pulse">Reading statistics…</div>
+    return (
+      <div className={`db-msg ${uiClasses.pulse}`}>Reading statistics…</div>
+    )
   }
 
   const stat: ColumnStat | undefined = read.data.columns[0]
@@ -84,17 +94,19 @@ export function ColumnStatsPanel({
         </Button>
       ) : null}
 
-      <dl className="db-kv">
-        <Row label="Rows" value={fmt(stat.row_count)} />
-        <Row label="Distinct" value={fmt(stat.distinct_count)} />
-        <Row label="Nulls" value={fmt(stat.null_count)} />
-        <Row label="Min" value={render(stat.min)} />
-        <Row label="Max" value={render(stat.max)} />
-        <Row
-          label="Mean"
-          value={stat.mean == null ? '—' : stat.mean.toFixed(3)}
-        />
-      </dl>
+      <MetaRow
+        items={[
+          { label: 'Rows', value: fmt(stat.row_count) },
+          { label: 'Distinct', value: fmt(stat.distinct_count) },
+          { label: 'Nulls', value: fmt(stat.null_count) },
+          { label: 'Min', value: render(stat.min) },
+          { label: 'Max', value: render(stat.max) },
+          {
+            label: 'Mean',
+            value: stat.mean == null ? '—' : stat.mean.toFixed(3),
+          },
+        ]}
+      />
 
       {nullFrac != null ? (
         <div className="db-bar-row">
@@ -111,7 +123,9 @@ export function ColumnStatsPanel({
 
       {stat.top_values.length > 0 ? (
         <>
-          <h4 className="db-stats-sub">Most common</h4>
+          <Eyebrow as="h4" className="db-stats-sub">
+            Most common
+          </Eyebrow>
           <ul className="db-stats-top">
             {stat.top_values.map((v, i) => (
               <li key={`${i}-${String(v.value)}`}>
@@ -131,15 +145,6 @@ export function ColumnStatsPanel({
         </>
       ) : null}
     </div>
-  )
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <>
-      <dt>{label}</dt>
-      <dd className="db-num">{value}</dd>
-    </>
   )
 }
 

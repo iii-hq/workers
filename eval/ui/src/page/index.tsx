@@ -1,6 +1,17 @@
-import { EmptyState, type Host, type PageRenderProps, Skeleton, StatusPanel, useConfirm } from '@iii-dev/console-ui'
+import {
+  EmptyState,
+  type Host,
+  type PageRenderProps,
+  Skeleton,
+  StatusPanel,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  useConfirm,
+} from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createEvalApi, errorMessage, isTerminal } from '../api'
+import { createEvalApi, isTerminal } from '../api'
 import { useEvalCompleted } from '../events'
 import type { CatalogModel, EvalRequest, EvalResultResponse, EvalStatusResponse, EvalSummary } from '../types'
 import { EvaluationDetail } from './EvaluationDetail'
@@ -11,8 +22,6 @@ import { SessionComparison } from './SessionComparison'
 export function EvalPage({ host, panelSide = 'left', panelContext, commands }: { host: Host } & Partial<PageRenderProps>) {
   const api = useMemo(() => createEvalApi(host), [host])
   const [surface, setSurface] = useState<'sessions' | 'experiments'>('sessions')
-  const sessionsTabRef = useRef<HTMLButtonElement>(null)
-  const experimentsTabRef = useRef<HTMLButtonElement>(null)
   const [evaluations, setEvaluations] = useState<EvalSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
@@ -215,11 +224,6 @@ export function EvalPage({ host, panelSide = 'left', panelContext, commands }: {
     }
   }, [panelContext])
 
-  const switchSurface = useCallback((next: 'sessions' | 'experiments') => {
-    setSurface(next)
-    ;(next === 'sessions' ? sessionsTabRef : experimentsTabRef).current?.focus()
-  }, [])
-
   useEffect(
     () =>
       commands?.register([
@@ -249,37 +253,20 @@ export function EvalPage({ host, panelSide = 'left', panelContext, commands }: {
   return (
     <div className="eval-ui-container">
       {dialog}
-      <div
+      <Tabs
         className="eval-ui-tabs"
-        role="tablist"
-        aria-label="Eval views"
-        onKeyDown={(event) => {
-          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-          event.preventDefault()
-          switchSurface(surface === 'sessions' ? 'experiments' : 'sessions')
-        }}
+        value={surface}
+        onValueChange={(value) => setSurface(value as 'sessions' | 'experiments')}
       >
-        <button
-          ref={sessionsTabRef}
-          className={surface === 'sessions' ? 'active' : ''}
-          type="button"
-          role="tab"
-          aria-selected={surface === 'sessions'}
-          onClick={() => setSurface('sessions')}
-        >
-          Sessions
-        </button>
-        <button
-          ref={experimentsTabRef}
-          className={surface === 'experiments' ? 'active' : ''}
-          type="button"
-          role="tab"
-          aria-selected={surface === 'experiments'}
-          onClick={() => setSurface('experiments')}
-        >
-          Prompt experiments
-        </button>
-      </div>
+        <TabsList aria-label="Eval views">
+          <TabsTrigger value="sessions" icon={false}>
+            Sessions
+          </TabsTrigger>
+          <TabsTrigger value="experiments" icon={false}>
+            Prompt experiments
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
       <div
         className={`eval-ui${creating && surface === 'experiments' ? ' creating' : ''}${surface === 'sessions' ? ' sessions-mode' : ''}${panelSide === 'right' ? ' right' : ''}`}
       >

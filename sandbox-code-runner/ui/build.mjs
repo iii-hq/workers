@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
 import esbuild from 'esbuild'
 
-await buildWorkerUi({ scope: 'sandbox-code-runner', keyframePrefixes: ['cr-ui-', 'cr-fam-', 'cr-page-'] })
+await buildWorkerUi({ scope: 'sandbox-code-runner', lint: { strict: true } })
 
 /**
  * The guest SDK bundle: the published `iii-sdk` npm package, with its whole

@@ -11,7 +11,8 @@
  *   teardown)
  * - src/configuration/           — deliberate form for the `code-runner`
  *   configuration entry in global Settings
- * - src/lib/shared.tsx            — the frame the cards share
+ * - src/lib/shared.tsx            — the frame the cards share, over the
+ *   package's terminal atoms
  *
  * Registrations go through `host` so the loader disposes them on hot reload /
  * worker disconnect.

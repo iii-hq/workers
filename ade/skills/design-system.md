@@ -77,6 +77,7 @@ The `surface*` fills are alpha, so one step reads the same over any base layer.
 | `accent-muted` / `accent-border` | 10% / 35% alpha | 12% / 35% alpha | Accent tint / legacy accent stroke |
 | `alert` / `alert-muted` | `#ff0026` / 8% | `#f05d68` / 12% | Errors, failed calls |
 | `warn` / `warn-muted` | `#a87a00` / 12% | `#f5a524` / 12% | Warnings, pending approval |
+| `alert-strong` / `warn-strong` | `#c60021` / `#7a5700` | `#ff4d63` / `#d49b00` | The same status as 11–12px text (AA); dots and badges keep the base tone |
 | `ok` / `ok-muted` | `#356f3d` / 12% | `#36c98f` / 12% | Success, completed calls, diff additions |
 | `workdir` / `workdir-muted` | `#0ea5e9` / 12% | same / 14% | Console-only: the chat activity folder mark |
 | `ring` | 5% `ink` mix | same | Tailwind's default `ring` colour |
@@ -209,7 +210,7 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | `CardHighlight` | Borderless neutral inset (`card-highlight`) | Never for hover, selection or status |
 | `CollapsibleCard` + `Trigger` + `Content` | Grid-track height motion; content stays mounted | No button inside the trigger |
 | `Panel` / `PanelHeader` / `PanelBody` | Same recipe as Card without the shadow | Do use for in-flow regions |
-| `Toolbar` | 36px raised strip, `end` slot, `role="toolbar"` | Do name it with `aria-label` |
+| `Toolbar` | 36px raised strip, `end` slot, `role="toolbar"`; `as="form"` for an address bar, `orientation="vertical"` for a rail | Do name it with `aria-label` |
 | `StatusBar` | 28px quiet strip, 11px faint tabular text, `end` slot | Counts and paths here, not the header |
 
 ### Lists and trees
@@ -217,14 +218,14 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | Component | Anatomy / props | Do / Don't |
 | --- | --- | --- |
 | `List` / `ListGroup` / `ListGroupLabel` | 4px gap; arrows and Home/End walk items | Do group with a 12px/600 label |
-| `ListItem` | 44px button row: `leading`, `label`, `description`, `trailing`, `selected` | Never accent on selection |
+| `ListItem` | 44px button row: `leading`, `label`, `description`, `trailing`, `selected`; `as="div"` when the row holds its own buttons | Never accent on selection |
 | `uiClasses.tree*` | 28px rows, `--iii-ui-tree-depth`, `treeItemIcon[data-color]`, caret, `meta`, `actions` wrapping every `action` | Do wrap the actions — a hidden one must never hold width. Phones: `data-narrow`; `data-pointer="fine"` drops a mouse-only action |
 
 ### Tables
 
 | Component | Anatomy / props | Do / Don't |
 | --- | --- | --- |
-| `TableViewport` → `TableFrame` → `Table` | Scroll viewport (`@container`), frame, `density` comfortable/compact | Wrap it |
+| `TableViewport` → `TableFrame` → `Table` | Scroll viewport (`@container`), frame, `density` comfortable/compact, `inset` inside a card | Wrap it |
 | `TableHeader` / `TableBody` / `TableFooter` | Sections; rows separate with an `edge` hairline | Don't zebra-stripe |
 | `TableRow` / `TableHead` / `TableCell` / `TableCaption` | `interactive` rows walk with arrows; `selected` | No vertical rules |
 
@@ -237,8 +238,9 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | `Select` | `options`/`groups`, `appearance`, `sheetTitle` on phones | Short fixed lists |
 | `Selector` | Searchable combobox; `query`, `loading`, `error`, `onCreate`; needs `aria-label` | Long or remote lists |
 | `Switch` | 36×20 desktop, 44×24 phone, 48px hit area | State only, never an action |
+| `Checkbox` | 18px box, `label`, `indeterminate`; accent when checked | Lists of options; a single on/off is a `Switch` |
 | `Input` | 36px desktop / 48px phone, `surface` fill, `rule-focus` on focus | Don't add a border |
-| `SearchField` | Magnifier, clear button, Escape clears and stops | Use it for filtering, not a bare `Input` |
+| `SearchField` | Magnifier, clear button, Escape clears and stops; other props (`data-*`, `aria-*`, `autoFocus`) reach the input | Use it for filtering, not a bare `Input` |
 | `RawValueInput` | `Input` that preserves raw values | Machine values |
 | `SettingsSection` / `SettingsList` | `title`, `description`, `action`; the list frames rows | Compose forms from these |
 | `SettingsRow` | `label`, `description`, `meta`, `control`, `action`, `layout` auto/inline/stacked | No hand-rolled label pairs |
@@ -258,9 +260,9 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 
 | Component | Anatomy / props | Do / Don't |
 | --- | --- | --- |
-| `EmptyState` | `icon`, `title`, `description`, one `action` (ghost sm) | Write a sentence, not a shrug |
+| `EmptyState` | `icon`, `title`, `description`, one `action` (ghost sm); `compact` inside a card, `actions[]` for more | Write a sentence, not a shrug |
 | `Skeleton` | `surface` block with `skeleton-pulse` | Match the final layout's shape |
-| `StatusPanel` | `variant` info/success/warn/alert; `icon`, `headline`, `detail` on the tint | Errors + retry; never raw text |
+| `StatusPanel` | `variant` info/success/warn/alert; `icon`, `headline`, `detail` on the tint; `action` slot, `role` passes through | Errors + retry; never raw text |
 | `Badge` | Pill, `variant` default/ok/warn/alert/accent, 12px (16px phone) | One word or a count |
 | `Chip` | 24px tag, `tone` neutral/accent/success/warning/danger, `selected` | Not a button |
 | `StatusDot` | 6px dot, `tone` accent/alert/warn/ink, `pulse` (`pulse-dot`, the one glow) | Accent = running |
@@ -294,7 +296,7 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 
 | Component | Anatomy / props | Do / Don't |
 | --- | --- | --- |
-| `MetaRow` | Label/value strip a function-call card opens with; `items[]` values in mono | Call metadata |
+| `MetaRow` | Label/value strip a function-call card opens with; `items[]` values in mono, `tone` per item | Call metadata |
 | `ActionLine` | One reported action: `icon` 16px in `tone` accent/warn/ink, body in ink | `→ url`, `ƒ function` |
 | `ModelPicker` | `value`, `options`, `thinkingLevel`, reasoning effort, provider setup | No second model menu |
 | `DirectoryPicker` | Working-directory picker with browse and validation | Wherever a page needs a folder |
@@ -310,11 +312,14 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | `useContainerNarrow({ below })` | `{ ref, narrow }` from a ResizeObserver on the pane (default 720) |
 | `usePaneState(key, initial)` | `useState` mirrored to localStorage; key it by `paneId` |
 | `useCopyFlash(text, ms)` | `{ state: idle\|copied\|failed, copy }` |
-| `useWorkerLive({ iii, triggers, fetch, handlerId })` | Fetch once, refetch on trigger events, poll only while not live |
+| `useWorkerLive({ iii, triggers, fetch, handlerId })` | Fetch once, refetch on trigger events (`'type'` or `{ type, config }` for a stream), poll only while not live |
+| `useDebounce(value, ms)` | The value once it stops changing for `ms` (remote queries) |
+| `useSplitDrag({ horizontal, begin, move, step })` | Pointer + arrow-key handlers for a `role="separator"` |
 | `formatRelative`, `formatDuration`, `formatBytes` | `42s`, `2m 05s`, `1.0 MiB` — binary units with a space |
 | `errorCode`, `errorMessage`, `copyText` | Readable errors from a rejected `iii.trigger`; clipboard with fallback |
+| `unwrapEnvelope(value)` | `{ content, details }` harness envelope → `details`; flat input passes through |
 
-The four hooks are `@iii-dev/console-ui/hooks`; the formatters are `@iii-dev/console-ui/format`
+The six hooks are `@iii-dev/console-ui/hooks`; the formatters are `@iii-dev/console-ui/format`
 — both bundle into a worker page.
 
 ## UX patterns

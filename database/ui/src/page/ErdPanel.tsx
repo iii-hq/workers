@@ -18,13 +18,15 @@ import {
   Button,
   EmptyState,
   type Host,
-  Input,
+  SearchField,
   Select,
   StatusPanel,
+  Toolbar,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { CircleAlert, KeyRound, Link2, Maximize, Table2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { schemaDiagram } from '../lib/rpc'
-import { AlertCircle, KeyRound, Link2, Maximize, Table2 } from './icons'
 import { useDatabaseRead } from './useDatabaseRead'
 
 const MIN_ZOOM = 0.15
@@ -35,8 +37,6 @@ const COMPACT_BELOW = 0.5
 const PAD = 60
 /** Breathing room between a component's boundary and its outermost node. */
 const GROUP_PAD = 22
-
-const TableIcon = (p: { className?: string }) => <Table2 size={28} {...p} />
 
 type Offset = { dx: number; dy: number } | undefined
 type Pt = { x: number; y: number }
@@ -275,19 +275,21 @@ export function ErdPanel({
     return (
       <StatusPanel
         variant="alert"
-        icon={<AlertCircle size={18} />}
+        icon={<CircleAlert size={18} />}
         headline="Could not lay out the schema"
         detail={read.error}
       />
     )
   }
   if (read.loading && !diagram) {
-    return <div className="db-msg db-pulse">Laying out the schema…</div>
+    return (
+      <div className={`db-msg ${uiClasses.pulse}`}>Laying out the schema…</div>
+    )
   }
   if (!diagram || diagram.nodes.length === 0) {
     return (
       <EmptyState
-        icon={TableIcon}
+        icon={Table2}
         title="Nothing to diagram"
         description="This database has no tables yet. Create one and refresh."
       />
@@ -298,7 +300,7 @@ export function ErdPanel({
 
   return (
     <div className="db-erd">
-      <div className="db-erd-bar db-toolbar">
+      <Toolbar aria-label="schema diagram" className="db-bar db-erd-bar">
         <span className="db-erd-stat">
           {diagram.nodes.length} table{diagram.nodes.length === 1 ? '' : 's'} ·{' '}
           {diagram.edges.length} relation
@@ -335,11 +337,10 @@ export function ErdPanel({
             </Button>
           </>
         ) : null}
-        <Input
+        <SearchField
           value={search}
           onChange={setSearch}
           placeholder="Find a table"
-          preserveCase
           className="db-erd-search"
           aria-label="find a table"
         />
@@ -355,7 +356,7 @@ export function ErdPanel({
           <Maximize size={16} aria-hidden />
           Fit
         </Button>
-      </div>
+      </Toolbar>
 
       {/* What was left out. A diagram that simply stops looks complete; naming
           the next ring is what makes expanding a decision rather than a guess. */}
@@ -424,6 +425,7 @@ export function ErdPanel({
               </div>
             ))}
 
+          {/* The diagram's edge layer (routed polylines), not an icon. lint-allow no-inline-svg */}
           <svg
             className="db-erd-edges"
             width={diagram.width}

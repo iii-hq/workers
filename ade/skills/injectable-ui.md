@@ -318,7 +318,7 @@ Six specifiers stay external because the console's import map serves them:
 externalize `@iii-dev/console-ui/format` and `/hooks`, which must bundle.
 Everything else bundles in. Only those six exist in the import map: a
 dependency importing another bare react-family specifier (`react-dom/server`)
-fails at `import()` time. A custom pipeline (`editor`, `canvas`) imports
+fails at `import()` time. A custom pipeline (`canvas`) imports
 `workerUiExternals`, `assertScoped`, `checkTokens` and, from
 `@iii-dev/console-ui/lint-worker-ui`, `lintWorkerUi`/`formatLint`, and runs
 the same checks; dropping the `react` external there bundles a second React

@@ -29,6 +29,7 @@ import {
   SettingsSection,
   Switch,
 } from '@iii-dev/console-ui'
+import { ChevronRight } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { errText } from '../lib/errors'
 import {
@@ -333,7 +334,6 @@ function DatabaseSelectInput({
       id={id}
       name={name}
       data-field={dataField}
-      className="db-cfg-control"
       value={current}
       options={[...options]}
       aria-label={label}
@@ -672,7 +672,7 @@ function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootVal
                         <Chip tone={opaque || driver === 'unknown' ? 'warning' : 'accent'}>
                           {opaque ? 'Custom value' : driverLabel}
                         </Chip>
-                        <span aria-hidden="true">›</span>
+                        <ChevronRight size={16} aria-hidden />
                       </span>
                     }
                     onClick={() => setSelectedName(name)}
@@ -928,7 +928,6 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
             }
           />
           <SettingsField
-            className="db-cfg-url-setting"
             layout="stacked"
             id={fieldId('url')}
             field={`databases.${name}.url`}
@@ -1111,7 +1110,6 @@ function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }
                   )}
                 />
                 <SettingsField
-                  className="db-cfg-trust-row"
                   id={`db-cfg-trust-native-${name}`}
                   field={`databases.${name}.tls.trust_native`}
                   label="Use the system trust store"

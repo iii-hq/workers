@@ -21,13 +21,15 @@ import {
   TableRow,
   TableViewport,
 } from '@iii-dev/console-ui'
+import { errorMessage, formatBytes } from '@iii-dev/console-ui/format'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { Copy, FileMusic, Send, Trash2, Upload } from 'lucide-react'
 import type { ChangeEvent, DragEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { transcribe } from '../lib/client'
-import { errorMessage, formatSeconds } from '../lib/format'
-import { CopyIcon, FileAudioIcon, SendIcon, TrashIcon, UploadIcon } from '../lib/icons'
+import { formatSeconds } from '../lib/format'
 import type { TranscribeResponse } from '../lib/types'
-import { formatBytes, formatDuration, SectionCard } from './shared'
+import { formatDuration, SectionCard } from './shared'
 
 const MAX_BYTES = 10 * 1024 * 1024
 
@@ -57,10 +59,10 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
   const [reading, setReading] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [result, setResult] = useState<Result>({ phase: 'idle' })
-  const [copied, setCopied] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const dropRef = useRef<HTMLButtonElement | null>(null)
   const readGenerationRef = useRef(0)
+  const { state: copyState, copy } = useCopyFlash(result.phase === 'ready' ? result.data.text : '', 2000)
 
   useEffect(() => {
     if (focusSignal > 0) dropRef.current?.focus()
@@ -72,7 +74,7 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
     const generation = readGenerationRef.current
     if (candidate.size > MAX_BYTES) {
       setFileError(
-        `${candidate.name} is ${formatBytes(candidate.size)}; the inline limit is 10 MB. Pass a path instead.`,
+        `${candidate.name} is ${formatBytes(candidate.size)}; the inline limit is 10 MiB. Pass a path instead.`,
       )
       setFile(null)
       setReading(false)
@@ -119,17 +121,6 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
       .catch((err: unknown) => setResult({ phase: 'error', message: errorMessage(err) }))
   }
 
-  const copyText = () => {
-    if (result.phase !== 'ready') return
-    navigator.clipboard
-      .writeText(result.data.text)
-      .then(() => {
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 2000)
-      })
-      .catch(() => {})
-  }
-
   const sendToChat = () => {
     if (result.phase === 'ready') host.chat?.compose?.({ text: `${result.data.text} ` })
   }
@@ -159,17 +150,17 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
           onDrop={onDrop}
           aria-label="choose or drop a WAV file"
         >
-          <UploadIcon className="voice-dropzone-icon" />
+          <Upload size={16} className="voice-dropzone-icon" />
           {file ? (
             <span className="voice-dropzone-file">
-              <FileAudioIcon />
+              <FileMusic size={16} />
               <span className="voice-dropzone-name">{file.name}</span>
               <span className="voice-sub">{formatBytes(file.size)}</span>
             </span>
           ) : (
             <span className="voice-dropzone-copy">
               <span className="voice-strong">Drop a WAV file or click to choose</span>
-              <span className="voice-sub">Any sample rate or channel count, up to 10 MB inline</span>
+              <span className="voice-sub">Any sample rate or channel count, up to 10 MiB inline</span>
             </span>
           )}
         </button>
@@ -185,7 +176,7 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
                 setReading(false)
               }}
             >
-              <TrashIcon />
+              <Trash2 />
             </IconButton>
           </div>
         ) : null}
@@ -220,13 +211,13 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
           }
           actions={
             <span className="voice-card-actions">
-              {copied ? <Chip tone="success">copied</Chip> : null}
-              <IconButton label="Copy transcript" variant="ghost" onClick={copyText}>
-                <CopyIcon />
+              {copyState === 'copied' ? <Chip tone="success">copied</Chip> : null}
+              <IconButton label="Copy transcript" variant="ghost" onClick={copy}>
+                <Copy />
               </IconButton>
               {host.chat?.compose ? (
                 <Button variant="primary" size="sm" onClick={sendToChat}>
-                  <SendIcon />
+                  <Send />
                   Send to chat
                 </Button>
               ) : null}

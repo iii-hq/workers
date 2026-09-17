@@ -27,13 +27,16 @@ TableFrame.displayName = 'TableFrame'
 export interface TableProps
   extends React.TableHTMLAttributes<HTMLTableElement> {
   density?: TableDensity
+  /** Keep the first/last cell padding — for a table inside a card or panel. */
+  inset?: boolean
 }
 
 export const Table = React.forwardRef<HTMLTableElement, TableProps>(
-  ({ className, density = 'comfortable', ...props }, ref) => (
+  ({ className, density = 'comfortable', inset, ...props }, ref) => (
     <table
       ref={ref}
       data-density={density}
+      data-inset={inset || undefined}
       className={cn(uiClasses.table, className)}
       {...props}
     />

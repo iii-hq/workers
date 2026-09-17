@@ -1,8 +1,21 @@
 /** `sandbox::fs::sed` — per-file replacement table with the total pill. */
 
-import { Tooltip, TooltipContent, TooltipTrigger } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Table,
+  TableBody,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@iii-dev/console-ui'
+import { TriangleAlert } from 'lucide-react'
 import { type FsSedFileResult, fsSedRequestSchema, fsSedResponseSchema, safeParseResponse } from './parsers'
-import { Chip, FooterPill, SandboxIdChip } from './shared'
+import { Chip, SandboxIdChip } from './shared'
 
 interface FsSedViewProps {
   input: unknown
@@ -23,7 +36,7 @@ export function FsSedView({ input, output }: FsSedViewProps) {
         <SandboxIdChip sandboxId={req.data.sandbox_id} />
         <Chip label="target">{target}</Chip>
         <Chip label="pattern">{req.data.pattern}</Chip>
-        <Chip label="→">{req.data.replacement || "''"}</Chip>
+        <Chip label="replacement">{req.data.replacement || "''"}</Chip>
         {req.data.regex === false ? <Chip>literal</Chip> : null}
         {req.data.first_only ? <Chip>first-only</Chip> : null}
         {req.data.ignore_case ? <Chip>case-insensitive</Chip> : null}
@@ -46,20 +59,20 @@ interface SedResultsTableProps {
 /** Per-file replacement table — the wire speaks `FsSedFileResult`. */
 function SedResultsTable({ results, totalReplacements }: SedResultsTableProps) {
   return (
-    <table className="cr-fam-table">
-      <thead>
-        <tr>
-          <th>path</th>
-          <th className="num">replacements</th>
-          <th>status</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table density="compact" inset>
+      <TableHeader>
+        <TableRow>
+          <TableHead>path</TableHead>
+          <TableHead className="num">replacements</TableHead>
+          <TableHead>status</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {results.map((r) => (
-          <tr key={r.path}>
-            <td>{r.path}</td>
-            <td className="faint num">{r.replacements}</td>
-            <td>
+          <TableRow key={r.path}>
+            <TableCell>{r.path}</TableCell>
+            <TableCell className="faint num">{r.replacements}</TableCell>
+            <TableCell>
               {r.success ? (
                 <span className="cr-fam-accent">ok</span>
               ) : r.error ? (
@@ -68,7 +81,7 @@ function SedResultsTable({ results, totalReplacements }: SedResultsTableProps) {
                     {/* A real button so keyboard users can reach the
                         tooltip; the class carries the reset. */}
                     <button type="button" className="cr-fam-sed-err" aria-label={`error for ${r.path}: ${r.error}`}>
-                      ⚠ err
+                      <TriangleAlert size={16} aria-hidden /> err
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>{r.error}</TooltipContent>
@@ -76,18 +89,18 @@ function SedResultsTable({ results, totalReplacements }: SedResultsTableProps) {
               ) : (
                 <span className="cr-fam-warn">err</span>
               )}
-            </td>
-          </tr>
+            </TableCell>
+          </TableRow>
         ))}
-        <tr className="total">
-          <td className="faint label">total</td>
-          <td colSpan={2}>
-            <FooterPill tone={totalReplacements > 0 ? 'ok' : 'default'}>
-              {`${totalReplacements} replacements`}
-            </FooterPill>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+      </TableBody>
+      <TableFooter>
+        <TableRow>
+          <TableCell className="faint">total</TableCell>
+          <TableCell colSpan={2}>
+            <Badge variant={totalReplacements > 0 ? 'ok' : 'default'}>{`${totalReplacements} replacements`}</Badge>
+          </TableCell>
+        </TableRow>
+      </TableFooter>
+    </Table>
   )
 }

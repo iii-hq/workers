@@ -11,16 +11,19 @@
 import {
   Button,
   CodeEditor,
+  Eyebrow,
   type Host,
   Input,
   JsonHighlight,
   Select,
+  StatusPanel,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCallback, useEffect, useState } from 'react'
-import { errorMessage, useResource } from './engine'
+import { useResource } from './engine'
 import { pretty } from './schema'
 import type { HttpBinding } from './trigger-kinds'
-import { Chip, ErrorNote, Note } from './widgets'
+import { Chip, CopyButton, ErrorNote, Note } from './widgets'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] as const
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH'])
@@ -219,13 +222,7 @@ export function HttpTester({
       <div className="console-catalog-endpoint">
         <span className="method">{method}</span>
         <code>{url}</code>
-        <Button
-          variant="pill"
-          size="sm"
-          onClick={() => url && navigator.clipboard.writeText(url)}
-        >
-          copy
-        </Button>
+        <CopyButton value={url ?? ''} />
       </div>
 
       <div className="console-catalog-field-row">
@@ -241,7 +238,7 @@ export function HttpTester({
 
       {binding.params.length > 0 ? (
         <div className="console-catalog-fields">
-          <span className="console-catalog-field-label">Path parameters</span>
+          <Eyebrow className="console-catalog-field-label">Path parameters</Eyebrow>
           {binding.params.map((name) => (
             <div key={name} className="console-catalog-field-row">
               <label htmlFor={`param-${name}`} className="console-catalog-key">
@@ -262,7 +259,7 @@ export function HttpTester({
       ) : null}
 
       <div className="console-catalog-fields">
-        <span className="console-catalog-field-label">
+        <Eyebrow className="console-catalog-field-label">
           query parameters
           <Button
             variant="pill"
@@ -277,7 +274,7 @@ export function HttpTester({
           >
             add
           </Button>
-        </span>
+        </Eyebrow>
         {query.length === 0 ? (
           <span className="console-catalog-hint">None</span>
         ) : (
@@ -352,7 +349,7 @@ export function HttpTester({
       </div>
 
       {outcome?.error ? (
-        <div className="console-catalog-error">{outcome.error}</div>
+        <StatusPanel variant="alert" headline={outcome.error} />
       ) : null}
       {outcome?.location ? (
         <div className="console-catalog-field-row">

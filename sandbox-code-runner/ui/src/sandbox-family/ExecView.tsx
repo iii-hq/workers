@@ -2,11 +2,11 @@
  * `sandbox::exec` — the terminal card. Ported from the console's
  * ExecView with the family upgrades: a single exit-reason verdict pill
  * (timed-out / not-found / not-executable folded in), SGR-aware
- * streams, the 1 MiB truncation chip (inside `AnsiOutput`), and a
+ * streams, the 1 MiB truncation chip (inside `Streams`), and a
  * sandbox-id chip that copies on click and jumps to the fleet page.
  */
 
-import { AnsiOutput } from './ansi'
+import { TerminalCommandLine } from '@iii-dev/console-ui'
 import { exitReason, formatExecCommand } from './format'
 import {
   type ExecRequest,
@@ -15,7 +15,8 @@ import {
   execResponseSchema,
   safeParseResponse,
 } from './parsers'
-import { Chip, ExitReasonPill, FooterPill, SandboxIdChip, Terminal } from './shared'
+import { Badge } from '@iii-dev/console-ui'
+import { Chip, ExitReasonPill, SandboxIdChip, Streams, Terminal } from './shared'
 
 interface ExecViewProps {
   input: unknown
@@ -34,7 +35,7 @@ export function ExecView({ input, output, running }: ExecViewProps) {
       chips={<ExecChips req={req.data} />}
       footer={respData ? <ExecFooter resp={respData} /> : null}
     >
-      <AnsiOutput stdout={respData?.stdout} stderr={respData?.stderr} />
+      <Streams stdout={respData?.stdout} stderr={respData?.stderr} />
     </Terminal>
   )
 }
@@ -44,15 +45,12 @@ export function ExecPreview({ input }: { input: unknown }) {
   const req = execRequestSchema.safeParse(input)
   if (!req.success) return null
   return (
-    <div className="cr-fam-card cr-fam-preview">
-      <div className="cr-fam-term-head">
-        <span className="cr-fam-cmd">
-          <span className="cr-fam-prompt">$</span> {formatExecCommand(req.data)}
-        </span>
-        <span className="cr-fam-chips-end">
-          <ExecChips req={req.data} />
-        </span>
-      </div>
+    <div className="cr-fam-card">
+      <TerminalCommandLine
+        command={formatExecCommand(req.data)}
+        chips={<ExecChips req={req.data} />}
+        className="cr-fam-term-head"
+      />
     </div>
   )
 }
@@ -71,7 +69,7 @@ function ExecFooter({ resp }: { resp: ExecResponse }) {
   return (
     <>
       <ExitReasonPill reason={exitReason(resp)} />
-      <FooterPill>{`${resp.duration_ms}ms`}</FooterPill>
+      <Badge>{`${resp.duration_ms}ms`}</Badge>
     </>
   )
 }

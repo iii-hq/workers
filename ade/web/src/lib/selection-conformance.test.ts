@@ -25,8 +25,6 @@ function cssRuleBodies(path: string, selector: string): string[] {
 const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['ade/ui/styles.css', '.console-catalog-row[data-selected="true"]'],
   ['computer/ui/styles.css', '.cp-ui-rail-row.active::before'],
-  ['state/ui/styles.css', '.state-ui-nav-row.active::before'],
-  ['memory/ui/styles.css', '.mem-ui-nav-row.active::before'],
   ['memory/ui/styles.css', '.mem-ui-tagbtn.active'],
   ['iii-directory/ui/styles.css', '.dir-ui-nav-row.active::before'],
   ['worktree/ui/styles.css', '.wt-ui-edge.selected'],
@@ -37,29 +35,16 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   // selected tab and the toggled-on chrome control are the selection now.
   ['browser/ui/styles.css', '.br-ui-tab.is-active'],
   ['browser/ui/styles.css', '.br-ui-chrome-btn.is-on'],
-  [
-    'ade/web/src/styles/ui-recipes.css',
-    '.iii-ui-tab[aria-selected="true"]',
-  ],
+  ['ade/web/src/styles/ui-recipes.css', '.iii-ui-tab[aria-selected="true"]'],
   ['browser/ui/styles.css', '.br-cfg-nav-row.active::before'],
-  ['storage/ui/styles.css', '.storage-ui-object-row.active::before'],
-  ['storage/ui/styles.css', '.storage-cfg-nav-row.active::before'],
   ['github/ui/styles.css', '.gh-ui-node-selected'],
   ['github/ui/styles.css', '.gh-ui-graph-row.selected'],
   ['eval/ui/styles.css', '.eval-ui-history-row.active'],
-  ['eval/ui/styles.css', '.eval-ui-tabs button.active'],
   ['eval/ui/styles.css', '.eval-ui-session-option.selected'],
   ['eval/ui/styles.css', '.eval-ui-run-card.selected'],
-  ['eval/ui/styles.css', '.eval-ui-run-row.active'],
-  ['editor/ui/styles.css', '.ed-seg button[data-active="true"]'],
-  ['editor/ui/styles.css', '.ed-row[data-active="true"]'],
-  ['editor/ui/styles.css', '.ed-tab[data-active="true"]'],
   ['ide/ui/styles.css', '.shui-etab.active'],
   ['ide/ui/styles.css', '.shui-terminal-tab.active'],
-  [
-    'ade/ui/styles.css',
-    '.console-catalog-header-toggle[aria-pressed="true"]',
-  ],
+  ['ade/ui/styles.css', '.console-catalog-header-toggle[aria-pressed="true"]'],
   ['sandbox-code-runner/ui/src/styles/page.css', '.cr-page-toggle.on'],
 ]
 

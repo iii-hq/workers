@@ -12,9 +12,10 @@ import {
   PageHeader,
   type PageRenderProps,
   PageShell,
+  StatusDot,
 } from '@iii-dev/console-ui'
+import { Database } from 'lucide-react'
 import { useStateEventHub } from '../lib/events'
-import { DatabaseIcon, LiveDot } from '../lib/widgets'
 import { StateBrowser } from './browser'
 
 export function StateManagerPage({
@@ -29,10 +30,17 @@ export function StateManagerPage({
   return (
     <PageShell className="state-ui-shell">
       <PageHeader
-        icon={<DatabaseIcon />}
+        icon={<Database size={16} />}
         title="State"
         description="Scoped key–value store, live"
-        actions={<LiveDot />}
+        actions={
+          <span
+            className="state-ui-live"
+            title="live — subscribed to the state trigger type; created/updated/deleted events stream in"
+          >
+            <StatusDot tone="accent" pulse /> live
+          </span>
+        }
         onClose={onRequestClose}
       />
       <StateBrowser

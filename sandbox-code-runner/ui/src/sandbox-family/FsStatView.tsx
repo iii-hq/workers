@@ -2,7 +2,8 @@
 
 import { formatBytes, formatMode, formatMtime } from './format'
 import { fsStatRequestSchema, fsStatResponseSchema, safeParseResponse } from './parsers'
-import { Chip, FooterPill, SandboxIdChip } from './shared'
+import { Badge } from '@iii-dev/console-ui'
+import { Chip, SandboxIdChip } from './shared'
 
 interface FsStatViewProps {
   input: unknown
@@ -27,8 +28,8 @@ export function FsStatView({ input, output }: FsStatViewProps) {
           <Chip label="size">{e.is_dir ? '—' : formatBytes(e.size)}</Chip>
           <Chip label="mode">{`${e.is_dir ? 'd' : '-'}${formatMode(e.mode)}`}</Chip>
           <Chip label="mtime">{formatMtime(e.mtime)}</Chip>
-          {e.is_dir ? <FooterPill tone="default">dir</FooterPill> : null}
-          {e.is_symlink ? <FooterPill tone="warn">symlink</FooterPill> : null}
+          {e.is_dir ? <Badge>dir</Badge> : null}
+          {e.is_symlink ? <Badge variant="warn">symlink</Badge> : null}
         </div>
       </div>
     </div>

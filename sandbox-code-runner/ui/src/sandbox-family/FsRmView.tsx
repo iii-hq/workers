@@ -1,5 +1,6 @@
 /** `sandbox::fs::rm` — removed vs not-removed, recursive flagged loud. */
 
+import { Minus } from 'lucide-react'
 import { fsRmRequestSchema, fsRmResponseSchema, safeParseResponse } from './parsers'
 import { Chip, SandboxIdChip } from './shared'
 
@@ -19,13 +20,14 @@ export function FsRmView({ input, output }: FsRmViewProps) {
     <div className="cr-fam-card">
       <div className="cr-fam-slab">
         <div className="cr-fam-line">
-          <span className={removed ? 'cr-fam-warn' : 'faint'}>{removed ? '− removed ' : '· not removed '}</span>
+          {removed ? <Minus size={16} aria-hidden className="cr-fam-warn" /> : null}
+          <span className={removed ? 'cr-fam-warn' : 'faint'}>{removed ? 'removed' : '· not removed'}</span>
           <span>{req.data.path}</span>
         </div>
         <div className="cr-fam-chips">
           <SandboxIdChip sandboxId={req.data.sandbox_id} />
           {req.data.recursive ? (
-            <Chip label="recursive" className="warn">
+            <Chip label="recursive" tone="warning">
               true
             </Chip>
           ) : null}

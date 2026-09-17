@@ -644,6 +644,11 @@ export interface UiClasses {
   readonly fieldLabel: 'iii-ui-field__label'
   readonly fieldDescription: 'iii-ui-field__description'
   readonly fieldError: 'iii-ui-field__error'
+  readonly checkbox: 'iii-ui-checkbox'
+  readonly checkboxControl: 'iii-ui-checkbox__control'
+  readonly checkboxInput: 'iii-ui-checkbox__input'
+  readonly checkboxMark: 'iii-ui-checkbox__mark'
+  readonly checkboxLabel: 'iii-ui-checkbox__label'
   readonly switch: 'iii-ui-switch'
   readonly switchInput: 'iii-ui-switch__input'
   readonly switchThumb: 'iii-ui-switch__thumb'
@@ -811,6 +816,8 @@ export declare const Chip: React.ComponentType<ChipProps & React.RefAttributes<H
 export type TableDensity = 'comfortable' | 'compact'
 export interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> {
   density?: TableDensity
+  /** Keep the first/last cell padding — for a table inside a card or panel. */
+  inset?: boolean
 }
 export declare const TableViewport: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
@@ -952,11 +959,20 @@ export declare const DropdownMenuItem: React.ComponentType<DropdownMenuItemProps
 export declare const DropdownMenuLabel: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 export declare const DropdownMenuSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 
+export interface EmptyStateAction {
+  label: string
+  onClick: () => void
+}
 export interface EmptyStateProps {
   icon?: React.ComponentType<{ className?: string }>
   title: string
   description: string
-  action?: { label: string; onClick: () => void }
+  /** The one action of a full cell. `actions` adds more (first is primary). */
+  action?: EmptyStateAction
+  actions?: readonly EmptyStateAction[]
+  /** Inside a card or a list: no cell, 13px title, tighter padding. */
+  compact?: boolean
+  className?: string
 }
 export declare const EmptyState: React.ComponentType<EmptyStateProps>
 
@@ -1035,6 +1051,17 @@ export interface SwitchProps
 /** Native checkbox semantics with shared switch presentation and touch target. */
 export declare const Switch: React.ComponentType<SwitchProps & React.RefAttributes<HTMLInputElement>>
 
+export interface CheckboxProps
+  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'children' | 'className' | 'type'> {
+  /** Classes apply to the label wrapper; native input props stay on the checkbox. */
+  className?: string
+  /** Text beside the box; otherwise pass `aria-label`. */
+  label?: React.ReactNode
+  indeterminate?: boolean
+}
+/** Native checkbox in the shared 18 px box; accent when checked, `Minus` when indeterminate. */
+export declare const Checkbox: React.ComponentType<CheckboxProps & React.RefAttributes<HTMLInputElement>>
+
 export declare const List: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
@@ -1050,6 +1077,12 @@ export interface ListItemProps extends React.ButtonHTMLAttributes<HTMLButtonElem
   label?: React.ReactNode
   description?: React.ReactNode
   trailing?: React.ReactNode
+  /**
+   * `div` when the row holds its own buttons — a button cannot contain
+   * buttons. Selection is then `aria-selected`; the caller owns
+   * `role`/`tabIndex`/keys.
+   */
+  as?: 'button' | 'div'
 }
 export declare const ListItem: React.ComponentType<ListItemProps & React.RefAttributes<HTMLButtonElement>>
 
@@ -1348,12 +1381,13 @@ export interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
 }
 export declare const StatusDot: React.ComponentType<StatusDotProps>
 
-export interface StatusPanelProps {
+export interface StatusPanelProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'info' | 'success' | 'warn' | 'alert'
   icon?: React.ReactNode
   headline: React.ReactNode
   detail?: React.ReactNode
-  className?: string
+  /** Trailing slot for a retry/dismiss `Button`; never text. */
+  action?: React.ReactNode
 }
 export declare const StatusPanel: React.ComponentType<StatusPanelProps>
 
@@ -1684,32 +1718,34 @@ export interface LiveRegionProps {
 export declare const LiveRegion: React.ComponentType<LiveRegionProps>
 
 export interface EyebrowProps extends React.HTMLAttributes<HTMLElement> {
-  as?: 'span' | 'div' | 'h2' | 'h3'
+  as?: 'span' | 'div' | 'p' | 'h2' | 'h3' | 'h4' | 'header' | 'dt' | 'legend'
+  /** `lg` is the section eyebrow: the same 11px, tracked 0.14em. */
+  size?: 'md' | 'lg'
 }
 /** The mono caps label (`uiClasses.eyebrow` is the same look as a class). */
 export declare const Eyebrow: React.ComponentType<EyebrowProps>
 
-export interface SearchFieldProps {
+export interface SearchFieldProps
+  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'type' | 'className'> {
   value: string
   onChange(next: string): void
-  placeholder?: string
   /** Visible label; otherwise `aria-label` is required. */
   label?: React.ReactNode
-  'aria-label'?: string
-  autoFocus?: boolean
+  /** Applies to the wrapper; every other prop (`data-*`, `aria-*`, `autoFocus`…) lands on the input. */
   className?: string
-  id?: string
-  name?: string
-  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
 }
 /** Search input with a leading magnifier and a clear affordance; Escape clears. */
 export declare const SearchField: React.ComponentType<
   SearchFieldProps & React.RefAttributes<HTMLInputElement>
 >
 
-export interface ToolbarProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface ToolbarProps extends React.HTMLAttributes<HTMLElement> {
   /** Trailing slot, pushed to the far end. */
   end?: React.ReactNode
+  /** Element to render: `form` for an address bar, `nav` for a rail. */
+  as?: 'div' | 'form' | 'nav' | 'header' | 'footer' | 'section'
+  /** A vertical toolbar is a 36 px wide rail; `end` sinks to the bottom. */
+  orientation?: 'horizontal' | 'vertical'
 }
 /** Secondary toolbar strip (36 px, raised). Give it an `aria-label`. */
 export declare const Toolbar: React.ComponentType<ToolbarProps>
@@ -1719,6 +1755,8 @@ export declare const StatusBar: React.ComponentType<ToolbarProps>
 export interface MetaRowItem {
   label: React.ReactNode
   value: React.ReactNode
+  /** Colour of the value: status inks, or `ink` (default). */
+  tone?: 'ink' | 'ok' | 'warn' | 'alert' | 'accent'
 }
 export interface MetaRowProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Label/value pairs, values in mono; free-form children (chips) follow. */

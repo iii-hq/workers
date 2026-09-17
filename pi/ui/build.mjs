@@ -36,6 +36,7 @@ export const STYLES_CSS = ${JSON.stringify(styles)};
 await buildWorkerUi({
   scope: 'pi',
   root: ui,
+  lint: { strict: true },
   // TODO fase 3: styles.css @imports @iii-workers/agent-terminal-ui's sheet, whose
   // `.agent-terminal*` rules and the @xterm/xterm vendor CSS it pulls in are
   // unscoped. Scope that package's sheet, then drop this.

@@ -12,21 +12,18 @@
  */
 
 import {
+  Eyebrow,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
   type Host,
   JsonHighlight,
+  MetaRow,
+  type MetaRowItem,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 
 const RENDERED = new Set(['state::set', 'state::get'])
-
-/** `{ content: [...], details }` harness result envelope → details. */
-function unwrapEnvelope(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
-  const obj = value as Record<string, unknown>
-  if (Array.isArray(obj.content) && 'details' in obj) return obj.details
-  return value
-}
 
 function isErrorOutput(value: unknown): boolean {
   return (
@@ -64,25 +61,6 @@ function isEmptyValue(v: unknown): boolean {
   return false
 }
 
-function Chips({ req }: { req: StateRequest }) {
-  return (
-    <>
-      {req.scope ? (
-        <span className="state-ui-chip">
-          <span className="k">scope </span>
-          {req.scope}
-        </span>
-      ) : null}
-      {req.key ? (
-        <span className="state-ui-chip">
-          <span className="k">key </span>
-          {req.key}
-        </span>
-      ) : null}
-    </>
-  )
-}
-
 function CardShell({
   op,
   req,
@@ -94,13 +72,16 @@ function CardShell({
   running?: boolean
   children?: React.ReactNode
 }) {
+  const items: MetaRowItem[] = [
+    { label: 'state::', value: op, tone: running ? 'ink' : 'accent' },
+  ]
+  if (req.scope) items.push({ label: 'scope', value: req.scope })
+  if (req.key) items.push({ label: 'key', value: req.key })
   return (
     <div className="state-ui-msg">
-      <div className="state-ui-msg-head">
-        <span className={`state-ui-pill${running ? ' quiet' : ''}`}>{op}</span>
-        <Chips req={req} />
-        <span className="state-ui-msg-tag">state ui</span>
-      </div>
+      <MetaRow items={items}>
+        <Eyebrow className="state-ui-msg-tag">state ui</Eyebrow>
+      </MetaRow>
       {children}
     </div>
   )
@@ -152,7 +133,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
   const op = message.functionId.slice('state::'.length)
   return (
     <CardShell op={op} req={req} running>
-      <div className="state-ui-msg-note pulse">· running…</div>
+      <div className={`state-ui-msg-note ${uiClasses.pulse}`}>· running…</div>
     </CardShell>
   )
 }

@@ -28,7 +28,7 @@ function text(node: ReactNode) {
 describe('voice model choices', () => {
   it('offers missing models and preserves custom paths', () => {
     expect(modelOptions([model], '/models/custom.bin')).toEqual([
-      { value: model.id, label: model.name, description: '78 MB · not downloaded' },
+      { value: model.id, label: model.name, description: '74.1 MiB · not downloaded' },
       { value: '/models/custom.bin', label: '/models/custom.bin', description: 'Custom or unavailable model' },
     ])
   })
@@ -123,7 +123,7 @@ describe('missing-model download control', () => {
   it('shows size and starts a download only when clicked', () => {
     const onDownload = vi.fn()
     const view = ModelDownload({ model, onDownload })
-    expect(text(view)).toContain('not downloadedDownload 78 MB')
+    expect(text(view)).toContain('not downloadedDownload 74.1 MiB')
     expect(onDownload).not.toHaveBeenCalled()
     const button = nodes(view).find((node) => isValidElement(node) && node.type === 'button')
     if (!isValidElement<{ onClick: () => void; 'aria-label': string }>(button)) throw new Error('missing button')
@@ -144,7 +144,7 @@ describe('missing-model download control', () => {
     expect(status.props.role).toBe('status')
     expect(actions.props.className).toBe('voice-model-actions')
     expect(text(status)).toBe('not downloaded')
-    expect(text(actions)).toBe('Use modelDownload 78 MB')
+    expect(text(actions)).toBe('Use modelDownload 74.1 MiB')
   })
   it('keeps related actions visible when the model is installed', () => {
     const view = ModelDownload({ model: { ...model, installed: true },
@@ -162,7 +162,7 @@ describe('missing-model download control', () => {
   })
   it('allows retry after an error', () => {
     expect(text(ModelDownload({ model, progress: { ...event, done: true, error: 'offline' },
-      onDownload: vi.fn() }))).toContain('Download 78 MB')
+      onDownload: vi.fn() }))).toContain('Download 74.1 MiB')
   })
   it('does not mistake unknown download size for inactivity', () => {
     expect(text(ModelDownload({ model, progress: { ...event, total_bytes: 0 }, onDownload: vi.fn() })))

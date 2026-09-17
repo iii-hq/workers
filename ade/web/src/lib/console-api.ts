@@ -27,6 +27,7 @@ import {
   BottomSheetTrigger,
 } from '@/components/ui/BottomSheet'
 import { Button } from '@/components/ui/Button'
+import { Checkbox } from '@/components/ui/Checkbox'
 import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
 import {
@@ -155,6 +156,7 @@ export const components: ConsoleApi['components'] = {
   CardBody,
   CardHighlight,
   CardHeader,
+  Checkbox,
   Chip,
   ConfirmDialog,
   Dialog,

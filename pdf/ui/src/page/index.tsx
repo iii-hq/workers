@@ -26,6 +26,7 @@ import {
   TooltipContent,
   TooltipTrigger,
   type Host,
+  uiClasses,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -309,7 +310,7 @@ function Result({ name, result }: { name: string; result: Inspection }) {
             {(markdown.pages ?? []).map((page) => (
               <article key={page.page} className="pdf-ui__page">
                 <header className="pdf-ui__page-head">
-                  <span className="pdf-ui__page-no">page {page.page}</span>
+                  <span className={uiClasses.eyebrow}>page {page.page}</span>
                   {page.needs_ocr && (
                     <Badge variant="warn">
                       {page.ocr_reason
@@ -359,7 +360,7 @@ function Stat({
 }) {
   const tile = (
     <div className="pdf-ui__stat">
-      <dt className="pdf-ui__stat-label">{label}</dt>
+      <dt className={uiClasses.eyebrow}>{label}</dt>
       <dd className="pdf-ui__stat-value">{value}</dd>
     </div>
   )

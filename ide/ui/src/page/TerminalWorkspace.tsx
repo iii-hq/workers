@@ -36,7 +36,7 @@ import {
   type TerminalSession,
   useTerminalSession,
 } from './terminal-session'
-import { useSplitDrag } from './use-split-drag'
+import { useSplitDrag } from '@iii-dev/console-ui/hooks'
 import {
   createTerminalConnectionCoordinator,
   type TerminalConnectionCoordinator,

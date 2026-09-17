@@ -46,11 +46,15 @@
  */
 
 import {
+  Chip,
   CodeHighlight,
+  Eyebrow,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
   type Host,
+  uiClasses,
 } from '@iii-dev/console-ui'
+import { unwrapEnvelope } from '@iii-dev/console-ui/format'
 import { useState } from 'react'
 import {
   asRecord,
@@ -68,7 +72,6 @@ import {
   resultConvention,
   Stream,
   TimeoutChip,
-  unwrapEnvelope,
 } from '../lib/shared'
 
 const FUNCTION_ID = 'code-runner::run'
@@ -112,27 +115,27 @@ function Chips({ req, runtimeId }: { req: RunRequest; runtimeId?: string }) {
     <>
       {runtimeId ? <RuntimeChip runtimeId={runtimeId} /> : null}
       {req.runtimeId ? (
-        <span className="cr-ui-chip">reused runtime</span>
+        <Chip>reused runtime</Chip>
       ) : req.keep ? (
-        <span
-          className="cr-ui-chip cr-run-fresh"
+        <Chip
+          tone="warning"
           title="No runtime_id, keep: true: creates a runtime and leaves it running — the response's runtime_id addresses it for later runs. You own it until teardown."
         >
           keeps the runtime
-        </span>
+        </Chip>
       ) : (
-        <span
-          className="cr-ui-chip cr-run-fresh"
+        <Chip
+          tone="warning"
           title="No runtime_id, no keep: one-shot — creates a runtime, runs the code, and destroys it before this response is sent. Nothing persists: no globals, no files."
         >
           one-shot
-        </span>
+        </Chip>
       )}
       {req.lang ? (
-        <span className="cr-ui-chip">
-          <span className="k">lang </span>
+        <Chip>
+          <span className="cr-ui-k">lang </span>
           {req.lang}
-        </span>
+        </Chip>
       ) : null}
       <TimeoutChip ms={req.timeoutMs} />
     </>
@@ -168,7 +171,9 @@ function CodeSection({ code, lang, clipped }: { code: string; lang?: Lang; clipp
 
   return (
     <div className="cr-ui-section">
-      <div className="cr-ui-section-label">{clipped ? 'code (excerpt)' : 'code'}</div>
+      <Eyebrow as="div" className="cr-ui-section-label">
+        {clipped ? 'code (excerpt)' : 'code'}
+      </Eyebrow>
       <div className="cr-ui-code">
         <CodeHighlight code={shown} language={langToPrism(lang) ?? 'text'} />
       </div>
@@ -244,7 +249,7 @@ function RunningView({ message }: { message: FunctionTriggerMessage }) {
   const req = parseRequest(message.input)
   return (
     <CardShell op={opName(message.functionId)} running chips={<Chips req={req} runtimeId={req.runtimeId} />}>
-      <div className="cr-ui-msg-note pulse">· running…</div>
+      <div className={`cr-ui-msg-note ${uiClasses.pulse}`}>· running…</div>
       {req.code === undefined ? null : <CodeSection code={req.code} lang={req.lang} />}
     </CardShell>
   )
