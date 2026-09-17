@@ -29,7 +29,7 @@
     .shui-search-file .chevron, .shui-search-file .file-icon, .shui-search-path .file-icon, .shui-search-file .dismiss svg,
     .shui-scm-branch svg, .shui-scm-folder svg, .shui-scm-row-main .file-icon, .shui-scm-row-actions .file-icon,
     .shui-view-actions > button svg, .shui-scm-row-actions > button svg, .shui-timeline-turn-main .chevron, .shui-agent-tag svg,
-    .shui-editor-head > button svg, .shui-goto-btn svg, .shui-review-option .menu-icon svg, .shui-review-option .check svg,
+    .shui-editor-head > button svg, .shui-goto-btn svg, .shui-review-option .menu-icon svg,
     .shui-launcher-recent-row .file-icon, .shui-quick-open-row .file-icon, .shui-browser-crumb-group svg,
     .shui-chat-summary-pill .files-icon, .shui-chat-summary-pill .chevron, .shui-file-changes-more svg,
     .shui-terminal-tab-action svg, .shui-terminal-tab-new svg, .shui-terminal-action svg, .shui-terminal-status-action svg,
@@ -1435,23 +1435,18 @@
   .shui-diff-stats .del { color: var(--shui-status-deleted); }
   .shui-compare-picker { flex: 0 1 280px; min-width: 140px; }
   .shui-review-menu-content { min-width: 248px; }
-  .shui-review-option {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: 32px;
-  }
-  .shui-review-option .menu-icon,
-  .shui-review-option .check {
+  /* The console's DropdownMenuCheckboxItem (check in the left gutter) with an
+     icon before the label. */
+  .shui-review-option { gap: 10px; min-height: 32px; }
+  .shui-review-option .menu-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 16px;
     height: 16px;
     flex: none;
+    color: var(--color-ink-faint);
   }
-  .shui-review-option .menu-icon { color: var(--color-ink-faint); }
-  .shui-review-option .check { margin-left: auto; }
   .shui-diff-body { display: flex; flex-direction: column; overflow: auto; }
   .shui-review-diff { display: block; }
   .shui-diff-body .shui-review-diff { flex: 1; min-height: 0; }

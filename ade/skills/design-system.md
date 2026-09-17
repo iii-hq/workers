@@ -254,7 +254,7 @@ ones in `index.d.ts`. State is expressed with `data-*` attributes (`data-selecte
 | `Button` | `variant` primary/ghost/pill/icon/terminal/wiggle; `size` sm 32 / md 36 / lg 44 / icon 30 | One `primary` per view |
 | `IconButton` | `Button` size icon + required `label`, `tooltip` (false hides), `tooltipSide` | Never icon-only without a label |
 | `Tooltip` | `label` shorthand, or `TooltipTrigger` + `TooltipContent` (`side`, default bottom) | Don't tooltip a bare ✕ |
-| `DropdownMenu` + `Trigger`/`Content`/`Item`/`Label`/`Separator` | Radix menu on `panel-raised`, `shadow-floating` | Destructive last |
+| `DropdownMenu` + `Trigger`/`Content`/`Group`/`Item`/`Label`/`Separator`, `CheckboxItem` (toggle, `onSelect` + `preventDefault` keeps it open), `RadioGroup`/`RadioItem` (one choice), `Sub`/`SubTrigger`/`SubContent` (a setting row that pushes into a submenu) | Radix menu on `panel-raised`, `shadow-floating`; check in the left gutter, tree caret on a sub-trigger | Destructive last; no Menubar — one trigger per menu |
 
 ### Feedback
 

@@ -3,10 +3,16 @@ import { Copy, Pencil, Trash2 } from 'lucide-react'
 import { Button } from './Button'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from './DropdownMenu'
 
@@ -71,6 +77,45 @@ export const IconsAndShortcuts: Story = {
           <Trash2 aria-hidden className="size-4" />
           Delete
         </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  ),
+}
+
+/** A setting row pushes into a submenu and shows its value; radio rows pick one, checkbox rows toggle many. */
+export const SubmenuRadioAndCheckbox: Story = {
+  render: () => (
+    <DropdownMenu defaultOpen>
+      <DropdownMenuTrigger asChild>
+        <Button variant="pill" size="sm">
+          View
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[12rem]">
+        <DropdownMenuSub defaultOpen>
+          <DropdownMenuSubTrigger>
+            <span>Group by</span>
+            <span className="ml-auto text-ink-faint">Recent</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuRadioGroup value="recent">
+              <DropdownMenuRadioItem value="none">None</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="recent">
+                Recent
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="project">
+                Project
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSeparator />
+        <DropdownMenuCheckboxItem checked onSelect={(e) => e.preventDefault()}>
+          Sub-agents
+        </DropdownMenuCheckboxItem>
+        <DropdownMenuCheckboxItem onSelect={(e) => e.preventDefault()}>
+          Automations
+        </DropdownMenuCheckboxItem>
       </DropdownMenuContent>
     </DropdownMenu>
   ),

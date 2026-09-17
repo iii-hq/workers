@@ -262,7 +262,7 @@ export function ConversationRow({
             <span
               className={cn(
                 uiClasses.treeItemMeta,
-                'rounded-xs bg-surface px-1 font-mono text-[10px]',
+                'rounded-xs bg-surface px-1 font-mono',
               )}
               title={kindTag.title}
             >

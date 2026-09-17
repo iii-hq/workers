@@ -74,6 +74,15 @@ export function DropdownMenuItem({
   )
 }
 
+/* A choice row (checkbox or radio): the check sits in the left gutter, the
+   label starts at pl-7 so checked and unchecked rows align. */
+const choiceItemClass = cn(
+  'relative flex cursor-pointer items-center rounded-xs py-1.5 pr-2 pl-7 outline-none select-none',
+  'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
+  'data-[state=checked]:text-ink',
+  'data-[disabled]:pointer-events-none data-[disabled]:opacity-40',
+)
+
 export function DropdownMenuCheckboxItem({
   className,
   children,
@@ -85,13 +94,7 @@ export function DropdownMenuCheckboxItem({
 }) {
   return (
     <DropdownMenuPrimitive.CheckboxItem
-      className={cn(
-        'relative flex cursor-pointer items-center rounded-xs py-1.5 pr-2 pl-7 outline-none select-none',
-        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
-        'data-[state=checked]:text-ink',
-        'data-[disabled]:pointer-events-none data-[disabled]:opacity-40',
-        className,
-      )}
+      className={cn(choiceItemClass, className)}
       {...props}
     >
       <DropdownMenuPrimitive.ItemIndicator className="absolute top-1/2 left-2 -translate-y-1/2 text-ink">
@@ -188,13 +191,7 @@ export function DropdownMenuRadioItem({
 }: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
   return (
     <DropdownMenuPrimitive.RadioItem
-      className={cn(
-        'relative flex cursor-pointer items-center rounded-xs py-1.5 pr-2 pl-7 outline-none select-none',
-        'data-[highlighted]:bg-surface-hover data-[highlighted]:text-ink',
-        'data-[state=checked]:text-ink',
-        'data-[disabled]:pointer-events-none data-[disabled]:opacity-40',
-        className,
-      )}
+      className={cn(choiceItemClass, className)}
       {...props}
     >
       <DropdownMenuPrimitive.ItemIndicator className="absolute top-1/2 left-2 -translate-y-1/2 text-ink">

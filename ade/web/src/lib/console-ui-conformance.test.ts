@@ -57,10 +57,17 @@ import {
 } from '@/components/ui/Dialog'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -180,10 +187,17 @@ const conformance: {
   DialogTitle: typeof ConsoleUi.DialogTitle
   DialogTrigger: typeof ConsoleUi.DialogTrigger
   DropdownMenu: typeof ConsoleUi.DropdownMenu
+  DropdownMenuCheckboxItem: typeof ConsoleUi.DropdownMenuCheckboxItem
   DropdownMenuContent: typeof ConsoleUi.DropdownMenuContent
+  DropdownMenuGroup: typeof ConsoleUi.DropdownMenuGroup
   DropdownMenuItem: typeof ConsoleUi.DropdownMenuItem
   DropdownMenuLabel: typeof ConsoleUi.DropdownMenuLabel
+  DropdownMenuRadioGroup: typeof ConsoleUi.DropdownMenuRadioGroup
+  DropdownMenuRadioItem: typeof ConsoleUi.DropdownMenuRadioItem
   DropdownMenuSeparator: typeof ConsoleUi.DropdownMenuSeparator
+  DropdownMenuSub: typeof ConsoleUi.DropdownMenuSub
+  DropdownMenuSubContent: typeof ConsoleUi.DropdownMenuSubContent
+  DropdownMenuSubTrigger: typeof ConsoleUi.DropdownMenuSubTrigger
   DropdownMenuTrigger: typeof ConsoleUi.DropdownMenuTrigger
   EmptyState: typeof ConsoleUi.EmptyState
   ErrorBoundary: typeof ConsoleUi.ErrorBoundary
@@ -284,10 +298,17 @@ const conformance: {
   DialogTitle,
   DialogTrigger,
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
   EmptyState,
   ErrorBoundary,

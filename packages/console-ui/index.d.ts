@@ -958,6 +958,42 @@ export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivEleme
 export declare const DropdownMenuItem: React.ComponentType<DropdownMenuItemProps>
 export declare const DropdownMenuLabel: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 export declare const DropdownMenuSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const DropdownMenuGroup: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export interface DropdownMenuCheckboxItemProps extends DropdownMenuItemProps {
+  checked?: boolean | 'indeterminate'
+  onCheckedChange?(checked: boolean): void
+  /** Checked-state icon (a Lucide element); defaults to a checkmark. */
+  indicator?: React.ReactNode
+}
+/** A toggle row, check in the left gutter. `onSelect={(e) => e.preventDefault()}` keeps the menu open across toggles. */
+export declare const DropdownMenuCheckboxItem: React.ComponentType<DropdownMenuCheckboxItemProps>
+export interface DropdownMenuRadioGroupProps extends React.HTMLAttributes<HTMLDivElement> {
+  value?: string
+  onValueChange?(value: string): void
+}
+export declare const DropdownMenuRadioGroup: React.ComponentType<DropdownMenuRadioGroupProps>
+export interface DropdownMenuRadioItemProps extends DropdownMenuItemProps {
+  value: string
+}
+/** A single-choice row inside `DropdownMenuRadioGroup`; the chosen one wears the check. */
+export declare const DropdownMenuRadioItem: React.ComponentType<DropdownMenuRadioItemProps>
+export interface DropdownMenuSubProps {
+  open?: boolean
+  defaultOpen?: boolean
+  onOpenChange?(open: boolean): void
+  children?: React.ReactNode
+}
+/** A nested menu: `SubTrigger` is a row (with the tree caret) that pushes into `SubContent` beside it. */
+export declare const DropdownMenuSub: React.ComponentType<DropdownMenuSubProps>
+export interface DropdownMenuSubTriggerProps extends React.HTMLAttributes<HTMLDivElement> {
+  disabled?: boolean
+}
+export declare const DropdownMenuSubTrigger: React.ComponentType<DropdownMenuSubTriggerProps>
+export interface DropdownMenuSubContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  sideOffset?: number
+  alignOffset?: number
+}
+export declare const DropdownMenuSubContent: React.ComponentType<DropdownMenuSubContentProps>
 
 export interface EmptyStateAction {
   label: string
