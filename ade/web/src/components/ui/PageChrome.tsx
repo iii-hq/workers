@@ -97,9 +97,9 @@ export function PageHeader({
         </span>
       ) : null}
       {title ? (
-        <span className="shrink-0 font-sans text-[14px] font-medium text-ink">
+        <h1 className="shrink-0 font-sans text-[14px] font-medium text-ink">
           {title}
-        </span>
+        </h1>
       ) : null}
       {description ? (
         <span className="min-w-0 truncate font-sans text-[12px] text-ink-ghost">

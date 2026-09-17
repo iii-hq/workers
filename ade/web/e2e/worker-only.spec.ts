@@ -6,6 +6,8 @@ test.use({ scenario: 'streamed-text' })
 const strip = (page: Page) =>
   page.getByRole('tablist', { name: 'Workspace tabs' })
 const tabs = (page: Page) => strip(page).getByRole('tab')
+const heading = (page: Page, name: string) =>
+  page.getByRole('heading', { name, exact: true })
 
 // The console's own catalog script (`console/catalog-page.js`) registers the
 // `functions` and `triggers` pages, so the isolated shell has a worker page
@@ -27,7 +29,7 @@ test('#/worker/<scope> renders one injected page alone and leaves the workspace 
   // A bare scope resolves to the worker's first page and canonicalizes the
   // URL; no tab strip, no chat composer.
   await page.goto(`${stack.consoleUrl}#/worker/console`)
-  await expect(page.getByRole('heading', { name: 'Functions' })).toBeVisible()
+  await expect(heading(page, 'Functions')).toBeVisible()
   await expect(strip(page)).toHaveCount(0)
   await expect(page.getByLabel('message composer')).toHaveCount(0)
   await expect(page).toHaveURL(/#\/worker\/console\/functions$/)
@@ -43,21 +45,21 @@ test('#/worker/<scope> renders one injected page alone and leaves the workspace 
   await page.keyboard.press('Escape')
   await expect(settings).toHaveCount(0)
   await expect(page).toHaveURL(/#\/worker\/console\/functions$/)
-  await expect(page.getByRole('heading', { name: 'Functions' })).toBeVisible()
+  await expect(heading(page, 'Functions')).toBeVisible()
 
   // A reload stays isolated on the same page.
   await page.reload()
-  await expect(page.getByRole('heading', { name: 'Functions' })).toBeVisible()
+  await expect(heading(page, 'Functions')).toBeVisible()
   await expect(strip(page)).toHaveCount(0)
 
   // An explicit page id picks another page of the same worker.
   await page.goto(`${stack.consoleUrl}#/worker/console/triggers`)
-  await expect(page.getByRole('heading', { name: 'Triggers' })).toBeVisible()
+  await expect(heading(page, 'Triggers')).toBeVisible()
   await expect(strip(page)).toHaveCount(0)
 
   // The traces explorer has the same standalone shell.
   await page.goto(`${stack.consoleUrl}#/traces`)
-  await expect(page.getByRole('heading', { name: 'Traces' })).toBeVisible()
+  await expect(heading(page, 'Traces')).toBeVisible()
   await expect(strip(page)).toHaveCount(0)
   await expect(page).toHaveTitle('iii - traces')
 

@@ -432,6 +432,7 @@ async fn launch_active(
                 "eval_role": run.role,
                 "eval_iteration": run.iteration,
             })),
+            kind: None,
         }),
         options: Some(send_options(job, variant)),
     };
