@@ -88,7 +88,7 @@ comparable type. Sporadic `map` misses still become `null`, like lodash —
 
 ```jsonc
 fp::pipe { through: [
-  { function: "scrapling::fetch",
+  { function: "browser::fetch",
     payload:  { url: "https://…", format: "markdown", main_content_only: true } },
   { function: "fp::get",  payload: { path: "/content" } },
   { function: "fp::take", payload: { n: 20000 } },

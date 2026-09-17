@@ -126,7 +126,7 @@ fn pipe_contract_validates_and_refuses() {
     // The canonical live shape, engine-injected _caller_worker_id included.
     let req: pipe::PipeRequest = serde_json::from_value(json!({
         "through": [
-            { "function": "scrapling::fetch", "payload": { "url": "u", "format": "markdown" } },
+            { "function": "browser::fetch", "payload": { "url": "u", "format": "markdown" } },
             { "function": "fp::get", "payload": { "path": "/content" } },
             { "function": "fp::take", "payload": { "n": 6000 } },
             { "function": "state::set", "payload": { "scope": "s", "key": "k" } },

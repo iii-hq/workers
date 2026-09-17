@@ -45,7 +45,7 @@ def test_artifact_kind_drives_ci_language_buckets():
     workers = _lib.read_worker_catalog(CATALOG)
     assert discover_changed_workers.language_of(workers["harness"]) == "rust"
     assert discover_changed_workers.language_of(workers["claude-code"]) == "node"
-    assert discover_changed_workers.language_of(workers["scrapling"]) == "python"
+    assert discover_changed_workers.language_of(workers["hermes"]) == "python"
 
 
 def test_rust_frontends_are_explicit_workspace_locked_builds():
@@ -139,9 +139,9 @@ def test_worker_bundle_start_commands_target_packaged_entrypoints():
         assert start.removeprefix("node ./") in worker["artifact"]["include"], worker_id
 
 
-def test_scrapling_release_image_supports_both_linux_architectures():
+def test_hermes_release_image_supports_both_linux_architectures():
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
-    artifact = document["workers"]["scrapling"]["artifact"]
+    artifact = document["workers"]["hermes"]["artifact"]
 
     assert artifact == {
         "kind": "oci-image",

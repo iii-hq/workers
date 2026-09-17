@@ -119,7 +119,6 @@ mod tests {
             "queue",
             "rbac-proxy",
             "sandbox-code-runner",
-            "scrapling",
             "security-scan",
             "session-manager",
             "shell",
@@ -131,7 +130,7 @@ mod tests {
             "workflow",
             "worktree",
         ];
-        assert_eq!(ids.len(), 39);
+        assert_eq!(ids.len(), 38);
         for id in ids {
             let registration = format!("configForms.register(\"{id}\"");
             assert!(

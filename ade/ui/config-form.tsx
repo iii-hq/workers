@@ -53,7 +53,6 @@ export default function setup(host: Host) {
   host.configForms.register('queue', configurationForm('queue'))
   host.configForms.register('rbac-proxy', configurationForm('rbac-proxy'))
   host.configForms.register('sandbox-code-runner', configurationForm('sandbox-code-runner'))
-  host.configForms.register('scrapling', configurationForm('scrapling'))
   host.configForms.register('security-scan', configurationForm('security-scan'))
   host.configForms.register('session-manager', configurationForm('session-manager'))
   host.configForms.register('shell', configurationForm('shell'))

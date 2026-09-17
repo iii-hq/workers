@@ -1795,18 +1795,6 @@ workers:
         outputs:
         - dist
     publish: true
-  scrapling:
-    source:
-      path: scrapling
-      package_manifest: pyproject.toml
-    artifact:
-      kind: oci-image
-      context: .
-      dockerfile: Dockerfile
-      platforms:
-      - linux/amd64
-      - linux/arm64
-    publish: true
   security-scan:
     source:
       path: security-scan

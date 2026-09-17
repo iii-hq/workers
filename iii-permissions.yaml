@@ -263,13 +263,12 @@ rules:
   - '!code-runner::on-config-change'
 
   # The guidance-knob configuration entries (web/workflow/fp/
-  # sandbox-code-runner/scrapling): internal hot-reload hooks, same pattern
+  # sandbox-code-runner): internal hot-reload hooks, same pattern
   # as the other on-config-change denies.
   - '!web::on-config-change'
   - '!workflow::on-config-change'
   - '!fp::on-config-change'
   - '!sandbox-code-runner::on-config-change'
-  - '!scrapling::on-config-change'
 
   # opengantry: bus-internal registration hooks; agents must not call them.
   # gantry::verify and gantry::middleware stay at needs_approval (not listed).

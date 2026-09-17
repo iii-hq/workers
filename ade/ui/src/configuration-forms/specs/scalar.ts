@@ -433,18 +433,6 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
     expectedFields: ['inject_guidance'],
   },
   {
-    id: 'scrapling',
-    title: 'Scrapling',
-    description: 'Prompt guidance for web scraping functions.',
-    sections: [
-      {
-        title: 'Agent guidance',
-        fields: [toggle('inject_guidance', 'Inject guidance', guidanceDescription, { defaultValue: true })],
-      },
-    ],
-    expectedFields: ['inject_guidance'],
-  },
-  {
     id: 'tailscale',
     title: 'Tailscale',
     description: 'ADE sharing through Tailscale Serve and Funnel.',

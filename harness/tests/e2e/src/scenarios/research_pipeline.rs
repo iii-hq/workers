@@ -454,7 +454,7 @@ fn is_source_pipeline(call: &common::ObservedFunctionCall, names: &Names) -> boo
 }
 
 fn is_article_fetch(function_id: &str, arguments: &Value) -> bool {
-    matches!(function_id, "web::fetch" | "scrapling::fetch")
+    matches!(function_id, "web::fetch" | "browser::fetch")
         && arguments.get("url").and_then(Value::as_str) == Some(ARTICLE_URL)
         && arguments.get("format").and_then(Value::as_str) == Some("markdown")
 }

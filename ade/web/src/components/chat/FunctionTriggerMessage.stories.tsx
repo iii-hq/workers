@@ -19,7 +19,6 @@ import {
 } from '@/stories/fixtures/harness-fixtures'
 import { routerFixtures } from '@/stories/fixtures/router-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
-import { scraplingFixtures } from '@/stories/fixtures/scrapling-fixtures'
 import { shellFixtures } from '@/stories/fixtures/shell-fixtures'
 import { stateFixtures } from '@/stories/fixtures/state-fixtures'
 import { webFixtures } from '@/stories/fixtures/web-fixtures'
@@ -435,9 +434,4 @@ export const FpFamily: Story = {
 export const StateFamily: Story = {
   name: 'state family',
   render: () => <FamilyGallery fixtures={stateFixtures} />,
-}
-
-export const ScraplingFamily: Story = {
-  name: 'scrapling family',
-  render: () => <FamilyGallery fixtures={scraplingFixtures} />,
 }
