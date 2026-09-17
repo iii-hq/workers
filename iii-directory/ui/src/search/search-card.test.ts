@@ -56,4 +56,26 @@ describe('search trigger renderer', () => {
     expect(serialized).toContain('extract latest news headlines')
     expect(serialized).not.toContain('legacy query must stay hidden')
   })
+
+  it('renders installed skills with their skills::get call, even without functions', () => {
+    const rendered = createSearchTriggerRenderer().tryRender({
+      functionId: 'directory::search_functions',
+      input: { capabilities: ['schedule recurring function execution with cron'] },
+      output: {
+        guidance: 'The `skills` entries are installed how-to documents…',
+        workers: [],
+        skills: [{ id: 'cron', title: 'cron', description: 'Schedule any registered function.' }],
+        latency_ms: 4256,
+      },
+    } as FunctionTriggerMessage) as {
+      type: (props: Record<string, unknown>) => unknown
+      props: Record<string, unknown>
+    }
+
+    const serialized = JSON.stringify(rendered.type(rendered.props))
+    expect(serialized).toContain('installed skills')
+    expect(serialized).toContain('"id":"cron"')
+    expect(serialized).toContain('Schedule any registered function.')
+    expect(serialized).not.toContain('No functions matched')
+  })
 })

@@ -15,12 +15,13 @@ import {
   MetaRow,
   TerminalCommandLine,
 } from '@iii-dev/console-ui'
-import { ChevronRight, Dot, SquareFunction } from 'lucide-react'
+import { BookOpen, ChevronRight, Dot, SquareFunction } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { kv } from '../lib/widgets'
 import {
   type DiscoverCandidateView,
   type DiscoverInstallableView,
+  type DiscoverSkillView,
   type DiscoverView,
   discoverCapabilities,
   functionCount,
@@ -73,6 +74,25 @@ function InstallableSection({ worker }: { worker: DiscoverInstallableView }) {
   )
 }
 
+/** One installed skill document: id (pass to `directory::skills::get`),
+ * title, and its slim description. It documents a how-to, not a callable. */
+function SkillBlock({ skill }: { skill: DiscoverSkillView }) {
+  return (
+    <details className="dir-ui-search-fn">
+      <summary>
+        <ChevronRight aria-hidden className="dir-ui-search-caret" />
+        <BookOpen aria-hidden className="dir-ui-search-sym" />
+        <span className="dir-ui-search-fn-id">{skill.id}</span>
+        {skill.title && skill.title !== skill.id ? (
+          <span className="dir-ui-search-fn-desc">{skill.title}</span>
+        ) : null}
+      </summary>
+      {skill.description.length > 0 ? <div className="dir-ui-search-desc">{skill.description}</div> : null}
+      <TerminalCommandLine command={`directory::skills::get { "id": "${skill.id}" }`} copy />
+    </details>
+  )
+}
+
 function GuidanceDetails({ guidance }: { guidance: string }) {
   return (
     <details className="dir-ui-search-guidance">
@@ -86,7 +106,7 @@ function GuidanceDetails({ guidance }: { guidance: string }) {
 }
 
 export function DiscoverCard({ capabilities, view }: { capabilities: string[]; view: DiscoverView }) {
-  const empty = view.workers.length === 0 && view.installable.length === 0
+  const empty = view.workers.length === 0 && view.installable.length === 0 && view.skills.length === 0
   return (
     <Card>
       <MetaRow
@@ -94,6 +114,7 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
           ['workers', view.workers.length],
           ['functions', functionCount(view)],
           ['installable', view.installable.length > 0 && view.installable.length],
+          ['skills', view.skills.length > 0 && view.skills.length],
           ['latency', `${Math.round(view.latency_ms)}ms`],
         ])}
       >
@@ -124,6 +145,14 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
           {view.installable.map((worker) => (
             <InstallableSection key={worker.name} worker={worker} />
           ))}
+          {view.skills.length > 0 ? (
+            <section aria-label="skills">
+              <SectionHead count={view.skills.length}>installed skills</SectionHead>
+              {view.skills.map((skill) => (
+                <SkillBlock key={skill.id} skill={skill} />
+              ))}
+            </section>
+          ) : null}
           <GuidanceDetails guidance={view.guidance} />
         </>
       )}

@@ -39,7 +39,7 @@ describe('isErrorOutput', () => {
 
 describe('parseDiscoverResponse', () => {
   it('parses a flat response and an enveloped one identically', () => {
-    const parsed = { ...response, installable: [] }
+    const parsed = { ...response, installable: [], skills: [] }
     expect(parseDiscoverResponse(response)).toEqual(parsed)
     expect(
       parseDiscoverResponse({ content: [{ type: 'text', text: 'x' }], details: response }),
@@ -48,7 +48,32 @@ describe('parseDiscoverResponse', () => {
 
   it('keeps empty worker lists (the refine-guidance card)', () => {
     const empty = { guidance: 'No functions matched…', workers: [], latency_ms: 3 }
-    expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [] })
+    expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [], skills: [] })
+  })
+
+  it('parses the installed skills section when present', () => {
+    const parsed = parseDiscoverResponse({
+      guidance: 'The `skills` entries are installed how-to documents…',
+      workers: [],
+      skills: [
+        { id: 'cron', title: 'cron', description: 'Schedule any registered function on a cron expression.' },
+      ],
+      latency_ms: 7,
+    })
+    expect(parsed?.skills).toEqual([
+      { id: 'cron', title: 'cron', description: 'Schedule any registered function on a cron expression.' },
+    ])
+    expect(parsed?.workers).toEqual([])
+  })
+
+  it('rejects a malformed skills section', () => {
+    for (const skills of [
+      {},
+      [{ title: 'x', description: '' }], // no id
+      [{ id: 'cron', title: 'cron' }], // no description
+    ]) {
+      expect(parseDiscoverResponse({ guidance: 'g', workers: [], skills, latency_ms: 1 })).toBeNull()
+    }
   })
 
   it('accepts legacy schema-bearing candidates but keeps only compact fields', () => {
@@ -145,6 +170,7 @@ describe('functionCount', () => {
         guidance: 'g',
         latency_ms: 1,
         installable: [],
+        skills: [],
         workers: [
           { namespace: 'a', functions: [candidate, candidate] },
           { namespace: 'b', functions: [candidate] },

@@ -20,10 +20,20 @@ export interface DiscoverInstallableView {
   functions: DiscoverCandidateView[]
 }
 
+/** An installed skill document the search judged relevant to the requested
+ * capabilities (Jev mode only). Read one with `directory::skills::get { id }`
+ * before acting on it — it carries no callable function. */
+export interface DiscoverSkillView {
+  id: string
+  title: string
+  description: string
+}
+
 export interface DiscoverView {
   guidance: string
   workers: DiscoverWorkerView[]
   installable: DiscoverInstallableView[]
+  skills: DiscoverSkillView[]
   latency_ms: number
 }
 
@@ -126,7 +136,18 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
       })
     }
   }
-  return { guidance: value.guidance, workers, installable, latency_ms: value.latency_ms }
+  const skills: DiscoverSkillView[] = []
+  if ('skills' in value && value.skills !== undefined) {
+    if (!Array.isArray(value.skills)) return null
+    for (const skill of value.skills) {
+      if (!isRecord(skill)) return null
+      if (typeof skill.id !== 'string' || skill.id.length === 0) return null
+      if (typeof skill.title !== 'string') return null
+      if (typeof skill.description !== 'string') return null
+      skills.push({ id: skill.id, title: skill.title, description: skill.description })
+    }
+  }
+  return { guidance: value.guidance, workers, installable, skills, latency_ms: value.latency_ms }
 }
 
 export function functionCount(view: DiscoverView): number {
