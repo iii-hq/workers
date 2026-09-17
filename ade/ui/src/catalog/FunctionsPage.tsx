@@ -1,5 +1,5 @@
 /**
- * The Functions page (`#/ext/functions`): a navigation sidebar of every
+ * The Functions page (page `functions`): a navigation sidebar of every
  * function on the bus — each row led by the `ƒ` tile, grouped by the worker
  * that registered it — and a workspace that is always present: a hero when
  * nothing is selected, the function document (breadcrumb, identity head,

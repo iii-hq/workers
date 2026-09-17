@@ -2,8 +2,8 @@
  * The `sandbox-fleet` session chip: `⬚ N` where N counts RUNNING (not
  * stopped) sandboxes — one `sandbox::list` read on mount, then pure push
  * from the worker's fleet-watcher events (no polling, house doctrine).
- * Clicking opens a popover listing the fleet; picking a sandbox jumps to
- * #/ext/sandbox with it selected (jumpToSandbox — the page reads the
+ * Clicking opens a popover listing the fleet; picking a sandbox opens the
+ * fleet page with it selected (jumpToSandbox — the page reads the
  * selection on mount).
  *
  * Mirrors the harness context chip's registration shape: a factory that

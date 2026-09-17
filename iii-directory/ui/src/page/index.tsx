@@ -1,5 +1,5 @@
 /**
- * The directory page (#/ext/directory): a full-height application shell —
+ * The directory page (page `directory`): a full-height application shell —
  * slim product top bar, a navigation sidebar carrying the directory
  * switcher, and a document workspace that opens one entry in the shared
  * CodeEditor/MarkdownPreview pair, saving through the worker's update

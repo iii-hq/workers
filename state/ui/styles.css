@@ -4,7 +4,7 @@
  * Layout only: chrome comes from @iii-dev/console-ui and the console's tokens.
  */
 
-/* ── the page (#/ext/state-manager): application shell ──────────────── */
+/* ── the page (page `state-manager`): application shell ──────────────── */
 
 [data-iii-ui="state"] .state-ui-shell {
   min-height: 360px;

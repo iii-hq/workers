@@ -123,7 +123,7 @@ function MyworkPage({ host, onRequestClose }: PageRenderProps & { host: Host }) 
 
 export default function setup(host: Host) {
   host.pages.register({
-    id: 'mywork-manager',       // page URL: #/ext/mywork-manager
+    id: 'mywork-manager',       // alone at #/worker/mywork/mywork-manager
     title: 'Mywork',            // nav label
     configurationId: 'mywork',  // host adds the standard settings action
     render: (props) => <MyworkPage host={host} {...props} />,
@@ -141,7 +141,7 @@ consoles: feature-detect them.
 
 | Surface | What it is |
 |---|---|
-| `host.pages` | `register({ id, title, configurationId?, render })` creates `#/ext/<id>` and a nav entry. `render` receives `PageRenderProps` (below). Set `configurationId` when the worker has a configuration entry; the host places the one settings action in `PageHeader`. Never mount `WorkerConfigurationDialog` yourself. |
+| `host.pages` | `register({ id, title, configurationId?, render })` registers a page the workspace opens through `host.panels.open` or `console::workspace::open { screen: "ext:<id>" }`, plus a nav entry; `#/worker/<scope>[/<id>]` renders it alone (Testing below). `render` receives `PageRenderProps` (below). Set `configurationId` when the worker has a configuration entry; the host places the one settings action in `PageHeader`. Never mount `WorkerConfigurationDialog` yourself. |
 | `host.functionTriggers` | Chat/trace renderers. Match only the worker's function ids; return `null` to fall through. `message.description` is the harness's short activity label. `metadata: { display: true }` keeps a successful rich artifact visible while raw details stay collapsed. If raw data can contain secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
 | `host.triggerRenderers?` | Layered trigger presentation; see below. |
 | `host.configForms` | The deliberate form for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker registers one. The host owns dirty tracking, validation, save, reset and the SaveBar; honor `focusField`. `{ layout: 'full' }` only for a workbench that owns its scrolling. Form anatomy and primitives: `ade/design-console-ui` › Configuration forms. |
@@ -447,6 +447,18 @@ Validate all four layers; a green build alone is not enough.
    type match, malformed-config fallthrough, every slot and activity kind,
    non-interactive compact display, complete-detail lifecycle fidelity,
    action fallback, fail-closed redaction, and disable/disconnect fallback.
+
+**The page alone: `#/worker/<scope>[/<page-id>][?context=<json>]`.** The
+console renders that one page over the full viewport — no tab strip, chat,
+palette or keybindings — and never reads or writes the shared workspace
+layout, so a Playwright or `browser`-worker session can open a worker's page
+directly for screenshots and drive-through. `scope` is the worker's asset
+namespace (`browser/page.js` → `browser`, the `data-iii-ui` value); omit the
+page id for the worker's first page. `context` replays a `host.panels.open`
+context on load. Inside that shell `host.panels.open` delivers context in
+place for the page on screen and opens any other page in a new browser tab.
+Chat slots, palette commands and configuration forms are out of its scope:
+validate those in the full console, opened through `console::workspace::open`.
 
 ## Definition of done
 

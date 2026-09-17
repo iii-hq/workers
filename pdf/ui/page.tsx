@@ -6,7 +6,7 @@
  *
  * `setup(host)` composes two contributions:
  *
- * - src/page/                     — the PDF page (#/ext/pdf-reader)
+ * - src/page/                     — the PDF page (page `pdf-reader`)
  * - src/function-trigger-message/ — how pdf::* calls render in chat and traces
  *
  * Registrations go through `host` so the loader disposes them on hot reload and

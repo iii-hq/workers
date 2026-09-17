@@ -11,8 +11,8 @@
  * bindings of a type to a function, they belong to the triggers view, and
  * showing them per worker invited the question of whose they are — the
  * registering worker's or the target's. Deeper reads stay on the dedicated
- * pages: schemas, invoke and call history on `#/ext/functions`, registered
- * triggers and their fire paths on `#/ext/triggers`.
+ * pages: schemas, invoke and call history on the `functions` page, registered
+ * triggers and their fire paths on the `triggers` page.
  */
 
 import { useQuery } from '@tanstack/react-query'

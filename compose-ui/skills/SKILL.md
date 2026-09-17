@@ -9,7 +9,7 @@ description: >-
 # compose-ui
 
 The compose-ui worker puts the compose daemon in the Console. Its page (Compose,
-`#/ext/compose`) opens on a topology map of the engine, the namespace, and the
+page `compose`) opens on a topology map of the engine, the namespace, and the
 containers laid out by `start_after`, and shows every container the daemon supervises with its live
 state, PID, and last error; starts, stops, and restarts containers or the whole
 project in dependency order; adds, updates, and removes declared worker

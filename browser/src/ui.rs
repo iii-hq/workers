@@ -4,7 +4,7 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `browser/page.js` (`console:script`) — the `#/ext/browser` page (session
+//! - `browser/page.js` (`console:script`) — the `browser` page (session
 //!   rail, screencast-fed live viewport, console/network feeds) AND the
 //!   function-trigger renderer for every `browser::*` call in chat and the
 //!   traces span tab.

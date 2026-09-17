@@ -6,7 +6,7 @@
  * the console mounts and link-swaps it, styles-before-scripts on boot.
  *
  * `setup(host)` registers one contribution:
- * - src/page/GithubPage — the `#/ext/github` page: the standard page chrome
+ * - src/page/GithubPage — the `github` page: the standard page chrome
  *   with a graph | activity switch over the worker's live bus. GRAPH
  *   (default, the hero) draws the working repo's commit DAG from a single
  *   `shell::exec` `git log --all`, refreshing as the agent works. ACTIVITY

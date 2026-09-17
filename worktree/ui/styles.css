@@ -3,7 +3,7 @@
    hairlines and graph edges. Sans for interface copy, mono for branches,
    ids, paths, shas and counts. */
 
-/* ── the page (#/ext/worktree): application shell ─────────────────────
+/* ── the page (page `worktree`): application shell ─────────────────────
    The root + top bar are the shared page chrome (PageShell/PageHeader
    from @iii-dev/console-ui); this class only layers the page's
    typography defaults on top. */

@@ -50,8 +50,14 @@ import {
   sceneElementCount,
 } from './parsers'
 
-/** The canvas page route (`host.pages.register({id: 'canvas'})` → `#/ext/canvas`). */
-const CANVAS_PAGE_HASH = '#/ext/canvas'
+/** The canvas page (`host.pages.register({id: 'canvas'})`); a `canvasId`
+    in the context selects that canvas once the page is up. */
+function openCanvasPage(host: Host, canvasId?: string | null) {
+  host.panels?.open({
+    pageId: 'canvas',
+    context: canvasId ? { canvasId } : undefined,
+  })
+}
 
 export const HANDLED: ReadonlySet<string> = new Set(CANVAS_FUNCTION_IDS)
 
@@ -102,7 +108,7 @@ function renderDone(
       )
       if (!hasContent(view)) return null
       return looksFreeform(view) ? (
-        <FreeformCard op={op(message)} view={view} />
+        <FreeformCard host={host} op={op(message)} view={view} />
       ) : (
         <MermaidCard host={host} op={op(message)} view={view} />
       )
@@ -110,12 +116,12 @@ function renderDone(
     case 'canvas::get': {
       const view = parseRecordView(output)
       if (!hasContent(view)) return null
-      return <GetCard view={view} />
+      return <GetCard host={host} view={view} />
     }
     case 'canvas::list': {
       const items = parseListResponse(output)
       if (items == null) return null
-      return <ListCard items={items} />
+      return <ListCard host={host} items={items} />
     }
     case 'canvas::delete': {
       const result = parseDeleteResponse(output)
@@ -146,7 +152,7 @@ function renderDone(
     case 'canvas::element::list': {
       const card = elementCardData(message.functionId, output)
       if (card == null) return null
-      return <ElementCard {...card} />
+      return <ElementCard host={host} {...card} />
     }
     default:
       return null
@@ -198,10 +204,12 @@ function elementCardData(
 /** Element-level drawing steps stay one-line: the diagram itself is live
     on the canvas page (the call streams onto the open whiteboard). */
 function ElementCard({
+  host,
   op: opLabel,
   note,
   canvasId,
 }: {
+  host: Host
   op: string
   note: string
   canvasId: string
@@ -210,9 +218,14 @@ function ElementCard({
     <CardShell op={opLabel}>
       <div className="canvas-trigger__note">
         {note} ·{' '}
-        <a href={CANVAS_PAGE_HASH} title="open in canvas">
+        <button
+          type="button"
+          className="canvas-trigger__id-link"
+          title="open in canvas"
+          onClick={() => openCanvasPage(host, canvasId)}
+        >
           <span className="canvas-trigger__id">{canvasId}</span>
-        </a>
+        </button>
       </div>
     </CardShell>
   )
@@ -233,7 +246,7 @@ function renderRunning(
         )
       }
       if (looksFreeform(view)) {
-        return <FreeformCard op={op(message)} view={view} running />
+        return <FreeformCard host={host} op={op(message)} view={view} running />
       }
       return (
         <CardShell op={op(message)} running head={<HeadMeta view={view} />}>
@@ -335,11 +348,15 @@ function HeadMeta({ view }: { view: CanvasRecordView }) {
   )
 }
 
-function OpenLink() {
+function OpenLink({ host, canvasId }: { host: Host; canvasId?: string | null }) {
   return (
-    <a className="canvas-trigger__open" href={CANVAS_PAGE_HASH}>
+    <button
+      type="button"
+      className="canvas-trigger__open"
+      onClick={() => openCanvasPage(host, canvasId)}
+    >
       open in canvas
-    </a>
+    </button>
   )
 }
 
@@ -368,12 +385,12 @@ function MermaidCard({
       head={
         <>
           <HeadMeta view={view} />
-          <OpenLink />
+          <OpenLink host={host} canvasId={view.id} />
         </>
       }
     >
       {view.source ? (
-        <MermaidDiagram host={host} source={view.source} />
+        <MermaidDiagram host={host} source={view.source} canvasId={view.id} />
       ) : (
         <div className="canvas-trigger__note">no source in this payload</div>
       )}
@@ -388,9 +405,17 @@ let renderSeq = 0
  * Lazy inline mermaid render: the vendor bundle loads on the first card,
  * strict + suppressErrorRendering so invalid source becomes a caught error
  * (shown over the source in a <pre>) instead of mermaid's bomb SVG. The
- * whole diagram is a link to the canvas page.
+ * whole diagram is a button to the canvas page.
  */
-function MermaidDiagram({ host, source }: { host: Host; source: string }) {
+function MermaidDiagram({
+  host,
+  source,
+  canvasId,
+}: {
+  host: Host
+  source: string
+  canvasId?: string | null
+}) {
   const theme = host.useTheme()
   const [state, setState] = useState<
     | { status: 'loading' }
@@ -425,7 +450,7 @@ function MermaidDiagram({ host, source }: { host: Host; source: string }) {
 
   // Draw-on: every fresh render sketches itself in, so a diagram landing
   // in the transcript looks drawn, not pasted.
-  const diagramRef = useRef<HTMLAnchorElement | null>(null)
+  const diagramRef = useRef<HTMLButtonElement | null>(null)
   const lastAnimatedRef = useRef<string | null>(null)
   useEffect(() => {
     if (state.status !== 'done') return
@@ -450,11 +475,12 @@ function MermaidDiagram({ host, source }: { host: Host; source: string }) {
     )
   }
   return (
-    <a
+    <button
       ref={diagramRef}
+      type="button"
       className="canvas-trigger__diagram"
-      href={CANVAS_PAGE_HASH}
       title="open in canvas"
+      onClick={() => openCanvasPage(host, canvasId)}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: mermaid output under securityLevel 'strict'
       dangerouslySetInnerHTML={{ __html: state.svg }}
     />
@@ -463,10 +489,12 @@ function MermaidDiagram({ host, source }: { host: Host; source: string }) {
 
 /** Freeform canvases stay compact in chat — excalidraw never loads here. */
 function FreeformCard({
+  host,
   op: opLabel,
   view,
   running,
 }: {
+  host: Host
   op: string
   view: CanvasRecordView
   running?: boolean
@@ -479,7 +507,7 @@ function FreeformCard({
       head={
         <>
           <HeadMeta view={view} />
-          <OpenLink />
+          <OpenLink host={host} canvasId={view.id} />
         </>
       }
     >
@@ -492,7 +520,7 @@ function FreeformCard({
   )
 }
 
-function GetCard({ view }: { view: CanvasRecordView }) {
+function GetCard({ host, view }: { host: Host; view: CanvasRecordView }) {
   const day = formatDay(view.updated_at)
   return (
     <CardShell
@@ -500,7 +528,7 @@ function GetCard({ view }: { view: CanvasRecordView }) {
       head={
         <>
           <HeadMeta view={view} />
-          <OpenLink />
+          <OpenLink host={host} canvasId={view.id} />
         </>
       }
     >
@@ -513,17 +541,17 @@ function GetCard({ view }: { view: CanvasRecordView }) {
   )
 }
 
-function ListCard({ items }: { items: CanvasRecordView[] }) {
+function ListCard({ host, items }: { host: Host; items: CanvasRecordView[] }) {
   if (items.length === 0) {
     return (
-      <CardShell op="list" head={<OpenLink />}>
+      <CardShell op="list" head={<OpenLink host={host} />}>
         <div className="canvas-trigger__note">no canvases yet</div>
       </CardShell>
     )
   }
   const { shown, hidden } = capList(items)
   return (
-    <CardShell op="list" head={<OpenLink />}>
+    <CardShell op="list" head={<OpenLink host={host} />}>
       <div className="canvas-trigger__table-wrap">
         <table className="canvas-trigger__table">
           <thead>

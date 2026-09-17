@@ -152,7 +152,7 @@ loop, spelled out.
    - Embedding: the worker's asset tests, when the project has them.
    - Delivery: `console::ui-manifest` lists the path with a fresh hash and an empty
      `warnings` array; `web::fetch` of `/ui/<path>` returns the bytes.
-   - Real rendering: open `#/ext/<page>` in a `browser::sessions::start` session at roughly
+   - Real rendering: open `#/worker/<scope>/<page>` (the page alone) in a `browser::sessions::start` session at roughly
      360 px, a narrow split and a wide pane; both themes; keyboard only; reduced motion; long
      names; every async state; reconnect. Screenshot what you claim.
 6. **Report.** Lead with the outcome, then a checklist: files, gates, manifest, rendering

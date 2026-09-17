@@ -1,5 +1,5 @@
 /**
- * The state-manager page (#/ext/state-manager): the standard page chrome
+ * The state-manager page (page `state-manager`): the standard page chrome
  * (PageShell/PageHeader from @iii-dev/console-ui) over the scopes × keys
  * browser (./browser) and its Monaco JSON value editor (./ValueEditor).
  *

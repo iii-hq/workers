@@ -44,12 +44,9 @@ import {
 import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import {
-  hashForExtPage,
   hashForSettingsLanding,
-  hashForView,
-  useExtPageRoute,
+  replaceHash,
   useHashRoute,
-  type View,
 } from '@/hooks/use-hash-route'
 import { useKeybindings } from '@/hooks/use-keybindings'
 import { REDUCED_MOTION_QUERY, useMediaQuery } from '@/hooks/use-media-query'
@@ -96,11 +93,11 @@ import {
 import {
   CHAT_SCREEN,
   chatSessionScreen,
+  deepLinkScreen,
   extPageIdForScreen,
   isChatScreen,
   MAX_COLUMNS,
   MIN_COLUMN_FRACTION,
-  screenForView,
   sessionIdForChatScreen,
   type TabScreen,
   tabColumns,
@@ -187,12 +184,6 @@ function paneIdsByTab(tabs: WorkspaceTab[]): Map<string, Set<string>> {
   return new Map(tabs.map((tab) => [tab.id, new Set(tabPaneIds(tab))]))
 }
 
-function hasExplicitHash(): boolean {
-  if (typeof window === 'undefined') return false
-  const hash = window.location.hash
-  return hash !== '' && hash !== '#' && hash !== '#/'
-}
-
 interface WorkspacePanelCommands {
   openScreen: (screen: TabScreen) => void
   split: (side: 'left' | 'right') => void
@@ -207,9 +198,8 @@ export function App({
   useEffect(() => armCompletionBell(), [])
   const { setDirty: setSettingsDirty, tryNavigate: trySettingsNavigation } =
     useUnsavedGuard({ guardHashNavigation: true })
-  const [view, setView] = useHashRoute()
+  const [view] = useHashRoute()
   const narrowSettings = useMediaQuery('(max-width: 639px)')
-  const extPageId = useExtPageRoute()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
   // search affordance is the other, so the state has to sit above both.
@@ -224,7 +214,7 @@ export function App({
     [],
   )
   const workspace = useWorkspaceTabs()
-  const { activeTab, activeTabId } = workspace
+  const { activeTabId } = workspace
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
   // Per-workspace phone panel, derived so a tab switch renders its own panel first.
@@ -317,23 +307,6 @@ export function App({
     [],
   )
 
-  // ── Hash → tabs ──
-  // A hash navigation (deep link, in-app `window.location.hash = …`) must
-  // land on a tab showing that screen: the active tab if it already does,
-  // else an existing tab, else a freshly created one. Guarded by a ref so
-  // it only reacts to genuine HASH changes — tab activation must never
-  // bounce the hash back. On mount an explicit hash wins over the stored
-  // active tab; a bare `#/` defers to it.
-  const hashScreen = screenForView(view, extPageId)
-  // Deep-link fallback for closing settings from a chat-only/empty tab.
-  const lastTabViewRef = useRef<View>('traces')
-  useEffect(() => {
-    if (view !== 'configuration' && view !== 'ext')
-      lastTabViewRef.current = view
-  }, [view])
-  const lastHashScreenRef = useRef<TabScreen | null>(
-    hasExplicitHash() ? null : hashScreen,
-  )
   const panelCommandsRef = useRef<WorkspacePanelCommands | null>(null)
   const openWorkspaceScreen = useCallback((screen: TabScreen) => {
     // The keyboard asked for this screen, so the keyboard lands in it: the
@@ -374,24 +347,10 @@ export function App({
       }),
     [openWorkspaceScreen],
   )
-  // Closing settings routes back to the ACTIVE tab's own screen (never to
-  // whichever tab happens to own the previous view — that would switch
-  // tabs under the user). Pre-marking keeps the hash-inbound effect quiet.
+  // Closing settings only drops the `#/configuration` hash: the hash never
+  // named the active tab, so the workspace stays exactly where it was.
   const closeSettings = useCallback(() => {
-    const primary = workspaceRef.current.activeTab.screens.find(
-      (s): s is TabScreen => s !== null && !isChatScreen(s),
-    )
-    if (primary) {
-      lastHashScreenRef.current = primary
-      const extId = extPageIdForScreen(primary)
-      const targetHash = extId
-        ? hashForExtPage(extId)
-        : hashForView(primary as View)
-      window.location.replace(targetHash)
-    } else {
-      lastHashScreenRef.current = lastTabViewRef.current
-      window.location.replace(hashForView(lastTabViewRef.current))
-    }
+    window.location.replace('#/')
   }, [])
   const requestCloseSettings = useCallback(() => {
     trySettingsNavigation(closeSettings)
@@ -404,62 +363,28 @@ export function App({
     if (view === 'configuration') requestCloseSettings()
     else openSettings()
   }, [view, openSettings, requestCloseSettings])
+  // ── Deep links ──
+  // `#/traces` / `#/workers` are one-shot commands, never state: open the
+  // screen with the same placement as an agent's console::workspace::open
+  // and a worker's panel-open (reuse the tab showing it, else beside chat,
+  // else a fresh tab), then drop the hash so a reload trusts the workspace
+  // store — the active tab — instead of replaying the link. Waits for the
+  // layout to hydrate so the link lands on the real tabs, not the local
+  // copy. Worker pages have no deep link here: `#/worker/<scope>` boots the
+  // isolated shell instead (main.tsx).
   const layoutSource = workspace.layoutSource
-  const lastLayoutSourceRef = useRef(layoutSource)
   useEffect(() => {
     if (layoutSource === 'pending') return
-    if (lastLayoutSourceRef.current !== layoutSource) {
-      lastLayoutSourceRef.current = layoutSource
-      if (hasExplicitHash()) lastHashScreenRef.current = null
+    const consume = () => {
+      const screen = deepLinkScreen(window.location.hash)
+      if (screen === null) return
+      replaceHash('#/')
+      workspaceRef.current.openScreen(screen)
     }
-    if (lastHashScreenRef.current === hashScreen) return
-    lastHashScreenRef.current = hashScreen
-    // No tab representation (settings overlay, unresolved ext route):
-    // the tab strip has nothing to react to — and reacting to the ext
-    // transient is what used to conjure duplicate tabs.
-    if (hashScreen === null) return
-    const ws = workspaceRef.current
-    if (ws.activeTab.screens.includes(hashScreen)) return
-    // Same placement as an agent's console::workspace::open and a worker's
-    // panel-open: reuse the tab already showing it, else place it beside chat
-    // in the active tab, else open a fresh chat + screen tab — never a bare
-    // single-column tab.
-    ws.openScreen(hashScreen)
-  }, [hashScreen, layoutSource])
-
-  // ── Tabs → hash ──
-  // Activating a tab whose screens don't cover the current hash points the
-  // hash at the tab's first routed screen, so page-internal sub-routes and
-  // deep links keep working. Chat-only and empty tabs leave the hash alone.
-  const prevActiveTabIdRef = useRef<string | null>(null)
-  const prevSourceForHashRef = useRef<string>('pending')
-  useEffect(() => {
-    if (layoutSource === 'pending') {
-      prevActiveTabIdRef.current = null
-      return
-    }
-    if (prevSourceForHashRef.current !== layoutSource) {
-      prevSourceForHashRef.current = layoutSource
-      prevActiveTabIdRef.current = activeTabId
-      return
-    }
-    const prev = prevActiveTabIdRef.current
-    prevActiveTabIdRef.current = activeTabId
-    if (prev === null || prev === activeTabId) return
-    // hashScreen null (settings overlay open / ext transient): always
-    // route to the activated tab's primary screen. The null-safe check
-    // matters — `screens.includes(null)` would match an EMPTY column.
-    if (hashScreen !== null && activeTab.screens.includes(hashScreen)) return
-    const primary = activeTab.screens.find(
-      (s): s is TabScreen => s !== null && !isChatScreen(s),
-    )
-    if (!primary) return
-    // Pre-mark so the hash-inbound effect treats this as already handled.
-    lastHashScreenRef.current = primary
-    const extId = extPageIdForScreen(primary)
-    if (extId) window.location.hash = hashForExtPage(extId)
-    else setView(primary as View)
-  }, [activeTabId, activeTab, hashScreen, setView, layoutSource])
+    consume()
+    window.addEventListener('hashchange', consume)
+    return () => window.removeEventListener('hashchange', consume)
+  }, [layoutSource])
 
   const paletteWorkspace = useMemo(
     (): PaletteWorkspace => ({

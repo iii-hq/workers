@@ -160,13 +160,13 @@ takes the same filters plus `since`.
 
 While the worker is connected it injects two pages into the console:
 
-- **Kanban** (`#/ext/kanban-board`) — the board: one lane per configured
+- **Kanban** (page `kanban-board`) — the board: one lane per configured
   column, drag and drop between lanes, a new-ticket dialog, and a lane picker
   when the pane is narrow. Clicking a card opens the ticket beside the
   board; the card's **Open in this tab** action keeps it in the current pane
   instead (the console reuses any tab that already shows a ticket pane), and
   the inline view offers **Open in its own pane** to go the other way.
-- **Ticket** (`#/ext/kanban-ticket`) — one ticket: status, priority and
+- **Ticket** (page `kanban-ticket`) — one ticket: status, priority and
   assignee (from `kanban::agent::list`), a Markdown description with an
   editor, and the activity timeline with threaded comments. Delete and
   restore live here, behind a confirmation.

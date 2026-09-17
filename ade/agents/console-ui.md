@@ -126,7 +126,7 @@ In this order, with `coder::read-file`, fully rather than skimmed:
      `cargo test --locked`. Console web: `pnpm --dir ade/web lint` and tests.
    - Delivery: `console::ui-manifest` lists the path with a fresh hash and an empty
      `warnings` array; `web::fetch` of `/ui/<path>` returns the bytes.
-   - Real rendering: open `#/ext/<page>` in a `browser::sessions::start` session at
+   - Real rendering: open `#/worker/<scope>/<page>` (the page alone) in a `browser::sessions::start` session at
      roughly 360 px, a narrow split, and a wide pane; both themes; keyboard only;
      reduced motion; long names; every async state; reconnect. Screenshot what you
      claim.

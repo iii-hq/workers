@@ -1,3 +1,5 @@
+import type { Host } from '@iii-dev/console-ui'
+
 const KEY = 'sandbox-ui:selected'
 
 let selected: string | null = null
@@ -28,7 +30,16 @@ export function onSandboxSelected(fn: (id: string | null) => void): () => void {
   return () => listeners.delete(fn)
 }
 
+let boundHost: Host | null = null
+
+/** Bound once in `setup(host)`: the chat chips that jump have no host. */
+export function bindSandboxHost(host: Host): void {
+  boundHost = host
+}
+
+/** Select a sandbox and open the fleet page on it (the page reads the
+    selection on mount and again through `panelContext`). */
 export function jumpToSandbox(id: string) {
   selectSandbox(id)
-  window.location.hash = '#/ext/sandbox'
+  boundHost?.panels?.open({ pageId: 'sandbox', context: { sandboxId: id } })
 }

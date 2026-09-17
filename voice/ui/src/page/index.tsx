@@ -1,5 +1,5 @@
 /**
- * The voice page (`#/ext/voice`): the standard page chrome with a section
+ * The voice page (page `voice`): the standard page chrome with a section
  * sidebar (Overview, Dictate, Transcribe, Models, Read aloud) over one
  * `voice::doctor` snapshot that every section reads. The header refreshes
  * the snapshot; notices and errors land as status panels above the section.

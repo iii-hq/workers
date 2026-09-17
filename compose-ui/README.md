@@ -17,7 +17,7 @@ iii compose add compose-ui
 ```
 
 Compose starts it beside the Console in the project's namespace. The page
-appears in the Console nav as **Compose** (`#/ext/compose`) and in the command
+appears in the Console nav as **Compose** (page `compose`) and in the command
 palette as "Open Compose"; the palette also searches containers by name.
 
 ### Companion workers

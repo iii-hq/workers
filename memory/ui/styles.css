@@ -4,7 +4,7 @@
  * and the console's tokens; sans for prose, mono for machine values.
  */
 
-/* ── the page (#/ext/memory): application shell ─────────────────────── */
+/* ── the page (page `memory`): application shell ─────────────────────── */
 
 [data-iii-ui="memory"] .mem-ui-shell {
   min-height: 360px;

@@ -69,7 +69,7 @@ function receipt(overrides: Record<string, unknown> = {}) {
     catalog_id: 'urn:iii:a2ui:console:v0.1',
     revision: 6,
     component_count: 21,
-    page: '#/ext/a2ui',
+    page: 'a2ui',
     ...overrides,
   }
 }

@@ -7,7 +7,7 @@
  *
  * `setup(host)` composes the worker's two console contributions:
  *
- * - src/page/             — the shell explorer (#/ext/shell): file tree +
+ * - src/page/             — the shell explorer (page `shell`): file tree +
  *                           git + search sidebar beside the shared Monaco
  *                           editor / FileDiff pane
  * - src/function-trigger/ — how shell::* function triggers render in

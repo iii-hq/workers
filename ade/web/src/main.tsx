@@ -7,6 +7,7 @@ import * as ReactDOM from 'react-dom'
 import * as ReactDOMClient from 'react-dom/client'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/ui/Tooltip'
+import { workerRouteFromHash } from '@/hooks/use-hash-route'
 import { buildConsoleApi } from '@/lib/console-api'
 import { installRandomUUIDPolyfill } from '@/lib/crypto-polyfill'
 import { getIiiClient } from '@/lib/iii-client'
@@ -14,6 +15,7 @@ import { registerServiceWorker } from '@/lib/register-service-worker'
 import { setUiAssetsStatus } from '@/lib/ui-slots'
 import { App } from './App'
 import './index.css'
+import { WorkerOnly } from './WorkerOnly'
 
 // Back-fills crypto.randomUUID on insecure origins (http://<LAN-IP>) —
 // iii-browser-sdk ≤ 0.21.6 calls it bare on every invocation. The module
@@ -70,6 +72,16 @@ registerServiceWorker()
 const root = document.getElementById('root')
 if (!root) throw new Error('missing #root container')
 
+// `#/worker/<scope>` boots the isolated shell — one injected page, no
+// workspace — instead of the app. The two never share a document: crossing
+// that line by hash reloads into the other.
+const isolated = workerRouteFromHash(window.location.hash) !== null
+window.addEventListener('hashchange', () => {
+  const nowIsolated = workerRouteFromHash(window.location.hash) !== null
+  if (nowIsolated !== isolated) window.location.reload()
+})
+const Root = isolated ? WorkerOnly : App
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -84,7 +96,7 @@ createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={150}>
-        <App injectableUiRuntime={injectableUiRuntime} />
+        <Root injectableUiRuntime={injectableUiRuntime} />
       </TooltipProvider>
     </QueryClientProvider>
   </StrictMode>,

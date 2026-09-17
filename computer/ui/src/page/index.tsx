@@ -1,5 +1,5 @@
 /**
- * The `#/ext/computer` page: the standard page chrome (PageShell/PageHeader
+ * The `computer` page: the standard page chrome (PageShell/PageHeader
  * from @iii-dev/console-ui) over a session rail and a screencast-fed live
  * desktop. The viewport forwards every click, scroll and keystroke back as
  * `computer::act`, so the page is a working desktop rather than a screenshot

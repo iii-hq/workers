@@ -202,7 +202,7 @@ Then verify at the wire:
    credential when the worker wraps a vendor. Docs and `--help` lie; the wire does not.
 3. Bind each emitted trigger type once and prove it fires.
 4. If there is a UI, confirm the served asset (`/ui` on the console lists the page
-   script with a fresh hash), open `#/ext/<slug>` in a browser and click through it.
+   script with a fresh hash), open `#/worker/<slug>` (the page alone, no workspace) in a browser and click through it.
    "Tests pass" without a rendered page is staged, not shipped.
 5. Stop only the process you started, by its PID. Never a broad `pkill -f` sweep.
 6. Report exactly what was verified and what was not.

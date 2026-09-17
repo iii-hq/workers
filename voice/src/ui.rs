@@ -4,7 +4,7 @@
 //!
 //! - `voice/page.js` (`console:script`) — the mic chip in every chat header,
 //!   the read-aloud turn summary above the composer, the voice page
-//!   (`#/ext/voice`) and the palette commands.
+//!   (page `voice`) and the palette commands.
 //! - `voice/styles.css` (`console:style`) — the stylesheet, every rule scoped
 //!   under `[data-iii-ui="voice"]`.
 //!

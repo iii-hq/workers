@@ -1,5 +1,5 @@
 /**
- * The database page (#/ext/database): the database worker's console surface —
+ * The database page (page `database`): the database worker's console surface —
  * configured databases, their schema, paged and sortable table contents with a
  * row inspector, an ad-hoc SQL panel, a schema diagram, connection health, and
  * the writes landing in the selected table as they commit.

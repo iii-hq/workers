@@ -4,7 +4,7 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `worktree/page.js` (`console:script`) — the `#/ext/worktree` page: a
+//! - `worktree/page.js` (`console:script`) — the `worktree` page: a
 //!   live repo → worktree → session topology graph with a per-worktree detail
 //!   panel, reading the live worker over `worktree::list` and refreshing on
 //!   the six lifecycle trigger types. Read-only; create / claim / land stay in

@@ -8,7 +8,7 @@
  *
  * `setup(host)` composes two contributions:
  *
- * - src/page/                     — the canvas page (#/ext/canvas)
+ * - src/page/                     — the canvas page (page `canvas`)
  * - src/function-trigger-message/ — how canvas::* calls render in chat/traces
  *
  * Registrations go through `host` so the loader disposes them on hot reload

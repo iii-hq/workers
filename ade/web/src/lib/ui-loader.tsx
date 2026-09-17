@@ -11,6 +11,7 @@
  */
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { hashForWorkerPage, workerRouteFromHash } from '@/hooks/use-hash-route'
 import {
   listHarnessProjects,
   recentHarnessProjectPaths,
@@ -30,6 +31,7 @@ import { acquireScreenWakeLock } from '@/lib/screen-wake-lock'
 import { requestThinkingLevelChange } from '@/lib/thinking-level-request'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
+  getExtPage,
   registerExtComposerAction,
   registerExtConfigForm,
   registerExtOverlay,
@@ -217,6 +219,19 @@ function makeHost(
     },
     panels: {
       open(request) {
+        // The isolated `#/worker/…` shell has no workspace to place a pane
+        // in: the page on screen just receives its context, any other page
+        // opens in a new browser tab (synchronously, so the click's gesture
+        // still covers the popup).
+        const isolated = workerRouteFromHash(window.location.hash)
+        if (isolated && isolated.pageId !== request.pageId) {
+          const scope = getExtPage(request.pageId)?.scope ?? request.pageId
+          window.open(
+            hashForWorkerPage(scope, request.pageId, request.context),
+            '_blank',
+          )
+          return
+        }
         requestPanelOpen(request)
       },
     },

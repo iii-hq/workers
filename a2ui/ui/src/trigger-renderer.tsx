@@ -11,7 +11,6 @@ import { getSurface } from './data'
 import { Surface } from './surface'
 import { parseReceipt, type SurfaceRecord, type SurfaceReceipt } from './types'
 
-const PAGE_HASH = '#/ext/a2ui'
 
 export function createA2uiTriggerRenderer(host: Host): FunctionTriggerRenderer {
   return {
@@ -105,7 +104,18 @@ function GeneratedSurface({ host, receipt }: { host: Host; receipt: SurfaceRecei
         <Badge variant="accent">A2UI</Badge>
         <strong>{receipt.title}</strong>
         <span>{receipt.component_count} components</span>
-        <a href={PAGE_HASH}>Open page</a>
+        <button
+          type="button"
+          className="a2ui-trigger-open"
+          onClick={() =>
+            host.panels?.open({
+              pageId: 'a2ui',
+              context: { surfaceId: receipt.surface_id },
+            })
+          }
+        >
+          Open page
+        </button>
       </div>
       {error ? (
         <StatusPanel variant="alert" headline="Could not load generated surface" detail={error} />

@@ -1,5 +1,5 @@
 /**
- * The canvas page (#/ext/canvas): standard page chrome (shell explorer
+ * The canvas page (page `canvas`): standard page chrome (shell explorer
  * composition) over a sidebar of stored canvases and a per-format main
  * surface — the mermaid editor/preview split, or the freeform whiteboard.
  *

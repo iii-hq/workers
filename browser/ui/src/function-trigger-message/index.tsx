@@ -3,8 +3,8 @@
  * registered through `host.functionTriggers`, so it dispatches BEFORE the
  * console's built-in families and owns how browser calls render in chat and
  * in the traces span tab. Ported from the console's `components/chat/browser`
- * family; the "open in browser tab" link now points at the injected page
- * (`#/ext/browser`), and shared-infra errors render through the ported
+ * family; the "open in browser tab" action opens the injected page through
+ * `host.panels.open`, and shared-infra errors render through the ported
  * `InfraErrorView` instead of the sandbox family.
  */
 
@@ -41,7 +41,6 @@ import {
 import { decodeBrowserResult } from './parsers'
 
 /** The injected page's route — where "open in browser tab" navigates. */
-const BROWSER_PAGE_HASH = '#/ext/browser'
 
 /**
  * Header label for `browser::*` ids: dims the namespace prefix so the op
@@ -134,11 +133,17 @@ function renderBody(message: FunctionTriggerMessage): React.ReactNode | null {
 
 /**
  * Terminal view for a `browser::*` call: the owning session with an
- * "open in browser tab" affordance (routes to `#/ext/browser`), then the
+ * "open in browser tab" affordance (`host.panels.open` to the page), then the
  * per-function pretty body. Unknown or unparseable payloads fall back to the
  * decoded result as clamped JSON.
  */
-function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
+function BrowserCallView({
+  host,
+  message,
+}: {
+  host: Host
+  message: FunctionTriggerMessage
+}) {
   const sessionId = browserSessionIdFromCall(message.input, message.output)
   const running = !!message.running
 
@@ -157,10 +162,14 @@ function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
           <span className="br-ui-call-session">browser</span>
         )}
         {sessionId ? (
-          <a href={BROWSER_PAGE_HASH} className="br-ui-call-link">
+          <button
+            type="button"
+            className="br-ui-call-link"
+            onClick={() => host.panels?.open({ pageId: 'browser' })}
+          >
             <ExternalLink size={16} aria-hidden />
             open in browser tab
-          </a>
+          </button>
         ) : null}
       </div>
       {running && message.output == null ? (
@@ -183,7 +192,10 @@ function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
   )
 }
 
-function renderCall(message: FunctionTriggerMessage): React.ReactNode | null {
+function renderCall(
+  host: Host,
+  message: FunctionTriggerMessage,
+): React.ReactNode | null {
   if (!isBrowserFunction(message.functionId)) return null
   if (message.pendingApproval) return null
 
@@ -197,15 +209,15 @@ function renderCall(message: FunctionTriggerMessage): React.ReactNode | null {
   if (errorDisplay) {
     return <InfraErrorView display={errorDisplay} />
   }
-  return <BrowserCallView message={message} />
+  return <BrowserCallView host={host} message={message} />
 }
 
-export function createBrowserRenderer(_host: Host): FunctionTriggerRenderer {
+export function createBrowserRenderer(host: Host): FunctionTriggerRenderer {
   return {
     id: 'browser/page.js#calls',
     isMatch: isBrowserFunction,
-    tryRender: (message) => renderCall(message),
-    tryRenderRunning: (message) => renderCall(message),
+    tryRender: (message) => renderCall(host, message),
+    tryRenderRunning: (message) => renderCall(host, message),
     tryRenderPreview: () => null,
     FunctionIdLabel,
   }

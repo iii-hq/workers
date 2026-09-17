@@ -7,7 +7,7 @@
 //! - `database/page.js` (`console:script`) — a function-trigger renderer for
 //!   every `database::*` call (SQL with highlighting, request chips, result
 //!   tables, batch/transaction step lists; errors fall through to the
-//!   console's built-in error card) plus the `#/ext/database` page: schema
+//!   console's built-in error card) plus the `database` page: schema
 //!   tree, paged row grid, row inspector, SQL panel (reads via
 //!   `database::query`, writes via `database::execute`).
 //! - `database/styles.css` (`console:style`) — the stylesheet for both, every

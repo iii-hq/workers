@@ -75,7 +75,7 @@ with the new backend, and never run in two scheduler instances at once.
 ## Console page
 
 While the worker is connected it injects a **cron** page into the console
-(`#/ext/cron`): every agent-owned schedule with its cadence, next UTC run and
+(page `cron`): every agent-owned schedule with its cadence, next UTC run and
 fire count, the cron bindings other workers registered for themselves, and a
 composer that turns "every weekday at 09:00, summarise open PRs" into a
 registered schedule. Schedules created there live in a session of their own,

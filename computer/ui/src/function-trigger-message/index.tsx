@@ -28,7 +28,6 @@ import {
 } from './ComputerViews'
 
 /** The injected page's route — where "open the desktop" navigates. */
-const COMPUTER_PAGE_HASH = '#/ext/computer'
 
 /**
  * Header label for `computer::*` ids: dims the namespace prefix so the op
@@ -68,7 +67,13 @@ function renderBody(message: FunctionTriggerMessage): React.ReactNode | null {
   }
 }
 
-function ComputerCallView({ message }: { message: FunctionTriggerMessage }) {
+function ComputerCallView({
+  host,
+  message,
+}: {
+  host: Host
+  message: FunctionTriggerMessage
+}) {
   const sessionId = sessionIdFromCall(message.input, message.output)
   const running = !!message.running
 
@@ -91,9 +96,13 @@ function ComputerCallView({ message }: { message: FunctionTriggerMessage }) {
           )}
         </span>
         {sessionId ? (
-          <a href={COMPUTER_PAGE_HASH} className="cp-ui-call-link">
+          <button
+            type="button"
+            className="cp-ui-call-link"
+            onClick={() => host.panels?.open({ pageId: 'computer' })}
+          >
             open the desktop
-          </a>
+          </button>
         ) : null}
       </div>
       {running && message.output == null ? (
@@ -111,18 +120,21 @@ function ComputerCallView({ message }: { message: FunctionTriggerMessage }) {
   )
 }
 
-function renderCall(message: FunctionTriggerMessage): React.ReactNode | null {
+function renderCall(
+  host: Host,
+  message: FunctionTriggerMessage,
+): React.ReactNode | null {
   if (!isComputerFunction(message.functionId)) return null
   if (message.pendingApproval) return null
-  return <ComputerCallView message={message} />
+  return <ComputerCallView host={host} message={message} />
 }
 
-export function createComputerRenderer(_host: Host): FunctionTriggerRenderer {
+export function createComputerRenderer(host: Host): FunctionTriggerRenderer {
   return {
     id: 'computer/page.js#calls',
     isMatch: isComputerFunction,
-    tryRender: (message) => renderCall(message),
-    tryRenderRunning: (message) => renderCall(message),
+    tryRender: (message) => renderCall(host, message),
+    tryRenderRunning: (message) => renderCall(host, message),
     tryRenderPreview: () => null,
     FunctionIdLabel,
   }

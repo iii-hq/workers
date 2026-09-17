@@ -3,7 +3,7 @@
    empty states, skeletons and eyebrows come from @iii-dev/console-ui — this sheet only styles
    the activity feed rows, the per-kind result previews and the git graph + commit detail. */
 
-/* ── the page (#/ext/github): application shell ───────────────────────── */
+/* ── the page (page `github`): application shell ───────────────────────── */
 
 [data-iii-ui="github"] .gh-ui-shell {
   min-height: 360px;

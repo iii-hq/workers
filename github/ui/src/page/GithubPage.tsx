@@ -1,5 +1,5 @@
 /**
- * The github page shell (#/ext/github): the standard page chrome
+ * The github page shell (page `github`): the standard page chrome
  * (PageShell/PageHeader from @iii-dev/console-ui) with a graph | activity
  * segmented control in the header's middle slot — one header, no stacked
  * top bars.

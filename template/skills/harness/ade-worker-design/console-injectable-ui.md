@@ -239,7 +239,7 @@ function MyworkPage({
 
 export default function setup(host: Host) {
   host.pages.register({
-    id: 'mywork-manager',           // page URL: #/ext/mywork-manager
+    id: 'mywork-manager',           // alone at #/worker/mywork/mywork-manager
     title: 'Mywork',                // nav label
     configurationId: 'mywork',      // host adds the standard settings action
     render: (props) => <MyworkPage host={host} {...props} />,
@@ -631,8 +631,9 @@ All registration goes through the per-script `host`; every entry is disposed
 automatically on hot reload and worker disconnect. Each `register` also
 returns a remover for manual teardown.
 
-`host.pages.register({id, title, render})` creates `#/ext/<id>` and adds it to
-the nav. Its `render` receives:
+`host.pages.register({id, title, render})` registers a page (opened through
+`host.panels.open` or `console::workspace::open`; `#/worker/<scope>/<id>` renders
+it alone) and adds it to the nav. Its `render` receives:
 
 - `panelSide`: `'left' | 'right'` — which side of the workspace tab the
   pane occupies; use it only to keep wide side navigation on the outer edge;
@@ -797,7 +798,7 @@ Validate all four layers; a successful esbuild run alone is not enough.
 3. **Delivery:** boot engine + console + worker; require manifest paths,
    hashes, no warnings, fetchable bytes, and a changed hash after hot reload.
 4. **Real rendering:** exercise the actual console, not only an isolated
-   component harness — the `browser` worker can drive it (`browser::sessions::start` on the console URL, `browser::snapshot` for structure, `browser::act`/`browser::evaluate` for interaction, `browser::screenshot` for both themes; toggle `document.documentElement.dataset.theme` to preview dark). Workspace tabs are server-persisted, so the session lands on the shared workspace: navigate through the tab strip rather than expecting a `#/ext/<id>` hash to win. Synthetic pointer drags do not fire HTML5 drag events; dispatch `DragEvent`s to test drag-and-drop. Cover at least a phone-sized pane (~320–430 px), a
+   component harness — the `browser` worker can drive it (`browser::sessions::start` on the console URL, `browser::snapshot` for structure, `browser::act`/`browser::evaluate` for interaction, `browser::screenshot` for both themes; toggle `document.documentElement.dataset.theme` to preview dark). Open `#/worker/<scope>[/<page-id>]` to render the page alone — no tab strip, no chat, the shared workspace layout untouched; `?context=<json>` in the hash replays a `host.panels.open` context, and in that shell `host.panels.open` for another page opens a new browser tab. Chat slots, palette commands and configuration forms need the full console, opened through `console::workspace::open`. Synthetic pointer drags do not fire HTML5 drag events; dispatch `DragEvent`s to test drag-and-drop. Cover at least a phone-sized pane (~320–430 px), a
    narrow split pane, and a wide pane; left and right split positions; light
    and dark themes; keyboard-only navigation; reduced motion; long names and
    payloads; loading, empty, error, success, and live-update states; dirty

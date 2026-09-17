@@ -8,7 +8,7 @@
  * `setup(host)` registers three contributions:
  * - src/function-trigger-message/ — how every database::* call renders in
  *   chat and traces (SQL, request chips, result tables).
- * - src/page/ — the `#/ext/database` browser: schema tree, sortable row
+ * - src/page/ — the `database` page: schema tree, sortable row
  *   grid, row inspector, and a read-only SQL editor (shared Monaco). Reads
  *   the live database over `database::query`/`database::listDatabases`.
  *   Registered with the host's render props so the page follows the pane

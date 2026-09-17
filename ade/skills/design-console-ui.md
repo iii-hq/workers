@@ -332,7 +332,10 @@ purpose-written labels, grouping, defaults, and reload semantics.
 ## Validate the result
 
 Static and delivery checks (build, lint, manifest, hot reload, trigger
-renderer fallthrough): `ade/injectable-ui` › Testing.
+renderer fallthrough): `ade/injectable-ui` › Testing. For screenshots and
+drive-through of one page, open it alone at `#/worker/<scope>[/<page-id>]`
+(no workspace, shared layout untouched); slots outside the page need the
+full console.
 
 ### Interaction matrix
 

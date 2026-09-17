@@ -6,7 +6,7 @@
  * the console mounts and link-swaps it, styles-before-scripts on boot.
  *
  * `setup(host)` registers one contribution:
- * - src/page/ — the `#/ext/memory` page: banks in a navigation rail, the
+ * - src/page/ — the `memory` page: banks in a navigation rail, the
  *   selected bank's workspace (always-injected markdown rules, memories with
  *   pin/edit/tombstone in place, a schematic graph, and a turn-preview dry
  *   run) behind one segmented control; a drill-in flow when the pane is

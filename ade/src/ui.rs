@@ -160,8 +160,8 @@ mod tests {
         );
     }
 
-    /// The pages are useless if their ids drift from the routes the nav and
-    /// deep links use (`#/ext/functions`, `#/ext/triggers`).
+    /// The pages are useless if their ids drift from the screens the nav
+    /// and the workspace open (`ext:functions`, `ext:triggers`).
     #[test]
     fn embedded_catalog_page_registers_every_page() {
         for id in ["functions", "triggers"] {

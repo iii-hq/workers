@@ -178,7 +178,7 @@ export interface PaletteOpenOptions {
 }
 
 export interface PageRegistration {
-  /** kebab-case, unique per tab; convention `<worker>-<name>`. Routes at `#/ext/<id>`. */
+  /** kebab-case, unique per tab; convention `<worker>-<name>`. Opened as the `ext:<id>` screen; alone at `#/worker/<scope>/<id>`. */
   id: string
   /** Nav label. */
   title: string

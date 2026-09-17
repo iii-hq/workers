@@ -1,5 +1,5 @@
 /**
- * The sandbox fleet page (#/ext/sandbox): the standard page chrome
+ * The sandbox fleet page (page `sandbox`): the standard page chrome
  * (PageShell > PageHeader > PageBody side > PageSidebar + PageMain) over
  * the fleet rail and the selected sandbox's workspace — overview, console,
  * files behind Tabs. All data flows from the one push-driven store (useFleet);

@@ -5,7 +5,7 @@
 //! Ships two assets into any running console:
 //!
 //! - `shell/page.js` (`console:script`) — the shell explorer page
-//!   (#/ext/shell: file tree / git / search sidebar beside the shared
+//!   (page `shell`: file tree / git / search sidebar beside the shared
 //!   Monaco editor and FileDiff pane), plus the `shell::*`
 //!   function-trigger renderer its `setup(host)` registers (moved out of
 //!   the console SPA, the iii-directory precedent).

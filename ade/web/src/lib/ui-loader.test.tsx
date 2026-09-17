@@ -9,6 +9,7 @@ import type {
   UiAssetsPush,
 } from '../types/injectable-ui'
 import type { IiiClient } from './iii-client'
+import { getPanelContext, resetPanelContextForTests } from './panel-context'
 import {
   type ConversationAdapter,
   startUiLoader,
@@ -295,6 +296,73 @@ describe('injectable UI loader readiness', () => {
     await vi.waitFor(() => expect(getUiAssetsStatus()).toBe('unavailable'))
 
     harness.stop()
+  })
+})
+
+describe('host.panels.open in the isolated #/worker shell', () => {
+  function setupTwoPages(): UiModule {
+    return {
+      default(host) {
+        host.pages.register({ id: 'board', title: 'Board', render: () => null })
+        host.pages.register({
+          id: 'ticket',
+          title: 'Ticket',
+          render: () => null,
+        })
+        host.panels.open({ pageId: 'board', context: { selected: 'b-1' } })
+        host.panels.open({ pageId: 'ticket', context: { id: 't-1' } })
+      },
+    }
+  }
+
+  // The loader tests run under node: `window` exists only as this stub, the
+  // two members `panels.open` reads.
+  function stubWindow(hash: string) {
+    const open = vi.fn()
+    vi.stubGlobal('window', { location: { hash }, open })
+    return open
+  }
+
+  it('delivers context in place for the page on screen and opens other pages in a new tab', async () => {
+    resetPanelContextForTests()
+    const open = stubWindow('#/worker/kanban/board')
+    const harness = createHarness({
+      importModule: vi.fn(async () => setupTwoPages()),
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'kanban/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(getExtPage('ticket')).toBeDefined())
+
+    expect(getPanelContext('board')?.context).toEqual({ selected: 'b-1' })
+    expect(getPanelContext('ticket')).toBeUndefined()
+    expect(open).toHaveBeenCalledWith(
+      '#/worker/kanban/ticket?context=%7B%22id%22%3A%22t-1%22%7D',
+      '_blank',
+    )
+
+    harness.stop()
+    vi.unstubAllGlobals()
+  })
+
+  it('places every page in the workspace outside the isolated shell', async () => {
+    resetPanelContextForTests()
+    const open = stubWindow('#/')
+    const harness = createHarness({
+      importModule: vi.fn(async () => setupTwoPages()),
+    })
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'kanban/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(getExtPage('ticket')).toBeDefined())
+
+    expect(open).not.toHaveBeenCalled()
+    expect(getPanelContext('ticket')?.context).toEqual({ id: 't-1' })
+
+    harness.stop()
+    vi.unstubAllGlobals()
   })
 })
 

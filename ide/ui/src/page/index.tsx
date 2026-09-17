@@ -1,5 +1,5 @@
 /**
- * The shell explorer page (#/ext/shell): an editor-shaped surface over
+ * The shell explorer page (page `shell`): an editor-shaped surface over
  * the worker's own functions. One tab strip holds everything the main
  * pane can show: a file (its real content, editable), a diff (one file
  * against one source: the index, a Harness turn, a revision, a recorded
@@ -1354,10 +1354,10 @@ export function ShellExplorerPage({
     [changeRoot, conversationId, host],
   )
 
-  // ── deep link: #/ext/shell/open/<encoded-abs>[:line] ──
-  // The chat's "open in shell" lands here. The request is captured (and
-  // stripped from the URL) immediately, then applied once the root has
-  // resolved — re-rooting to the file's own folder when it lives outside
+  // ── open request ──
+  // The chat's "open in shell" arrives as panel context (parseShellPanelContext
+  // below). The request is captured immediately, then applied once the root
+  // has resolved — re-rooting to the file's own folder when it lives outside
   // the browsed one; the effect refires on the new root and opens it.
   const pendingOpenRef = useRef<{ abs: string; line?: number; endLine?: number } | null>(null)
   const pendingOpenCaptureSeqRef = useRef(0)
@@ -1382,28 +1382,6 @@ export function ShellExplorerPage({
     }
     setOpenBump((n) => n + 1)
   }, [])
-  useEffect(() => {
-    const capture = () => {
-      const m = window.location.hash.match(/^#\/ext\/shell\/open\/([^/]+)/)
-      if (m === null) return
-      window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#/ext/shell`)
-      const raw = m[1]
-      const colon = raw.lastIndexOf(':')
-      const hasLine = colon !== -1 && /^\d+$/.test(raw.slice(colon + 1))
-      const encoded = hasLine ? raw.slice(0, colon) : raw
-      let abs: string
-      try {
-        abs = decodeURIComponent(encoded)
-      } catch {
-        return // malformed percent escape — not our link
-      }
-      if (!abs.startsWith('/')) return
-      requestOpen(abs, hasLine ? Number.parseInt(raw.slice(colon + 1), 10) : undefined)
-    }
-    capture()
-    window.addEventListener('hashchange', capture)
-    return () => window.removeEventListener('hashchange', capture)
-  }, [requestOpen])
   // biome-ignore lint/correctness/useExhaustiveDependencies: openBump and rootChangeSettledEpoch re-run the pending open
   useEffect(() => {
     const pending = pendingOpenRef.current

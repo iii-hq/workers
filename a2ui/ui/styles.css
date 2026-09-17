@@ -143,10 +143,14 @@
   white-space: nowrap;
 }
 
-[data-iii-ui='a2ui'] .a2ui-workspace-export a {
+[data-iii-ui='a2ui'] .a2ui-workspace-export-open {
   flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
   color: var(--color-accent);
-  text-decoration: none;
+  cursor: pointer;
 }
 
 [data-iii-ui='a2ui'] .a2ui-mobile-switcher {
@@ -368,10 +372,14 @@
   font-weight: 600;
 }
 
-[data-iii-ui='a2ui'] .a2ui-trigger-head a {
+[data-iii-ui='a2ui'] .a2ui-trigger-open {
   margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
   color: var(--color-accent);
-  text-decoration: none;
+  cursor: pointer;
 }
 
 [data-iii-ui='a2ui'] .a2ui-trigger-skeleton {

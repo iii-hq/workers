@@ -6,7 +6,7 @@
  * the console mounts and link-swaps it, styles-before-scripts on boot.
  *
  * `setup(host)` registers four contributions:
- * - src/page/ — the `#/ext/browser` page: a browser — a Chrome-style tab
+ * - src/page/ — the `browser` page: a browser — a Chrome-style tab
  *   strip, the address bar, a screencast-fed live viewport, and the
  *   developer-tools dock (console/network/downloads/history) behind the menu.
  * - src/function-trigger-message/ — how every `browser::*` call renders in

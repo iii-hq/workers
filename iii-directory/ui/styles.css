@@ -170,7 +170,7 @@
   color: var(--color-ink-faint);
 }
 
-/* ── the page (#/ext/directory): shell + browser ────────────────────── */
+/* ── the page (page `directory`): shell + browser ────────────────────── */
 
 [data-iii-ui="iii-directory"] .dir-ui-shell {
   min-height: 360px;

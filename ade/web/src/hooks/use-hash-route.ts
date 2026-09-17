@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
+import type { JsonValue } from '@/types/injectable-ui'
 
 // `chat` is no longer a routed view; it's always-rendered as the side dock
 // in App.tsx. Hash routes only pick which view fills the right pane. The
 // component spec sheet + streaming playground moved to Storybook, so the
 // first-party routed views are `traces`, `workers`, and `configuration`.
-// `ext` is the injectable-UI prefix: worker-contributed pages
-// route at `#/ext/<page-id>` — deliberately outside the first-party names so an
-// injected page can never collide with or shadow `#/traces`, `#/workers`, ….
-// Pages that migrated to injected UI (worktrees, memory, browser, github) keep
-// their old first-party hash working via a redirect to `#/ext/<id>` — see
-// MIGRATED_ROUTES.
-export type View = 'configuration' | 'traces' | 'workers' | 'ext'
+// Worker pages have no workspace route: they open through `host.panels.open`
+// or `console::workspace::open` and live in the tab store. Their one hash is
+// `#/worker/<scope>` — the isolated shell (WorkerOnly.tsx) that renders a
+// single injected page with no workspace at all.
+export type View = 'configuration' | 'traces' | 'workers'
 
 export interface WorkersConfigurationRoute {
   /**
@@ -118,9 +124,7 @@ export function normalizeWorkersConfigurationHash(hash: string): string | null {
   return hashForWorkersConfiguration(legacy.configurationId, legacy.fieldPath)
 }
 
-export function routeFromHash(rawHash: string): View | null {
-  // Migrated pages (worktrees, memory, browser, github) resolve via `#/ext/<id>`.
-  const hash = normalizeExtHash(rawHash)
+export function routeFromHash(hash: string): View | null {
   if (hash === '' || hash === '#' || hash === '#/' || hash === '#/traces') {
     return 'traces'
   }
@@ -138,9 +142,6 @@ export function routeFromHash(rawHash: string): View | null {
   }
   if (hash === '#/workers' || hash.startsWith('#/workers/')) {
     return 'workers'
-  }
-  if (hash.startsWith('#/ext/')) {
-    return 'ext'
   }
   if (hash === '#/configuration' || hash.startsWith('#/configuration/')) {
     return 'configuration'
@@ -162,11 +163,6 @@ export function hashForView(view: View): string {
       return '#/workers'
     case 'configuration':
       return '#/configuration'
-    // `ext` needs a page id; navigation to a specific extension page goes
-    // through `hashForExtPage`. A bare `#/ext/` resolves to no page and the
-    // Ext view falls back to the default view.
-    case 'ext':
-      return '#/ext/'
   }
 }
 
@@ -179,12 +175,6 @@ export function useHashRoute(): [View, (next: View) => void] {
   viewRef.current = view
 
   useEffect(() => {
-    // Rewrite a legacy migrated hash (`#/worktrees`, `#/memory`, `#/browser`,
-    // `#/github`) to its `#/ext/<id>` form so the URL bar matches the resolved
-    // page. The view
-    // state already used the normalized hash, so this is cosmetic.
-    const normalized = normalizeExtHash(window.location.hash)
-    if (normalized !== window.location.hash) replaceHash(normalized)
     const handle = () => {
       const next = routeFromHash(window.location.hash)
       if (next !== null && next !== viewRef.current) setView(next)
@@ -205,7 +195,8 @@ export function useHashRoute(): [View, (next: View) => void] {
   return [view, navigate]
 }
 
-function replaceHash(targetHash: string) {
+/** Swap the hash in place: no history entry, no `hashchange` event. */
+export function replaceHash(targetHash: string): void {
   window.history.replaceState(
     window.history.state,
     '',
@@ -213,67 +204,66 @@ function replaceHash(targetHash: string) {
   )
 }
 
-const EXT_HASH_PREFIX = '#/ext/'
-
-/** `#/ext/<page-id>` -> the page id, or null for anything else. */
-export function extPageFromHash(hash: string): string | null {
-  if (!hash.startsWith(EXT_HASH_PREFIX)) return null
-  const segment = hash
-    .slice(EXT_HASH_PREFIX.length)
-    .split('/')
-    .filter(Boolean)[0]
-  if (!segment) return null
-  return decodeSegment(segment)
-}
-
-export function hashForExtPage(pageId: string): string {
-  return `${EXT_HASH_PREFIX}${encodeURIComponent(pageId)}`
-}
+const WORKER_HASH_PREFIX = '#/worker/'
 
 /**
- * First-party hashes whose page migrated to injected UI. The old bookmark
- * still works: it resolves to the worker's `#/ext/<id>` route instead of
- * falling back to `traces`. Add an entry when a page moves to injected UI.
+ * `#/worker/<scope>[/<page-id>][?context=<json>]` — the isolated shell's
+ * route. `scope` is the worker's asset namespace (the first segment of its
+ * script path, the `data-iii-ui` value); the page id picks one of the
+ * worker's pages and is omitted for its first. `context` is what
+ * `host.panels.open` would have delivered to that page.
  */
-const MIGRATED_ROUTES: Record<string, string> = {
-  '#/worktrees': 'worktree',
-  '#/memory': 'memory',
-  '#/browser': 'browser',
-  '#/github': 'github',
+export interface WorkerRoute {
+  scope: string
+  pageId: string | null
+  context: JsonValue | null
 }
 
-/**
- * Rewrite a migrated first-party hash to its `#/ext/<id>` form so old deep
- * links keep working; any other hash passes through unchanged.
- */
-export function normalizeExtHash(hash: string): string {
-  const pageId = MIGRATED_ROUTES[hash]
-  return pageId ? hashForExtPage(pageId) : hash
-}
-
-/**
- * Selected extension page as a hash sub-route, so injected pages deep-link
- * (`#/ext/<page-id>`) and survive reloads.
- */
-export function useExtPageRoute(): string | null {
-  const [selected, setSelected] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null
-    return extPageFromHash(normalizeExtHash(window.location.hash))
-  })
-  const selectedRef = useRef(selected)
-  selectedRef.current = selected
-
-  useEffect(() => {
-    const sync = () => {
-      const next = extPageFromHash(normalizeExtHash(window.location.hash))
-      if (next !== selectedRef.current) setSelected(next)
+export function workerRouteFromHash(hash: string): WorkerRoute | null {
+  if (!hash.startsWith(WORKER_HASH_PREFIX)) return null
+  const rest = hash.slice(WORKER_HASH_PREFIX.length)
+  const query = rest.indexOf('?')
+  const path = query === -1 ? rest : rest.slice(0, query)
+  const [scope, pageId] = path.split('/').filter(Boolean).map(decodeSegment)
+  if (!scope) return null
+  const raw =
+    query === -1
+      ? null
+      : new URLSearchParams(rest.slice(query + 1)).get('context')
+  let context: JsonValue | null = null
+  if (raw !== null) {
+    try {
+      context = JSON.parse(raw) as JsonValue
+    } catch {
+      context = null
     }
-    sync()
-    window.addEventListener('hashchange', sync)
-    return () => window.removeEventListener('hashchange', sync)
-  }, [])
+  }
+  return { scope, pageId: pageId ?? null, context }
+}
 
-  return selected
+export function hashForWorkerPage(
+  scope: string,
+  pageId: string,
+  context: JsonValue | null | undefined = null,
+): string {
+  const base = `${WORKER_HASH_PREFIX}${encodePath([scope, pageId])}`
+  if (context === null || context === undefined) return base
+  return `${base}?context=${encodeURIComponent(JSON.stringify(context))}`
+}
+
+function subscribeHash(listener: () => void): () => void {
+  window.addEventListener('hashchange', listener)
+  return () => window.removeEventListener('hashchange', listener)
+}
+
+/** The live `#/worker/…` route; null outside the isolated shell. */
+export function useWorkerRoute(): WorkerRoute | null {
+  const hash = useSyncExternalStore(
+    subscribeHash,
+    () => window.location.hash,
+    () => '',
+  )
+  return useMemo(() => workerRouteFromHash(hash), [hash])
 }
 
 export function useWorkersConfigurationRoute(): [

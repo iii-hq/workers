@@ -119,7 +119,7 @@ instead, which is a different machine entirely.
 
 ## Console
 
-The worker ships its own console page (`#/ext/computer`): a session rail, a live
+The worker ships its own console page (page `computer`): a session rail, a live
 viewport fed by the screencast stream, and click / type / scroll forwarding
 straight into the desktop. It is injected into any running console at
 registration time — nothing to install, nothing to rebuild. Every `computer::*`

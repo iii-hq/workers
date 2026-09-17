@@ -6,7 +6,7 @@
  * mounts and link-swaps it, styles-before-scripts on boot.
  *
  * `setup(host)` registers two contributions:
- * - src/page/ — the `#/ext/computer` page: session rail plus a screencast-fed
+ * - src/page/ — the `computer` page: session rail plus a screencast-fed
  *   live desktop that forwards clicks, scroll and typing as `computer::act`;
  *   drill-in flow (list ⇄ viewport) when the pane is narrow.
  * - src/function-trigger-message/ — how every `computer::*` call renders in

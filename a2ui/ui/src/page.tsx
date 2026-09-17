@@ -457,7 +457,13 @@ export function A2uiPage({
                   {' · '}run it in Shell, then open the local URL in Browser
                 </small>
               </div>
-              <a href="#/ext/shell">open Shell</a>
+              <button
+                type="button"
+                className="a2ui-workspace-export-open"
+                onClick={() => host.panels?.open({ pageId: 'shell' })}
+              >
+                open Shell
+              </button>
             </div>
           ) : null}
           {!conversationId ? (

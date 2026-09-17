@@ -1,5 +1,5 @@
 /**
- * The worktrees page (#/ext/worktree): the standard page chrome
+ * The worktrees page (page `worktree`): the standard page chrome
  * (PageShell/PageHeader from @iii-dev/console-ui) over a live repo →
  * worktree → session topology graph (./WorktreeGraph) and a per-worktree
  * detail column (./WorktreeDetailPanel). Data is `worktree::list

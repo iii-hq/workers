@@ -266,8 +266,9 @@ The trigger's `function_id` is the worker's *content function*
 (`{path} → {content, content_type?}`); the console fetches over the bus,
 hashes, serves from `/ui/*`, and pushes invalidations so every open tab
 disposes the old module and re-imports the new one. Injected scripts default-
-export `setup(host)` and register through `host.pages` (whole pages at
-`#/ext/<id>`), `host.functionTriggers` (function-trigger message renderers —
+export `setup(host)` and register through `host.pages` (whole pages, opened
+through `host.panels.open` or `console::workspace::open`; `#/worker/<scope>/<id>`
+renders one alone), `host.functionTriggers` (function-trigger message renderers —
 injected renderers dispatch before the built-in families, so matching a
 built-in id overrides it; `metadata.display` promotes the winning renderer's
 rich result into the collapsed chat flow), `host.triggerRenderers` (override

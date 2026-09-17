@@ -86,7 +86,7 @@
   color: var(--color-alert-strong);
 }
 
-/* === the page (#/ext/database) ======================================== *
+/* === the page (page `database`) ======================================== *
  * The chrome is the shared page shell; the rules here lay out the panel
  * switcher, the schema-tree column and the workspace, and skin the panels.
  * ====================================================================== */

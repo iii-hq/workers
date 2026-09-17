@@ -14,7 +14,9 @@ use crate::config::WorkerConfig;
 
 pub const PROTOCOL_VERSION: &str = "v0.9.1";
 pub const CATALOG_ID: &str = "urn:iii:a2ui:console:v0.1";
-pub const PAGE_HASH: &str = "#/ext/a2ui";
+/// The console page id the receipt's `page` names; an agent opens it with
+/// `console::workspace::open { screen: "ext:a2ui" }`.
+pub const PAGE_ID: &str = "a2ui";
 
 const COMPONENT_TYPES: &[&str] = &[
     "Column",

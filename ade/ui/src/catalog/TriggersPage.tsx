@@ -1,5 +1,5 @@
 /**
- * The Triggers page (`#/ext/triggers`): the same sidebar + workspace shell
+ * The Triggers page (page `triggers`): the same sidebar + workspace shell
  * as the functions page. The sidebar lists every trigger type with its live
  * bindings indented beneath it, each row led by the family's glyph (globe,
  * clock, layers…); the workspace is always present — a hero when nothing is

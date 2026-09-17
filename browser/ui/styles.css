@@ -17,7 +17,7 @@
   --br-incognito-hover: rgba(255, 255, 255, 0.12);
 }
 
-/* ── the page (#/ext/browser): a browser ────────────────────────────── */
+/* ── the page (page `browser`): a browser ────────────────────────────── */
 
 [data-iii-ui="browser"] .br-ui-shell {
   min-height: 360px;
@@ -1554,8 +1554,12 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
   color: var(--color-ink-faint);
-  text-decoration: none;
+  cursor: pointer;
   transition: color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 [data-iii-ui="browser"] .br-ui-call-link:hover {

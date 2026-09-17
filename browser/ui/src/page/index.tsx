@@ -1,5 +1,5 @@
 /**
- * The browser page (#/ext/browser): a browser. Under the standard pane
+ * The browser page (page `browser`): a browser. Under the standard pane
  * header sits a Chrome-style tab strip over the selected tab's workspace —
  * address bar, a screencast-fed live viewport that fills the pane, and the
  * developer tools (console, network, downloads, history) docked below only

@@ -4,7 +4,7 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `memory/page.js` (`console:script`) — the `#/ext/memory` page: banks in
+//! - `memory/page.js` (`console:script`) — the `memory` page: banks in
 //!   a left rail, the selected bank's memories (pin/edit/tombstone in place),
 //!   a schematic graph, its always-injected markdown rules, and a turn-preview
 //!   dry run. Everything re-reads live off the `memory::item-changed` /

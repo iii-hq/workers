@@ -45,7 +45,7 @@ one module each under `ui/src/`:
 
 | Module | Slot | What it does |
 |---|---|---|
-| `ui/src/page/` | `host.pages` | the state-manager page (`#/ext/state-manager`): browse scopes → keys → edit one value as JSON and save it back with `state::set` |
+| `ui/src/page/` | `host.pages` | the state-manager page (page `state-manager`): browse scopes → keys → edit one value as JSON and save it back with `state::set` |
 | `ui/src/configuration/` | `host.configForms` | deliberate form for the `state` entry in global Settings (adapter picker, persistence, trigger gate, limits) |
 | `ui/src/function-trigger-message/` | `host.functionTriggers` | how `state::set` / `state::get` triggers render in chat and the traces span view (overrides the console's built-in family for those two ids; errors and other `state::*` ids fall through) |
 

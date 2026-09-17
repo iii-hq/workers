@@ -3,7 +3,7 @@
    status panel, empty states, skeletons and eyebrows come from @iii-dev/console-ui — this
    sheet styles the rail rows, the desktop stage/viewport and the chat cards. */
 
-/* ── the page (#/ext/computer): application shell ───────────────────── */
+/* ── the page (page `computer`): application shell ───────────────────── */
 
 [data-iii-ui="computer"] .cp-ui-shell {
   min-height: 360px;
@@ -355,8 +355,12 @@
   color: var(--color-ink);
 }
 [data-iii-ui="computer"] .cp-ui-call-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
   color: var(--color-accent);
-  text-decoration: none;
+  cursor: pointer;
 }
 [data-iii-ui="computer"] .cp-ui-call-link:hover {
   text-decoration: underline;

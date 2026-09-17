@@ -1,5 +1,5 @@
 /**
- * The memory page (#/ext/memory): the standard page chrome (PageShell/
+ * The memory page (page `memory`): the standard page chrome (PageShell/
  * PageHeader from @iii-dev/console-ui) over the bank rail (navigation
  * column) and the selected bank's workspace — rules, memories, graph, and
  * turn preview behind one segmented control in the workspace header.

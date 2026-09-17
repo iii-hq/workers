@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  extPageFromHash,
   hashForSettingsLanding,
+  hashForWorkerPage,
   hashForWorkersConfiguration,
-  normalizeExtHash,
   normalizeWorkersConfigurationHash,
   routeFromHash,
+  workerRouteFromHash,
   workersConfigurationRouteFromHash,
 } from './use-hash-route'
 
@@ -101,23 +101,46 @@ describe('workers configuration hash helpers', () => {
   })
 })
 
-describe('migrated-page hash redirects', () => {
-  it('rewrites legacy first-party hashes to their injected #/ext/<id> route', () => {
-    expect(normalizeExtHash('#/worktrees')).toBe('#/ext/worktree')
-    expect(normalizeExtHash('#/memory')).toBe('#/ext/memory')
-    expect(normalizeExtHash('#/browser')).toBe('#/ext/browser')
-    expect(normalizeExtHash('#/github')).toBe('#/ext/github')
+describe('isolated worker route', () => {
+  it('parses scope, page id and context', () => {
+    expect(workerRouteFromHash('#/worker/state')).toEqual({
+      scope: 'state',
+      pageId: null,
+      context: null,
+    })
+    expect(workerRouteFromHash('#/worker/kanban/ticket')).toEqual({
+      scope: 'kanban',
+      pageId: 'ticket',
+      context: null,
+    })
+    expect(
+      workerRouteFromHash(
+        '#/worker/kanban/ticket?context=%7B%22id%22%3A%22T-1%22%7D',
+      ),
+    ).toEqual({ scope: 'kanban', pageId: 'ticket', context: { id: 'T-1' } })
   })
 
-  it('resolves the injected page id from a legacy hash', () => {
-    expect(extPageFromHash(normalizeExtHash('#/worktrees'))).toBe('worktree')
-    expect(extPageFromHash(normalizeExtHash('#/memory'))).toBe('memory')
-    expect(extPageFromHash(normalizeExtHash('#/browser'))).toBe('browser')
-    expect(extPageFromHash(normalizeExtHash('#/github'))).toBe('github')
+  it('round-trips through hashForWorkerPage, context included', () => {
+    const context = { id: 'a+b', nested: [1, { ok: true }] }
+    expect(workerRouteFromHash(hashForWorkerPage('x', 'p', context))).toEqual({
+      scope: 'x',
+      pageId: 'p',
+      context,
+    })
+    expect(hashForWorkerPage('x', 'p')).toBe('#/worker/x/p')
+    expect(hashForWorkerPage('x', 'p', null)).toBe('#/worker/x/p')
   })
 
-  it('passes non-migrated hashes through unchanged', () => {
-    expect(normalizeExtHash('#/traces')).toBe('#/traces')
-    expect(normalizeExtHash('#/ext/database')).toBe('#/ext/database')
+  it('tolerates a malformed context and rejects other hashes', () => {
+    expect(workerRouteFromHash('#/worker/x/p?context=nope')).toEqual({
+      scope: 'x',
+      pageId: 'p',
+      context: null,
+    })
+    expect(workerRouteFromHash('#/worker/')).toBeNull()
+    expect(workerRouteFromHash('#/workers')).toBeNull()
+    expect(workerRouteFromHash('#/ext/state')).toBeNull()
+    // The app's own router never claims it either: the shell is chosen at boot.
+    expect(routeFromHash('#/worker/state')).toBeNull()
   })
 })

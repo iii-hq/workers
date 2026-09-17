@@ -4,6 +4,7 @@ import {
   adjacentTabId,
   CHAT_SCREEN,
   chatSessionScreen,
+  deepLinkScreen,
   defaultTabs,
   isChatScreen,
   MAX_COLUMNS,
@@ -198,14 +199,22 @@ describe('screen mapping + labels', () => {
     expect(() => chatSessionScreen('   ')).toThrow(/non-empty session id/)
   })
 
-  it('maps views to screens; ext-without-id and configuration have none', () => {
-    expect(screenForView('workers', null)).toBe('workers')
-    expect(screenForView('ext', 'my-page')).toBe('ext:my-page')
-    // The ext transient (view and page id land in separate commits) must
-    // not resolve to a fallback screen — that used to spawn duplicate tabs.
-    expect(screenForView('ext', null)).toBeNull()
+  it('maps views to screens; configuration has none', () => {
+    expect(screenForView('workers')).toBe('workers')
+    expect(screenForView('traces')).toBe('traces')
     // Settings are an overlay page, not a tab screen.
-    expect(screenForView('configuration', null)).toBeNull()
+    expect(screenForView('configuration')).toBeNull()
+  })
+
+  it('resolves deep links to screens and ignores everything else', () => {
+    expect(deepLinkScreen('#/traces')).toBe('traces')
+    expect(deepLinkScreen('#/workers')).toBe('workers')
+    // The bare hash is what a consumed deep link leaves behind: not a link.
+    expect(deepLinkScreen('')).toBeNull()
+    expect(deepLinkScreen('#/')).toBeNull()
+    expect(deepLinkScreen('#/configuration/workers/browser')).toBeNull()
+    expect(deepLinkScreen('#/worker/state')).toBeNull()
+    expect(deepLinkScreen('#/ext/state-manager')).toBeNull()
   })
 
   it('labels ext screens through the registry, falling back to the id', () => {
