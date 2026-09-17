@@ -1,11 +1,8 @@
+import { ActionLine, Badge, Chip, MetaRow } from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { ArrowRight, Radio } from 'lucide-react'
 import { cn } from '../../lib/cn'
-import {
-  ActionLine,
-  Chip,
-  FilterChip,
-  MetaRow,
-  StatusPill,
-} from '../../lib/shared'
+import { FilterChip } from '../../lib/shared'
 import {
   type CrawlItem,
   type CrawlRequest,
@@ -41,7 +38,7 @@ function crawlChips(req: CrawlRequest) {
       {req.allowed_domains?.length ? (
         <FilterChip label="domains" value={req.allowed_domains.join(', ')} />
       ) : req.same_domain === false ? (
-        <Chip className="br-ui-scrape-warning">
+        <Chip tone="warning">
           <span>off-domain</span>
         </Chip>
       ) : null}
@@ -65,10 +62,10 @@ export function CrawlView({
     return (
       <div className="br-ui-scrape-section">
         <MetaRow>
-          <StatusPill label="crawling…" variant="default" />
+          <Badge variant="default">crawling…</Badge>
           {crawlChips(req)}
         </MetaRow>
-        <div className="br-ui-scrape-running">
+        <div className="br-ui-more">
           · walking the site…
         </div>
       </div>
@@ -81,26 +78,23 @@ export function CrawlView({
   return (
     <div className="br-ui-scrape-section">
       <MetaRow>
-        <StatusPill
-          label={`${stats.items} items`}
-          variant={stats.items ? 'accent' : 'warn'}
-        />
+        <Badge variant={stats.items ? 'accent' : 'warn'}>{`${stats.items} items`}</Badge>
         <FilterChip label="crawled" value={stats.crawled} />
         {stats.errors > 0 ? (
-          <Chip className="br-ui-scrape-warning">
+          <Chip tone="warning">
             <span>{stats.errors} err</span>
           </Chip>
         ) : null}
         {stats.stopped && stats.stopped !== 'done' ? (
-          <Chip className="br-ui-scrape-warning">
+          <Chip tone="warning">
             <span>{stats.stopped}</span>
           </Chip>
         ) : null}
         {crawlChips(req)}
       </MetaRow>
       {res.stream?.name ? (
-        <ActionLine symbol="≈" tone="accent">
-          <span className="br-ui-scrape-detail">
+        <ActionLine icon={<Radio size={16} aria-hidden />} tone="accent">
+          <span className="br-ui-faint br-ui-break">
             stream {res.stream.name}
             {res.stream.group_id ? ` · ${res.stream.group_id}` : ''}
           </span>
@@ -108,7 +102,7 @@ export function CrawlView({
       ) : null}
       {res.items && res.items.length > 0 ? (
         <div>
-          <div className="br-ui-scrape-label">
+          <div className={cn('br-ui-scrape-label', uiClasses.eyebrow)}>
             sample · {res.items.length}
           </div>
           {res.items.slice(0, MAX_ITEM_ROWS).map((item, i) => (
@@ -130,24 +124,14 @@ function CrawlRow({ item }: { item: CrawlItem }) {
           .join('  ')
       : ''
   return (
-    <div className="br-ui-scrape-result-row">
-      <span
-        className={cn(
-          'br-ui-scrape-row-status',
-          item.error && 'is-warn',
-        )}
-      >
+    <div className="br-ui-row">
+      <span className={cn('br-ui-num', item.error ? 'br-ui-warn' : 'br-ui-faint')}>
         {item.error ? '✗' : (item.status ?? '·')}
       </span>
-      <div className="br-ui-scrape-row-main">
-        <div className="br-ui-scrape-break">{item.url}</div>
+      <div className="br-ui-break">
+        <div className="br-ui-break">{item.url}</div>
         {summary ? (
-          <div
-            className={cn(
-              'br-ui-scrape-summary',
-              item.error && 'is-warn',
-            )}
-          >
+          <div className={cn('br-ui-break', item.error ? 'br-ui-warn' : 'br-ui-faint')}>
             {summary}
           </div>
         ) : null}
@@ -174,13 +158,13 @@ export function CrawlPreview({ input }: { input: unknown }) {
   return (
     <div className="br-ui-scrape-section is-preview">
       <MetaRow>
-        <StatusPill label="permission to crawl" variant="warn" />
+        <Badge variant="warn">permission to crawl</Badge>
         {crawlChips(req)}
       </MetaRow>
       {seeds.slice(0, 5).map((u, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; seed list is fixed
-        <ActionLine key={`${i}:${u}`} symbol="→" tone="ink">
-          <span className="br-ui-scrape-break">{u}</span>
+        <ActionLine key={`${i}:${u}`} icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+          <span className="br-ui-break">{u}</span>
         </ActionLine>
       ))}
     </div>

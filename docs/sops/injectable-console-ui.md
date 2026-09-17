@@ -21,14 +21,14 @@ implementation. The `state` worker is the broad delivery reference; the
 | Worker reference implementation | `workers/state/src/ui.rs` + `workers/state/ui/` |
 | Trigger-activity renderer reference | `workers/cron/src/ui.rs` + `workers/cron/ui/` |
 
-> **Companion skill — keep it in sync.** `workers/ade/skills/injectable-ui.md` is a
-> standalone skill teaching this same workflow to authors *outside* this
-> repo: it consumes `@iii-dev/console-ui` via `npm install` and the
-> `iii-console-ui` crate via `cargo add`, instead of the workspace/path
-> links this SOP uses. By design it references no repo files, so nothing
-> keeps it honest automatically — any change to this SOP, the wire
-> contract, the shared component surface, or either package MUST update
-> the skill in the same change.
+> **Companion skill — keep it in sync.** `workers/ade/skills/injectable-ui.md`
+> (served as `ade/injectable-ui`) is the in-repo authoring contract an agent
+> reads before touching a worker's UI: the same workspace-linked
+> `@iii-dev/console-ui` and path-linked `iii-console-ui` this SOP uses, in
+> ≤ 450 lines, with every number delegated to `ade/design-system`. This SOP
+> is the long-form operational reference behind it. Any change to the wire
+> contract, the shared component surface, the build driver, the lint, or
+> either package MUST update the skill in the same change.
 
 ## How it works (one paragraph)
 
@@ -65,6 +65,11 @@ that links the console SPA, the `@iii-dev/console-ui` package
 
 `pnpm install` at the repo root links it — no publishing, no copied type
 files. There is one lockfile for the whole UI workspace, at the repo root.
+Toolchain versions (`react`, `react-dom`, `@types/*`, `esbuild`,
+`typescript`, `lucide-react`) come from the workspace `catalog:` in
+`pnpm-workspace.yaml`, and `ui/tsconfig.json` extends
+`@iii-dev/console-ui/tsconfig.worker-ui.json` — copy `state/ui/package.json`
+and `state/ui/tsconfig.json`.
 
 ### 1. The script asset (`ui/page.tsx`)
 
@@ -207,30 +212,40 @@ the exception in the Console UI conformance inventory.
 
 ### 3. The build (`ui/build.mjs`)
 
-esbuild with the five shared specifiers external
-(`workers/state/ui/build.mjs`):
+Every worker's `build.mjs` is the shared esbuild driver
+(`workers/packages/console-ui/build-worker-ui.mjs`; `workers/state/ui/build.mjs`
+is the whole file):
 
 ```js
-const options = {
-  entryPoints: ['page.tsx', 'styles.css'],
-  bundle: true,
-  format: 'esm',
-  jsx: 'automatic',
-  outdir: 'dist',
-  external: ['react', 'react-dom', 'react-dom/client',
-             'react/jsx-runtime', '@iii-dev/console-ui'],
-}
+import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
+
+await buildWorkerUi({ scope: 'state' })
 ```
 
-Everything else gets bundled in; keep output well under the console's 8 MiB
-per-asset cap (a slot component should be tens of KiB). Two footguns:
+`buildWorkerUi({ scope, entryPoints?, outdir?, root?, keyframePrefixes?,
+allowUnscopedSelectors?, strictTokens?, lint?, watch?, minify?, plugins?,
+extraExternal?, define? })` bundles `page.tsx` + `styles.css` into `dist/`
+with the **six** import-map specifiers external — `react`, `react-dom`,
+`react-dom/client`, `react/jsx-runtime`, `@iii-dev/console-ui`,
+`lucide-react` — matched exactly through `workerUiExternalsPlugin`, because
+esbuild's `external` list would also externalize the package's bundleable
+`/format` and `/hooks` subpaths. After each build it fails on an asset over
+the 8 MiB cap, an unscoped selector, an unprefixed `@keyframes`, `@font-face`
+(`assertScoped`) or a `var(--…)` token the console does not define
+(`checkTokens`, `strictTokens: false` to warn instead), then lints the
+source (below). A worker that needs its own pipeline (`canvas`)
+imports `workerUiExternals`, `assertScoped`, `checkTokens` and
+`lintWorkerUi` and runs the same checks itself.
+
+Everything else gets bundled in (a slot component should be tens of KiB).
+Footguns a custom build reintroduces:
 
 - **A forgotten `react` external bundles a second React** — hooks resolve
   against the bundled copy's never-installed dispatcher and fail at runtime
   as a cryptic "Invalid hook call" with nothing pointing at the cause. (A
   forgotten `@iii-dev/console-ui` external fails loudly instead: the
-  package's bundleable entry throws with the fix in the message.)
-- **Only those five specifiers exist in the import map.** A transitive
+  package's root entry throws with the fix in the message.)
+- **Only those six specifiers exist in the import map.** A transitive
   dependency importing any other bare react-family specifier
   (`react-dom/server`, …) fails at `import()` time, not build time.
 - **Never bundle an editor.** Every code/text editing surface — in the
@@ -245,14 +260,32 @@ Rust workers embed `dist/` with `include_str!` and rebuild it from
 `build.rs` (see `workers/state/build.rs`) so the worker stays one
 self-contained binary.
 
+#### Lint
+
+`@iii-dev/console-ui/lint-worker-ui` (`lintWorkerUi({ root, scope, strict,
+disable, allow })`) scans `styles.css`, `page.tsx` and `src/**` — never
+`dist/` or tests — for the design rules `ade/web/DESIGN.md` states and the
+`*-conformance` tests already enforce on the Console: 3 errors
+(`no-window-dialogs`, `icon-size`, `accent-selection`) and 12 warnings
+(`no-inline-svg`, `radius`, `font-family`, `font-size`, `case-transform`,
+`focus-stroke`, `shadow`, `hex-color`, `motion-literal`, `keyframes-shared`,
+`viewport-media`, `tailwind-in-worker`). The driver runs it after every
+non-watch build; errors fail, warnings print. `lint: { strict: true }`
+promotes warnings (`browser`, `iii-directory`, `ide` run strict),
+`disable`/`allow` tune rules, and a `lint-allow <rule>` comment on the
+finding's line or the one above silences one finding in place. CLI:
+`node packages/console-ui/lint-worker-ui.mjs <worker>/ui [--strict]
+[--json]`, or `--all` from the repo root for one row per worker. The rule
+table is in `packages/console-ui/README.md`; the migration order the
+numbers drive is `docs/plans/2026-09-16-worker-ui-migration.md`.
+
 ### 4. Registration (the worker side)
 
 The wire contract is: one content function serving all of the worker's
 assets (dispatch on `path`), one trigger per asset. Rust workers don't
 hand-roll it — the shared **`iii-console-ui`** crate
 (`workers/crates/console-ui`) is the whole worker side. Workers in this
-repo link it directly by path so it versions with the console worker here
-(out-of-repo workers install it instead — see `workers/ade/skills/injectable-ui.md`):
+repo link it directly by path so it versions with the console worker here:
 
 ```toml
 # <worker>/Cargo.toml
@@ -1226,7 +1259,7 @@ Common failures:
 | Registration rejected with a path error | path violates the rules table above (wrong extension, uppercase, `..`, …) |
 | Registration rejected with a fetch error | your content function threw, returned no string `content`, or timed out (2 × 3 s budget) |
 | "Invalid hook call" in the tab | your bundle contains a second React — a missing `external` |
-| `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the five shared specifiers |
+| `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the six shared specifiers |
 | Styles apply on your page but not in a custom portal | Shared portalled components preserve scope; a custom `document.body` portal must carry `data-iii-ui="<worker>"` on its root |
 | Whole console restyled | your sheet has unscoped rules — check `warnings` in the manifest |
 | Asset gone after console restart | replay fetch failed (worker down at replay) — re-register, or just restart the worker |
@@ -1281,8 +1314,16 @@ its own board: the registry refuses to disable it.
   `workers/docs/sops/console-ui-conformance.md`.
 - The package's declarations are themselves pinned to the real console
   components by `ade/web/src/lib/console-ui-conformance.test.ts`
-  (type-level + name-manifest checks) — extend all three (manifest, record,
-  declaration) when promoting a new shared component.
+  (type-level + name-manifest checks). Promoting a new shared component
+  touches five places: `packages/console-ui/component-names.mjs` (manifest),
+  the `components` record in `ade/web/src/lib/console-api.ts`,
+  `packages/console-ui/index.d.ts` (declaration), the `conformance` map in
+  that test (type and value entries), then `node
+  ade/web/scripts/generate-vendor-shims.mjs` to regenerate the checked-in
+  `public/vendor/console-ui.js` — the test catches the first four, only the
+  regenerated shim exports the name to a browser tab. A React-free helper or
+  hook needs no promotion: it goes into `packages/console-ui/format.mjs` or
+  `hooks.mjs` (plus its `.d.mts`) and bundles into the worker asset.
 
 ## Status: shipped vs spec
 
@@ -1295,7 +1336,7 @@ composer toolbar itself. Not shipped yet (don't design against them):
 | Spec item | Status |
 |---|---|
 | `@iii-dev/console-build` CLI + Tailwind preset | not implemented — hand-write scoped CSS (as `state` does) or scope your own Tailwind output; there is no automatic scoping pass to save you |
-| Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — in-repo workers consume it **workspace-linked** (out-of-repo authors install it from npm, see `workers/ade/skills/injectable-ui.md`); the runtime module specifier was renamed from the spec's `@iii/console` |
+| Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — consumed **workspace-linked** only, never published to npm; the root is types-only and the `/format`, `/hooks`, `/build-worker-ui` and `/lint-worker-ui` subpaths carry real code; the runtime module specifier was renamed from the spec's `@iii/console` |
 | Rust worker-side registration | shipped **beyond spec** as the path-linked `iii-console-ui` crate (`crates/console-ui`) — the spec's authoring doc had each worker hand-roll the content function, triggers, and watcher |
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |

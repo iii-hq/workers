@@ -82,9 +82,12 @@ In this order, with `coder::read-file`, fully rather than skimmed:
   prefixed, motion through `--motion-duration-*` / `--motion-ease-*`, reduced motion
   honoured. No Tailwind utility classes in injected markup; no `:root`, `html`, `body`,
   bare elements, or `@font-face`.
-- Build: esbuild with exactly five externals (`react`, `react-dom`, `react-dom/client`,
-  `react/jsx-runtime`, `@iii-dev/console-ui`). A bundled React is the "Invalid hook
-  call" you will otherwise chase for an hour. Never bundle an editor or an ANSI parser.
+- Build: `buildWorkerUi({ scope })` from `@iii-dev/console-ui/build-worker-ui` — the six
+  import-map externals (`react`, `react-dom`, `react-dom/client`, `react/jsx-runtime`,
+  `@iii-dev/console-ui`, `lucide-react`), scoped-CSS and token checks, then the design
+  lint; `@iii-dev/console-ui/hooks` and `/format` bundle in. A bundled React is the
+  "Invalid hook call" you will otherwise chase for an hour. Never bundle an editor or an
+  ANSI parser; never hand-write `<svg>` icons.
 - Registration through the SDK Message path (Rust: `iii-console-ui` crate; Node: one
   content function plus one `console:script` / `console:style` trigger per asset).
   Never the durable `engine::register_trigger`; never `console:assets`.

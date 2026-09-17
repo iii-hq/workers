@@ -108,6 +108,7 @@ function createHarness({
     tokens: [],
     uiClasses: {} as ConsoleApi['uiClasses'],
     useTheme: () => 'light',
+    useConfirm: () => ({ confirm: async () => true, dialog: null }),
   } as ConsoleApi
   const stop = startUiLoader(client, api, conversationAdapter, {
     baseUrl: new URL('http://console.test/base/'),

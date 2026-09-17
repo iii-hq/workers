@@ -26,6 +26,7 @@ export function FileTypeIcon({ path, className }: { path: string; className?: st
   useEffect(ensureSprite, [])
   const icon = resolver.resolveIcon(FILE_SLOT, path)
   return (
+    // The icon is a <use> of @pierre/trees' sprite, not a hand-drawn glyph. lint-allow no-inline-svg
     <svg
       className={className ? `shui-file-type-icon ${className}` : 'shui-file-type-icon'}
       data-token={fileTypeToken(path)}

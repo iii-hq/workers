@@ -31,6 +31,7 @@ import {
   PageSidebar,
   SegmentedControl,
   StatusDot,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BankRail } from './BankRail'
@@ -164,8 +165,9 @@ export function MemoryPage({
   const reportDirty = useCallback((delta: number) => {
     dirtyCount.current += delta
   }, [])
-  const confirmDiscard = () =>
-    dirtyCount.current <= 0 || window.confirm('Discard unsaved changes?')
+  const { confirm, dialog } = useConfirm()
+  const confirmDiscard = async () =>
+    dirtyCount.current <= 0 || confirm({ title: 'Discard unsaved changes?', confirmLabel: 'Discard', tone: 'danger' })
 
   // Resolves to whether the mutation landed, so children keep their
   // drafts when it did not (a failed save must not eat the input).
@@ -187,22 +189,22 @@ export function MemoryPage({
     [refresh],
   )
 
-  const setPanel = (next: Panel) => {
+  const setPanel = async (next: Panel) => {
     if (next === panel) return
-    if (!confirmDiscard()) return
+    if (!(await confirmDiscard())) return
     setPanelState(next)
     writeStored(`${storageKey}:panel`, next)
   }
 
-  const openBank = (bank: string) => {
+  const openBank = async (bank: string) => {
     if (bank !== selected) {
-      if (!confirmDiscard()) return
+      if (!(await confirmDiscard())) return
       setSelected(bank)
     }
     setDrilled(true)
   }
-  const backToBanks = () => {
-    if (!confirmDiscard()) return
+  const backToBanks = async () => {
+    if (!(await confirmDiscard())) return
     setDrilled(false)
   }
 
@@ -262,6 +264,7 @@ export function MemoryPage({
 
   return (
     <PageShell ref={shellRef} className="mem-ui-shell">
+      {dialog}
       <PageHeader
         icon={<Brain size={16} />}
         title="Memory"

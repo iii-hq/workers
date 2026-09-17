@@ -9,6 +9,7 @@ import {
   PageSidebar,
   type PanelContextEvent,
   StatusPanel,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { parseStoragePanelContext } from './panel-context'
@@ -96,6 +97,7 @@ function StorageExplorer({
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
   const [buckets, setBuckets] = useState<BucketSummary[] | null>(null)
   const [bucketError, setBucketError] = useState<string | null>(null)
+  const { confirm, dialog } = useConfirm()
   const [bucketName, setBucketName] = useState<string | null>(
     persisted.bucket ?? null,
   )
@@ -295,7 +297,7 @@ function StorageExplorer({
     const key = `${prefix}${file.name}`
     if (
       listing?.objects.some((object) => object.key === key) &&
-      !window.confirm(`Replace ${file.name}?`)
+      !(await confirm({ title: `Replace ${file.name}?`, confirmLabel: 'Replace' }))
     ) {
       return
     }
@@ -379,7 +381,11 @@ function StorageExplorer({
     if (
       !bucketName ||
       !objectKey ||
-      !window.confirm(`Delete ${leafName(objectKey)}?`)
+      !(await confirm({
+        title: `Delete ${leafName(objectKey)}?`,
+        confirmLabel: 'Delete',
+        tone: 'danger',
+      }))
     )
       return
     const key = objectKey
@@ -437,6 +443,7 @@ function StorageExplorer({
       ref={rootRef}
       className={`storage-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
     >
+      {dialog}
       {showBuckets ? (
         <PageSidebar
           label="buckets"

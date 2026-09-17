@@ -55,8 +55,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 44
-    assert len(frontends) == 47
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 43
+    assert len(frontends) == 46
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -181,7 +181,6 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "compose-ui",
         "code-runner",
         "context-manager",
-        "editor",
         "lsp",
         "sandbox-code-runner",
         "ide",

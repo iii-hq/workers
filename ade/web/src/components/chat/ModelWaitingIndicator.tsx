@@ -3,6 +3,10 @@ import { Wordmark } from '@/components/ui/Wordmark'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import './thinking-motion.css'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export const MODEL_WAITING_LABEL_SWAP_MS = 150
 
 export function formatModelWaitElapsed(elapsedMs: number): string {

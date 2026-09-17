@@ -69,6 +69,12 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  readonly eyebrow: 'iii-ui-eyebrow'
+  readonly toolbar: 'iii-ui-toolbar'
+  readonly toolbarEnd: 'iii-ui-toolbar__end'
+  readonly statusbar: 'iii-ui-statusbar'
+  readonly spin: 'iii-ui-spin'
+  readonly pulse: 'iii-ui-pulse'
 }
 
 export declare const uiClasses: UiClasses

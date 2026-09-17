@@ -33,8 +33,10 @@ const neutralSelectionRules: Array<[path: string, selector: string]> = [
   ['worktree/ui/styles.css', '.wt-ui-node.selected::before'],
   ['database/ui/styles.css', '.db-tree-row.active::before'],
   ['database/ui/styles.css', '.db-erd-node.selected'],
-  ['browser/ui/styles.css', '.br-ui-rail-row.active'],
-  ['browser/ui/styles.css', '.br-ui-rail-row.active .br-ui-rail-icon'],
+  // The sidebar rail became a Chrome-like tab strip (c86b4ddbd); the
+  // selected tab and the toggled-on chrome control are the selection now.
+  ['browser/ui/styles.css', '.br-ui-tab.is-active'],
+  ['browser/ui/styles.css', '.br-ui-chrome-btn.is-on'],
   [
     'ade/web/src/styles/ui-recipes.css',
     '.iii-ui-tab[aria-selected="true"]',

@@ -1,5 +1,5 @@
-import { JsonHighlight } from '@iii-dev/console-ui'
-import { Chip, FilterChip, MetaRow, StatusPill } from '../../lib/shared'
+import { Badge, Chip, EmptyState, JsonHighlight, MetaRow } from '@iii-dev/console-ui'
+import { FilterChip } from '../../lib/shared'
 import {
   extractRequestSchema,
   extractResponseSchema,
@@ -20,18 +20,13 @@ const MAX_SIMILAR_ITEMS = 20
  *  element identities. */
 function AdaptiveChip({ domain }: { domain?: string }) {
   return (
-    <Chip className="br-ui-scrape-adaptive">
-      <span>adaptive</span>
-      {domain ? (
-        <span className="br-ui-scrape-chip-value">{domain}</span>
-      ) : null}
-    </Chip>
+    <Chip tone="accent">adaptive{domain ? ` · ${domain}` : ''}</Chip>
   )
 }
 
 function RunningNote({ label }: { label: string }) {
   return (
-    <div className="br-ui-scrape-running">
+    <div className="br-ui-more">
       · {label}
     </div>
   )
@@ -63,15 +58,15 @@ function selectorSummary(spec: SelectorSpec): string {
 
 function SelectorRows({ selectors }: { selectors: SelectorSpec[] }) {
   return (
-    <div className="br-ui-scrape-selector-list">
+    <div>
       {selectors.map((spec, i) => (
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; specs never reorder and names may repeat
           key={`${i}:${spec.name}`}
-          className="br-ui-scrape-selector-row"
+          className="br-ui-row"
         >
-          <span className="br-ui-scrape-selector-name">{spec.name}</span>
-          <span className="br-ui-scrape-selector-value">
+          <span className="br-ui-accent">{spec.name}</span>
+          <span className="br-ui-faint br-ui-break">
             ← {selectorSummary(spec)}
           </span>
         </div>
@@ -107,7 +102,7 @@ export function ExtractView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="extracting…" variant="default" />
+          <Badge variant="default">extracting…</Badge>
           {chips}
         </MetaRow>
         <RunningNote label="parsing…" />
@@ -121,10 +116,7 @@ export function ExtractView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill
-          label={`${fields} field${fields === 1 ? '' : 's'}`}
-          variant={fields ? 'accent' : 'warn'}
-        />
+        <Badge variant={fields ? 'accent' : 'warn'}>{`${fields} field${fields === 1 ? '' : 's'}`}</Badge>
         {chips}
       </MetaRow>
       {req.selectors?.length ? (
@@ -169,7 +161,7 @@ export function QueryView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label={`${op}…`} variant="default" />
+          <Badge variant="default">{`${op}…`}</Badge>
           {chips}
         </MetaRow>
         <RunningNote label="querying…" />
@@ -184,14 +176,11 @@ export function QueryView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill
-          label={
+        <Badge variant={matches ? 'accent' : 'warn'}>{
             matches === 0
               ? 'no match'
               : `${matches} match${matches === 1 ? '' : 'es'}`
-          }
-          variant={matches ? 'accent' : 'warn'}
-        />
+          }</Badge>
         {chips}
       </MetaRow>
       <ResultRows result={res.result} />
@@ -202,9 +191,7 @@ export function QueryView({
 function ResultRows({ result }: { result: string | (string | null)[] | null }) {
   if (result == null || (Array.isArray(result) && result.length === 0)) {
     return (
-      <div className="br-ui-scrape-empty">
-        · no match
-      </div>
+      <EmptyState title="No match" description="Nothing matched the query." />
     )
   }
   const numbered = Array.isArray(result)
@@ -215,7 +202,7 @@ function ResultRows({ result }: { result: string | (string | null)[] | null }) {
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; matches never reorder and often repeat
           key={`${i}:${row ?? ''}`}
-          className="br-ui-scrape-result-row"
+          className="br-ui-row"
         >
           {numbered ? (
             <span className="br-ui-scrape-result-number">
@@ -223,16 +210,16 @@ function ResultRows({ result }: { result: string | (string | null)[] | null }) {
             </span>
           ) : null}
           {row == null ? (
-            <span className="br-ui-scrape-dim">∅</span>
+            <span className="br-ui-dim">∅</span>
           ) : (
-            <span className="br-ui-scrape-row-main br-ui-scrape-prewrap">
+            <span className="br-ui-break br-ui-prewrap">
               {row}
             </span>
           )}
         </div>
       ))}
       {rows.length > MAX_RESULT_ROWS ? (
-        <div className="br-ui-scrape-more">
+        <div className="br-ui-more">
           +{rows.length - MAX_RESULT_ROWS} more
         </div>
       ) : null}
@@ -270,7 +257,7 @@ export function FindSimilarView({
     return (
       <SectionShell>
         <MetaRow>
-          <StatusPill label="matching…" variant="default" />
+          <Badge variant="default">matching…</Badge>
           {chips}
         </MetaRow>
         <RunningNote label="scanning structure…" />
@@ -284,21 +271,19 @@ export function FindSimilarView({
   return (
     <SectionShell>
       <MetaRow>
-        <StatusPill
-          label={`${res.count} similar`}
-          variant={res.count ? 'accent' : 'warn'}
-        />
+        <Badge variant={res.count ? 'accent' : 'warn'}>{`${res.count} similar`}</Badge>
         {chips}
       </MetaRow>
       {res.count === 0 ? (
-        <div className="br-ui-scrape-empty">
-          · no similar elements
-        </div>
+        <EmptyState
+          title="No similar elements"
+          description="Nothing structurally close to the anchor was found."
+        />
       ) : (
         <>
           <JsonHighlight code={JSON.stringify(shown, null, 2)} wrap />
           {res.items.length > MAX_SIMILAR_ITEMS ? (
-            <div className="br-ui-scrape-more is-separated">
+            <div className="br-ui-more is-separated">
               +{res.items.length - MAX_SIMILAR_ITEMS} more items
             </div>
           ) : null}

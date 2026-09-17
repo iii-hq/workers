@@ -634,6 +634,7 @@ a.iii-ui-tree-item {
   transition-timing-function: var(--motion-ease-enter);
 }
 
+/* viewport: phone chrome — touch padding on phones */
 @media (max-width: 640px) {
   .trigger-activity-collapsible > .trigger-activity-collapsible__trigger {
     padding-block: 0.25rem;
@@ -1275,6 +1276,8 @@ a.iii-ui-tree-item {
   }
 }
 
+/* viewport: phone chrome — 16px text and 48px switches below the
+   console's 640px phone breakpoint; the row layout itself is container-driven above. */
 @media (min-width: 641px) {
   .iii-ui-switch {
     --iii-ui-switch-travel: 1rem;
@@ -1310,6 +1313,7 @@ a.iii-ui-tree-item {
   }
 }
 
+/* viewport: phone chrome — 48px touch hit area */
 @media (max-width: 640px) {
   .iii-ui-switch__input {
     inset: auto;
@@ -1539,6 +1543,7 @@ a.iii-ui-tree-item {
   }
 }
 
+/* viewport: phone chrome — touch row heights */
 @media (max-width: 640px) {
   .iii-ui-list-item {
     min-height: 3rem;
@@ -1568,7 +1573,9 @@ a.iii-ui-tree-item {
   .iii-ui-motion-overlay,
   .iii-ui-motion-dropdown,
   .iii-ui-motion-sheet,
-  .iii-ui-motion-sheet-overlay {
+  .iii-ui-motion-sheet-overlay,
+  .iii-ui-spin,
+  .iii-ui-pulse {
     animation: none;
   }
 
@@ -1581,5 +1588,75 @@ a.iii-ui-tree-item {
   .iii-ui-tree-item__caret > svg,
   .iii-ui-tree-item__action {
     transition: none;
+  }
+}
+
+/* ── Eyebrow, toolbar, status bar ──────────────────────────────────────
+ * The mono caps label (`Eyebrow`) and the two horizontal strips
+ * (`Toolbar`, `StatusBar`) as classes for markup that needs no wrapper. */
+.iii-ui-eyebrow {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.iii-ui-toolbar {
+  display: flex;
+  height: 2.25rem;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0.5rem;
+  background: var(--color-panel-raised);
+}
+
+.iii-ui-toolbar__end {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-left: auto;
+}
+
+.iii-ui-statusbar {
+  display: flex;
+  height: 1.75rem;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.5rem;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Shared loops ──────────────────────────────────────────────────────
+ * The spinner and the breathing placeholder, defined once for the document
+ * instead of once per worker sheet (`uiClasses.spin` / `uiClasses.pulse`).
+ * Both stop under prefers-reduced-motion (see the block above). */
+.iii-ui-spin {
+  animation: iii-ui-spin 1s linear infinite;
+}
+
+.iii-ui-pulse {
+  animation: iii-ui-pulse 1.6s var(--motion-ease-standard) infinite;
+}
+
+@keyframes iii-ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes iii-ui-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
   }
 }

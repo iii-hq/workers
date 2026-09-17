@@ -169,7 +169,7 @@ export function SpanFilterMenu({
           onPointerEnter={openNow}
           onPointerLeave={scheduleClose}
           className={cn(
-            'flex items-center gap-1 rounded-sm px-1.5 py-1 font-mono text-[10px] lowercase backdrop-blur-sm transition-colors',
+            'flex items-center gap-1 rounded-sm px-1.5 py-1 font-mono text-[11px] backdrop-blur-sm transition-colors',
             filtering
               ? 'bg-surface-selected text-ink'
               : 'bg-surface-active text-ink-faint hover:text-ink',

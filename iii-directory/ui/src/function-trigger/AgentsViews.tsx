@@ -1,6 +1,8 @@
-import { MarkdownPreview } from '@iii-dev/console-ui'
-import { formatBytes, formatRelativeTime } from '../lib/format'
-import { ActionLine, Card, EmptyRow, KvChip, MetaRow, PulseLine, StatusPill } from '../lib/widgets'
+import { ActionLine, Badge, Card, EmptyState, MarkdownPreview, MetaRow } from '@iii-dev/console-ui'
+import { formatBytes } from '@iii-dev/console-ui/format'
+import { Minus, Pencil, Plus, SquareFunction } from 'lucide-react'
+import { ago } from '../lib/format'
+import { Identity, kv, Loading, Row, Rows } from '../lib/widgets'
 import {
   agentsFunctionsRequestSchema,
   agentsFunctionsResponseSchema,
@@ -19,6 +21,9 @@ interface ViewProps {
   running?: boolean
 }
 
+const displayName = (a: { logo?: string | null; name?: string | null; id: string }) =>
+  [a.logo, a.name || a.id].filter(Boolean).join(' ')
+
 /* ---------------- directory::agents::list ---------------- */
 
 export function AgentsListView({ output, running }: ViewProps) {
@@ -26,42 +31,43 @@ export function AgentsListView({ output, running }: ViewProps) {
     return (
       <Card>
         <MetaRow>
-          <StatusPill label="listing…" variant="default" />
+          <Badge>listing…</Badge>
         </MetaRow>
-        <PulseLine label="scanning agent profiles…" />
+        <Loading label="scanning agent profiles…" />
       </Card>
     )
   }
 
   const resp = safeParseResponse(agentsListResponseSchema, output)
   if (!resp) return null
-
-  const label =
-    resp.agents.length === 0
-      ? 'no agent profiles'
-      : `${resp.agents.length} ${resp.agents.length === 1 ? 'agent profile' : 'agent profiles'}`
+  const n = resp.agents.length
 
   return (
     <Card>
       <MetaRow>
-        <StatusPill label={label} variant={resp.agents.length === 0 ? 'warn' : 'accent'} />
+        <Badge variant={n === 0 ? 'warn' : 'accent'}>
+          {n === 0 ? 'no agent profiles' : `${n} ${n === 1 ? 'agent profile' : 'agent profiles'}`}
+        </Badge>
       </MetaRow>
-      {resp.agents.length === 0 ? (
-        <EmptyRow label="no agent profiles found" />
+      {n === 0 ? (
+        <EmptyState title="No agent profiles" description="The agents folder holds no profiles yet." />
       ) : (
-        <ul className="dir-ui-list">
+        <Rows>
           {resp.agents.map((a) => (
-            <li key={a.id} className="dir-ui-row">
-              <span className="dir-ui-id">{[a.logo, a.name || a.id].filter(Boolean).join(' ')}</span>
-              {a.description ? <div className="dir-ui-desc">{a.description}</div> : null}
-              <span className="dir-ui-fine">
-                {a.skill_count != null ? `${a.skill_count} skills · ` : 'no skills · '}
-                {a.function_count ? `${a.function_count} preloaded functions · ` : ''}
-                {formatRelativeTime(a.modified_at)}
-              </span>
-            </li>
+            <Row
+              key={a.id}
+              title={displayName(a)}
+              description={a.description || undefined}
+              meta={[
+                a.skill_count != null ? `${a.skill_count} skills` : 'no skills',
+                a.function_count ? `${a.function_count} preloaded functions` : '',
+                ago(a.modified_at),
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            />
           ))}
-        </ul>
+        </Rows>
       )}
     </Card>
   )
@@ -75,11 +81,10 @@ export function AgentsGetView({ input, output, running }: ViewProps) {
   if (running) {
     return (
       <Card>
-        <MetaRow>
-          <StatusPill label="loading…" variant="default" />
-          {req ? <KvChip label="id">{req.id}</KvChip> : null}
+        <MetaRow items={kv([['id', req?.id]])}>
+          <Badge>loading…</Badge>
         </MetaRow>
-        <PulseLine label="fetching agent profile…" />
+        <Loading label="fetching agent profile…" />
       </Card>
     )
   }
@@ -89,26 +94,20 @@ export function AgentsGetView({ input, output, running }: ViewProps) {
 
   return (
     <Card>
-      <MetaRow>
-        <StatusPill label="agent profile" variant="accent" />
-        {resp.model ? <KvChip label="model">{resp.model}</KvChip> : null}
-        <KvChip label="skills">{resp.skills.length === 0 ? 'all' : String(resp.skills.length)}</KvChip>
-        {resp.unknown_skills.length > 0 ? (
-          <KvChip label="unknown skills">{resp.unknown_skills.join(', ')}</KvChip>
-        ) : null}
-        {resp.functions && resp.functions.length > 0 ? (
-          <KvChip label="preloaded functions">{resp.functions.join(', ')}</KvChip>
-        ) : null}
-        {resp.unknown_functions && resp.unknown_functions.length > 0 ? (
-          <KvChip label="unknown functions">{resp.unknown_functions.join(', ')}</KvChip>
-        ) : null}
-        <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
+      <MetaRow
+        items={kv([
+          ['model', resp.model],
+          ['skills', resp.skills.length === 0 ? 'all' : String(resp.skills.length)],
+          ['unknown skills', resp.unknown_skills.length > 0 && resp.unknown_skills.join(', ')],
+          ['preloaded functions', resp.functions?.length ? resp.functions.join(', ') : null],
+          ['unknown functions', resp.unknown_functions?.length ? resp.unknown_functions.join(', ') : null],
+          ['modified', ago(resp.modified_at)],
+        ])}
+      >
+        <Badge variant="accent">agent profile</Badge>
       </MetaRow>
-      <ActionLine symbol="ƒ" tone="accent">
-        <div className="dir-ui-stack">
-          <span className="dir-ui-id lg">{[resp.logo, resp.name || resp.id].filter(Boolean).join(' ')}</span>
-          {resp.description ? <span className="dir-ui-desc">{resp.description}</span> : null}
-        </div>
+      <ActionLine icon={<SquareFunction />}>
+        <Identity name={displayName(resp)} description={resp.description} />
       </ActionLine>
       <MarkdownPreview markdown={resp.system_prompt} />
     </Card>
@@ -123,11 +122,10 @@ export function AgentsUpdateView({ input, output, running, verb = 'updated' }: V
   if (running) {
     return (
       <Card>
-        <MetaRow>
-          <StatusPill label="saving…" variant="default" />
-          {req ? <KvChip label="id">{req.id}</KvChip> : null}
+        <MetaRow items={kv([['id', req?.id]])}>
+          <Badge>saving…</Badge>
         </MetaRow>
-        <PulseLine label="writing agent profile…" />
+        <Loading label="writing agent profile…" />
       </Card>
     )
   }
@@ -137,16 +135,16 @@ export function AgentsUpdateView({ input, output, running, verb = 'updated' }: V
 
   return (
     <Card>
-      <MetaRow>
-        <StatusPill label={verb} variant="accent" />
-        <KvChip label="bytes">{formatBytes(resp.bytes)}</KvChip>
-        <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
+      <MetaRow
+        items={kv([
+          ['bytes', formatBytes(resp.bytes)],
+          ['modified', ago(resp.modified_at)],
+        ])}
+      >
+        <Badge variant="accent">{verb}</Badge>
       </MetaRow>
-      <ActionLine symbol="✎" tone="accent">
-        <div className="dir-ui-stack">
-          <span className="dir-ui-id lg">{[resp.logo, resp.name || resp.id].filter(Boolean).join(' ')}</span>
-          {resp.description ? <span className="dir-ui-desc">{resp.description}</span> : null}
-        </div>
+      <ActionLine icon={<Pencil />}>
+        <Identity name={displayName(resp)} description={resp.description} />
       </ActionLine>
     </Card>
   )
@@ -160,12 +158,15 @@ export function AgentsFunctionsView({ input, output, running, verb }: ViewProps 
   if (running) {
     return (
       <Card>
-        <MetaRow>
-          <StatusPill label={verb === 'add' ? 'adding…' : 'removing…'} variant="default" />
-          {req ? <KvChip label="id">{req.id}</KvChip> : null}
-          {req && req.functions.length > 0 ? <KvChip label="functions">{req.functions.join(', ')}</KvChip> : null}
+        <MetaRow
+          items={kv([
+            ['id', req?.id],
+            ['functions', req && req.functions.length > 0 && req.functions.join(', ')],
+          ])}
+        >
+          <Badge>{verb === 'add' ? 'adding…' : 'removing…'}</Badge>
         </MetaRow>
-        <PulseLine label="rewriting the profile's preloaded functions…" />
+        <Loading label="rewriting the profile's preloaded functions…" />
       </Card>
     )
   }
@@ -176,17 +177,19 @@ export function AgentsFunctionsView({ input, output, running, verb }: ViewProps 
   const changed = verb === 'add' ? (resp.added ?? []) : (resp.removed ?? [])
   return (
     <Card>
-      <MetaRow>
-        <StatusPill
-          label={resp.unchanged ? 'unchanged' : verb === 'add' ? 'functions added' : 'functions removed'}
-          variant={resp.unchanged ? 'default' : 'accent'}
-        />
-        <KvChip label="id">{resp.id}</KvChip>
-        <KvChip label="bytes">{formatBytes(resp.bytes)}</KvChip>
-        <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
+      <MetaRow
+        items={kv([
+          ['id', resp.id],
+          ['bytes', formatBytes(resp.bytes)],
+          ['modified', ago(resp.modified_at)],
+        ])}
+      >
+        <Badge variant={resp.unchanged ? 'default' : 'accent'}>
+          {resp.unchanged ? 'unchanged' : verb === 'add' ? 'functions added' : 'functions removed'}
+        </Badge>
       </MetaRow>
-      <ActionLine symbol={verb === 'add' ? '+' : '−'} tone="accent">
-        <div className="dir-ui-stack">
+      <ActionLine icon={verb === 'add' ? <Plus /> : <Minus />}>
+        <span className="dir-ui-identity">
           {changed.length > 0 ? (
             <span className="dir-ui-id">{changed.join(', ')}</span>
           ) : (
@@ -199,7 +202,7 @@ export function AgentsFunctionsView({ input, output, running, verb }: ViewProps 
               ? 'The profile now declares no preloaded functions.'
               : `now: ${resp.functions.join(', ')}`}
           </span>
-        </div>
+        </span>
       </ActionLine>
     </Card>
   )

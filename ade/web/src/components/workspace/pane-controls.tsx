@@ -25,6 +25,10 @@ import { REDUCED_MOTION_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { bindingsFor, hoverTitle } from '@/lib/keybindings/registry'
 import { cn } from '@/lib/utils'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /** Mouse dwell on an edge before the split preview reveals. */
 const EDGE_REVEAL_MS = 200
 /** Revealed preview auto-hides after the pointer leaves it. */

@@ -18,7 +18,7 @@ export const LivePulse: Story = { args: { tone: 'accent', pulse: true } }
 
 export const Tones: Story = {
   render: () => (
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-3 font-mono text-[12px] text-ink-faint lowercase">
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-3 font-mono text-[12px] text-ink-faint">
       <span className="flex items-center gap-2">
         <StatusDot tone="accent" pulse /> live
       </span>

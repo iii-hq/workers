@@ -76,6 +76,12 @@ export const uiClasses = Object.freeze({
   motionControl: 'iii-ui-motion-control',
   motionPanel: 'iii-ui-motion-panel',
   motionOverlay: 'iii-ui-motion-overlay',
+  eyebrow: 'iii-ui-eyebrow',
+  toolbar: 'iii-ui-toolbar',
+  toolbarEnd: 'iii-ui-toolbar__end',
+  statusbar: 'iii-ui-statusbar',
+  spin: 'iii-ui-spin',
+  pulse: 'iii-ui-pulse',
 })
 
 export const uiClassNames = Object.freeze(Object.values(uiClasses))

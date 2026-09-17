@@ -17,20 +17,13 @@
 
 import {
   Button,
-  Input,
   PageBody,
   PageMain,
   PageShell,
   PageSidebar,
   uiClasses,
 } from '@iii-dev/console-ui'
-import {
-  Fragment,
-  type ReactNode,
-  type Ref,
-  useCallback,
-  useState,
-} from 'react'
+import { Fragment, type ReactNode, useCallback, useState } from 'react'
 import type { Family, Tone } from './trigger-kinds'
 
 /**
@@ -115,67 +108,6 @@ export function CatalogShell({
         <PageMain className="console-catalog-main">{main}</PageMain>
       </PageBody>
     </PageShell>
-  )
-}
-
-function SearchGlassIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className="icon">
-      <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
-      <path
-        d="M10.5 10.5L14 14"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-/** The sidebar search box: leading magnifier, esc/× to clear. */
-export function SearchField({
-  value,
-  onChange,
-  placeholder,
-  inputRef,
-}: {
-  value: string
-  onChange: (next: string) => void
-  placeholder: string
-  /** Lets the page command palette focus this field on `/`. */
-  inputRef?: Ref<HTMLInputElement>
-}) {
-  return (
-    <div className="console-catalog-search">
-      <SearchGlassIcon />
-      <Input
-        ref={inputRef}
-        name="catalog-search"
-        value={value}
-        onChange={onChange}
-        preserveCase
-        placeholder={placeholder}
-        aria-label={placeholder}
-        className="console-catalog-search-input"
-        data-autofocus=""
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && value) {
-            e.stopPropagation()
-            onChange('')
-          }
-        }}
-      />
-      {value ? (
-        <button
-          type="button"
-          className="clear"
-          aria-label="clear search"
-          onClick={() => onChange('')}
-        >
-          ×
-        </button>
-      ) : null}
-    </div>
   )
 }
 

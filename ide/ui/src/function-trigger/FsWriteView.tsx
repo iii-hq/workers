@@ -1,5 +1,15 @@
-import { formatBytes } from '../lib/format'
-import { Chip, FooterPill } from '../lib/terminal'
+import {
+  Badge,
+  MetaRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@iii-dev/console-ui'
+import { formatBytes } from '@iii-dev/console-ui/format'
 import {
   contentRefSchema,
   type FsWriteRequest,
@@ -8,7 +18,7 @@ import {
   fsWriteResponseSchema,
   safeParseResponse,
 } from './parsers'
-import { displayPath, TargetChip } from './shared'
+import { displayPath, items, kv, targetItem } from './shared'
 
 interface FsWriteViewProps {
   input: unknown
@@ -34,21 +44,20 @@ export function FsWriteView({ input, output }: FsWriteViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-slab">
-        <div className="shui-line">
-          <span className="t-accent">+ wrote</span>{' '}
-          <span className="num">{formatBytes(resp.bytes_written)}</span>{' '}
-          <span className="t-faint">to</span>{' '}
-          <span>{displayPath(req.data.path ?? '', resp.path)}</span>
-        </div>
-        <div className="shui-row">
-          <Chip label="mode">{req.data.mode ?? '0644'}</Chip>
-          {req.data.parents ? <Chip label="parents">true</Chip> : null}
-          {streamed ? (
-            <FooterPill tone="default">uploaded via channel</FooterPill>
-          ) : null}
-          <TargetChip target={req.data.target} />
-        </div>
+      <MetaRow
+        items={items(
+          kv('mode', req.data.mode ?? '0644'),
+          req.data.parents ? kv('parents', 'true') : null,
+          targetItem(req.data.target),
+        )}
+      >
+        {streamed ? <Badge>uploaded via channel</Badge> : null}
+      </MetaRow>
+      <div className="shui-card-body shui-line">
+        <span className="t-accent">+ wrote</span>{' '}
+        <span className="num">{formatBytes(resp.bytes_written)}</span>{' '}
+        <span className="t-faint">to</span>{' '}
+        <span className="shui-path">{displayPath(req.data.path ?? '', resp.path)}</span>
       </div>
     </div>
   )
@@ -68,53 +77,45 @@ function BatchWrite({ req, resp }: BatchWriteProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-head">
-        <span className="shui-chips">
-          <Chip label="files">{resp.files.length}</Chip>
-          <TargetChip target={req.target} />
-        </span>
-      </div>
-
-      <table className="shui-table">
-        <thead>
-          <tr>
-            <th className="pad-l">path</th>
-            <th className="r">bytes</th>
-            <th>mode</th>
-            <th className="pad-r">content</th>
-          </tr>
-        </thead>
-        <tbody>
+      <MetaRow items={items(kv('files', resp.files.length), targetItem(req.target))} />
+      <Table density="compact">
+        <TableHeader>
+          <TableRow>
+            <TableHead>path</TableHead>
+            <TableHead className="r">bytes</TableHead>
+            <TableHead>mode</TableHead>
+            <TableHead>content</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {resp.files.map((r, i) => {
             const spec = specByPath.get(r.path) ?? specs[i]
             return (
-              <tr key={r.path}>
-                <td className="pad-l t-ink">{r.path}</td>
-                <td className="t-faint num r">{formatBytes(r.bytes_written)}</td>
-                <td className="t-faint">
+              <TableRow key={r.path}>
+                <TableCell className="shui-path t-ink">{r.path}</TableCell>
+                <TableCell className="t-faint num r">{formatBytes(r.bytes_written)}</TableCell>
+                <TableCell className="t-faint">
                   {spec ? (spec.mode ?? '0644') : '—'}
                   {spec?.parents ? <span className="t-ghost"> +parents</span> : null}
-                </td>
-                <td className="t-faint pad-r">
-                  {spec
-                    ? typeof spec.content === 'string'
-                      ? 'inline'
-                      : 'channel'
-                    : '—'}
-                </td>
-              </tr>
+                </TableCell>
+                <TableCell className="t-faint">
+                  {spec ? (typeof spec.content === 'string' ? 'inline' : 'channel') : '—'}
+                </TableCell>
+              </TableRow>
             )
           })}
-          <tr className="total">
-            <td className="pad-l label">total</td>
-            <td colSpan={3}>
-              <FooterPill tone="accent">
+        </TableBody>
+        <TableFooter>
+          <TableRow>
+            <TableCell className="t-faint">total</TableCell>
+            <TableCell colSpan={3}>
+              <Badge variant="accent">
                 {`${formatBytes(resp.bytes_written)} · ${resp.files.length} ${resp.files.length === 1 ? 'file' : 'files'}`}
-              </FooterPill>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+              </Badge>
+            </TableCell>
+          </TableRow>
+        </TableFooter>
+      </Table>
     </div>
   )
 }

@@ -98,7 +98,7 @@ describe('settings primitives', () => {
       />,
     )
 
-    expect(html).toContain('sm:w-auto')
+    expect(html).toContain('@[30rem]:w-auto')
     expect(html).toContain('data-layout="inline"')
   })
 })

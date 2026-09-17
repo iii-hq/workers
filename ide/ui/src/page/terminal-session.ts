@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { errorMessage } from '../lib/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import {
   backendConfirmedSessionMissing,
   closeTerminalConnection,

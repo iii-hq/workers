@@ -1,3 +1,12 @@
+# Downloaded template workspaces are local sandboxes, regardless of their name.
+# Keep only the checked-in tooling and baseline directories visible to Git.
+/*/
+!/scripts/
+!/tests/
+!/agents/
+!/skills/
+!/upstream/
+
 # Keep only the local development seeds; other files are runtime settings.
 !/config/
 /config/*

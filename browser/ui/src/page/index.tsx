@@ -18,11 +18,15 @@
  */
 
 import {
+  Button,
   type Host,
   PageHeader,
   type PageRenderProps,
   PageShell,
+  StatusPanel,
 } from '@iii-dev/console-ui'
+import { useContainerNarrow, usePaneState } from '@iii-dev/console-ui/hooks'
+import { Globe, HatGlasses, Plus } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   errorMessage,
@@ -30,8 +34,6 @@ import {
   stopBrowserSession,
 } from '../lib/browser'
 import { cn } from '../lib/cn'
-import { Globe, Incognito, Plus } from '../lib/icons'
-import { GlobeIcon, useContainerNarrow } from '../lib/widgets'
 import { dismissBrowserOverlay } from '../overlay/overlay-store'
 import { SavedSetsDialog } from './SavedSetsDialog'
 import { type SessionActions, SessionView } from './SessionView'
@@ -40,23 +42,6 @@ import { useBrowserSessionsLive } from './useBrowserSessionsLive'
 
 /** Container width (px) below which controls grow to touch size. */
 const NARROW_BELOW = 720
-
-function readStored(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key)
-  } catch {
-    return null
-  }
-}
-
-function writeStored(key: string, value: string | null) {
-  try {
-    if (value === null) window.localStorage.removeItem(key)
-    else window.localStorage.setItem(key, value)
-  } catch {
-    /* private mode / quota — persistence is best-effort */
-  }
-}
 
 export function BrowserPage({
   host,
@@ -70,23 +55,13 @@ export function BrowserPage({
     loading,
     error,
     refresh,
-  } = useBrowserSessionsLive(host, true)
-  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  } = useBrowserSessionsLive(host)
+  const { ref: rootRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
 
   // The selected tab survives a reload of the console.
-  const selectionKey = `browser-ui:${tabId || 'page'}:tab`
-  const [selectedId, setSelectedIdState] = useState<string | null>(() =>
-    readStored(selectionKey),
-  )
-  const setSelectedId = useCallback(
-    (next: string | null | ((current: string | null) => string | null)) => {
-      setSelectedIdState((current) => {
-        const value = typeof next === 'function' ? next(current) : next
-        writeStored(selectionKey, value)
-        return value
-      })
-    },
-    [selectionKey],
+  const [selectedId, setSelectedId] = usePaneState<string | null>(
+    `browser-ui:${tabId || 'page'}:tab`,
+    null,
   )
 
   // A tab selected the moment it opens is not in the list yet; hold it until
@@ -419,27 +394,21 @@ export function BrowserPage({
   return (
     <PageShell className="br-ui-shell">
       <PageHeader
-        icon={<GlobeIcon />}
+        icon={<Globe />}
         title="Browser"
         onClose={onRequestClose}
       />
 
       {banner ? (
-        <div className="br-ui-banner alert" role="alert">
-          <span>{banner}</span>
-          {error ? (
-            <button type="button" className="br-ui-linkish" onClick={refresh}>
-              retry
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="br-ui-linkish quiet"
-              onClick={() => setStartError(null)}
-            >
-              dismiss
-            </button>
-          )}
+        <div className="br-ui-banner" role="alert">
+          <StatusPanel variant="alert" headline={banner} />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={error ? refresh : () => setStartError(null)}
+          >
+            {error ? 'Retry' : 'Dismiss'}
+          </Button>
         </div>
       ) : null}
 
@@ -488,24 +457,22 @@ export function BrowserPage({
                     an agent to call <code>browser::sessions::start</code>.
                   </p>
                   <div className="br-ui-hero-actions">
-                    <button
-                      type="button"
-                      className="br-ui-hero-btn"
+                    <Button
+                      variant="primary"
                       onClick={() => void handleNewTab(false)}
                       disabled={starting}
                     >
                       <Plus size={16} aria-hidden />
                       {starting ? 'Opening…' : 'New tab'}
-                    </button>
-                    <button
-                      type="button"
-                      className="br-ui-hero-btn is-incognito"
+                    </Button>
+                    <Button
+                      variant="ghost"
                       onClick={() => void handleNewTab(true)}
                       disabled={starting}
                     >
-                      <Incognito size={16} aria-hidden />
+                      <HatGlasses size={16} aria-hidden />
                       New incognito tab
-                    </button>
+                    </Button>
                   </div>
                 </>
               )}

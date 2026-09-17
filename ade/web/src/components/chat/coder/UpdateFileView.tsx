@@ -418,7 +418,7 @@ function EchoGroupBlock({
         {op ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint cursor-help">
+              <span className="iii-ui-eyebrow cursor-help">
                 op {group.opIndex}
               </span>
             </TooltipTrigger>
@@ -427,9 +427,7 @@ function EchoGroupBlock({
             </TooltipContent>
           </Tooltip>
         ) : (
-          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            op {group.opIndex}
-          </span>
+          <span className="iii-ui-eyebrow">op {group.opIndex}</span>
         )}
       </div>
       {group.echoes.map((echo, i) => (
@@ -473,7 +471,7 @@ function FileFailureRow({ result }: { result: UpdateFileResult }) {
             <TooltipTrigger asChild>
               <span className="inline-flex items-center gap-1 text-warn cursor-help">
                 <TriangleAlert aria-hidden className="size-4" />
-                <Chip className="border-warn text-warn">
+                <Chip className="bg-warn-muted text-warn">
                   {result.error.code}
                 </Chip>
               </span>
@@ -521,7 +519,7 @@ function FileEchoSection({
         <Chip label="applied">{result.applied}</Chip>
         <Chip label="lines">{result.new_line_count}</Chip>
         {result.echoes_truncated ? (
-          <Chip label="echoes" className="border-warn text-warn">
+          <Chip label="echoes" className="bg-warn-muted text-warn">
             truncated
           </Chip>
         ) : null}
@@ -616,7 +614,7 @@ export function UpdateFileView({
       <div className="bg-paper-2 border-b border-rule-2 px-3 py-2 flex flex-wrap items-center gap-1.5">
         <Chip label="files">{req.files.length}</Chip>
         {showEchoes && failedCount > 0 ? (
-          <Chip label="failed" className="border-warn text-warn">
+          <Chip label="failed" className="bg-warn-muted text-warn">
             {failedCount}
           </Chip>
         ) : null}

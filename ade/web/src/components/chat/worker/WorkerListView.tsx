@@ -27,9 +27,7 @@ export function WorkerListView({
           <StatusPill label="listing…" variant="default" />
           {req?.running_only ? (
             <Chip>
-              <span className="uppercase tracking-[0.06em] text-ink-faint">
-                running only
-              </span>
+              <span className="iii-ui-eyebrow">running only</span>
             </Chip>
           ) : null}
         </MetaRow>
@@ -59,9 +57,7 @@ export function WorkerListView({
         <StatusPill label={label} variant={pillVariant} />
         {req?.running_only ? (
           <Chip>
-            <span className="uppercase tracking-[0.06em] text-ink-faint">
-              running only
-            </span>
+            <span className="iii-ui-eyebrow">running only</span>
           </Chip>
         ) : null}
       </MetaRow>
@@ -89,7 +85,7 @@ function WorkerRow({ entry }: { entry: WorkerEntry }) {
         </span>
         <RunningBadge running={entry.running} />
         {entry.version ? (
-          <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint border border-rule-2 bg-paper-2 px-1.5 py-0.5">
+          <span className="iii-ui-eyebrow border border-rule-2 bg-paper-2 px-1.5 py-0.5">
             v{entry.version}
           </span>
         ) : null}
@@ -108,10 +104,8 @@ function WorkerRow({ entry }: { entry: WorkerEntry }) {
 function RunningBadge({ running }: { running: boolean }) {
   return (
     <span
-      className={`font-mono text-[10px] uppercase tracking-[0.06em] border px-1.5 py-0.5 ${
-        running
-          ? 'text-accent border-accent/40 bg-paper-2'
-          : 'text-ink-faint border-rule-2 bg-paper-2'
+      className={`font-mono text-[11px] rounded-sm px-1.5 py-0.5 ${
+        running ? 'bg-accent-muted text-accent' : 'bg-paper-2 text-ink-faint'
       }`}
     >
       {running ? 'running' : 'stopped'}

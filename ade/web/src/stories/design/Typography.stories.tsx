@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { eyebrowClassName, eyebrowLgClassName } from '@/components/ui/Eyebrow'
 
 interface TypeRow {
   token: string
@@ -71,28 +72,25 @@ const ROWS: TypeRow[] = [
   },
   {
     token: 'label-caps-lg',
-    className:
-      'font-mono text-[12px] font-medium uppercase tracking-[0.18em] text-ink-faint',
+    className: eyebrowLgClassName,
     sample: 'section eyebrow',
-    spec: '12px / 500 upper',
+    spec: '11px / 500 upper, 0.14em',
   },
   {
     token: 'label-caps-md',
-    className:
-      'font-mono text-[12px] font-medium uppercase tracking-[0.14em] text-ink-faint',
+    className: eyebrowLgClassName,
     sample: 'card head',
-    spec: '12px / 500 upper',
+    spec: '11px / 500 upper, 0.14em',
   },
   {
     token: 'label-caps-sm',
-    className:
-      'font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint',
+    className: eyebrowClassName,
     sample: 'meta row',
     spec: '11px / 500 upper',
   },
   {
     token: 'micro',
-    className: 'font-mono text-[9px] tracking-[0.04em] text-ink-faint',
+    className: 'font-mono text-[11px] tracking-[0.04em] text-ink-faint',
     sample: 'diagram annotation',
     spec: '9px / 400',
   },
@@ -114,9 +112,7 @@ export const Scale: Story = {
           key={row.token}
           className="grid grid-cols-[200px_1fr_auto] items-baseline gap-x-6 px-4 py-4"
         >
-          <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            {row.token}
-          </div>
+          <div className="iii-ui-eyebrow">{row.token}</div>
           <div className={row.className}>{row.sample}</div>
           <div className="font-mono text-[11px] text-ink-ghost tabular-nums">
             {row.spec}

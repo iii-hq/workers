@@ -23,16 +23,20 @@
  */
 
 import {
+  Button,
   Dialog,
   DialogContent,
   DialogDescription,
   DialogTitle,
+  Eyebrow,
   type Host,
   type SessionChipProps,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@iii-dev/console-ui'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
+import { ArrowLeftRight, ChevronDown, Plus } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 
 /** Namespaced so the per-session function ids can't collide with another
@@ -123,36 +127,6 @@ function partLabel(
   return 'injected'
 }
 
-/** Clipboard write that survives http://<LAN-IP> (insecure context, where
- *  navigator.clipboard is undefined) — the console's lib/clipboard strategy,
- *  inlined because injected bundles only get components from
- *  @iii-dev/console-ui, not its libs. */
-async function copyText(text: string): Promise<boolean> {
-  if (typeof navigator !== 'undefined' && navigator.clipboard) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return true
-    } catch {
-      // Permissions can reject even on secure origins — try the fallback.
-    }
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.setAttribute('readonly', '')
-  textarea.style.position = 'fixed'
-  textarea.style.left = '-9999px'
-  document.body.appendChild(textarea)
-  textarea.select()
-  let ok = false
-  try {
-    ok = document.execCommand('copy')
-  } catch {
-    ok = false
-  }
-  textarea.remove()
-  return ok
-}
-
 /** chars/4 — the usual rough-tokens rule of thumb, labeled approximate. The
  *  prompt is the largest fixed spend in every turn's window; the surface
  *  that displays it should put a number on it. */
@@ -175,31 +149,23 @@ function PromptPart({
   body,
   synthetic,
 }: {
-  /** Role word, uppercased by CSS. */
+  /** Role word, set as an eyebrow. */
   label: string
   /** Data, never uppercased: a prompt filename or a provider id. */
   name?: string
   body: string | null
   synthetic?: boolean
 }) {
-  const [copied, setCopied] = useState(false)
-  const handleCopy = useCallback(() => {
-    if (body === null) return
-    void copyText(body).then((ok) => {
-      if (!ok) return
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
-    })
-  }, [body])
+  const { state: copyState, copy } = useCopyFlash(body ?? '')
 
   const real = body !== null && !synthetic
   return (
-    <section className="dir-ui-sysprompt-partwrap">
+    <section>
       <div className="dir-ui-sysprompt-parthead">
         <h3 className="dir-ui-sysprompt-part">
-          <span className="dir-ui-sysprompt-partrole">{label}</span>
+          <Eyebrow>{label}</Eyebrow>
           {name ? (
-            <span className="dir-ui-sysprompt-partname"> · {name}</span>
+            <span> · {name}</span>
           ) : null}
           {real ? (
             <span className="dir-ui-sysprompt-partmeta">
@@ -209,14 +175,9 @@ function PromptPart({
           ) : null}
         </h3>
         {real ? (
-          <button
-            type="button"
-            className="dir-ui-sysprompt-copy"
-            onClick={handleCopy}
-            data-copied={copied || undefined}
-          >
-            {copied ? 'copied' : 'copy'}
-          </button>
+          <Button variant="ghost" size="sm" onClick={copy}>
+            {copyState === 'copied' ? 'copied' : copyState === 'failed' ? 'copy failed' : 'copy'}
+          </Button>
         ) : null}
       </div>
       {body === null ? (
@@ -374,48 +335,13 @@ export function createSystemPromptChip(host: Host) {
               which a pair of same-length uppercase words did not. The word
               itself survives in the tooltip and in the dialog's opening
               sentence, so nothing depends on reading the icon cold. */}
-              {strategy ? (
-                <svg
-                  className="dir-ui-sysprompt-strategy"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  {strategy === 'enrich' ? (
-                    <>
-                      <path d="M5 12h14" />
-                      <path d="M12 5v14" />
-                    </>
-                  ) : (
-                    <>
-                      <path d="m16 3 4 4-4 4" />
-                      <path d="M20 7H4" />
-                      <path d="m8 21-4-4 4-4" />
-                      <path d="M4 17h16" />
-                    </>
-                  )}
-                </svg>
+              {strategy === 'enrich' ? (
+                <Plus aria-hidden className="dir-ui-sysprompt-strategy" />
+              ) : strategy === 'replace' ? (
+                <ArrowLeftRight aria-hidden className="dir-ui-sysprompt-strategy" />
               ) : null}
-              {/* Says "this opens something" — the row is otherwise all
-              read-outs. Drawn inline at lucide's `chevron-down` geometry
-              (24 viewBox, 2px round stroke): the console's icon set is not
-              a dependency of an injected bundle, but its stroke is. */}
-              <svg
-                className="dir-ui-sysprompt-caret"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="m6 9 6 6 6-6" />
-              </svg>
+              {/* Says "this opens something" — the row is otherwise all read-outs. */}
+              <ChevronDown aria-hidden className="dir-ui-sysprompt-caret" />
             </button>
           </TooltipTrigger>
           <TooltipContent>

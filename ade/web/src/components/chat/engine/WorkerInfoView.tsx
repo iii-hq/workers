@@ -1,3 +1,4 @@
+import { SquareFunction } from 'lucide-react'
 import {
   ActionLine,
   Chip,
@@ -33,9 +34,7 @@ export function WorkerInfoView({
           <StatusPill label="loading…" variant="default" />
           {req ? (
             <Chip>
-              <span className="text-ink-faint uppercase tracking-[0.06em]">
-                worker
-              </span>
+              <span className="iii-ui-eyebrow">worker</span>
               <span className="ml-1 text-ink break-all">{req.name}</span>
             </Chip>
           ) : null}
@@ -61,37 +60,29 @@ export function WorkerInfoView({
         />
         {worker.runtime ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              runtime
-            </span>
+            <span className="iii-ui-eyebrow">runtime</span>
             <span className="ml-1 text-ink">{worker.runtime}</span>
           </Chip>
         ) : null}
         {worker.version ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              version
-            </span>
+            <span className="iii-ui-eyebrow">version</span>
             <span className="ml-1 text-ink">{worker.version}</span>
           </Chip>
         ) : null}
         {worker.os ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              os
-            </span>
+            <span className="iii-ui-eyebrow">os</span>
             <span className="ml-1 text-ink">{worker.os}</span>
           </Chip>
         ) : null}
         {worker.internal ? (
           <Chip>
-            <span className="uppercase tracking-[0.06em] text-ink-faint">
-              internal
-            </span>
+            <span className="iii-ui-eyebrow">internal</span>
           </Chip>
         ) : null}
       </MetaRow>
-      <ActionLine symbol="ƒ" tone="accent">
+      <ActionLine icon={<SquareFunction />} tone="accent">
         <span className="font-mono text-[13px] text-accent break-all">
           {worker.name ?? worker.id}
         </span>
@@ -196,9 +187,7 @@ function MetricsRow({ metrics }: { metrics: WorkerMetrics }) {
     <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 flex flex-wrap gap-1.5">
       {cells.map((c) => (
         <Chip key={c.key}>
-          <span className="text-ink-faint uppercase tracking-[0.06em]">
-            {c.label}
-          </span>
+          <span className="iii-ui-eyebrow">{c.label}</span>
           <span className="ml-1 text-ink tabular-nums">{c.value}</span>
         </Chip>
       ))}
@@ -215,7 +204,7 @@ interface SubListProps {
 function SubList({ title, empty, items }: SubListProps) {
   return (
     <div className="border-b border-rule-2">
-      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
+      <div className="px-3 py-1.5 bg-paper-2 border-b border-rule-2 iii-ui-eyebrow">
         {title} · {items.length}
       </div>
       {items.length === 0 ? (

@@ -20,6 +20,7 @@ import {
   SettingsList,
   SettingsRow,
   SettingsSection,
+  StatusPanel,
   Switch,
 } from '@iii-dev/console-ui'
 import { useEffect, useRef } from 'react'
@@ -305,18 +306,25 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
       </SettingsSection>
 
       {props.errors && props.errors.size > 0 ? (
-        <div className="dir-ui-form-errors" role="alert">
-          <div>
-            {props.errors.size === 1
-              ? 'There is 1 configuration error. Review the highlighted setting.'
-              : `There are ${props.errors.size} configuration errors. Review the highlighted settings.`}
-          </div>
-          {unassociatedErrors.map(([pointer, message]) => (
-            <div key={pointer || message}>
-              {pointer ? `${pointer}: ` : ''}
-              {message}
-            </div>
-          ))}
+        <div role="alert">
+          <StatusPanel
+            variant="alert"
+            headline={
+              props.errors.size === 1
+                ? 'There is 1 configuration error. Review the highlighted setting.'
+                : `There are ${props.errors.size} configuration errors. Review the highlighted settings.`
+            }
+            detail={
+              unassociatedErrors.length > 0
+                ? unassociatedErrors.map(([pointer, message]) => (
+                    <div key={pointer || message}>
+                      {pointer ? `${pointer}: ` : ''}
+                      {message}
+                    </div>
+                  ))
+                : undefined
+            }
+          />
         </div>
       ) : null}
     </div>

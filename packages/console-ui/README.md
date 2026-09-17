@@ -5,13 +5,15 @@ types for `setup(host)`, the slot contracts, the extension engine client,
 the shared component library, stable CSS recipes, and the canonical token
 inventory.
 
-**There is no bundleable runtime here, by design.** At runtime the console's
-import map resolves `@iii-dev/console-ui` to `/vendor/console-ui.js`, which
-re-exports the running SPA's own React tree, engine client, and components
-from `window.__III_CONSOLE__`. Every worker shares the console's single copy
-— nothing from this package (or React) ships inside a worker's asset, which
-is what keeps injected bundles tens of KiB. The `index.js` entry throws with
-instructions if a build bundles it anyway.
+**The root entry has no bundleable runtime, by design.** At runtime the
+console's import map resolves `@iii-dev/console-ui` to
+`/vendor/console-ui.js`, which re-exports the running SPA's own React tree,
+engine client, and components from `window.__III_CONSOLE__`. Every worker
+shares the console's single copy — no component (or React) ships inside a
+worker's asset, which is what keeps injected bundles tens of KiB. The
+`index.js` entry throws with instructions if a build bundles it anyway. The
+`/format` and `/hooks` subpaths are the deliberate exception: React-free
+helpers that bundle into the worker asset (see below).
 
 ## Using it in a worker UI
 
@@ -69,11 +71,13 @@ Use the shared contracts for repeated Console interactions:
   states, and optional free-form creation. `Select` is for small finite lists.
   `ModelPicker` is the Console-owned responsive model catalog picker for chat
   and injected profile editors; worker UIs provide the catalog and selection.
-- Shared `Tooltip`, `Dialog`, `ConfirmDialog`, `DropdownMenu`, `Select`, and
-  `Selector` portals preserve an injected worker's `data-iii-ui` scope.
-  `IconButton` combines an accessible label with the shared tooltip contract.
-  `ConfirmDialog` replaces `window.confirm`: cancel owns initial focus, Escape
-  cancels, and unsaved items can be listed under the description.
+- Shared `Tooltip`, `Dialog`, `ConfirmDialog`, `DropdownMenu`, `Select`,
+  `Selector`, and `BottomSheet` portals preserve an injected worker's
+  `data-iii-ui` scope. `IconButton` combines an accessible label with the
+  shared tooltip contract. `useConfirm()` (render its `dialog`, then `await
+  confirm({ … })`) or `ConfirmDialog` replaces `window.confirm` — a lint
+  error in worker UI: cancel owns initial focus, Escape cancels, and unsaved
+  items can be listed under the description.
 - `AnnotationLayer` is the one way to put numbered pins with notes on a
   picture: the note is written in a callout beside the pin; the page owns
   the list and sends it on through `host.chat.compose`. `AnnotationList`
@@ -129,14 +133,87 @@ The host reuses an existing page or places it beside chat, and delivers a
 react to repeated clicks. Context is ephemeral; fetch large bodies from the
 worker by opaque id.
 
-and keep it external in the build (alongside the react specifiers):
+Everything above is imported from the package root, which stays external in
+the build — `buildWorkerUi` (see *Building a worker UI* below) does that for
+all six import-map specifiers.
 
-```js
-external: ['react', 'react-dom', 'react-dom/client',
-           'react/jsx-runtime', '@iii-dev/console-ui']
-```
+Two subpaths DO bundle (React-free helpers and hooks the Console itself
+uses): `@iii-dev/console-ui/format` — `formatRelative`, `formatDuration`,
+`formatBytes`, `errorMessage`/`errorCode`, `copyText` — and
+`@iii-dev/console-ui/hooks` — `useContainerNarrow`, `usePaneState`,
+`useCopyFlash`, `useWorkerLive` (fetch + trigger bindings + visible-tab poll).
+Newer shared components: `Eyebrow` (the mono caps label; `uiClasses.eyebrow`
+is the class form), `SearchField`, `Toolbar`/`StatusBar` (36 px raised and
+28 px quiet strips with an `end` slot), `MetaRow`/`ActionLine` (a card's
+metadata strip and its `icon`-led action lines — pass a Lucide element, not a
+glyph string), `BottomSheet`, `Kbd`/`KeyCombo`, `LiveRegion`, and
+`<Tooltip label="…">` as the one-line form of the trigger/content
+composition. `setup(host)` may return a disposer; the loader runs it first on
+hot reload and disconnect. Icons come from `lucide-react` (external, shared
+with the console) — never inline SVG copies.
 
 Full authoring guide: `workers/docs/sops/injectable-console-ui.md`.
+
+## Building a worker UI
+
+Every worker's `ui/build.mjs` is the shared esbuild driver:
+
+```js
+import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
+
+await buildWorkerUi({ scope: 'state' })
+```
+
+`scope` is the `data-iii-ui` value the console wraps the render in — the first
+segment of the asset path, normally the worker name. The driver bundles
+`page.tsx` + `styles.css` into `dist/` (`--watch` rebuilds on change,
+unminified), keeps the six import-map specifiers external (only the exact
+`@iii-dev/console-ui` root — `/format` and `/hooks` bundle), and after each
+build fails on an unscoped selector, an unprefixed `@keyframes`, `@font-face`,
+an asset over 8 MiB or a `var(--color-…)` token the console does not define,
+then lints the source against the design rules below.
+
+Options: `entryPoints` (default `['page.tsx', 'styles.css']`), `outdir`
+(`'dist'`), `root` (`process.cwd()`; pass `import.meta.dirname` when invoked
+from elsewhere), `keyframePrefixes` (`[scope, `${scope}-ui`]`),
+`allowUnscopedSelectors` (selector prefixes that are global on purpose, e.g. a
+portal root), `strictTokens` (default `true`; `false` warns instead), `lint`
+(`false` skips the lint; `{ strict, disable, allow }` tunes it — see below),
+`minify` (`!watch`), `watch`, `plugins`, `extraExternal`, `define`. Custom
+builds import `workerUiExternals`, `workerUiExternalsPlugin`, `assertScoped`
+and `checkTokens` from the same module. `tsconfig.json` extends
+`@iii-dev/console-ui/tsconfig.worker-ui.json`.
+
+### Lint rules
+
+`@iii-dev/console-ui/lint-worker-ui` — `lintWorkerUi({ root, scope, strict,
+disable, allow })` — scans `styles.css`, `page.tsx` and `src/**` (never
+`dist/` or tests) and returns `{ errors, warnings }` of `{ rule, file, line,
+excerpt, hint }`. The driver prints the findings grouped by rule after every
+non-watch build and fails on errors; `strict: true` promotes every warning,
+`disable: ['rule']` drops a rule, `allow: { rule: ['substring', /re/] }`
+ignores matching excerpts, and a `lint-allow <rule>` comment on the line
+above a finding does the same in place. CLI: `node
+packages/console-ui/lint-worker-ui.mjs <worker>/ui [--strict] [--json]`, or
+`--all` from the repo root for one row per worker.
+
+| Rule | Level | Checks |
+| --- | --- | --- |
+| `no-window-dialogs` | error | `window.confirm/alert/prompt(` — use `useConfirm()`/`ConfirmDialog` |
+| `icon-size` | error | Lucide `size`, `<svg width/height>` or `size-3`/`w-3 h-3` classes below 16 px |
+| `accent-selection` | error | `var(--color-accent…)` in a rule whose selector is a selected/active/current state (focus rules excepted) |
+| `no-inline-svg` | warning | `<svg` in a `.tsx` outside `icons.tsx`/`icons/` — import from `lucide-react` |
+| `radius` | warning | `border-radius` other than `0`, `6px`, `9999px`, `50%`, `var(--radius-*)`, `inherit` |
+| `font-family` | warning | anything but `var(--font-…)`/`inherit` |
+| `font-size` | warning | below `11px`/`0.6875rem` |
+| `case-transform` | warning | `text-transform` (or `textTransform:`) uppercase/lowercase/capitalize — use the Eyebrow recipe |
+| `focus-stroke` | warning | `:focus`/`:focus-visible` outline, box-shadow or border in accent — use `--color-rule-focus` |
+| `shadow` | warning | `box-shadow` that is not `var(--shadow-*)`, `none` or a token inset/1–2 px stroke |
+| `hex-color` | warning | `#hex`/`rgb()`/`hsl()` literals in CSS (custom properties on the scope root are fine) |
+| `motion-literal` | warning | `transition`/`animation` with a literal `ms`/`s` duration — use `--motion-duration-*` |
+| `keyframes-shared` | warning | `@keyframes …spin/pulse/shimmer/fade` — use `uiClasses.spin`/`uiClasses.pulse` |
+| `viewport-media` | warning | `@media (max-width|min-width …)` — use `@container` |
+| `tailwind-in-worker` | warning | `className` strings with 3+ Tailwind utilities |
 
 ## Transcript annotation renderers
 

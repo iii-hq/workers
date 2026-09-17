@@ -1,19 +1,15 @@
-import { formatBytes, formatRelativeTime } from '../lib/format'
+import { ActionLine, Badge, Card, MetaRow } from '@iii-dev/console-ui'
+import { formatBytes } from '@iii-dev/console-ui/format'
+import { Pencil } from 'lucide-react'
+import { ago } from '../lib/format'
+import { Identity, kv, Loading } from '../lib/widgets'
 import {
-  ActionLine,
-  Card,
-  KvChip,
-  MetaRow,
-  PulseLine,
-  StatusPill,
-} from '../lib/widgets'
-import {
-  systemPromptsUpdateRequestSchema,
-  systemPromptsUpdateResponseSchema,
   safeParseRequest,
   safeParseResponse,
   skillsUpdateRequestSchema,
   skillsUpdateResponseSchema,
+  systemPromptsUpdateRequestSchema,
+  systemPromptsUpdateResponseSchema,
 } from './parsers'
 
 interface ViewProps {
@@ -24,22 +20,16 @@ interface ViewProps {
 
 /* ---------------- directory::skills::update ---------------- */
 
-export function SkillsUpdateView({
-  input,
-  output,
-  running,
-  verb = 'updated',
-}: ViewProps & { verb?: string }) {
+export function SkillsUpdateView({ input, output, running, verb = 'updated' }: ViewProps & { verb?: string }) {
   const req = safeParseRequest(skillsUpdateRequestSchema, input)
 
   if (running) {
     return (
       <Card>
-        <MetaRow>
-          <StatusPill label="saving…" variant="default" />
-          {req ? <KvChip label="id">{req.id}</KvChip> : null}
+        <MetaRow items={kv([['id', req?.id]])}>
+          <Badge>saving…</Badge>
         </MetaRow>
-        <PulseLine label="writing skill…" />
+        <Loading label="writing skill…" />
       </Card>
     )
   }
@@ -49,17 +39,17 @@ export function SkillsUpdateView({
 
   return (
     <Card>
-      <MetaRow>
-        <StatusPill label={verb} variant="accent" />
-        {resp.type ? <KvChip label="type">{resp.type}</KvChip> : null}
-        <KvChip label="bytes">{formatBytes(resp.bytes)}</KvChip>
-        <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
+      <MetaRow
+        items={kv([
+          ['type', resp.type],
+          ['bytes', formatBytes(resp.bytes)],
+          ['modified', ago(resp.modified_at)],
+        ])}
+      >
+        <Badge variant="accent">{verb}</Badge>
       </MetaRow>
-      <ActionLine symbol="✎" tone="accent">
-        <div className="dir-ui-stack">
-          <span className="dir-ui-id lg">{resp.id}</span>
-          <span className="dir-ui-desc">{resp.title}</span>
-        </div>
+      <ActionLine icon={<Pencil />}>
+        <Identity name={resp.id} description={resp.title} />
       </ActionLine>
     </Card>
   )
@@ -67,22 +57,16 @@ export function SkillsUpdateView({
 
 /* ---------------- directory::system-prompts::update ---------------- */
 
-export function SystemPromptsUpdateView({
-  input,
-  output,
-  running,
-  verb = 'updated',
-}: ViewProps & { verb?: string }) {
+export function SystemPromptsUpdateView({ input, output, running, verb = 'updated' }: ViewProps & { verb?: string }) {
   const req = safeParseRequest(systemPromptsUpdateRequestSchema, input)
 
   if (running) {
     return (
       <Card>
-        <MetaRow>
-          <StatusPill label="saving…" variant="default" />
-          {req ? <KvChip label="name">{req.name}</KvChip> : null}
+        <MetaRow items={kv([['name', req?.name]])}>
+          <Badge>saving…</Badge>
         </MetaRow>
-        <PulseLine label="writing system prompt…" />
+        <Loading label="writing system prompt…" />
       </Card>
     )
   }
@@ -90,23 +74,19 @@ export function SystemPromptsUpdateView({
   const resp = safeParseResponse(systemPromptsUpdateResponseSchema, output)
   if (!resp) return null
 
-  const renamed = req && req.name !== resp.name
-
   return (
     <Card>
-      <MetaRow>
-        <StatusPill label={verb} variant="accent" />
-        {renamed ? <KvChip label="was">{req.name}</KvChip> : null}
-        <KvChip label="bytes">{formatBytes(resp.bytes)}</KvChip>
-        <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
+      <MetaRow
+        items={kv([
+          ['was', req && req.name !== resp.name && req.name],
+          ['bytes', formatBytes(resp.bytes)],
+          ['modified', ago(resp.modified_at)],
+        ])}
+      >
+        <Badge variant="accent">{verb}</Badge>
       </MetaRow>
-      <ActionLine symbol="✎" tone="accent">
-        <div className="dir-ui-stack">
-          <span className="dir-ui-id lg">{resp.name}</span>
-          {resp.description ? (
-            <span className="dir-ui-desc">{resp.description}</span>
-          ) : null}
-        </div>
+      <ActionLine icon={<Pencil />}>
+        <Identity name={resp.name} description={resp.description} />
       </ActionLine>
     </Card>
   )

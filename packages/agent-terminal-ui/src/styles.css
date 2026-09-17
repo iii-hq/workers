@@ -61,8 +61,8 @@
 }
 
 .agent-terminal-billing-api-key {
-  color: var(--color-notice, var(--color-ink));
-  border-color: var(--color-notice, var(--color-edge));
+  color: var(--color-warn);
+  border-color: var(--color-warn);
 }
 
 .agent-terminal-billing-none {

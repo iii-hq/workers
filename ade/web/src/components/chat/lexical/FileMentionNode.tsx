@@ -180,12 +180,12 @@ interface PillProps {
 
 /**
  * Glyph for a mention path: Lucide `FolderOpen` when the path ends in `/`,
- * Lucide `File` otherwise. Shared by the pill and the typeahead menus; 14 px
- * with a lighter stroke so it sits level with 13 px monospace text.
+ * Lucide `File` otherwise. Shared by the pill and the typeahead menus; 16 px
+ * (the application-icon floor) with a lighter stroke beside 13 px monospace text.
  */
 export function PathGlyph({ path }: { path: string }) {
   const Icon = path.endsWith('/') ? FolderOpen : File
-  return <Icon size={14} strokeWidth={1.75} aria-hidden />
+  return <Icon size={16} strokeWidth={1.75} aria-hidden />
 }
 
 /**

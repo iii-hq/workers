@@ -174,9 +174,7 @@ export function TraceDetailSkeleton({
       <div className="border-t border-rule-2 flex-shrink-0">
         <div className="flex items-center gap-2 px-4 py-2.5">
           <ChevronRight className="size-4 text-ink-faint" />
-          <span className="font-mono text-[11px] font-medium uppercase tracking-[0.06em] text-ink-faint">
-            workers
-          </span>
+          <span className="iii-ui-eyebrow">workers</span>
           <span className="flex items-center gap-3 ml-auto font-mono text-[11px] text-ink-faint">
             {(['p50', 'p95', 'p99'] as const).map((p) => (
               <span key={p} className="flex items-center gap-1">

@@ -579,6 +579,16 @@ export type SetupFn = (host: Host) => void | (() => void) | Promise<void | (() =
 export declare const iii: ExtensionIii
 export declare const components: Record<string, React.ComponentType<any>>
 export declare function useTheme(): 'light' | 'dark'
+/**
+ * `window.confirm` shaped around `ConfirmDialog`: render `dialog` once in the
+ * component, then `await confirm({ title, … })` where the native box used to
+ * be. Escape, the close control and Cancel resolve `false`; a second call
+ * while one is open cancels the first; unmounting cancels whatever is open.
+ */
+export declare function useConfirm(): {
+  confirm: (options: ConfirmOptions) => Promise<boolean>
+  dialog: React.ReactNode
+}
 /** Design-token names, for documentation/tooling; styling just uses `var(--color-*)`. */
 export declare const tokens: readonly string[]
 /** Stable namespaced CSS recipes; state is expressed through `data-*` attributes. */
@@ -654,6 +664,12 @@ export interface UiClasses {
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
+  readonly eyebrow: 'iii-ui-eyebrow'
+  readonly toolbar: 'iii-ui-toolbar'
+  readonly toolbarEnd: 'iii-ui-toolbar__end'
+  readonly statusbar: 'iii-ui-statusbar'
+  readonly spin: 'iii-ui-spin'
+  readonly pulse: 'iii-ui-pulse'
 }
 
 /* ── the shared component library ───────────────────────────────────── */
@@ -876,6 +892,8 @@ export interface ConfirmDialogProps {
   details?: readonly string[]
   confirmLabel?: string
   cancelLabel?: string
+  /** `danger` paints the confirm control in `alert` for destructive actions. */
+  tone?: 'default' | 'danger'
   onConfirm: () => void
   onCancel?: () => void
 }
@@ -884,6 +902,10 @@ export interface ConfirmDialogProps {
  * initial focus, Escape and the close control cancel.
  */
 export declare const ConfirmDialog: React.ComponentType<ConfirmDialogProps>
+export type ConfirmOptions = Pick<
+  ConfirmDialogProps,
+  'title' | 'description' | 'details' | 'confirmLabel' | 'cancelLabel' | 'tone'
+>
 
 /** Root is state-only; compose with `DialogTrigger`/`DialogContent`. */
 export interface DialogProps {
@@ -1321,7 +1343,7 @@ export declare const SettingsField: React.ComponentType<
 export declare const Skeleton: React.ComponentType<React.HTMLAttributes<HTMLSpanElement>>
 
 export interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
-  tone?: 'accent' | 'alert' | 'warn' | 'ink'
+  tone?: 'accent' | 'alert' | 'warn' | 'ink' | 'ok'
   pulse?: boolean
 }
 export declare const StatusDot: React.ComponentType<StatusDotProps>
@@ -1401,12 +1423,15 @@ export interface TerminalStreamProps {
     a private stream pane in a worker asset; import this instead. */
 export declare const TerminalStream: React.ComponentType<TerminalStreamProps>
 
-/** The console app provides the Radix `TooltipProvider`; compose Root/Trigger/Content only. */
+/** The console app provides the Radix `TooltipProvider`; compose Root/Trigger/Content,
+    or pass `label` to wrap `children` as the trigger with that content. */
 export interface TooltipProps {
   open?: boolean
   defaultOpen?: boolean
   onOpenChange?(open: boolean): void
   delayDuration?: number
+  /** Shorthand: `children` become the trigger (`asChild`) and this the content. */
+  label?: React.ReactNode
   children?: React.ReactNode
 }
 export declare const Tooltip: React.ComponentType<TooltipProps>
@@ -1608,3 +1633,103 @@ export interface WordmarkProps {
 }
 /** The "iii" wordmark. */
 export declare const Wordmark: React.ComponentType<WordmarkProps>
+
+/* ── 2026-09 additions: sheets, keys, live regions, labels, strips ───── */
+
+/** Mobile bottom sheet (Radix Dialog underneath); the portal keeps the worker's `data-iii-ui` scope. */
+export declare const BottomSheet: React.ComponentType<DialogProps>
+export declare const BottomSheetTrigger: React.ComponentType<DialogTriggerProps>
+export declare const BottomSheetClose: React.ComponentType<DialogTriggerProps>
+export interface BottomSheetContentProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Optional visible heading for simple, single-page sheets. */
+  heading?: React.ReactNode
+  description?: React.ReactNode
+  closeLabel?: string
+  headerClassName?: string
+  overlayClassName?: string
+}
+export declare const BottomSheetContent: React.ComponentType<
+  BottomSheetContentProps & React.RefAttributes<HTMLDivElement>
+>
+export declare const BottomSheetTitle: React.ComponentType<
+  React.HTMLAttributes<HTMLHeadingElement> & React.RefAttributes<HTMLHeadingElement>
+>
+export declare const BottomSheetDescription: React.ComponentType<
+  React.HTMLAttributes<HTMLParagraphElement> & React.RefAttributes<HTMLParagraphElement>
+>
+
+/** One key cap (`<kbd>`); `KeyCombo` composes a chord out of them. */
+export declare const Kbd: React.ComponentType<React.HTMLAttributes<HTMLElement>>
+export interface KeyComboProps {
+  /** Stored binding, e.g. `Mod+K`, `Ctrl+G C`. */
+  binding: string
+  platform?: 'mac' | 'other'
+  className?: string
+  capClassName?: string
+  /** The last cap shows `1–9` when the chord ends in a digit. */
+  digitRange?: boolean
+}
+export declare const KeyCombo: React.ComponentType<KeyComboProps>
+
+export interface LiveAnnouncement {
+  /** Monotonic; a new value re-announces identical text. */
+  readonly seq: number
+  readonly text: string
+  readonly urgency: 'polite' | 'assertive'
+}
+export interface LiveRegionProps {
+  announcement: LiveAnnouncement | null
+}
+/** Visually hidden polite + assertive ARIA live regions. */
+export declare const LiveRegion: React.ComponentType<LiveRegionProps>
+
+export interface EyebrowProps extends React.HTMLAttributes<HTMLElement> {
+  as?: 'span' | 'div' | 'h2' | 'h3'
+}
+/** The mono caps label (`uiClasses.eyebrow` is the same look as a class). */
+export declare const Eyebrow: React.ComponentType<EyebrowProps>
+
+export interface SearchFieldProps {
+  value: string
+  onChange(next: string): void
+  placeholder?: string
+  /** Visible label; otherwise `aria-label` is required. */
+  label?: React.ReactNode
+  'aria-label'?: string
+  autoFocus?: boolean
+  className?: string
+  id?: string
+  name?: string
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
+}
+/** Search input with a leading magnifier and a clear affordance; Escape clears. */
+export declare const SearchField: React.ComponentType<
+  SearchFieldProps & React.RefAttributes<HTMLInputElement>
+>
+
+export interface ToolbarProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Trailing slot, pushed to the far end. */
+  end?: React.ReactNode
+}
+/** Secondary toolbar strip (36 px, raised). Give it an `aria-label`. */
+export declare const Toolbar: React.ComponentType<ToolbarProps>
+/** Quiet status strip (28 px, faint tabular text); same `end` slot. */
+export declare const StatusBar: React.ComponentType<ToolbarProps>
+
+export interface MetaRowItem {
+  label: React.ReactNode
+  value: React.ReactNode
+}
+export interface MetaRowProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Label/value pairs, values in mono; free-form children (chips) follow. */
+  items?: readonly MetaRowItem[]
+}
+/** The wrapping metadata strip a function-trigger card opens with. */
+export declare const MetaRow: React.ComponentType<MetaRowProps>
+export interface ActionLineProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Leading 16 px icon (a Lucide element). */
+  icon: React.ReactNode
+  tone?: 'accent' | 'warn' | 'ink'
+}
+/** One action a card reports (`→ url`, `ƒ function`): icon in the tone, body in ink. */
+export declare const ActionLine: React.ComponentType<ActionLineProps>

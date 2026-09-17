@@ -51,6 +51,10 @@ import {
   worktreeIndicators,
 } from '@/lib/worktrees'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /**
  * Per-session working-directory picker, project-switcher style.
  *
@@ -855,7 +859,7 @@ export function DirectoryPicker({
                     />
                     <span className="flex min-w-0 flex-1 items-center gap-1.5 font-sans text-base md:text-[12px]">
                       <span className="truncate text-ink">{wt.branch}</span>
-                      <span className="shrink-0 rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-ghost tabular-nums">
+                      <span className="shrink-0 rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[11px] text-ink-ghost tabular-nums">
                         {shortWorktreeId(wt.worktree_id)}
                       </span>
                       {dirty ? (
@@ -868,14 +872,14 @@ export function DirectoryPicker({
                       ) : null}
                       {ahead > 0 ? (
                         <span
-                          className="shrink-0 text-[10px] text-ink-faint tabular-nums"
+                          className="shrink-0 text-[11px] text-ink-faint tabular-nums"
                           title={`${ahead} commit(s) ahead of base`}
                         >
                           +{ahead}
                         </span>
                       ) : null}
                     </span>
-                    <span className="flex shrink-0 items-center gap-1.5 font-sans text-sm md:text-[10px]">
+                    <span className="flex shrink-0 items-center gap-1.5 font-sans text-sm md:text-[11px]">
                       {wt.session_id ? (
                         <span
                           className="max-w-[80px] truncate text-ink-ghost"
@@ -923,7 +927,7 @@ export function DirectoryPicker({
                 type="button"
                 disabled={validating !== null}
                 onClick={() => void validateAndSelect(query)}
-                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5 md:text-[12px]"
+                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface-selected px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5 md:text-[12px]"
               >
                 <CornerDownLeft className="size-4 shrink-0" aria-hidden />
                 <span className="truncate font-mono">Use {query.trim()}</span>
@@ -1068,7 +1072,7 @@ export function DirectoryPicker({
                 <button
                   type="button"
                   onClick={() => void jumpTo(query)}
-                  className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
+                  className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface-selected px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
                 >
                   <CornerDownLeft className="size-4 shrink-0" aria-hidden />
                   <span className="truncate font-mono">

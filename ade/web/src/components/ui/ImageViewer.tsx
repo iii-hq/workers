@@ -90,7 +90,7 @@ function isEditable(target: EventTarget | null): boolean {
   )
 }
 
-/** The shared full-screen image viewer; see DESIGN.md for the interaction contract. */
+/** The shared full-screen image viewer; see ade/skills/design-system.md ("Overlays") for the interaction contract. */
 export function ImageViewer({
   open,
   onOpenChange,
@@ -498,11 +498,11 @@ function Stage({
     <div
       data-image-viewer-root
       tabIndex={-1}
-      className="relative flex min-h-0 flex-1 flex-col outline-none"
+      className="@container relative flex min-h-0 flex-1 flex-col outline-none"
       onKeyDown={onKeyDown}
     >
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-col items-end gap-2 p-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3 sm:p-4">
-        <div className="pointer-events-auto order-2 max-w-full min-w-0 rounded-md bg-panel-raised/95 px-3 py-2 shadow-floating sm:order-1 sm:max-w-[40%]">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-col items-end gap-2 p-3 @2xl:flex-row @2xl:items-start @2xl:justify-between @2xl:gap-3 @2xl:p-4">
+        <div className="pointer-events-auto order-2 max-w-full min-w-0 rounded-md bg-panel-raised/95 px-3 py-2 shadow-floating @2xl:order-1 @2xl:max-w-[40%]">
           <div className="truncate font-sans text-[13px] font-medium text-ink">
             {title ?? 'Image'}
           </div>
@@ -514,7 +514,8 @@ function Stage({
             </div>
           ) : null}
         </div>
-        <div className="pointer-events-auto order-1 flex shrink-0 items-center gap-0.5 rounded-md bg-panel-raised/95 p-1 shadow-floating sm:order-2">
+        {/* viewport: phone chrome — the 44px touch targets below */}
+        <div className="pointer-events-auto order-1 flex shrink-0 items-center gap-0.5 rounded-md bg-panel-raised/95 p-1 shadow-floating @2xl:order-2">
           <IconButton
             label="Zoom out"
             tooltip="Zoom out (-)"

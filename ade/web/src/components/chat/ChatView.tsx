@@ -2236,10 +2236,10 @@ export function ChatView({
 
   const isDock = density === 'dock'
   const compact = isDock || onBack !== undefined
-  const headerPad = compact ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
+  const headerPad = compact ? 'px-3 @2xl:px-4' : 'px-3 @2xl:px-6 @5xl:px-9'
   const footerPad = compact
-    ? 'px-3 pb-3 pt-2 sm:px-4 sm:pb-4'
-    : 'px-3 pb-3 pt-2 sm:px-6 sm:pb-5 lg:px-9 lg:pb-6'
+    ? 'px-3 pb-3 pt-2 @2xl:px-4 @2xl:pb-4'
+    : 'px-3 pb-3 pt-2 @2xl:px-6 @2xl:pb-5 @5xl:px-9 @5xl:pb-6'
 
   // Resolve the working directory to its managed worktree so landed /
   // land-blocked events can be scoped to this conversation.
@@ -2548,7 +2548,7 @@ export function ChatView({
                 lines (index.css:44-52 — rule/rule-2 are transparent in both
                 themes), so a group is a fill, not a run of dividers. It also
                 keeps the related session metadata visually together. */}
-            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5 max-lg:hidden">
+            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5 @max-5xl:hidden">
               {sessionChips}
               {hasInjectedContextChip ? null : (
                 <ContextUsage
@@ -2566,7 +2566,8 @@ export function ChatView({
                 target without letting an error widen the header. */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 lg:self-stretch lg:size-auto lg:px-1">
+                {/* viewport: phone chrome — hidden from the phone header, touch size */}
+                <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 @5xl:self-stretch @5xl:size-auto @5xl:px-1">
                   <StatusDot
                     tone={
                       conversation.status === 'error'

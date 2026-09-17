@@ -64,6 +64,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { Eyebrow, eyebrowClassName } from '@/components/ui/Eyebrow'
 import { StatusDot } from '@/components/ui/StatusDot'
 import {
   Tooltip,
@@ -223,7 +224,7 @@ const WaterfallRow = memo(function WaterfallRow({
 
         <span
           className={cn(
-            'text-[13px] font-mono truncate lowercase',
+            'text-[13px] font-mono truncate',
             isSelected ? 'font-semibold text-ink' : 'text-ink',
           )}
         >
@@ -431,7 +432,7 @@ function Toolbar(props: ToolbarProps) {
             </>
           )}
       </div>
-      <div className="text-[11px] text-ink-faint tabular-nums lowercase">
+      <div className="text-[11px] text-ink-faint tabular-nums">
         {visibleCount} of {totalCount} spans
       </div>
     </div>
@@ -744,7 +745,10 @@ export function WaterfallChart({
         style={
           { '--span-col-width': `${spanColWidth}px` } as React.CSSProperties
         }
-        className="grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-2 text-[11px] font-semibold text-ink-ghost uppercase tracking-[0.06em] border-b border-rule-2 bg-panel-raised"
+        className={cn(
+          eyebrowClassName,
+          'grid grid-cols-[var(--span-col-width)_1fr] gap-4 px-3 py-2 text-ink-ghost border-b border-rule-2 bg-panel-raised',
+        )}
       >
         <div className="flex items-center relative">
           <span>Span</span>
@@ -821,9 +825,9 @@ export function WaterfallChart({
         {/* minimap */}
         {contentHeight > containerHeight && (
           <div className="w-16 border-l border-rule-2 flex-shrink-0 relative p-2">
-            <div className="text-[9px] text-ink-ghost uppercase tracking-[0.06em] mb-2">
+            <Eyebrow as="div" className="text-ink-ghost mb-2">
               map
-            </div>
+            </Eyebrow>
             <div
               className="relative bg-surface overflow-hidden"
               style={{ height: MINIMAP_HEIGHT }}

@@ -5,7 +5,14 @@
  * chat, save to disk, or be removed.
  */
 
-import { type Host, IconButton } from '@iii-dev/console-ui'
+import {
+  EmptyState,
+  type Host,
+  IconButton,
+  StatusPanel,
+} from '@iii-dev/console-ui'
+import { formatBytes } from '@iii-dev/console-ui/format'
+import { Download, MessageSquarePlus, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   BROWSER_DOWNLOAD_CHANGED_TRIGGER,
@@ -18,15 +25,13 @@ import {
   removeBrowserDownload,
 } from '../lib/browser'
 import { useBrowserSessionEvent } from '../lib/events'
-import { formatSize } from '../lib/format'
-import { Download, MessageSquarePlus, X } from '../lib/icons'
 
 const DOWNLOADS_FEED_FN = 'iii::browser-ui::downloads-feed'
 
 function downloadStatusText(d: BrowserDownload, pct: number): string {
   if (d.state === 'in_progress') return `Downloading… ${pct}%`
   if (d.state === 'canceled') return 'Canceled'
-  return formatSize(d.received_bytes)
+  return formatBytes(d.received_bytes)
 }
 
 interface DownloadsPanelProps {
@@ -105,13 +110,20 @@ export function DownloadsPanel({
   )
 
   if (error) {
-    return <p className="br-ui-downloads-empty">downloads failed: {error}</p>
+    return (
+      <div className="br-ui-panel-body">
+        <StatusPanel variant="alert" headline="Downloads failed" detail={error} />
+      </div>
+    )
   }
   if (downloads.length === 0) {
     return (
-      <p className="br-ui-downloads-empty">
-        Nothing downloaded in this session yet.
-      </p>
+      <div className="br-ui-panel-body">
+        <EmptyState
+          title="Nothing downloaded yet"
+          description="Files this tab downloads are listed here; send them to the chat or save them."
+        />
+      </div>
     )
   }
   return (

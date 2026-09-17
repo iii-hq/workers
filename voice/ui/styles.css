@@ -401,9 +401,13 @@
 }
 
 [data-iii-ui='voice'] .voice-dropzone:hover,
-[data-iii-ui='voice'] .voice-dropzone:focus-visible,
 [data-iii-ui='voice'] .voice-dropzone.dragging {
   border-color: var(--color-accent);
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui='voice'] .voice-dropzone:focus-visible {
+  border-color: var(--color-rule-focus);
   background: var(--color-surface-hover);
   outline: none;
 }
@@ -477,7 +481,7 @@
 
 [data-iii-ui='voice'] .voice-textarea:focus-visible {
   outline: none;
-  border-color: var(--color-accent);
+  border-color: var(--color-rule-focus);
 }
 
 /* ── chat header chip (src/chip): old consoles only ──────────────────── */
@@ -497,7 +501,7 @@
 [data-iii-ui='voice'] .voice-chip-error {
   padding: 0.125rem 0.5rem;
   border-radius: 999px;
-  background: var(--color-surface-raised);
+  background: var(--color-panel-raised);
   color: var(--color-ink-faint);
   font-size: 0.75rem;
   max-width: 16rem;

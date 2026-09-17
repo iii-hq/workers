@@ -1,8 +1,9 @@
 /* Pure formatting helpers shared by the shell renderers. No React, no
    DOM access — deterministic transforms over the parsed shell payloads.
-   Generic byte/mode/time/quoting helpers come from ../lib/format. */
+   Generic quoting comes from ../lib/format, times from the console. */
 
-import { formatMtime, quoteShellArg } from '../lib/format'
+import { formatRelative } from '@iii-dev/console-ui/format'
+import { quoteShellArg } from '../lib/format'
 import type { JobStatus } from './parsers'
 
 /** Render an ExecRequest command line for the terminal prompt.
@@ -24,10 +25,13 @@ export function formatArgv(argv: string[]): string {
   return argv.map(quoteShellArg).join(' ')
 }
 
-/** Epoch-millis (`started_at_ms`/`finished_at_ms`) → short relative
-    time, via `formatMtime` (which takes unix seconds). */
+/** Epoch-millis (`started_at_ms`/`finished_at_ms`) → `3m ago`; `—` when
+    unset (0 marks unknown on the wire). Unix-second mtimes pass as
+    `secs * 1000`. */
 export function formatEpochMs(ms: number): string {
-  return formatMtime(Math.floor(ms / 1000))
+  if (!(ms > 0)) return '—'
+  const relative = formatRelative(ms)
+  return relative === '' ? '—' : relative === 'just now' ? relative : `${relative} ago`
 }
 
 /** Job wall-clock duration. Null while running (`finished_at_ms` null);

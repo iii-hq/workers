@@ -4,7 +4,7 @@
    stage / unstage). Clicking a row opens that file's diff for its side —
    index against HEAD for staged rows, worktree against index otherwise. */
 
-import { ConfirmDialog, IconButton } from '@iii-dev/console-ui'
+import { Button, ConfirmDialog, EmptyState, IconButton } from '@iii-dev/console-ui'
 import { Check, FolderTree, GitBranch, List, Minus, Plus, RefreshCw, Undo2 } from 'lucide-react'
 import { useState } from 'react'
 import { ChangeEntries } from './ChangeEntries'
@@ -79,7 +79,9 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
         }
       />
       {scm.phase === 'not-a-repo' ? (
-        <div className="shui-side-note">This folder is not inside a Git repository.</div>
+        <div className="shui-side-empty">
+          <EmptyState title="No repository" description="This folder is not inside a Git repository." />
+        </div>
       ) : scm.phase === 'error' ? (
         <div className="shui-side-note warn">{scm.error}</div>
       ) : scm.phase === 'loading' || scm.phase === 'idle' ? (
@@ -107,15 +109,16 @@ export function SourceControlTab({ scm, activePath, activeSide, onOpenChange, on
                 }
               }}
             />
-            <button
+            <Button
               type="submit"
-              className="shui-scm-commit-btn"
+              variant="primary"
+              size="sm"
               disabled={scm.busy || message.trim() === '' || scm.staged.length === 0}
               title={scm.staged.length === 0 ? 'stage changes first' : 'commit staged changes'}
             >
               <Check aria-hidden />
               Commit
-            </button>
+            </Button>
           </form>
           {scm.note ? (
             <div className={`shui-scm-note${scm.note.includes('failed') ? ' warn' : ''}`} role="status">

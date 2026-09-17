@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react'
 import { Button } from '@/components/ui/Button'
+import { Eyebrow, eyebrowLgClassName } from '@/components/ui/Eyebrow'
 import type { StreamEvent } from '@/lib/backend'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
@@ -59,7 +60,8 @@ export const EventLog = forwardRef<EventLogHandle, EventLogProps>(
           aria-label="open event log"
           className={cn(
             'w-7 shrink-0 border-l border-rule bg-bg flex items-start justify-center pt-3',
-            'font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint hover:text-ink',
+            eyebrowLgClassName,
+            'hover:text-ink',
             'transition-colors',
           )}
         >
@@ -73,9 +75,7 @@ export const EventLog = forwardRef<EventLogHandle, EventLogProps>(
     return (
       <aside className="w-[260px] shrink-0 border-l border-rule bg-bg flex flex-col min-h-0">
         <header className="flex items-center justify-between px-3 py-2 border-b border-rule">
-          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
-            event log
-          </span>
+          <Eyebrow size="lg">event log</Eyebrow>
           <div className="flex items-center gap-1">
             <Button
               variant="ghost"
@@ -122,7 +122,7 @@ function EventList({ events }: { events: TaggedEvent[] }) {
   if (events.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center px-4 py-6">
-        <div className="font-mono text-[12px] text-ink-ghost lowercase text-center">
+        <div className="font-mono text-[12px] text-ink-ghost text-center">
           no events yet. pick a scenario and send a message to populate.
         </div>
       </div>

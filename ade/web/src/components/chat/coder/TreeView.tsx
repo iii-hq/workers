@@ -49,7 +49,7 @@ export function TreeView({ input, output, running }: TreeViewProps) {
           <Chip label="limit">{req.per_folder_limit}</Chip>
         ) : null}
         {req.use_default_excludes === false ? (
-          <Chip label="excludes" className="border-warn text-warn">
+          <Chip label="excludes" className="bg-warn-muted text-warn">
             off
           </Chip>
         ) : null}
@@ -58,7 +58,7 @@ export function TreeView({ input, output, running }: TreeViewProps) {
             <Chip label="dirs">{summary.dirs}</Chip>
             <Chip label="files">{summary.files}</Chip>
             {summary.truncated > 0 ? (
-              <Chip label="truncated" className="border-warn text-warn">
+              <Chip label="truncated" className="bg-warn-muted text-warn">
                 {summary.truncated}
               </Chip>
             ) : null}

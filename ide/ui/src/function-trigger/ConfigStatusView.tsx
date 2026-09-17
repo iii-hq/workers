@@ -1,4 +1,4 @@
-import { Chip, FooterPill, StatusPill } from '../lib/terminal'
+import { Badge, TerminalStream } from '@iii-dev/console-ui'
 import { safeParseResponse, shellConfigStatusResponseSchema } from './parsers'
 
 interface ShellConfigStatusViewProps {
@@ -29,25 +29,14 @@ export function ShellConfigStatusView({
   const applied = resp.last_outcome === 'applied'
   return (
     <div className="shui-card">
-      <div className={`shui-slab ${applied ? 'accent' : 'alert'}`}>
+      <div className="shui-slab" data-tone={applied ? 'accent' : 'alert'}>
         <div className="shui-row">
-          <StatusPill
-            label={resp.last_outcome}
-            variant={applied ? 'accent' : 'alert'}
-          />
-          {resp.rejected_reloads > 0 ? (
-            <FooterPill tone="warn">
-              {`rejected reloads ${resp.rejected_reloads}`}
-            </FooterPill>
-          ) : (
-            <Chip label="rejected reloads">{resp.rejected_reloads}</Chip>
-          )}
+          <Badge variant={applied ? 'accent' : 'alert'}>{resp.last_outcome}</Badge>
+          <Badge variant={resp.rejected_reloads > 0 ? 'warn' : 'default'}>
+            {`rejected reloads ${resp.rejected_reloads}`}
+          </Badge>
         </div>
-        {resp.last_error != null ? (
-          <pre className="shui-pre err">
-            <code>{resp.last_error}</code>
-          </pre>
-        ) : null}
+        {resp.last_error != null ? <TerminalStream label="last error" text={resp.last_error} tone="err" /> : null}
       </div>
     </div>
   )

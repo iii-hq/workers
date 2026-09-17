@@ -1,7 +1,36 @@
-import { Button, type Host, Input, type ModelOption, ModelPicker, Select, Switch } from '@iii-dev/console-ui'
-import type { CSSProperties, KeyboardEvent, ReactNode } from 'react'
+import {
+  Button,
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
+  type Host,
+  IconButton,
+  Kbd,
+  type ModelOption,
+  ModelPicker,
+  SearchField,
+  Select,
+  Skeleton,
+  Switch,
+} from '@iii-dev/console-ui'
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  ClipboardCheck,
+  CodeXml,
+  Database,
+  FileText,
+  FlaskConical,
+  type LucideIcon,
+  Palette,
+  Pencil,
+  Search,
+  Terminal,
+  X,
+} from 'lucide-react'
+import type { KeyboardEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { PencilIcon, SearchIcon, XIcon } from '../lib/widgets'
 import { type FormContext, slugify } from './browser'
 import {
   frontmatterBody,
@@ -12,7 +41,25 @@ import {
   setFrontmatterStringList,
   withoutFrontmatterFields,
 } from './frontmatter'
-import { TokenIcon } from './token-icons'
+
+/** The nine harness `SubagentIcon` glyphs — the same Lucide icons the
+ * console's session tree renders for each token (ActiveSubagentChips). */
+const TOKEN_ICONS: Record<string, LucideIcon> = {
+  agent: Bot,
+  code: CodeXml,
+  search: Search,
+  terminal: Terminal,
+  database: Database,
+  test: FlaskConical,
+  review: ClipboardCheck,
+  docs: FileText,
+  design: Palette,
+}
+
+export function TokenIcon({ token, className }: { token: string; className?: string }) {
+  const Icon = TOKEN_ICONS[token]
+  return Icon ? <Icon aria-hidden className={className} /> : null
+}
 
 interface PickItem {
   id: string
@@ -163,13 +210,6 @@ function agentColor(value: string): AgentColor {
   return AGENT_COLORS.some((color) => color.id === value) ? (value as AgentColor) : 'neutral'
 }
 
-function cssDurationMs(element: HTMLElement, variable: string, fallback: number) {
-  const value = getComputedStyle(element).getPropertyValue(variable).trim()
-  const duration = Number.parseFloat(value)
-  if (!Number.isFinite(duration)) return fallback
-  return value.endsWith('s') && !value.endsWith('ms') ? duration * 1000 : duration
-}
-
 function AvatarPicker({
   icon,
   color,
@@ -185,18 +225,16 @@ function AvatarPicker({
 }) {
   const [state, setState] = useState<'closed' | 'open' | 'closing'>('closed')
   const wrapRef = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
-  const closeTimerRef = useRef<number | null>(null)
 
-  const close = useCallback(() => {
-    if (state !== 'open') return
-    setState('closing')
-    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
-    const closeMs = wrapRef.current ? cssDurationMs(wrapRef.current, '--dropdown-close-dur', 150) : 150
-    closeTimerRef.current = window.setTimeout(() => {
-      setState('closed')
-      closeTimerRef.current = null
-    }, closeMs)
+  const close = useCallback(() => setState((current) => (current === 'open' ? 'closing' : current)), [])
+
+  // The popover unmounts when its exit animation ends; with no animation
+  // (reduced motion) it goes at once — Radix Presence's rule.
+  useEffect(() => {
+    if (state !== 'closing') return
+    if (popRef.current && getComputedStyle(popRef.current).animationName === 'none') setState('closed')
   }, [state])
 
   useEffect(() => {
@@ -218,19 +256,6 @@ function AvatarPicker({
     }
   }, [close, state])
 
-  useEffect(
-    () => () => {
-      if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
-    },
-    [],
-  )
-
-  const open = () => {
-    if (readOnly) return
-    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current)
-    setState('open')
-  }
-
   const selectedColor = agentColor(color)
 
   return (
@@ -244,64 +269,67 @@ function AvatarPicker({
         aria-haspopup="dialog"
         aria-expanded={state === 'open'}
         disabled={readOnly}
-        onClick={() => (state === 'open' ? close() : open())}
+        onClick={() => (state === 'open' ? close() : readOnly ? undefined : setState('open'))}
       >
-        <TokenIcon token={icon || 'agent'} size={24} />
+        <TokenIcon token={icon || 'agent'} />
       </button>
-      <div
-        data-origin="top-left"
-        className={`dir-ui-af-avatar-pop t-dropdown${
-          state === 'open' ? ' is-open' : state === 'closing' ? ' is-closing' : ''
-        }`}
-        role="dialog"
-        aria-label="Agent profile avatars"
-        aria-hidden={state === 'closed'}
-        inert={state !== 'open'}
-      >
-        <p className="dir-ui-af-avatar-pop-title">Choose an avatar</p>
-        <div className="dir-ui-af-avatar-grid">
-          {LOGO_PRESETS.map((preset) => (
+      {state !== 'closed' ? (
+        <div
+          ref={popRef}
+          className="dir-ui-af-avatar-pop iii-ui-motion-dropdown"
+          data-state={state === 'closing' ? 'closed' : 'open'}
+          role="dialog"
+          aria-label="Agent profile avatars"
+          inert={state === 'closing'}
+          onAnimationEnd={() => {
+            if (state === 'closing') setState('closed')
+          }}
+        >
+          <p className="dir-ui-af-avatar-pop-title">Choose an avatar</p>
+          <div className="dir-ui-af-avatar-grid">
+            {LOGO_PRESETS.map((preset) => (
+              <button
+                key={preset.token}
+                type="button"
+                aria-pressed={icon === preset.token}
+                aria-label={preset.token}
+                title={preset.token}
+                className="dir-ui-af-avatar-option"
+                data-color={selectedColor}
+                onClick={() => onIconChange(preset)}
+              >
+                <TokenIcon token={preset.token} />
+              </button>
+            ))}
             <button
-              key={preset.token}
               type="button"
-              aria-pressed={icon === preset.token}
-              aria-label={preset.token}
-              title={preset.token}
+              aria-pressed={icon === ''}
+              aria-label="No avatar"
+              title="No avatar"
               className="dir-ui-af-avatar-option"
               data-color={selectedColor}
-              onClick={() => onIconChange(preset)}
+              onClick={() => onIconChange(null)}
             >
-              <TokenIcon token={preset.token} size={20} />
+              <X aria-hidden />
             </button>
-          ))}
-          <button
-            type="button"
-            aria-pressed={icon === ''}
-            aria-label="No avatar"
-            title="No avatar"
-            className="dir-ui-af-avatar-option"
-            data-color={selectedColor}
-            onClick={() => onIconChange(null)}
-          >
-            <XIcon className="dir-ui-af-avatar-option-icon" />
-          </button>
+          </div>
+          <div className="dir-ui-af-avatar-colors" role="radiogroup" aria-label="Avatar color">
+            {AGENT_COLORS.map((option) => (
+              <label key={option.id} className="dir-ui-af-avatar-color" data-color={option.id} title={option.label}>
+                <input
+                  type="radio"
+                  name="agent-avatar-color"
+                  value={option.id}
+                  aria-label={option.label}
+                  checked={selectedColor === option.id}
+                  disabled={readOnly}
+                  onChange={() => onColorChange(option.id)}
+                />
+              </label>
+            ))}
+          </div>
         </div>
-        <div className="dir-ui-af-avatar-colors" role="radiogroup" aria-label="Avatar color">
-          {AGENT_COLORS.map((option) => (
-            <label key={option.id} className="dir-ui-af-avatar-color" data-color={option.id} title={option.label}>
-              <input
-                type="radio"
-                name="agent-avatar-color"
-                value={option.id}
-                aria-label={option.label}
-                checked={selectedColor === option.id}
-                disabled={readOnly}
-                onChange={() => onColorChange(option.id)}
-              />
-            </label>
-          ))}
-        </div>
-      </div>
+      ) : null}
     </div>
   )
 }
@@ -418,7 +446,7 @@ function InlineTextField({
       onClick={begin}
     >
       <span className={value.trim() ? '' : 'placeholder'}>{display}</span>
-      <PencilIcon className="dir-ui-af-pencil" />
+      <Pencil aria-hidden className="dir-ui-af-pencil" />
     </button>
   )
 }
@@ -436,34 +464,20 @@ function CollapsibleSection({
   defaultOpen?: boolean
   children: ReactNode
 }) {
-  const [open, setOpen] = useState(defaultOpen)
-  const panelId = useId()
   return (
-    <section className="dir-ui-af-disclosure t-acc" data-open={open}>
-      <button
-        type="button"
-        className="dir-ui-af-disclosure-head t-acc-head"
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={() => setOpen((current) => !current)}
-      >
+    <CollapsibleCard className="dir-ui-af-disclosure" defaultOpen={defaultOpen}>
+      <CollapsibleCardTrigger className="dir-ui-af-disclosure-head">
         <span className="dir-ui-af-disclosure-copy">
           <span className="dir-ui-af-disclosure-title">{title}</span>
           <span className="dir-ui-af-disclosure-description">{description}</span>
         </span>
         {summary ? <span className="dir-ui-af-disclosure-summary">{summary}</span> : null}
-        <span className="dir-ui-af-disclosure-chevron t-acc-chevron">
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M4 6.5L8 10.5L12 6.5" />
-          </svg>
-        </span>
-      </button>
-      <div id={panelId} className="t-acc-panel">
-        <div className="dir-ui-af-disclosure-inner t-acc-panel-inner">
-          <div className="dir-ui-af-disclosure-content">{children}</div>
-        </div>
-      </div>
-    </section>
+        <ChevronDown aria-hidden className="dir-ui-af-disclosure-chevron" />
+      </CollapsibleCardTrigger>
+      <CollapsibleCardContent>
+        <div className="dir-ui-af-disclosure-content">{children}</div>
+      </CollapsibleCardContent>
+    </CollapsibleCard>
   )
 }
 
@@ -585,15 +599,8 @@ function PickerRowView({
         onChange={onChange}
         onFocus={onFocus}
       />
-      <span
-        className="dir-ui-af-skill-check t-check"
-        aria-hidden="true"
-        data-checked={checked}
-        style={{ '--check-len': 15 } as CSSProperties}
-      >
-        <svg viewBox="0 0 10.1668 10.1668" aria-hidden="true">
-          <path d="M1 5.52L3.92 9.17L9.17 1" />
-        </svg>
+      <span className="dir-ui-af-skill-check" aria-hidden="true" data-checked={checked}>
+        <Check />
       </span>
       <span className="dir-ui-af-skill-copy">
         <span className="dir-ui-af-skill-name" title={item.label}>
@@ -703,10 +710,20 @@ function PickerEditor({
 }) {
   const [filter, setFilter] = useState('')
   const [active, setActive] = useState<Record<PickerList, string | null>>({ selected: null, available: null })
-  const searchRef = useRef<HTMLInputElement>(null)
+  const searchRef = useRef<HTMLInputElement | null>(null)
   const rowsRef = useRef(new Map<string, HTMLInputElement>())
   const pendingFocusRef = useRef<{ list: PickerList; index: number } | null>(null)
   const listsId = useId()
+  // `SearchField` forwards no ARIA beyond its label: the list link and the
+  // key hints ride on the element itself.
+  const attachSearch = useCallback(
+    (el: HTMLInputElement | null) => {
+      searchRef.current = el
+      el?.setAttribute('aria-controls', listsId)
+      el?.setAttribute('aria-keyshortcuts', 'ArrowDown ArrowUp Enter Escape')
+    },
+    [listsId],
+  )
   const needle = filter.trim().toLowerCase()
   const matches = (item: PickItem) =>
     !needle ||
@@ -859,41 +876,18 @@ function PickerEditor({
 
   return (
     <div className="dir-ui-af-skills" data-picker={copy.field}>
-      <div className="dir-ui-af-skill-search">
-        <SearchIcon className="dir-ui-af-skill-search-icon" />
-        <Input
-          ref={searchRef}
-          type="search"
-          name={`${copy.field}_filter`}
-          value={filter}
-          onChange={setFilter}
-          onKeyDown={onSearchKeyDown}
-          placeholder={copy.placeholder}
-          aria-label={`Filter ${copy.plural}`}
-          aria-controls={listsId}
-          aria-keyshortcuts="ArrowDown ArrowUp Enter Escape"
-          autoComplete="off"
-          spellCheck={false}
-          className="dir-ui-af-skill-search-input"
-        />
-        {filter ? (
-          <button
-            type="button"
-            className="dir-ui-af-skill-search-clear"
-            aria-label={`Clear ${copy.plural} filter`}
-            tabIndex={-1}
-            onClick={() => {
-              setFilter('')
-              focusSearch()
-            }}
-          >
-            <XIcon className="dir-ui-af-skill-search-clear-icon" />
-          </button>
-        ) : null}
-      </div>
+      <SearchField
+        ref={attachSearch}
+        name={`${copy.field}_filter`}
+        value={filter}
+        onChange={setFilter}
+        onKeyDown={onSearchKeyDown}
+        placeholder={copy.placeholder}
+        aria-label={`Filter ${copy.plural}`}
+      />
       <p className="dir-ui-af-picker-hint" aria-hidden="true">
-        <kbd>↑</kbd>
-        <kbd>↓</kbd> browse · <kbd>Enter</kbd> adds the first match · <kbd>Space</kbd> toggles · <kbd>Esc</kbd> back to
+        <Kbd>↑</Kbd>
+        <Kbd>↓</Kbd> browse · <Kbd>Enter</Kbd> adds the first match · <Kbd>Space</Kbd> toggles · <Kbd>Esc</Kbd> back to
         search
       </p>
       <div id={listsId} className="dir-ui-af-picker-lists" onKeyDown={onListsKeyDown}>
@@ -932,22 +926,27 @@ function PickerEditor({
   )
 }
 
+/** One placeholder block; sizes mirror the control it stands in for. */
+function Bar({ w, h = 10 }: { w: string | number; h?: number }) {
+  return <Skeleton style={{ display: 'block', width: w, height: h }} />
+}
+
 function SkeletonSkillList() {
   return (
     <div className="dir-ui-af-skill-list-wrap">
       <div className="dir-ui-af-skill-list-head">
-        <span className="dir-ui-af-skeleton-block is-list-title" />
-        <span className="dir-ui-af-skeleton-block is-count" />
+        <Bar w={72} />
+        <Bar w={16} />
       </div>
       {/* biome-ignore lint/a11y/noRedundantRoles: preserve list semantics across embedded hosts */}
       <ul className="dir-ui-af-skill-list" role="list">
         {[0, 1].map((row) => (
           <li key={row}>
             <div className="dir-ui-af-skeleton-skill-row">
-              <span className="dir-ui-af-skeleton-block is-checkbox" />
+              <Bar w={20} h={20} />
               <span className="dir-ui-af-skill-copy">
-                <span className="dir-ui-af-skeleton-block is-skill-name" />
-                <span className="dir-ui-af-skeleton-block is-skill-description" />
+                <Bar w="42%" />
+                <Bar w="72%" h={9} />
               </span>
             </div>
           </li>
@@ -959,27 +958,31 @@ function SkeletonSkillList() {
 
 function SkeletonDisclosure({ kind }: { kind: 'prompt' | 'skills' }) {
   return (
-    <section className="dir-ui-af-disclosure dir-ui-af-skeleton-disclosure">
+    <section className="dir-ui-af-disclosure">
       <div className="dir-ui-af-disclosure-head">
         <span className="dir-ui-af-disclosure-copy">
-          <span className="dir-ui-af-skeleton-block is-section-title" />
-          <span className="dir-ui-af-skeleton-block is-section-description" />
+          <Bar w={96} h={16} />
+          <Bar w="min(70%, 300px)" />
         </span>
-        <span className="dir-ui-af-disclosure-summary dir-ui-af-skeleton-block is-summary" />
-        <span className="dir-ui-af-disclosure-chevron dir-ui-af-skeleton-block is-chevron" />
+        <span className="dir-ui-af-disclosure-summary">
+          <Bar w={52} h={8} />
+        </span>
+        <Bar w={16} h={16} />
       </div>
       <div className="dir-ui-af-disclosure-content">
         {kind === 'prompt' ? (
           <div className="dir-ui-af-prompt dir-ui-af-skeleton-prompt">
-            <span className="dir-ui-af-skeleton-block is-prompt-line" />
-            <span className="dir-ui-af-skeleton-block is-prompt-line is-medium" />
-            <span className="dir-ui-af-skeleton-block is-prompt-line is-short" />
+            <Bar w="88%" />
+            <Bar w="68%" />
+            <Bar w="42%" />
           </div>
         ) : (
           <div className="dir-ui-af-skills">
-            <span className="dir-ui-af-skeleton-block is-search" />
+            <Bar w="100%" h={36} />
             <SkeletonSkillList />
-            <span className="dir-ui-af-skeleton-block is-transfer" />
+            <div className="dir-ui-af-skill-transfer" aria-hidden="true">
+              <Bar w={36} h={6} />
+            </div>
             <SkeletonSkillList />
           </div>
         )}
@@ -992,21 +995,21 @@ function AgentFormSkeletonLayout() {
   return (
     <div className="dir-ui-af dir-ui-af-skeleton">
       <div className="dir-ui-af-profile">
-        <span className="dir-ui-af-skeleton-block is-avatar" />
+        <Bar w={56} h={56} />
         <div className="dir-ui-af-profile-copy">
-          <span className="dir-ui-af-skeleton-block is-name" />
-          <span className="dir-ui-af-skeleton-block is-description" />
-          <span className="dir-ui-af-skeleton-block is-description-short" />
+          <Bar w="min(52%, 280px)" h={24} />
+          <Bar w="min(72%, 420px)" h={12} />
+          <Bar w="min(48%, 280px)" h={12} />
         </div>
       </div>
 
       <div className="dir-ui-af-aligned">
         <div className="dir-ui-af-model-row">
           <div className="dir-ui-af-model-label">
-            <span className="dir-ui-af-skeleton-block is-model-label" />
-            <span className="dir-ui-af-skeleton-block is-model-hint" />
+            <Bar w={52} h={12} />
+            <Bar w={86} h={8} />
           </div>
-          <span className="dir-ui-af-skeleton-block is-model-picker" />
+          <Bar w="min(100%, 280px)" h={36} />
         </div>
         <SkeletonDisclosure kind="prompt" />
         <SkeletonDisclosure kind="skills" />
@@ -1220,15 +1223,9 @@ export function AgentForm(ctx: FormContext) {
                   className="dir-ui-af-model-picker"
                 />
                 {model && !readOnly ? (
-                  <button
-                    type="button"
-                    className="dir-ui-af-model-clear"
-                    aria-label="Use the session default model"
-                    title="Use the session default"
-                    onClick={() => setModel('')}
-                  >
-                    <XIcon className="dir-ui-af-model-clear-icon" />
-                  </button>
+                  <IconButton label="Use the session default model" onClick={() => setModel('')}>
+                    <X />
+                  </IconButton>
                 ) : null}
               </div>
             </div>

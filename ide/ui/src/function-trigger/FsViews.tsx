@@ -1,10 +1,13 @@
 /* The single-outcome shell::fs::* views: ls, stat, read, mkdir, rm, mv,
    chmod. Grep/sed (match lists) live in FsSearchViews.tsx; write (with
-   its batch table) in FsWriteView.tsx. */
+   its batch table) in FsWriteView.tsx. Each card opens with the console's
+   MetaRow (the request's facts) and says what happened in one line. */
 
+import { Badge, Chip, EmptyState, MetaRow, Table, TableBody, TableCell, TableRow } from '@iii-dev/console-ui'
+import { formatBytes } from '@iii-dev/console-ui/format'
 import { File, FileText, Folder, Link as LinkIcon } from 'lucide-react'
-import { formatBytes, formatMode, formatMtime, truncateMiddle } from '../lib/format'
-import { Chip, FooterPill } from '../lib/terminal'
+import { formatMode, truncateMiddle } from '../lib/format'
+import { formatEpochMs } from './format'
 import {
   type FsEntry,
   fsChmodRequestSchema,
@@ -23,12 +26,15 @@ import {
   fsStatResponseSchema,
   safeParseResponse,
 } from './parsers'
-import { displayPath, isSandboxTarget, TargetChip } from './shared'
+import { displayPath, isSandboxTarget, items, kv, targetItem } from './shared'
 
 interface ViewProps {
   input: unknown
   output: unknown
 }
+
+/** Unix-second mtimes (0 = unknown) as `3m ago`. */
+const mtime = (secs: number) => formatEpochMs(secs * 1000)
 
 /* ---------------- fs::ls ---------------- */
 
@@ -41,15 +47,11 @@ export function FsLsView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-head">
-        <span className="shui-chips">
-          <Chip label="path">{req.data.path}</Chip>
-          <TargetChip target={req.data.target} />
-          <Chip label="entries">{entries.length}</Chip>
-        </span>
-      </div>
+      <MetaRow items={items(kv('path', req.data.path), targetItem(req.data.target), kv('entries', entries.length))} />
       {entries.length === 0 ? (
-        <div className="shui-empty">· directory is empty</div>
+        <div className="shui-card-body">
+          <EmptyState title="Empty directory" description="There is nothing to list here." />
+        </div>
       ) : (
         <FsEntriesTable entries={entries} />
       )}
@@ -60,8 +62,8 @@ export function FsLsView({ input, output }: ViewProps) {
 /** Directory-listing table shared by the ls view. */
 export function FsEntriesTable({ entries }: { entries: FsEntry[] }) {
   return (
-    <table className="shui-table plain">
-      <tbody>
+    <Table density="compact">
+      <TableBody>
         {entries.map((e) => {
           const Icon = e.is_symlink
             ? LinkIcon
@@ -69,23 +71,23 @@ export function FsEntriesTable({ entries }: { entries: FsEntry[] }) {
               ? Folder
               : iconForFile(e.name)
           return (
-            <tr key={`${e.name}:${e.size}:${e.mtime}`}>
-              <td className="pad-l icon">
-                <Icon aria-hidden className="shui-fs-icon" />
-              </td>
-              <td className="t-ink">{e.name}</td>
-              <td className="t-faint num r">
+            <TableRow key={`${e.name}:${e.size}:${e.mtime}`}>
+              <TableCell className="icon">
+                <Icon aria-hidden className="shui-glyph t-faint" />
+              </TableCell>
+              <TableCell className="shui-path t-ink">{e.name}</TableCell>
+              <TableCell className="t-faint num r">
                 {e.is_dir ? '—' : formatBytes(e.size)}
-              </td>
-              <td className="t-faint num">
+              </TableCell>
+              <TableCell className="t-faint num">
                 {`${e.is_dir ? 'd' : '-'}${formatMode(e.mode)}`}
-              </td>
-              <td className="t-faint pad-r">{formatMtime(e.mtime)}</td>
-            </tr>
+              </TableCell>
+              <TableCell className="t-faint">{mtime(e.mtime)}</TableCell>
+            </TableRow>
           )
         })}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   )
 }
 
@@ -107,19 +109,20 @@ export function FsStatView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-slab">
-        <div className="shui-line">
-          <span className="t-faint">stat </span>
-          <span>{req.data.path}</span>
-        </div>
-        <div className="shui-row">
-          <Chip label="size">{e.is_dir ? '—' : formatBytes(e.size)}</Chip>
-          <Chip label="mode">{`${e.is_dir ? 'd' : '-'}${formatMode(e.mode)}`}</Chip>
-          <Chip label="mtime">{formatMtime(e.mtime)}</Chip>
-          <TargetChip target={req.data.target} />
-          {e.is_dir ? <FooterPill tone="default">dir</FooterPill> : null}
-          {e.is_symlink ? <FooterPill tone="warn">symlink</FooterPill> : null}
-        </div>
+      <MetaRow
+        items={items(
+          kv('size', e.is_dir ? '—' : formatBytes(e.size)),
+          kv('mode', `${e.is_dir ? 'd' : '-'}${formatMode(e.mode)}`),
+          kv('mtime', mtime(e.mtime)),
+          targetItem(req.data.target),
+        )}
+      >
+        {e.is_dir ? <Badge>dir</Badge> : null}
+        {e.is_symlink ? <Badge variant="warn">symlink</Badge> : null}
+      </MetaRow>
+      <div className="shui-card-body shui-line">
+        <span className="t-faint">stat </span>
+        <span className="shui-path">{req.data.path}</span>
       </div>
     </div>
   )
@@ -139,27 +142,21 @@ export function FsReadView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-head">
-        <span className="shui-chips">
-          <span className="shui-err-label">file</span>
-          <code className="t-ink">{req.data.path}</code>
-          <TargetChip target={req.data.target} />
-        </span>
-      </div>
-
-      <div className="shui-body stream-row">
+      <MetaRow
+        items={items(
+          kv('file', req.data.path),
+          targetItem(req.data.target),
+          kv('size', formatBytes(resp.size)),
+          kv('mode', formatMode(resp.mode)),
+          kv('mtime', mtime(resp.mtime)),
+        )}
+      >
+        <Badge>streamed</Badge>
+      </MetaRow>
+      <div className="shui-card-body shui-row">
         <span className="t-faint">content streamed via channel</span>
-        <code className="shui-inline-code">
-          {truncateMiddle(resp.content.channel_id, 18)}
-        </code>
+        <code className="shui-inline-code">{truncateMiddle(resp.content.channel_id, 18)}</code>
         <span className="t-ghost">({resp.content.direction ?? 'read'})</span>
-      </div>
-
-      <div className="shui-foot">
-        <Chip label="size">{formatBytes(resp.size)}</Chip>
-        <Chip label="mode">{formatMode(resp.mode)}</Chip>
-        <Chip label="mtime">{formatMtime(resp.mtime)}</Chip>
-        <FooterPill tone="default">streamed</FooterPill>
       </div>
     </div>
   )
@@ -186,16 +183,16 @@ export function FsMkdirView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-slab">
-        <div className="shui-line">
-          <span className={created ? 't-accent' : 't-faint'}>{verb}</span>
-          <span>{displayPath(req.data.path, resp.path)}</span>
-        </div>
-        <div className="shui-row">
-          <Chip label="mode">{req.data.mode ?? '0755'}</Chip>
-          {req.data.parents ? <Chip label="parents">true</Chip> : null}
-          <TargetChip target={req.data.target} />
-        </div>
+      <MetaRow
+        items={items(
+          kv('mode', req.data.mode ?? '0755'),
+          req.data.parents ? kv('parents', 'true') : null,
+          targetItem(req.data.target),
+        )}
+      />
+      <div className="shui-card-body shui-line">
+        <span className={created ? 't-accent' : 't-faint'}>{verb}</span>
+        <span className="shui-path">{displayPath(req.data.path, resp.path)}</span>
       </div>
     </div>
   )
@@ -223,21 +220,14 @@ export function FsRmView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-slab">
-        <div className="shui-line">
-          <span className={tone}>{verb}</span>
-          <span>{displayPath(req.data.path, resp.path)}</span>
-        </div>
-        {recursive || sandboxed ? (
-          <div className="shui-row">
-            {recursive ? (
-              <Chip label="recursive" className="warn">
-                true
-              </Chip>
-            ) : null}
-            <TargetChip target={req.data.target} />
-          </div>
-        ) : null}
+      {recursive || sandboxed ? (
+        <MetaRow items={items(targetItem(req.data.target))}>
+          {recursive ? <Chip tone="warning">recursive</Chip> : null}
+        </MetaRow>
+      ) : null}
+      <div className="shui-card-body shui-line">
+        <span className={tone}>{verb}</span>
+        <span className="shui-path">{displayPath(req.data.path, resp.path)}</span>
       </div>
     </div>
   )
@@ -259,24 +249,16 @@ export function FsMvView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-slab">
-        <div className="shui-baseline-row">
-          <span className={moved ? 't-accent' : 't-faint'}>
-            {moved ? 'mv' : '·'}
-          </span>
-          <span>{displayPath(req.data.src, resp.src)}</span>
-          <span className="t-ghost">→</span>
-          <span>{displayPath(req.data.dst, resp.dst)}</span>
-        </div>
-        {hasChips ? (
-          <div className="shui-row">
-            <TargetChip target={req.data.target} />
-            {req.data.overwrite ? <Chip label="overwrite">true</Chip> : null}
-            {showOverwrote ? (
-              <FooterPill tone="warn">overwrote existing</FooterPill>
-            ) : null}
-          </div>
-        ) : null}
+      {hasChips ? (
+        <MetaRow items={items(targetItem(req.data.target), req.data.overwrite ? kv('overwrite', 'true') : null)}>
+          {showOverwrote ? <Badge variant="warn">overwrote existing</Badge> : null}
+        </MetaRow>
+      ) : null}
+      <div className="shui-card-body shui-baseline-row">
+        <span className={moved ? 't-accent' : 't-faint'}>{moved ? 'mv' : '·'}</span>
+        <span className="shui-path">{displayPath(req.data.src, resp.src)}</span>
+        <span className="t-ghost">→</span>
+        <span className="shui-path">{displayPath(req.data.dst, resp.dst)}</span>
       </div>
     </div>
   )
@@ -296,20 +278,20 @@ export function FsChmodView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-slab">
-        <div className="shui-baseline-row">
-          <span className="t-faint">chmod</span>
-          <span>{displayPath(req.data.path, resp.path)}</span>
-          <span className="t-ghost">→</span>
-          <span className="num">{req.data.mode}</span>
-          <span className="t-faint">({formatMode(req.data.mode)})</span>
-        </div>
-        <div className="shui-row">
-          {ownership ? <Chip label="own">{ownership}</Chip> : null}
-          {req.data.recursive ? <Chip label="recursive">true</Chip> : null}
-          <Chip label="changed">{resp.entries_changed}</Chip>
-          <TargetChip target={req.data.target} />
-        </div>
+      <MetaRow
+        items={items(
+          ownership ? kv('own', ownership) : null,
+          req.data.recursive ? kv('recursive', 'true') : null,
+          kv('changed', resp.entries_changed),
+          targetItem(req.data.target),
+        )}
+      />
+      <div className="shui-card-body shui-baseline-row">
+        <span className="t-faint">chmod</span>
+        <span className="shui-path">{displayPath(req.data.path, resp.path)}</span>
+        <span className="t-ghost">→</span>
+        <span className="num">{req.data.mode}</span>
+        <span className="t-faint">({formatMode(req.data.mode)})</span>
       </div>
     </div>
   )

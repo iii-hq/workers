@@ -6,12 +6,9 @@
  *   mermaid-entry.ts  → dist/mermaid.js  (`console:script`, vendor bundle)
  *   freeform-entry.ts → dist/freeform.js (`console:script`, vendor bundle)
  *
- * page.js keeps the five shared specifiers EXTERNAL — they resolve at runtime
- * through the console's import map. A bundled React copy surfaces as a cryptic
- * "Invalid hook call" with nothing pointing at the cause.
- *
- * The vendor bundles are self-contained ES modules the page lazily imports
- * through src/lib/loaders.ts:
+ * page.js + styles.css go through the shared driver (externals, scoping and
+ * size checks). The vendor bundles are self-contained ES modules the page
+ * lazily imports through src/lib/loaders.ts:
  *   - mermaid.js bundles ALL of mermaid (no externals — mermaid never touches
  *     React) and re-exports its API.
  *   - freeform.js bundles @excalidraw/excalidraw + the mermaid→excalidraw
@@ -22,32 +19,16 @@
  * console:script asset and calls its default export.
  *
  * Every dist file must stay under the console's 8 MiB per-asset cap — the
- * build prints sizes and fails past the cap.
- *
- * `--watch` (page assets only) pairs with the worker's III_CANVAS_UI_WATCH
- * poller for the hot-reload dev loop.
+ * build prints sizes and fails past the cap. The vendor bundles change only
+ * when dependencies do, so they build once, before the page (which `--watch`
+ * then keeps rebuilding).
  */
 
-import esbuild from 'esbuild'
 import { statSync } from 'node:fs'
+import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
+import esbuild from 'esbuild'
 
 const SIZE_CAP = 8 * 1024 * 1024
-
-const pageOptions = {
-  entryPoints: ['page.tsx', 'styles.css'],
-  bundle: true,
-  format: 'esm',
-  jsx: 'automatic',
-  outdir: 'dist',
-  external: [
-    'react',
-    'react-dom',
-    'react-dom/client',
-    'react/jsx-runtime',
-    '@iii-dev/console-ui',
-  ],
-  logLevel: 'info',
-}
 
 const mermaidOptions = {
   entryPoints: ['mermaid-entry.ts'],
@@ -121,33 +102,20 @@ const freeformOptions = {
   logLevel: 'info',
 }
 
-if (process.argv.includes('--watch')) {
-  // The vendor bundles change only when dependencies do — build them once
-  // so a fresh dist serves complete assets, then watch the page entries.
-  await esbuild.build(mermaidOptions)
-  await esbuild.build(freeformOptions)
-  const ctx = await esbuild.context(pageOptions)
-  await ctx.watch()
-} else {
-  await esbuild.build(pageOptions)
-  await esbuild.build(mermaidOptions)
-  await esbuild.build(freeformOptions)
+await esbuild.build(mermaidOptions)
+await esbuild.build(freeformOptions)
 
-  let overCap = false
-  for (const file of [
-    'dist/page.js',
-    'dist/styles.css',
-    'dist/mermaid.js',
-    'dist/freeform.js',
-  ]) {
-    const bytes = statSync(file).size
-    const mib = (bytes / (1024 * 1024)).toFixed(2)
-    const verdict = bytes < SIZE_CAP ? 'ok' : 'OVER THE 8 MiB CONSOLE CAP'
-    console.log(`${file}: ${bytes} bytes (${mib} MiB) — ${verdict}`)
-    if (bytes >= SIZE_CAP) overCap = true
-  }
-  if (overCap) {
-    console.error('one or more assets exceed the console 8 MiB per-asset cap')
-    process.exit(1)
-  }
+let overCap = false
+for (const file of ['dist/mermaid.js', 'dist/freeform.js']) {
+  const bytes = statSync(file).size
+  const mib = (bytes / (1024 * 1024)).toFixed(2)
+  const verdict = bytes < SIZE_CAP ? 'ok' : 'OVER THE 8 MiB CONSOLE CAP'
+  console.log(`${file}: ${bytes} bytes (${mib} MiB) — ${verdict}`)
+  if (bytes >= SIZE_CAP) overCap = true
 }
+if (overCap) {
+  console.error('one or more assets exceed the console 8 MiB per-asset cap')
+  process.exit(1)
+}
+
+await buildWorkerUi({ scope: 'canvas' })

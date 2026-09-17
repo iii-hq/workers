@@ -1,9 +1,5 @@
-import {
-  ActionLine,
-  Chip,
-  MetaRow,
-  StatusPill,
-} from '../../lib/shared'
+import { ActionLine, Badge, Chip, MetaRow } from '@iii-dev/console-ui'
+import { ArrowRight } from 'lucide-react'
 import {
   safeParseRequest,
   safeParseResponse,
@@ -29,15 +25,15 @@ export function ScreenshotView({
     return (
       <div className="br-ui-scrape-section">
         <MetaRow>
-          <StatusPill label="capturing…" variant="default" />
+          <Badge variant="default">capturing…</Badge>
           <Chip>{req.fetcher ?? 'dynamic'}</Chip>
           {req.full_page ? <Chip>full page</Chip> : null}
           {req.proxy ? <Chip>proxy</Chip> : null}
         </MetaRow>
-        <ActionLine symbol="→" tone="ink">
-          <span className="br-ui-scrape-break">{req.url}</span>
+        <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+          <span className="br-ui-break">{req.url}</span>
         </ActionLine>
-        <div className="br-ui-scrape-running">
+        <div className="br-ui-more">
           · waiting for the browser…
         </div>
       </div>
@@ -60,19 +56,18 @@ export function ScreenshotView({
   return (
     <div className="br-ui-scrape-section">
       <MetaRow>
-        <StatusPill label="screenshot" variant="accent" />
+        <Badge variant="accent">screenshot</Badge>
         <Chip>{req.fetcher ?? 'dynamic'}</Chip>
         <Chip>{mime.replace('image/', '')}</Chip>
         {req.full_page ? <Chip>full page</Chip> : null}
         {req.proxy ? <Chip>proxy</Chip> : null}
         {images.length > 1 ? <Chip>{images.length} tiles</Chip> : null}
         <Chip>
-          <span className="br-ui-scrape-num">{sizeKb}</span>
-          <span className="br-ui-scrape-unit">KB</span>
+          <span className="br-ui-num">{sizeKb} KB</span>
         </Chip>
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
-        <span className="br-ui-scrape-break">{url}</span>
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+        <span className="br-ui-break">{url}</span>
       </ActionLine>
       <div className="br-ui-scrape-gallery">
         {images.map((b, i) => (
@@ -85,7 +80,7 @@ export function ScreenshotView({
           />
         ))}
         {caption ? (
-          <div className="br-ui-scrape-caption">
+          <div className="br-ui-faint br-ui-break">
             {caption}
           </div>
         ) : null}
@@ -100,14 +95,14 @@ export function ScreenshotPreview({ input }: { input: unknown }) {
   return (
     <div className="br-ui-scrape-section is-preview">
       <MetaRow>
-        <StatusPill label="permission to screenshot" variant="warn" />
+        <Badge variant="warn">permission to screenshot</Badge>
         <Chip>{req.fetcher ?? 'dynamic'}</Chip>
         {req.format ? <Chip>{req.format}</Chip> : null}
         {req.full_page ? <Chip>full page</Chip> : null}
         {req.proxy ? <Chip>proxy</Chip> : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
-        <span className="br-ui-scrape-break">{req.url}</span>
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+        <span className="br-ui-break">{req.url}</span>
       </ActionLine>
     </div>
   )

@@ -21,6 +21,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { KeyCombo } from '@/components/ui/KeyCombo'
 import { Sheet } from '@/components/ui/Sheet'
 import { Wordmark } from '@/components/ui/Wordmark'
@@ -113,6 +114,10 @@ import { ExtPage } from '@/pages/Ext'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
+
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 function firstPartyPageTitle(screen: TabScreen): string {
   if (isChatScreen(screen)) return 'Chat'
@@ -1810,7 +1815,7 @@ function Header({
             aria-label={hoverTitle('Search and commands', 'palette.toggle')}
             title={hoverTitle('Search and commands', 'palette.toggle')}
             /* onboarding-palette: tour anchor (workers/onboarding). Do not remove. */
-            className="onboarding-palette relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-accent focus-visible:outline-none active:scale-[0.97]"
+            className="onboarding-palette relative flex h-10 items-center justify-center rounded-md border border-transparent bg-transparent px-2 text-ink-faint transition-[transform,color,background-color] [transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)] hover:bg-surface-hover hover:text-ink focus-visible:border-rule-focus focus-visible:outline-none active:scale-[0.97]"
           >
             <KeyCombo
               binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'}
@@ -1917,9 +1922,9 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
           .filter(([, entries]) => entries.length > 0)
           .map(([group, entries]) => (
             <section key={group} className="mt-4">
-              <h3 className="text-[11px] uppercase tracking-[0.18em] text-ink-ghost">
+              <Eyebrow as="h3" size="lg" className="text-ink-ghost">
                 {group}
-              </h3>
+              </Eyebrow>
               <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
                 {entries.map((entry) => (
                   <li

@@ -62,7 +62,7 @@ export function FunctionsListView({
                 <span className="font-mono text-[12.5px] text-accent break-all">
                   {fn.function_id}
                 </span>
-                <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint border border-rule-2 bg-paper-2 px-1.5 py-0.5">
+                <span className="iii-ui-eyebrow border border-rule-2 bg-paper-2 px-1.5 py-0.5">
                   {fn.worker_name}
                 </span>
               </div>

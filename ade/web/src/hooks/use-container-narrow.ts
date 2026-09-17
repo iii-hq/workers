@@ -1,36 +1,14 @@
-import { useCallback, useRef, useState } from 'react'
+import { useContainerNarrow as useSharedContainerNarrow } from '@iii-dev/console-ui/hooks'
 
 /**
  * Observe an element's own width and report whether it is currently
- * narrower than `threshold`. Container-driven (a ResizeObserver on the
- * node, not a viewport media query) so the same component adapts inside
- * any pane the console gives it — a phone viewport and a squeezed tab
- * column behave identically.
- *
- * Measures synchronously when the ref attaches to avoid a wide-mode
- * flash; zero widths (display:none hosts) are ignored so a hidden pane
- * keeps its last real layout.
+ * narrower than `threshold` — the shared `@iii-dev/console-ui/hooks`
+ * implementation (ResizeObserver on the node, synchronous first measure,
+ * zero widths ignored) in the tuple shape the Console's callers use.
  */
 export function useContainerNarrow(
   threshold: number,
 ): [(node: HTMLElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const refCb = useCallback(
-    (node: HTMLElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-  return [refCb, narrow]
+  const { ref, narrow } = useSharedContainerNarrow({ below: threshold })
+  return [ref, narrow]
 }

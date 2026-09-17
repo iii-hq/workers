@@ -9,18 +9,20 @@
  */
 
 import {
+  EmptyState,
   type FunctionTriggerMessage,
   type FunctionTriggerRenderer,
   type Host,
   JsonHighlight,
+  Skeleton,
 } from '@iii-dev/console-ui'
+import { ExternalLink } from 'lucide-react'
 import {
   browserSessionIdFromCall,
   isBrowserFunction,
   parseScreenshotOutput,
 } from '../lib/browser'
 import { InfraErrorView, parseInfraErrorDisplay } from '../lib/errors'
-import { ExternalLink } from '../lib/icons'
 import {
   ActView,
   ConsoleReadView,
@@ -46,24 +48,15 @@ const BROWSER_PAGE_HASH = '#/ext/browser'
  * (`navigate`, `act`, …) reads clearly.
  */
 export function FunctionIdLabel({ functionId }: { functionId: string }) {
-  if (!functionId.startsWith('browser::')) {
-    return <span style={{ color: 'var(--color-ink)' }}>{functionId}</span>
-  }
-  const tail = functionId.slice('browser::'.length)
+  const [ns, op] = functionId.startsWith('browser::')
+    ? ['browser::', functionId.slice('browser::'.length)]
+    : ['', functionId]
   return (
     <>
-      <span style={{ color: 'var(--color-ink-faint)' }}>browser::</span>
-      <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>{tail}</span>
+      {ns ? <span style={{ color: 'var(--color-ink-faint)' }}>{ns}</span> : null}
+      <span style={{ color: 'var(--color-ink)', fontWeight: 500 }}>{op}</span>
     </>
   )
-}
-
-function formatJson(value: unknown): string {
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
 }
 
 function ScreenshotBody({ output }: { output: unknown }) {
@@ -171,15 +164,20 @@ function BrowserCallView({ message }: { message: FunctionTriggerMessage }) {
         ) : null}
       </div>
       {running && message.output == null ? (
-        <p className="br-ui-call-running">Running...</p>
+        <div className="br-ui-call-running" aria-busy aria-label="Running">
+          <Skeleton className="br-ui-skel" />
+        </div>
       ) : body ? (
         body
       ) : fallback != null ? (
         <div className="br-ui-json">
-          <JsonHighlight code={formatJson(fallback)} />
+          <JsonHighlight code={JSON.stringify(fallback, null, 2) ?? 'null'} />
         </div>
       ) : (
-        <p className="br-ui-empty-line">No result</p>
+        <EmptyState
+          title="No result"
+          description="The call finished without returning a payload."
+        />
       )}
     </div>
   )

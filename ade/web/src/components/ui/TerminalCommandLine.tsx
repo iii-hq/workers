@@ -1,6 +1,7 @@
 import { Copy } from 'lucide-react'
 import type * as React from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { Prompt } from '@/components/ui/Prompt'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
@@ -88,19 +89,14 @@ export function TerminalCommandLine({
           {copyState === 'idle' ? (
             <>
               <Copy className="size-4 shrink-0" aria-hidden />
-              <span className="font-mono text-[10px] uppercase tracking-[0.06em]">
-                copy
-              </span>
+              <Eyebrow className="text-inherit">copy</Eyebrow>
             </>
           ) : (
-            <span
-              className={cn(
-                'font-mono text-[10px] uppercase tracking-[0.06em]',
-                copyState === 'copied' ? 'text-accent' : 'text-warn',
-              )}
+            <Eyebrow
+              className={copyState === 'copied' ? 'text-accent' : 'text-warn'}
             >
               {copyState === 'copied' ? 'copied' : 'failed'}
-            </span>
+            </Eyebrow>
           )}
         </button>
       ) : null}

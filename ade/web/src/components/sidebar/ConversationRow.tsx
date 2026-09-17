@@ -14,6 +14,10 @@ import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import type { Conversation, SubagentColor } from '@/types/chat'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 const rowActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12 pointer-coarse:min-w-12`
 
 /**

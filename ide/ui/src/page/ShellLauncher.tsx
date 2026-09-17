@@ -7,7 +7,7 @@
  * end; this is the whole page in one glance.
  */
 
-import { DirectoryPicker, Wordmark } from '@iii-dev/console-ui'
+import { DirectoryPicker, Kbd, Wordmark } from '@iii-dev/console-ui'
 import { FileSearch, FolderOpen, GitCompareArrows, History, Search, SquareTerminal } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { FileTypeIcon } from './file-type-icon'
@@ -182,10 +182,10 @@ export function ShellLauncher({
           </section>
         ) : null}
         <p className="shui-launcher-hint">
-          Keys work while this pane has the focus. <kbd className="shui-launcher-key">{quickOpenKey}</kbd> goes to a file,{' '}
-          <kbd className="shui-launcher-key">Shift+Alt+←</kbd>{' '}
-          <kbd className="shui-launcher-key">Shift+Alt+→</kbd> walk the files you visited, <kbd className="shui-launcher-key">Alt+←</kbd>{' '}
-          <kbd className="shui-launcher-key">Alt+→</kbd> step between tabs. Everything else is a row in the palette.
+          Keys work while this pane has the focus. <Kbd>{quickOpenKey}</Kbd> goes to a file,{' '}
+          <Kbd>Shift+Alt+←</Kbd>{' '}
+          <Kbd>Shift+Alt+→</Kbd> walk the files you visited, <Kbd>Alt+←</Kbd>{' '}
+          <Kbd>Alt+→</Kbd> step between tabs. Everything else is a row in the palette.
         </p>
       </div>
     </div>

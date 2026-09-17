@@ -107,8 +107,9 @@ mod tests {
         }
         // Every card uses hooks, so react must be in there — as a bare import
         // the console's import map resolves, never as bundled source.
+        // buildWorkerUi minifies release assets: `from"react"`, no space.
         assert!(
-            PAGE_JS.contains(r#"from "react"#),
+            PAGE_JS.contains(r#"from"react"#) || PAGE_JS.contains(r#"from "react"#),
             "react should be imported, not bundled"
         );
     }

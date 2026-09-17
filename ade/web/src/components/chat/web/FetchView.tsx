@@ -1,3 +1,4 @@
+import { ArrowRight, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import {
   ActionLine,
@@ -5,6 +6,7 @@ import {
   MetaRow,
   StatusPill,
 } from '@/components/chat/sandbox/shared'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import {
   Table,
   TableBody,
@@ -46,7 +48,7 @@ export function FetchView({ input, output, running }: FetchViewProps) {
           <StatusPill label="fetching…" variant="default" />
           <Chip>{method}</Chip>
         </MetaRow>
-        <ActionLine symbol="→" tone="ink">
+        <ActionLine icon={<ArrowRight />} tone="ink">
           <span className="break-all">{req.url}</span>
         </ActionLine>
         <div className="px-3 py-3 font-mono text-[12.5px] text-ink-ghost animate-pulse">
@@ -80,28 +82,22 @@ export function FetchPreview({ input }: { input: unknown }) {
         <Chip>{method}</Chip>
         {req.response_format ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              format
-            </span>
+            <span className="iii-ui-eyebrow">format</span>
             <span className="ml-1 text-ink">{req.response_format}</span>
           </Chip>
         ) : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{req.url}</span>
       </ActionLine>
       <div className="px-3 py-1.5 flex flex-wrap items-center gap-1.5 border-b border-rule-2 bg-paper-2">
         <Chip>
-          <span className="text-ink-faint uppercase tracking-[0.06em]">
-            headers
-          </span>
+          <span className="iii-ui-eyebrow">headers</span>
           <span className="ml-1 text-ink tabular-nums">{headerCount}</span>
         </Chip>
         {hasBody ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              body
-            </span>
+            <span className="iii-ui-eyebrow">body</span>
             <span className="ml-1 text-ink">
               {req.json !== undefined ? 'json' : 'text'}
             </span>
@@ -109,9 +105,7 @@ export function FetchPreview({ input }: { input: unknown }) {
         ) : null}
         {typeof req.timeout_ms === 'number' ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              timeout
-            </span>
+            <span className="iii-ui-eyebrow">timeout</span>
             <span className="ml-1 text-ink tabular-nums">
               {req.timeout_ms}ms
             </span>
@@ -119,9 +113,7 @@ export function FetchPreview({ input }: { input: unknown }) {
         ) : null}
         {req.follow_redirects === false ? (
           <Chip>
-            <span className="uppercase tracking-[0.06em] text-warn">
-              no-redirect
-            </span>
+            <Eyebrow className="text-warn">no-redirect</Eyebrow>
           </Chip>
         ) : null}
       </div>
@@ -150,39 +142,33 @@ function FetchSuccessPane({ req, method, result }: FetchSuccessPaneProps) {
         <Chip>{method}</Chip>
         {contentType ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              type
-            </span>
+            <span className="iii-ui-eyebrow">type</span>
             <span className="ml-1 text-ink">{contentType.split(';')[0]}</span>
           </Chip>
         ) : null}
         <Chip>
-          <span className="text-ink-faint uppercase tracking-[0.06em]">
-            format
-          </span>
+          <span className="iii-ui-eyebrow">format</span>
           <span className="ml-1 text-ink">{result.response_format}</span>
         </Chip>
         {result.bytes_truncated ? (
-          <Chip className="text-warn border-warn/40">
+          <Chip className="bg-warn-muted text-warn">
             <span>Truncated</span>
           </Chip>
         ) : null}
         {result.redirect_chain && result.redirect_chain.length > 0 ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              redirects
-            </span>
+            <span className="iii-ui-eyebrow">redirects</span>
             <span className="ml-1 text-ink tabular-nums">
               {result.redirect_chain.length}
             </span>
           </Chip>
         ) : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{req.url}</span>
       </ActionLine>
       {result.parse_error ? (
-        <ActionLine symbol="!" tone="warn">
+        <ActionLine icon={<TriangleAlert />} tone="warn">
           parse error: {result.parse_error}
         </ActionLine>
       ) : null}
@@ -198,9 +184,7 @@ function FetchSuccessPane({ req, method, result }: FetchSuccessPaneProps) {
 function RedirectChain({ chain }: { chain: string[] }) {
   return (
     <div className="px-3 py-1.5 border-b border-rule-2 bg-paper-2 flex flex-col gap-0.5">
-      <div className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-        redirect chain
-      </div>
+      <div className="iii-ui-eyebrow">redirect chain</div>
       {chain.map((url) => (
         <div
           key={url}
@@ -225,13 +209,11 @@ function ResponseHeaders({ headers }: { headers: Record<string, string> }) {
         className="w-full px-3 py-1.5 flex items-center justify-between gap-2 text-left hover:bg-paper-3 cursor-pointer"
         aria-expanded={open}
       >
-        <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint">
-          headers · {entries.length}
-        </span>
+        <span className="iii-ui-eyebrow">headers · {entries.length}</span>
         <span
           aria-hidden
           className={cn(
-            'text-ink-ghost transition-transform duration-150 inline-block text-[10px]',
+            'text-ink-ghost transition-transform duration-[var(--motion-duration-control)] inline-block text-[11px]',
             open && 'rotate-90',
           )}
         >
@@ -362,23 +344,19 @@ function FetchErrorPane({ req, method, error }: FetchErrorPaneProps) {
         <Chip>{method}</Chip>
         {typeof error.status === 'number' ? (
           <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              status
-            </span>
+            <span className="iii-ui-eyebrow">status</span>
             <span className="ml-1 text-ink tabular-nums">{error.status}</span>
           </Chip>
         ) : null}
         <Chip>
-          <span className="text-ink-faint uppercase tracking-[0.06em]">
-            code
-          </span>
+          <span className="iii-ui-eyebrow">code</span>
           <span className="ml-1 text-ink">{error.error}</span>
         </Chip>
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
+      <ActionLine icon={<ArrowRight />} tone="ink">
         <span className="break-all">{req.url}</span>
       </ActionLine>
-      <div className="px-3 py-3 flex flex-col gap-2 border-l-2 border-warn ml-0">
+      <div className="px-3 py-3 flex flex-col gap-2 bg-warn-muted ml-0">
         <pre className="font-mono text-[12.5px] leading-[1.55] text-ink whitespace-pre-wrap break-words m-0">
           <code>{error.message}</code>
         </pre>

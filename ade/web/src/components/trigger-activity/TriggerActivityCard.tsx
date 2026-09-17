@@ -44,6 +44,10 @@ import {
 } from './TriggerDetails'
 import { TriggerSource } from './TriggerSource'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 interface TriggerActivityCardProps {
   record?: SystemMessage
   notification?: UserMessage

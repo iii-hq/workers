@@ -1,10 +1,21 @@
 /* shell::fs::grep and shell::fs::sed — match list + replacement table. */
 
-import { Tooltip, TooltipContent, TooltipTrigger } from '@iii-dev/console-ui'
-import { TriangleAlert } from 'lucide-react'
+import {
+  Badge,
+  Chip,
+  EmptyState,
+  MetaRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Tooltip,
+} from '@iii-dev/console-ui'
 import { truncateMiddle } from '../lib/format'
 import { renderWithHighlight } from '../lib/highlight'
-import { Chip, FooterPill } from '../lib/terminal'
 import {
   type FsMatch,
   type FsSedFileResult,
@@ -14,7 +25,7 @@ import {
   fsSedResponseSchema,
   safeParseResponse,
 } from './parsers'
-import { TargetChip } from './shared'
+import { items, kv, targetItem } from './shared'
 
 interface ViewProps {
   input: unknown
@@ -32,33 +43,28 @@ export function FsGrepView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-head">
-        <span className="shui-chips">
-          <Chip label="path">{req.data.path}</Chip>
-          <Chip label="pattern">{req.data.pattern}</Chip>
-          <TargetChip target={req.data.target} />
-          {req.data.ignore_case ? <Chip>case-insensitive</Chip> : null}
-          {/* `recursive` defaults TRUE on the wire — chip the deviation only */}
-          {req.data.recursive === false ? <Chip>non-recursive</Chip> : null}
-          {req.data.include_glob?.length ? (
-            <Chip label="include">
-              {truncateMiddle(req.data.include_glob.join(' '), 40)}
-            </Chip>
-          ) : null}
-          {req.data.exclude_glob?.length ? (
-            <Chip label="exclude">
-              {truncateMiddle(req.data.exclude_glob.join(' '), 40)}
-            </Chip>
-          ) : null}
-          <FooterPill tone={matches.length > 0 ? 'default' : 'warn'}>
-            {`${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`}
-          </FooterPill>
-          {truncated ? <FooterPill tone="warn">truncated</FooterPill> : null}
-        </span>
-      </div>
+      <MetaRow
+        items={items(
+          kv('path', req.data.path),
+          kv('pattern', req.data.pattern),
+          targetItem(req.data.target),
+          req.data.include_glob?.length ? kv('include', truncateMiddle(req.data.include_glob.join(' '), 40)) : null,
+          req.data.exclude_glob?.length ? kv('exclude', truncateMiddle(req.data.exclude_glob.join(' '), 40)) : null,
+        )}
+      >
+        {req.data.ignore_case ? <Chip>case-insensitive</Chip> : null}
+        {/* `recursive` defaults TRUE on the wire — chip the deviation only */}
+        {req.data.recursive === false ? <Chip>non-recursive</Chip> : null}
+        <Badge variant={matches.length > 0 ? 'default' : 'warn'}>
+          {`${matches.length} ${matches.length === 1 ? 'match' : 'matches'}`}
+        </Badge>
+        {truncated ? <Badge variant="warn">truncated</Badge> : null}
+      </MetaRow>
 
       {matches.length === 0 ? (
-        <div className="shui-empty">· no matches</div>
+        <div className="shui-card-body">
+          <EmptyState title="No matches" description="Nothing in the searched files matched the pattern." />
+        </div>
       ) : (
         <GrepMatchList
           matches={matches}
@@ -97,7 +103,7 @@ export function GrepMatchList({
             <span className="t-ghost">:</span>
             <span className="num">{m.line}</span>
           </div>
-          <pre className="shui-pre out">
+          <pre className="shui-pre">
             <code>
               {renderWithHighlight(m.content, pattern, {
                 isRegex: true,
@@ -126,35 +132,28 @@ export function FsSedView({ input, output }: ViewProps) {
 
   return (
     <div className="shui-card">
-      <div className="shui-head">
-        <span className="shui-chips">
-          <Chip label="target">{target}</Chip>
-          <Chip label="pattern">{req.data.pattern}</Chip>
-          <Chip label="→">{req.data.replacement || "''"}</Chip>
-          {/* `regex`/`recursive` default TRUE on the wire — chip the
-              deviations ("literal", "non-recursive") only */}
-          {req.data.regex === false ? <Chip>literal</Chip> : null}
-          {req.data.first_only ? <Chip>first-only</Chip> : null}
-          {req.data.ignore_case ? <Chip>case-insensitive</Chip> : null}
-          {pathMode && req.data.recursive === false ? (
-            <Chip>non-recursive</Chip>
-          ) : null}
-          {req.data.include_glob?.length ? (
-            <Chip label="include">
-              {truncateMiddle(req.data.include_glob.join(' '), 40)}
-            </Chip>
-          ) : null}
-          {req.data.exclude_glob?.length ? (
-            <Chip label="exclude">
-              {truncateMiddle(req.data.exclude_glob.join(' '), 40)}
-            </Chip>
-          ) : null}
-          <TargetChip target={req.data.target} />
-        </span>
-      </div>
+      <MetaRow
+        items={items(
+          kv('target', target),
+          kv('pattern', req.data.pattern),
+          kv('→', req.data.replacement || "''"),
+          req.data.include_glob?.length ? kv('include', truncateMiddle(req.data.include_glob.join(' '), 40)) : null,
+          req.data.exclude_glob?.length ? kv('exclude', truncateMiddle(req.data.exclude_glob.join(' '), 40)) : null,
+          targetItem(req.data.target),
+        )}
+      >
+        {/* `regex`/`recursive` default TRUE on the wire — chip the
+            deviations ("literal", "non-recursive") only */}
+        {req.data.regex === false ? <Chip>literal</Chip> : null}
+        {req.data.first_only ? <Chip>first-only</Chip> : null}
+        {req.data.ignore_case ? <Chip>case-insensitive</Chip> : null}
+        {pathMode && req.data.recursive === false ? <Chip>non-recursive</Chip> : null}
+      </MetaRow>
 
       {results.length === 0 ? (
-        <div className="shui-empty">· no files touched</div>
+        <div className="shui-card-body">
+          <EmptyState title="No files touched" description="No file contained the pattern." />
+        </div>
       ) : (
         <SedResultsTable
           results={results}
@@ -176,47 +175,41 @@ export function SedResultsTable({
   totalReplacements,
 }: SedResultsTableProps) {
   return (
-    <table className="shui-table">
-      <thead>
-        <tr>
-          <th className="pad-l">path</th>
-          <th className="num">replacements</th>
-          <th className="pad-r">status</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Table density="compact">
+      <TableHeader>
+        <TableRow>
+          <TableHead>path</TableHead>
+          <TableHead className="num">replacements</TableHead>
+          <TableHead>status</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
         {results.map((r) => (
-          <tr key={r.path}>
-            <td className="pad-l t-ink">{r.path}</td>
-            <td className="t-faint num">{r.replacements}</td>
-            <td className="pad-r">
+          <TableRow key={r.path}>
+            <TableCell className="shui-path t-ink">{r.path}</TableCell>
+            <TableCell className="t-faint num">{r.replacements}</TableCell>
+            <TableCell>
               {r.success ? (
                 <span className="t-accent">ok</span>
               ) : r.error ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="shui-err-chip">
-                      <TriangleAlert aria-hidden className="shui-fs-icon" />
-                      err
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>{r.error}</TooltipContent>
+                <Tooltip label={r.error}>
+                  <Badge variant="warn">err</Badge>
                 </Tooltip>
               ) : (
                 <span className="t-warn">err</span>
               )}
-            </td>
-          </tr>
+            </TableCell>
+          </TableRow>
         ))}
-        <tr className="total">
-          <td className="pad-l label">total</td>
-          <td colSpan={2}>
-            <FooterPill tone={totalReplacements > 0 ? 'accent' : 'default'}>
-              {`${totalReplacements} replacements`}
-            </FooterPill>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+      </TableBody>
+      <TableFooter>
+        <TableRow>
+          <TableCell className="t-faint">total</TableCell>
+          <TableCell colSpan={2}>
+            <Badge variant={totalReplacements > 0 ? 'accent' : 'default'}>{`${totalReplacements} replacements`}</Badge>
+          </TableCell>
+        </TableRow>
+      </TableFooter>
+    </Table>
   )
 }

@@ -9,10 +9,10 @@
    the rows are a listbox the field drives, which is why they are not the
    shared List (its rows take the focus themselves). */
 
-import { Dialog, DialogContent, DialogTitle, type Host, StatusPanel } from '@iii-dev/console-ui'
+import { Dialog, DialogContent, DialogTitle, type Host, Kbd, StatusPanel } from '@iii-dev/console-ui'
 import { Search } from 'lucide-react'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { errorMessage } from '../lib/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { coderSearch } from './coder'
 import { FileTypeIcon } from './file-type-icon'
 import {
@@ -276,10 +276,10 @@ export function QuickOpen({ host, root, open, onOpenChange, recent, onOpenFile }
         </div>
         <div className="shui-quick-open-foot">
           <span className="hints">
-            <kbd className="shui-launcher-key">↑</kbd>
-            <kbd className="shui-launcher-key">↓</kbd> move
-            <kbd className="shui-launcher-key">↵</kbd> open
-            <kbd className="shui-launcher-key">esc</kbd> close
+            <Kbd>↑</Kbd>
+            <Kbd>↓</Kbd> move
+            <Kbd>↵</Kbd> open
+            <Kbd>esc</Kbd> close
           </span>
           <span className="summary" role="status" aria-live="polite">
             {summary}

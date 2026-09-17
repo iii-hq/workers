@@ -19,6 +19,20 @@ export const SharedIconButton: Story = {
   ),
 }
 
+/** `label` is the one-liner: children become the trigger, the label the content. */
+export const LabelShorthand: Story = {
+  render: () => (
+    <Tooltip label="Restart the worker" defaultOpen>
+      <button
+        type="button"
+        className="rounded-sm bg-surface px-3 py-2 font-sans text-[13px] text-ink"
+      >
+        Restart
+      </button>
+    </Tooltip>
+  ),
+}
+
 export const LongContentNearEdge: Story = {
   render: () => (
     <div className="flex w-[240px] justify-end">

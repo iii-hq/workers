@@ -1,66 +1,86 @@
 #!/usr/bin/env bash
-# Fetch upstream instructions without replacing the local-source Compose stack.
+# Download a template folder verbatim. Do not configure or run the project.
 set -euo pipefail
 
 usage() {
   cat <<'HELP'
-Usage: ./sync.sh [--ref REF] [--repo URL_OR_PATH] [--dry-run | --stack-stopped] [--force]
+Usage: ./sync.sh [--template NAME] [--ref REF] [--repo URL_OR_PATH] [--dry-run]
 
-Fetch agents and skills from iii-hq/templates (main by default). Record the
-resolved commit in upstream/sync.json; keep any upstream configuration under
-upstream/config/ for review only. Local config/, Compose, environment files
-and runtime data are never replaced. No upstream scripts are run.
+Download all contents of iii/NAME/ into the folder NAME beside sync.sh.
+The default template is harness. Downloaded folders are ignored by Git.
+Existing files with matching paths are overwritten; local-only files are kept.
+No project structure or runtime-state checks, configuration changes or scripts.
 
+  --template NAME Template folder under iii/ (default: harness)
   --ref REF       Branch, tag, commit, or pull request ref (default: main)
   --repo SOURCE   Git URL or local repository (default: iii-hq/templates)
-  --dry-run       Fetch and validate, but do not replace generated files
-  --stack-stopped Confirm the stack/readers are stopped before replacing files
-                  (required for writes; not an automatic runtime-state check)
-  --force         Discard edits in agents/, skills/ and upstream/ only
-                  (the normal mode refuses to overwrite edits)
+  --dry-run       List files without creating or changing the destination
   --help          Show this help
 
 Requires Bash, Git and Python 3.11+ (standard library only).
-Run from any working directory.
+Automatically tries python3, then python, using the first compatible interpreter.
+Run from any working directory; destinations are always beside sync.sh.
 HELP
 }
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo=https://github.com/iii-hq/templates.git
 ref=main
+template=harness
 # Bash 3.2 treats empty arrays as unset under set -u; keep a required argument.
-options=(--destination "$script_dir")
-preview=false
-stack_stopped=false
+options=(--root "$script_dir")
 while (($#)); do
   case "$1" in
-    --ref|--repo)
+    --ref|--repo|--template)
       (($# >= 2)) && [[ -n "$2" && "$2" != -* ]] || {
         echo "Missing value for $1" >&2; exit 2;
       }
-      if [[ "$1" == --ref ]]; then ref=$2; else repo=$2; fi
+      case "$1" in
+        --ref) ref=$2 ;;
+        --repo) repo=$2 ;;
+        --template) template=$2 ;;
+      esac
       shift 2 ;;
-    --dry-run) preview=true; options+=("$1"); shift ;;
-    --stack-stopped) stack_stopped=true; options+=("$1"); shift ;;
-    --force) options+=("$1"); shift ;;
+    --dry-run) options+=("$1"); shift ;;
+    # Accepted for compatibility; neither flag is needed or has any effect.
+    --stack-stopped|--force) shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-# Reject writes before fetching unless the operator confirms readers are stopped.
-if [[ "$preview" == false && "$stack_stopped" == false ]]; then
-  echo 'Stop the template stack first, then run ./sync.sh --stack-stopped (or use --dry-run).' >&2
+# Restrict the destination to a sandbox beside sync.sh, not the tooling itself.
+if [[ ! "$template" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo 'Invalid template name: use lowercase letters, digits, underscores and hyphens.' >&2
   exit 2
 fi
+case "$template" in
+  agents|config|data|scripts|skills|tests|upstream)
+    echo "Reserved template name: $template" >&2; exit 2 ;;
+esac
+options+=(--template "$template")
 
+importer="$script_dir/scripts/sync_template.py"
+if [[ ! -f "$importer" || ! -r "$importer" ]]; then
+  echo "Sync importer is missing or unreadable: $importer" >&2
+  echo 'Restore template/scripts/sync_template.py from this checkout; keep sync.sh and scripts/ together.' >&2
+  exit 1
+fi
 command -v git >/dev/null || { echo 'Git is required.' >&2; exit 1; }
-python3 -c 'import sys; assert sys.version_info >= (3, 11)' 2>/dev/null || {
-  echo 'Python 3.11+ is required.' >&2; exit 1;
-}
+python_bin=
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && \
+      "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+    python_bin=$candidate
+    break
+  fi
+done
+if [[ -z "$python_bin" ]]; then
+  echo 'Python 3.11+ is required. Neither python3 nor python is available with a compatible version.' >&2
+  exit 1
+fi
 
-# Prevent concurrent replacements; a crashed process leaves an explicit lock
-# to inspect rather than allowing another invocation to race partial output.
+# This lock only prevents concurrent downloads; it is not a project-state check.
 lock="$script_dir/.sync.lock"
 mkdir -- "$lock" 2>/dev/null || {
   echo "Sync already running (or stale lock): $lock" >&2; exit 1;
@@ -73,14 +93,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/harness-template-sync.XXXXXX")
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/template-sync.XXXXXX")
 
 git init --quiet "$scratch/repo"
-# A fresh repository avoids stale tracking refs and never checks out/runs
-# upstream code. Fetch failure leaves the template untouched.
 GIT_TERMINAL_PROMPT=0 git -C "$scratch/repo" -c protocol.ext.allow=never \
   fetch --quiet --depth=1 --no-tags -- "$repo" "$ref"
 commit=$(git -C "$scratch/repo" rev-parse --verify 'FETCH_HEAD^{commit}')
-python3 "$script_dir/scripts/sync_template.py" \
-  --checkout "$scratch/repo" --commit "$commit" --repo "$repo" --ref "$ref" \
-  "${options[@]}"
+"$python_bin" "$importer" --checkout "$scratch/repo" --commit "$commit" "${options[@]}"

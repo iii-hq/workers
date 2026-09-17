@@ -67,7 +67,6 @@ import { WorkerBreakdown } from './components/WorkerBreakdown'
 import { useAllSpans } from './hooks/useAllSpans'
 import { useFollowLiveTurn } from './hooks/useFollowLiveTurn'
 import { useFollowTurns } from './hooks/useFollowTurns'
-import { turnTracesFor } from './lib/followTurn'
 import {
   showsWithoutProbe,
   useSpanFilteredTraceRows,
@@ -78,6 +77,7 @@ import { useTraceActivity } from './hooks/useTraceActivity'
 import { useTraceData } from './hooks/useTraceData'
 import { useTraceFilters } from './hooks/useTraceFilters'
 import { useTraceViews } from './hooks/useTraceViews'
+import { turnTracesFor } from './lib/followTurn'
 import { isTraceLive } from './lib/timelineSpans'
 import { type TraceChatLink, traceChatLink } from './lib/traceChatLink'
 import { collectTraceDetailSpans } from './lib/traceDetailPages'
@@ -919,7 +919,7 @@ export function TracesV2({
       title="the list follows the active chat — showing only this session's traces"
     >
       <MessageSquare className="size-4 flex-shrink-0" />
-      <span className="max-w-[140px] truncate lowercase">
+      <span className="max-w-[140px] truncate">
         {activeConversation?.title ?? sessionScope}
       </span>
       <button

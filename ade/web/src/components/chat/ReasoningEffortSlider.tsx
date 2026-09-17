@@ -11,6 +11,10 @@ import { cn } from '@/lib/utils'
 import type { ReasoningEffortOption, ThinkingLevel } from '@/types/chat'
 import './ReasoningEffortSlider.css'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /** Position of a level along the slider, 0 at the first stop and 1 at the last. */
 export function effortRatio(index: number, count: number): number {
   if (count <= 1 || index <= 0) return 0

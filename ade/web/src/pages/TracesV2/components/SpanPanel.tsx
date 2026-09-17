@@ -3,6 +3,7 @@ import { ArrowUp, Clock, Copy, Layers, X, Zap } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
 import { useFunctionTriggerRenderers } from '@/components/function-trigger/renderer-registry'
 import { Button } from '@/components/ui/Button'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { cn } from '@/lib/utils'
@@ -122,11 +123,11 @@ export function SpanPanel({
       <div className="flex-shrink-0 border-b border-rule-2">
         {/* Row 1: worker badge + span name + close */}
         <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
-          <span className="px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0 rounded-xs bg-surface text-ink-faint lowercase">
+          <span className="px-1.5 py-0.5 font-mono text-[11px] flex-shrink-0 rounded-xs bg-surface text-ink-faint">
             {worker}
           </span>
           <h2
-            className="font-mono text-[13px] font-semibold text-ink leading-tight truncate flex-1 min-w-0 lowercase"
+            className="font-mono text-[13px] font-semibold text-ink leading-tight truncate flex-1 min-w-0"
             title={span.name}
           >
             {span.name}
@@ -151,9 +152,7 @@ export function SpanPanel({
           >
             <span>{span.span_id.slice(0, 12)}</span>
             {copiedField === 'spanId' ? (
-              <span className="text-accent text-[10px] uppercase tracking-[0.06em]">
-                copied
-              </span>
+              <Eyebrow className="text-accent">copied</Eyebrow>
             ) : (
               <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity" />
             )}
@@ -171,7 +170,7 @@ export function SpanPanel({
           {traceContext && traceContext.childSpans.length > 0 && (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
               <Zap className="size-4 text-ink-faint" />
-              <span className="font-mono text-[11px] text-ink-faint tabular-nums lowercase">
+              <span className="font-mono text-[11px] text-ink-faint tabular-nums">
                 self {formatDuration(traceContext.selfTime)}
               </span>
             </span>
@@ -186,7 +185,7 @@ export function SpanPanel({
             <StatusDot tone={tone} />
             <span
               className={cn(
-                'font-mono text-[11px] uppercase tracking-[0.06em]',
+                'font-mono text-[11px]',
                 span.status === 'error' ? 'text-alert' : 'text-ink-faint',
               )}
             >
@@ -203,7 +202,7 @@ export function SpanPanel({
 
           {traceContext && traceContext.childSpans.length > 0 && (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-              <span className="font-mono text-[11px] text-ink-faint tabular-nums lowercase">
+              <span className="font-mono text-[11px] text-ink-faint tabular-nums">
                 {traceContext.childSpans.length} child
                 {traceContext.childSpans.length !== 1 ? 'ren' : ''}
               </span>
@@ -223,13 +222,13 @@ export function SpanPanel({
               className="flex items-center gap-1.5 w-full px-2.5 py-1.5 rounded-sm bg-surface hover:bg-surface-hover transition-colors group text-left"
             >
               <ArrowUp className="size-4 text-ink-faint group-hover:text-accent transition-colors flex-shrink-0" />
-              <span className="font-mono text-[11px] text-ink-faint flex-shrink-0 lowercase">
+              <span className="font-mono text-[11px] text-ink-faint flex-shrink-0">
                 parent
               </span>
-              <span className="font-mono text-[11px] text-ink truncate group-hover:text-ink transition-colors lowercase">
+              <span className="font-mono text-[11px] text-ink truncate group-hover:text-ink transition-colors">
                 {traceContext.parentSpan.name}
               </span>
-              <span className="font-mono text-[10px] text-ink-ghost ml-auto flex-shrink-0 tabular-nums">
+              <span className="font-mono text-[11px] text-ink-ghost ml-auto flex-shrink-0 tabular-nums">
                 {formatDuration(traceContext.parentSpan.duration_ms)}
               </span>
             </button>
@@ -250,7 +249,7 @@ export function SpanPanel({
             <TabsTrigger value="tags">
               Attributes
               {attrCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
+                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {attrCount}
                 </span>
               )}
@@ -258,7 +257,7 @@ export function SpanPanel({
             <TabsTrigger value="logs">
               Events
               {eventCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
+                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {eventCount}
                 </span>
               )}
@@ -272,7 +271,7 @@ export function SpanPanel({
             <TabsTrigger value="otel-logs">
               Logs
               {logCount > 0 && (
-                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
+                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {logCount}
                 </span>
               )}
@@ -281,7 +280,7 @@ export function SpanPanel({
             {linkCount > 0 && (
               <TabsTrigger value="links">
                 Links
-                <span className="ml-1 px-1 py-0.5 font-mono text-[10px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
+                <span className="ml-1 px-1 py-0.5 font-mono text-[11px] tabular-nums text-ink-faint rounded-xs bg-surface normal-case tracking-normal">
                   {linkCount}
                 </span>
               </TabsTrigger>

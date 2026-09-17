@@ -1,3 +1,4 @@
+import { formatRelative } from '@iii-dev/console-ui/format'
 import type { ExtensionIii } from '@iii-dev/console-ui'
 import { z } from 'zod'
 
@@ -365,16 +366,12 @@ export function browserSessionIdFromCall(
   )
 }
 
-/** Human-readable message from anything a bus call can reject with: Error
- * instances, or the engine's plain `{ code, message }` error objects (which
- * String() would render as [object Object]). */
-export function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message
-  if (typeof err === 'object' && err !== null) {
-    const msg = (err as { message?: unknown }).message
-    if (typeof msg === 'string' && msg.length > 0) return msg
-  }
-  return String(err)
+export { errorMessage } from '@iii-dev/console-ui/format'
+
+/** `3m ago` / `just now` for a unix-seconds or millisecond timestamp. */
+export function formatAgo(input: number): string {
+  const rel = formatRelative(input)
+  return rel === '' ? '—' : rel === 'just now' ? rel : `${rel} ago`
 }
 
 /** 24-hour clock for a console/network entry timestamp. Shared by the live

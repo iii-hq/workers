@@ -1,19 +1,19 @@
 import type { Host } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useState } from 'react'
+import { useWorkerLive } from '@iii-dev/console-ui/hooks'
+import { useEffect } from 'react'
 import {
+  BROWSER_LIFECYCLE_TRIGGERS,
   type BrowserSessionInfo,
-  errorMessage,
   listBrowserSessions,
 } from '../lib/browser'
-import { useBrowserLifecycleEvents } from '../lib/events'
 
 /**
  * Live tab feed for the browser page: `browser::sessions::list`, re-read on
- * session-started / session-stopped / session-updated / navigated. A modest
- * poll runs alongside — faster while the event bindings are unavailable (SDK
- * hiccup, races around worker restart), slower otherwise — so a title a page
- * sets after it loaded reaches the tab strip too. Skipped entirely while the
- * document is hidden so a backgrounded console never hammers the engine.
+ * session-started / session-stopped / session-updated / navigated through
+ * the shared `useWorkerLive` (which also polls while the bindings are down).
+ * A slow poll runs alongside even while live, because no trigger fires for
+ * a title a page sets after it loaded — the tab strip catches it up here.
+ * Skipped while the document is hidden.
  */
 
 export const BROWSER_SESSIONS_POLL_MS = 10_000
@@ -29,60 +29,22 @@ export interface BrowserSessionsLive {
   refresh: () => void
 }
 
-export function useBrowserSessionsLive(
-  host: Host,
-  enabled: boolean,
-): BrowserSessionsLive {
-  const [sessions, setSessions] = useState<BrowserSessionInfo[]>([])
-  const [loading, setLoading] = useState(enabled)
-  const [error, setError] = useState<string | null>(null)
-  const [token, setToken] = useState(0)
+const EMPTY: BrowserSessionInfo[] = []
 
-  const refresh = useCallback(() => setToken((t) => t + 1), [])
-
-  const { bound } = useBrowserLifecycleEvents({
-    host,
-    enabled,
-    onEvent: refresh,
+export function useBrowserSessionsLive(host: Host): BrowserSessionsLive {
+  const { data, loading, error, live, refresh } = useWorkerLive({
+    iii: host.iii,
+    triggers: BROWSER_LIFECYCLE_TRIGGERS,
+    fetch: () => listBrowserSessions(host.iii),
+    pollMs: BROWSER_SESSIONS_POLL_MS,
+    handlerId: 'iii::browser-ui::lifecycle',
   })
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: token is a re-run token (bumped by events, polling, and manual refresh), not read by the effect body
   useEffect(() => {
-    if (!enabled) {
-      setLoading(false)
-      return
-    }
-    setLoading(true)
-    let cancelled = false
-    void (async () => {
-      try {
-        const next = await listBrowserSessions(host.iii)
-        if (cancelled) return
-        setSessions(next)
-        setError(null)
-      } catch (err) {
-        if (cancelled) return
-        setError(errorMessage(err))
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [host, enabled, token])
-
-  useEffect(() => {
-    if (!enabled) return
-    const id = window.setInterval(
-      () => {
-        if (document.hidden) return
-        refresh()
-      },
-      bound ? BROWSER_SESSIONS_TITLE_POLL_MS : BROWSER_SESSIONS_POLL_MS,
-    )
+    if (!live) return
+    const id = window.setInterval(() => {
+      if (!document.hidden) refresh()
+    }, BROWSER_SESSIONS_TITLE_POLL_MS)
     return () => window.clearInterval(id)
-  }, [enabled, bound, refresh])
-
-  return { sessions, loading, error, live: bound, refresh }
+  }, [live, refresh])
+  return { sessions: data ?? EMPTY, loading, error, live, refresh }
 }

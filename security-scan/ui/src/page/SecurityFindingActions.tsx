@@ -1,4 +1,4 @@
-import { Button } from '@iii-dev/console-ui'
+import { Button, useConfirm } from '@iii-dev/console-ui'
 import {
   type ActionKind,
   type ActionRequestResult,
@@ -81,18 +81,29 @@ export function SecurityFindingActions({
   const completed = runStatus === 'completed'
   const canIssue = completed && githubConfigured
   const canFixPr = completed && githubConfigured && runMode === 'suggest' && hasPatch
+  const { confirm, dialog } = useConfirm()
 
-  const start = (kind: ActionKind) => {
-    const confirmMessage =
+  const start = async (kind: ActionKind) => {
+    const ok = await confirm(
       kind === 'issue'
-        ? 'Create a GitHub issue for this finding? The mutation stays held until you approve it.'
-        : 'Create a draft GitHub fix PR for this finding? The mutation stays held until you approve it, and the PR will not merge automatically.'
-    if (!window.confirm(confirmMessage)) return
+        ? {
+            title: 'Create a GitHub issue for this finding?',
+            description: 'The mutation stays held until you approve it.',
+            confirmLabel: 'Create issue',
+          }
+        : {
+            title: 'Create a draft GitHub fix PR for this finding?',
+            description: 'The mutation stays held until you approve it, and the PR will not merge automatically.',
+            confirmLabel: 'Create fix PR',
+          },
+    )
+    if (!ok) return
     void actions.request(runId, findingIndex, kind)
   }
 
   return (
     <div className="security-scan-ui-finding-actions">
+      {dialog}
       <div className="security-scan-ui-finding-action-row">
         <Button variant="ghost" size="sm" disabled={!canIssue || pending !== null} onClick={() => start('issue')}>
           {pending === 'issue' ? 'starting issue' : 'Create issue'}

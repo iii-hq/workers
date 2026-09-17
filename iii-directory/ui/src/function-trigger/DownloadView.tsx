@@ -1,14 +1,6 @@
-import type { ReactNode } from 'react'
-import {
-  ActionLine,
-  Card,
-  EmptyRow,
-  KvChip,
-  MetaRow,
-  PulseLine,
-  SectionHead,
-  StatusPill,
-} from '../lib/widgets'
+import { ActionLine, Badge, Card, MetaRow } from '@iii-dev/console-ui'
+import { Download } from 'lucide-react'
+import { kv, Loading, Row, Rows, Section } from '../lib/widgets'
 import {
   type SkillsDownloadRequest,
   safeParseRequest,
@@ -23,33 +15,39 @@ interface ViewProps {
   running?: boolean
 }
 
+type Source =
+  | { kind: 'repo'; repo: string; skill: string; branch: string }
+  | { kind: 'registry'; worker: string; spec: string }
+
 /** Classifies the request shape into the two valid source modes (repo or
  * registry). Only the active source's chips render — `null` means the
  * request was malformed and the dispatcher will fall back to JSON. */
-function classifySource(
-  req: SkillsDownloadRequest,
-):
-  | { kind: 'repo'; repo: string; skill: string; branch: string }
-  | { kind: 'registry'; worker: string; spec: string }
-  | null {
+function classifySource(req: SkillsDownloadRequest): Source | null {
   if (req.repo && req.skill) {
-    return {
-      kind: 'repo',
-      repo: req.repo,
-      skill: req.skill,
-      branch: req.branch ?? 'main',
-    }
+    return { kind: 'repo', repo: req.repo, skill: req.skill, branch: req.branch ?? 'main' }
   }
   if (req.worker) {
-    const spec = req.version
-      ? `v${req.version}`
-      : req.tag
-        ? `${req.tag}`
-        : 'latest'
+    const spec = req.version ? `v${req.version}` : req.tag ? `${req.tag}` : 'latest'
     return { kind: 'registry', worker: req.worker, spec }
   }
   return null
 }
+
+const sourceItems = (source: Source) =>
+  source.kind === 'repo'
+    ? kv([
+        ['Source', 'Repo'],
+        ['branch', source.branch],
+      ])
+    : kv([
+        ['Source', 'Registry'],
+        ['spec', source.spec],
+      ])
+
+const describeSource = (source: Source) =>
+  source.kind === 'repo'
+    ? `${source.repo} › skills/${source.skill}@${source.branch}`
+    : `registry: ${source.worker}@${source.spec}`
 
 export function SkillsDownloadView({ input, output, running }: ViewProps) {
   const req = safeParseRequest(skillsDownloadRequestSchema, input)
@@ -60,14 +58,13 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
   if (running) {
     return (
       <Card>
-        <MetaRow>
-          <StatusPill label="downloading…" variant="default" />
-          {sourceChips(source)}
+        <MetaRow items={sourceItems(source)}>
+          <Badge>downloading…</Badge>
         </MetaRow>
-        <ActionLine symbol="↓" tone="ink">
-          <span>{describeSource(source)}</span>
+        <ActionLine icon={<Download />} tone="ink">
+          {describeSource(source)}
         </ActionLine>
-        <PulseLine label="cloning + writing skills…" />
+        <Loading label="cloning + writing skills…" />
       </Card>
     )
   }
@@ -75,23 +72,21 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
   const resp = safeParseResponse(skillsDownloadResponseSchema, output)
   if (!resp) return null
 
-  const skillsCount = resp.skills_written.length
-
   return (
     <Card>
-      <MetaRow>
-        <StatusPill label="downloaded" variant="accent" />
-        <KvChip label="namespace">{resp.namespace}</KvChip>
-        <KvChip label="skills">{skillsCount}</KvChip>
+      <MetaRow
+        items={kv([
+          ['namespace', resp.namespace],
+          ['skills', resp.skills_written.length],
+        ])}
+      >
+        <Badge variant="accent">downloaded</Badge>
       </MetaRow>
-      <ActionLine symbol="↓" tone="ink">
-        <span>{describeSource(source)}</span>
+      <ActionLine icon={<Download />} tone="ink">
+        {describeSource(source)}
       </ActionLine>
       <WrittenList label="skills written" names={resp.skills_written} />
-      <WrittenList
-        label="system prompts written"
-        names={resp.system_prompts_written}
-      />
+      <WrittenList label="system prompts written" names={resp.system_prompts_written} />
       <WrittenList label="agent profiles written" names={resp.agents_written} />
     </Card>
   )
@@ -99,49 +94,16 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
 
 function WrittenList({ label, names }: { label: string; names: string[] }) {
   return (
-    <div className="dir-ui-section">
-      <SectionHead>
-        {label} · {names.length}
-      </SectionHead>
+    <Section label={`${label} · ${names.length}`}>
       {names.length === 0 ? (
-        <EmptyRow label="none" />
+        <div className="dir-ui-empty">none</div>
       ) : (
-        <ul className="dir-ui-list">
+        <Rows>
           {names.map((n) => (
-            <li key={n} className="dir-ui-item">
-              {n}
-            </li>
+            <Row key={n} mono title={n} />
           ))}
-        </ul>
+        </Rows>
       )}
-    </div>
+    </Section>
   )
-}
-
-function sourceChips(
-  source: ReturnType<typeof classifySource> & object,
-): ReactNode {
-  if (source.kind === 'repo') {
-    return (
-      <>
-        <KvChip label="Source">Repo</KvChip>
-        <KvChip label="branch">{source.branch}</KvChip>
-      </>
-    )
-  }
-  return (
-    <>
-      <KvChip label="Source">Registry</KvChip>
-      <KvChip label="spec">{source.spec}</KvChip>
-    </>
-  )
-}
-
-function describeSource(
-  source: ReturnType<typeof classifySource> & object,
-): string {
-  if (source.kind === 'repo') {
-    return `${source.repo} › skills/${source.skill}@${source.branch}`
-  }
-  return `registry: ${source.worker}@${source.spec}`
 }

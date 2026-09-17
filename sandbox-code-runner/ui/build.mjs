@@ -1,33 +1,13 @@
 /**
- * Build the worker's two console assets:
- *
- *   page.tsx   → dist/page.js    (injected over `console:script`)
- *   styles.css → dist/styles.css (injected over `console:style`)
- *
- * The five shared specifiers stay EXTERNAL — they resolve at runtime
- * through the console's import map (a bundled React copy would surface as
- * a cryptic "Invalid hook call"). Everything else the page needs gets
- * bundled in. `--watch` pairs with the worker's
- * III_SANDBOX_CODE_RUNNER_UI_WATCH poller for the hot-reload dev loop.
+ * Two builds: the console assets (page.tsx + styles.css, the shared driver)
+ * and the guest SDK bundle below.
  */
 
+import { readFileSync, writeFileSync } from 'node:fs'
+import { buildWorkerUi } from '@iii-dev/console-ui/build-worker-ui'
 import esbuild from 'esbuild'
 
-const options = {
-  entryPoints: ['page.tsx', 'styles.css'],
-  bundle: true,
-  format: 'esm',
-  jsx: 'automatic',
-  outdir: 'dist',
-  external: [
-    'react',
-    'react-dom',
-    'react-dom/client',
-    'react/jsx-runtime',
-    '@iii-dev/console-ui',
-  ],
-  logLevel: 'info',
-}
+await buildWorkerUi({ scope: 'sandbox-code-runner', keyframePrefixes: ['cr-ui-', 'cr-fam-', 'cr-page-'] })
 
 /**
  * The guest SDK bundle: the published `iii-sdk` npm package, with its whole
@@ -75,11 +55,7 @@ const guestSdkOptions = {
   logLevel: 'info',
 }
 
-if (process.argv.includes('--watch')) {
-  const ctx = await esbuild.context(options)
-  await ctx.watch()
-} else {
-  await esbuild.build(options)
+if (!process.argv.includes('--watch')) {
   await esbuild.build(guestSdkOptions)
 
   // The planted package's manifest. The SDK reads `../package.json` at
@@ -89,10 +65,7 @@ if (process.argv.includes('--watch')) {
   // version can never drift from what was actually bundled.
   // Read through the node_modules symlink — the package's `exports` map
   // does not expose ./package.json to require().
-  const { readFileSync, writeFileSync } = await import('node:fs')
-  const real = JSON.parse(
-    readFileSync(new URL('./node_modules/iii-sdk/package.json', import.meta.url), 'utf8'),
-  )
+  const real = JSON.parse(readFileSync(new URL('./node_modules/iii-sdk/package.json', import.meta.url), 'utf8'))
   writeFileSync(
     'dist/iii-sdk-guest-package.json',
     JSON.stringify(

@@ -3,6 +3,10 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from './Button'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export interface SettingsDeckProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, 'children' | 'title'> {
   /** Whether the detail level is visible. The overview is shown when false. */

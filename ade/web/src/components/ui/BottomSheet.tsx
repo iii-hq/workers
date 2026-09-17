@@ -4,6 +4,10 @@ import * as React from 'react'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 export const BottomSheet = DialogPrimitive.Root
 export const BottomSheetTrigger = DialogPrimitive.Trigger
 export const BottomSheetClose = DialogPrimitive.Close

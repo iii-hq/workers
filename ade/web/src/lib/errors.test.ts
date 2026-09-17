@@ -82,6 +82,6 @@ describe('errText', () => {
     expect(errText({ weird: true })).toBe('{"weird":true}')
     const cyclic: Record<string, unknown> = {}
     cyclic.self = cyclic
-    expect(errText(cyclic)).toBe('unknown error')
+    expect(errText(cyclic)).toBe('Unknown error')
   })
 })

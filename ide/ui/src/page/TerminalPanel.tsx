@@ -1,3 +1,4 @@
+import { Tooltip } from '@iii-dev/console-ui'
 import {
   PanelBottom,
   PanelRight,
@@ -8,14 +9,10 @@ import {
 import {
   type CSSProperties,
   type Dispatch,
-  type KeyboardEvent,
-  type PointerEvent,
-  useCallback,
   useEffect,
   useRef,
   useState,
 } from 'react'
-import { HoverTip } from './HoverTip'
 import type { TerminalDock } from './persist'
 import {
   TerminalWorkspace,
@@ -27,9 +24,9 @@ import type {
 } from './terminal-layout'
 import type { TerminalOutputRouter } from './terminal-output-router'
 import type { TerminalConnectionCoordinator } from './terminal-session-state'
+import { useSplitDrag } from './use-split-drag'
 
 interface ResizeState {
-  start: number
   startSize: number
   maxSize: number
 }
@@ -40,6 +37,8 @@ interface TerminalPanelSharedProps {
   onDockChange: (dock: TerminalDock) => void
   onSizeChange: (size: number) => void
   onClose: () => void
+  /** The page is narrow: a right dock stacks under the editor at full width. */
+  narrow?: boolean
 }
 
 interface TerminalPanelProps extends TerminalPanelSharedProps {
@@ -83,7 +82,7 @@ function DockActions({
   return (
     <>
       <span className="shui-terminal-dock-group">
-      <HoverTip label="Dock terminal at bottom">
+      <Tooltip label="Dock terminal at bottom">
         <button
           type="button"
           className={`shui-terminal-action${dock === 'bottom' ? ' active' : ''}`}
@@ -93,8 +92,8 @@ function DockActions({
         >
           <PanelBottom aria-hidden />
         </button>
-      </HoverTip>
-      <HoverTip label="Dock terminal on right">
+      </Tooltip>
+      <Tooltip label="Dock terminal on right">
         <button
           type="button"
           className={`shui-terminal-action${dock === 'right' ? ' active' : ''}`}
@@ -104,8 +103,8 @@ function DockActions({
         >
           <PanelRight aria-hidden />
         </button>
-      </HoverTip>
-      <HoverTip label="Open terminal as an editor tab">
+      </Tooltip>
+      <Tooltip label="Open terminal as an editor tab">
         <button
           type="button"
           className={`shui-terminal-action${dock === 'editor' ? ' active' : ''}`}
@@ -115,9 +114,9 @@ function DockActions({
         >
           <SquareTerminal aria-hidden />
         </button>
-      </HoverTip>
+      </Tooltip>
       </span>
-      <HoverTip label="Hide terminal">
+      <Tooltip label="Hide terminal">
         <button
           type="button"
           className="shui-terminal-action"
@@ -126,19 +125,18 @@ function DockActions({
         >
           <X aria-hidden />
         </button>
-      </HoverTip>
+      </Tooltip>
     </>
   )
 }
 
 export function TerminalPanel(props: TerminalPanelProps) {
-  const { dock, size, onDockChange, onSizeChange, onClose } = props
-  const resizeRef = useRef<ResizeState | null>(null)
+  const { dock, size, onDockChange, onSizeChange, onClose, narrow } = props
   const panelRef = useRef<HTMLElement>(null)
   const workspaceRef = useRef<TerminalWorkspaceHandle>(null)
   const [resizeBounds, setResizeBounds] = useState({ size, max: 1200 })
   const docked = dock !== 'editor'
-  const style = terminalPanelStyle(dock, size)
+  const style = narrow && dock === 'right' ? undefined : terminalPanelStyle(dock, size)
 
   useEffect(() => {
     const panel = panelRef.current
@@ -162,75 +160,30 @@ export function TerminalPanel(props: TerminalPanelProps) {
     return () => observer.disconnect()
   }, [dock, docked])
 
-  const onPointerDown = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      if (!docked) return
+  const maxSizeOf = (frame: Element | null | undefined) => {
+    const rect = frame?.getBoundingClientRect()
+    return dock === 'bottom'
+      ? Math.max(160, (rect?.height ?? window.innerHeight) - 120)
+      : Math.max(160, (rect?.width ?? window.innerWidth) - 240)
+  }
+  const currentSizeOf = (panel: Element | null) => {
+    const rect = panel?.getBoundingClientRect()
+    return dock === 'bottom' ? (rect?.height ?? size) : (rect?.width ?? size)
+  }
+  const resizer = useSplitDrag<ResizeState>({
+    horizontal: dock === 'right',
+    begin: (event) => {
+      if (!docked) return null
       const panel = event.currentTarget.parentElement
-      const frame = panel?.parentElement
-      const panelRect = panel?.getBoundingClientRect()
-      const frameRect = frame?.getBoundingClientRect()
-      resizeRef.current = {
-        start: dock === 'bottom' ? event.clientY : event.clientX,
-        startSize:
-          dock === 'bottom'
-            ? (panelRect?.height ?? size)
-            : (panelRect?.width ?? size),
-        maxSize:
-          dock === 'bottom'
-            ? Math.max(160, (frameRect?.height ?? window.innerHeight) - 120)
-            : Math.max(160, (frameRect?.width ?? window.innerWidth) - 240),
-      }
-      event.preventDefault()
-      event.currentTarget.setPointerCapture(event.pointerId)
+      return { startSize: currentSizeOf(panel), maxSize: maxSizeOf(panel?.parentElement) }
     },
-    [dock, docked, size],
-  )
-
-  const onPointerMove = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const resize = resizeRef.current
-      if (!resize) return
-      const current = dock === 'bottom' ? event.clientY : event.clientX
-      onSizeChange(
-        clampSize(resize.startSize - (current - resize.start), resize.maxSize),
-      )
+    move: (origin, delta) => onSizeChange(clampSize(origin.startSize - delta, origin.maxSize)),
+    // Up/Left grow the panel: its free edge faces the start of the axis.
+    step: (direction, event) => {
+      const panel = event.currentTarget.parentElement
+      onSizeChange(clampSize(currentSizeOf(panel) + (direction === -1 ? 16 : -16), maxSizeOf(panel?.parentElement)))
     },
-    [dock, onSizeChange],
-  )
-
-  const onPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    resizeRef.current = null
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-  }, [])
-
-  const onResizeKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLDivElement>) => {
-      const grow =
-        (dock === 'bottom' && event.key === 'ArrowUp') ||
-        (dock === 'right' && event.key === 'ArrowLeft')
-      const shrink =
-        (dock === 'bottom' && event.key === 'ArrowDown') ||
-        (dock === 'right' && event.key === 'ArrowRight')
-      if (!grow && !shrink) return
-      event.preventDefault()
-      const frame = event.currentTarget.parentElement?.parentElement
-      const panelRect =
-        event.currentTarget.parentElement?.getBoundingClientRect()
-      const frameRect = frame?.getBoundingClientRect()
-      const maxSize =
-        dock === 'bottom'
-          ? Math.max(160, (frameRect?.height ?? window.innerHeight) - 120)
-          : Math.max(160, (frameRect?.width ?? window.innerWidth) - 240)
-      const currentSize =
-        dock === 'bottom'
-          ? (panelRect?.height ?? size)
-          : (panelRect?.width ?? size)
-      onSizeChange(clampSize(currentSize + (grow ? 16 : -16), maxSize))
-    },
-    [dock, onSizeChange, size],
-  )
+  })
 
   return (
     <section
@@ -246,12 +199,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
           role="separator"
           tabIndex={0}
           className="shui-terminal-resize"
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-          onLostPointerCapture={onPointerUp}
-          onKeyDown={onResizeKeyDown}
+          {...resizer}
           aria-label={`Resize ${dock} terminal`}
           aria-orientation={dock === 'bottom' ? 'horizontal' : 'vertical'}
           aria-valuemin={160}
@@ -266,7 +214,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
         ref={workspaceRef}
         actions={
           <>
-            <HoverTip label="Close disconnected terminals">
+            <Tooltip label="Close disconnected terminals">
               <button
                 type="button"
                 className="shui-terminal-action"
@@ -275,7 +223,7 @@ export function TerminalPanel(props: TerminalPanelProps) {
               >
                 <Trash2 aria-hidden />
               </button>
-            </HoverTip>
+            </Tooltip>
             <DockActions
               dock={dock}
               onDockChange={onDockChange}

@@ -6,6 +6,7 @@
  */
 import { formatBytes } from '@/components/chat/sandbox/format'
 import { Chip, FooterPill } from '@/components/chat/sandbox/terminal/Terminal'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import {
   Table,
   TableBody,
@@ -116,9 +117,7 @@ function limitRows(info: InfoResponse): ConfigRow[] {
 function RootsList({ basePaths }: { basePaths: string[] }) {
   return (
     <div className="border-b border-rule-2 last:border-b-0">
-      <div className="px-3 pt-2 pb-1 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-        allowed roots
-      </div>
+      <div className="px-3 pt-2 pb-1 iii-ui-eyebrow">allowed roots</div>
       {basePaths.length === 0 ? (
         <div className="px-3 pb-2 font-mono text-[12px] text-ink-ghost">
           · none
@@ -190,7 +189,7 @@ function GlobList({
   return (
     <div className="border-b border-rule-2 last:border-b-0 px-3 py-2 flex flex-col gap-1.5">
       <div className="font-mono text-[11px] text-ink-faint">
-        <span className="uppercase tracking-[0.06em]">{title}</span>
+        <Eyebrow>{title}</Eyebrow>
         <span className="text-ink-ghost"> · {note}</span>
       </div>
       {globs.length === 0 ? (
@@ -200,7 +199,7 @@ function GlobList({
           {globs.map((glob) => (
             <Chip
               key={glob}
-              className={warn ? 'border-warn text-warn' : undefined}
+              className={warn ? 'bg-warn-muted text-warn' : undefined}
             >
               {glob}
             </Chip>

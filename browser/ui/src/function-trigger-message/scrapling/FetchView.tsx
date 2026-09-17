@@ -1,14 +1,10 @@
 import type { Host } from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { ArrowRight } from 'lucide-react'
 import { OpenInBrowser } from '../open-in-browser'
-import { JsonHighlight } from '@iii-dev/console-ui'
+import { ActionLine, Badge, Chip, EmptyState, JsonHighlight, MetaRow } from '@iii-dev/console-ui'
 import { cn } from '../../lib/cn'
-import {
-  ActionLine,
-  Chip,
-  FilterChip,
-  MetaRow,
-  StatusPill,
-} from '../../lib/shared'
+import { FilterChip } from '../../lib/shared'
 import {
   type FetchRequest,
   fetchEngineLabel,
@@ -47,11 +43,11 @@ export function FetchView({
     return (
       <div className="br-ui-scrape-section">
         <MetaRow>
-          <StatusPill label="fetching…" variant="default" />
+          <Badge variant="default">fetching…</Badge>
           <OptionChips functionId={functionId} req={req} />
         </MetaRow>
         <TargetLines urls={targetUrls(req)} host={host} />
-        <div className="br-ui-scrape-running">
+        <div className="br-ui-more">
           · waiting for page…
         </div>
       </div>
@@ -85,14 +81,11 @@ export function FetchPreview({
   return (
     <div className="br-ui-scrape-section is-preview">
       <MetaRow>
-        <StatusPill
-          label={
+        <Badge variant="warn">{
             urls.length > 1
               ? `permission to fetch ${urls.length} urls`
               : 'permission to fetch'
-          }
-          variant="warn"
-        />
+          }</Badge>
         <OptionChips functionId={functionId} req={req} />
       </MetaRow>
       <TargetLines urls={urls} />
@@ -124,12 +117,12 @@ function OptionChips({
         <FilterChip label="as" value={req.impersonate} />
       ) : null}
       {req.solve_cloudflare ? (
-        <Chip className="br-ui-scrape-warning">
+        <Chip tone="warning">
           <span>cloudflare</span>
         </Chip>
       ) : null}
       {req.headless === false ? (
-        <Chip className="br-ui-scrape-warning">
+        <Chip tone="warning">
           <span>headed</span>
         </Chip>
       ) : null}
@@ -156,13 +149,13 @@ function TargetLines({ urls, host }: { urls: string[]; host?: Host }) {
     <>
       {urls.slice(0, MAX_TARGET_LINES).map((url, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; rows never reorder and urls may repeat
-        <ActionLine key={`${i}:${url}`} symbol="→" tone="ink">
-          <span className="br-ui-scrape-break">{url}</span>
+        <ActionLine key={`${i}:${url}`} icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+          <span className="br-ui-break">{url}</span>
           {host ? <OpenInBrowser host={host} url={url} /> : null}
         </ActionLine>
       ))}
       {urls.length > MAX_TARGET_LINES ? (
-        <div className="br-ui-scrape-more">
+        <div className="br-ui-more">
           +{urls.length - MAX_TARGET_LINES} more urls
         </div>
       ) : null}
@@ -188,10 +181,7 @@ function SinglePane({
   return (
     <div className="br-ui-scrape-section">
       <MetaRow>
-        <StatusPill
-          label={status != null ? String(status) : 'done'}
-          variant={statusToVariant(status)}
-        />
+        <Badge variant={statusToVariant(status)}>{status != null ? String(status) : 'done'}</Badge>
         <OptionChips functionId={functionId} req={req} />
         {contentType ? (
           <FilterChip label="type" value={contentType.split(';')[0]} />
@@ -200,8 +190,8 @@ function SinglePane({
           <FilterChip label="xhr" value={page.captured_xhr.length} />
         ) : null}
       </MetaRow>
-      <ActionLine symbol="→" tone="ink">
-        <span className="br-ui-scrape-break">{page.url || req.url || ''}</span>
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+        <span className="br-ui-break">{page.url || req.url || ''}</span>
         {host && (page.url || req.url) ? (
           <OpenInBrowser host={host} url={page.url || req.url || ''} />
         ) : null}
@@ -212,10 +202,10 @@ function SinglePane({
       ) : null}
       {page.html != null ? <HtmlSnippet html={page.html} /> : null}
       {!page.extracted && page.content == null && page.html == null ? (
-        <div className="br-ui-scrape-empty">
-          · page fetched — pass `selectors`, `format`, or `include_html` for
-          content
-        </div>
+        <EmptyState
+          title="Page fetched"
+          description="Pass selectors, format, or include_html to get content back."
+        />
       ) : null}
     </div>
   )
@@ -245,7 +235,7 @@ function statusToVariant(
 function Extracted({ extracted }: { extracted: Record<string, unknown> }) {
   return (
     <div>
-      <div className="br-ui-scrape-label">
+      <div className={cn('br-ui-scrape-label', uiClasses.eyebrow)}>
         extracted · {Object.keys(extracted).length}
       </div>
       <JsonHighlight code={JSON.stringify(extracted, null, 2)} wrap />
@@ -263,11 +253,11 @@ function RenderedContent({
   const truncated = content.length > HTML_PREVIEW_CHARS
   return (
     <div>
-      <div className="br-ui-scrape-label">
+      <div className={cn('br-ui-scrape-label', uiClasses.eyebrow)}>
         {format ?? 'content'} · {formatChars(content.length)}
         {truncated ? ' · truncated' : ''}
       </div>
-      <pre className="br-ui-scrape-pre">
+      <pre className="br-ui-text">
         <code>
           {content.slice(0, HTML_PREVIEW_CHARS)}
           {truncated ? '…' : ''}
@@ -281,11 +271,11 @@ function HtmlSnippet({ html }: { html: string }) {
   const truncated = html.length > HTML_PREVIEW_CHARS
   return (
     <div>
-      <div className="br-ui-scrape-label">
+      <div className={cn('br-ui-scrape-label', uiClasses.eyebrow)}>
         html · {formatChars(html.length)}
         {truncated ? ' · truncated preview' : ''}
       </div>
-      <pre className="br-ui-scrape-pre is-muted">
+      <pre className="br-ui-text br-ui-faint">
         <code>
           {html.slice(0, HTML_PREVIEW_CHARS)}
           {truncated ? '…' : ''}
@@ -316,10 +306,7 @@ function BulkPane({
   return (
     <div className="br-ui-scrape-section">
       <MetaRow>
-        <StatusPill
-          label={`${ok}/${results.length} ok`}
-          variant={failed ? 'warn' : 'accent'}
-        />
+        <Badge variant={failed ? 'warn' : 'accent'}>{`${ok}/${results.length} ok`}</Badge>
         <OptionChips functionId={functionId} req={req} />
       </MetaRow>
       <div>
@@ -327,28 +314,23 @@ function BulkPane({
           <div
             // biome-ignore lint/suspicious/noArrayIndexKey: static wire snapshot; rows never reorder and urls may repeat
             key={`${i}:${r.url ?? ''}`}
-            className="br-ui-scrape-result-row"
+            className="br-ui-row"
           >
-            <span
-              className={cn(
-                'br-ui-scrape-row-status',
-                r.error != null && 'is-warn',
-              )}
-            >
+            <span className={cn('br-ui-num', r.error != null ? 'br-ui-warn' : 'br-ui-faint')}>
               {r.error != null ? '✗' : (r.status ?? '·')}
             </span>
-            <span className="br-ui-scrape-row-main br-ui-scrape-break">
+            <span className="br-ui-break">
               {r.url ?? ''}
             </span>
             {r.error != null ? (
-              <span className="br-ui-scrape-row-error">{r.error}</span>
+              <span className="br-ui-warn br-ui-break">{r.error}</span>
             ) : null}
           </div>
         ))}
       </div>
       {extractedCount > 0 ? (
         <div>
-          <div className="br-ui-scrape-label">
+          <div className={cn('br-ui-scrape-label', uiClasses.eyebrow)}>
             extracted · {extractedCount} page{extractedCount === 1 ? '' : 's'}
           </div>
           <JsonHighlight code={JSON.stringify(extractedByUrl, null, 2)} wrap />

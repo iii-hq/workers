@@ -77,6 +77,10 @@ import {
 import type { TurnVisualPhase } from './turn-visual-state'
 import './chat-motion.css'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 interface MessageListProps {
   messages: MessageType[]
   /**
@@ -1175,8 +1179,8 @@ export function MessageList({
 
   const listPad =
     density === 'dock'
-      ? 'px-3 py-5 sm:px-4 sm:py-6'
-      : 'px-3 py-5 sm:px-6 sm:py-7 lg:px-9 lg:py-8'
+      ? 'px-3 py-5 @2xl:px-4 @2xl:py-6'
+      : 'px-3 py-5 @2xl:px-6 @2xl:py-7 @5xl:px-9 @5xl:py-8'
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -1241,7 +1245,7 @@ export function MessageList({
       >
         <div
           ref={contentRef}
-          className="chat-message-stack mx-auto flex max-w-[720px] flex-col gap-y-6 sm:gap-y-8"
+          className="chat-message-stack mx-auto flex max-w-[720px] flex-col gap-y-6 @2xl:gap-y-8"
         >
           {header}
           {history && messages.length > 0 ? (
@@ -1391,7 +1395,7 @@ export function MessageList({
           data-transcript-loading=""
           aria-live="polite"
           className={cn(
-            'pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-base text-ink-faint transition-opacity duration-200',
+            'pointer-events-none absolute inset-0 flex items-center justify-center font-sans text-base text-ink-faint transition-opacity duration-[var(--motion-duration-control)]',
             openingIndicator ? 'opacity-100' : 'opacity-0',
           )}
         >

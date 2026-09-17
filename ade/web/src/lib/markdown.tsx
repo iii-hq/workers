@@ -152,7 +152,7 @@ const components: Components = {
   h4: ({ className, ...rest }) => (
     <h4
       className={cn(
-        'font-mono text-[13px] font-semibold uppercase tracking-[0.06em] text-ink-faint mt-4 mb-2 first:mt-0',
+        'font-mono text-[13px] font-semibold text-ink-faint mt-4 mb-2 first:mt-0',
         className,
       )}
       {...rest}

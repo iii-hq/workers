@@ -37,7 +37,7 @@ done
 mc() {
   docker run --rm --network host \
     -e MC_HOST_local="http://${AK}:${SK}@127.0.0.1:9000" \
-    minio/mc:RELEASE.2024-11-21T17-21-54Z \
+    quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z \
     "$@"
 }
 

@@ -3,8 +3,8 @@
  *
  * The console unmounts the directory page on every tab switch, so without
  * this a mid-typed new entry — or an unsaved edit to an existing one — dies
- * with the component. These are the pure decisions; `browser.tsx` owns the
- * localStorage calls.
+ * with the component. These are the pure decisions; `browser.tsx` mirrors
+ * them into pane state.
  */
 
 export interface StoredDraft {
@@ -21,12 +21,13 @@ export type DraftAction =
   /** Leave storage untouched — see the in-flight case in [`draftAction`]. */
   | { kind: 'keep' }
 
-/** Tolerant read: anything not shaped like a draft is treated as absent, so
- * a hand-edited or stale storage entry can't wedge the editor on mount. */
-export function parseStoredDraft(raw: string | null): StoredDraft | null {
+/** Tolerant read of a raw JSON string or an already-parsed value: anything
+ * not shaped like a draft is treated as absent, so a hand-edited or stale
+ * storage entry can't wedge the editor on mount. */
+export function parseStoredDraft(raw: unknown): StoredDraft | null {
   if (!raw) return null
   try {
-    const parsed = JSON.parse(raw)
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
     if (typeof parsed?.content !== 'string') return null
     return {
       creating: parsed.creating === true,

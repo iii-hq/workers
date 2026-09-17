@@ -473,8 +473,8 @@
 }
 
 [data-iii-ui="eval"] .eval-ui-textarea:focus {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 1px var(--color-accent);
+  border-color: var(--color-rule-focus);
+  box-shadow: 0 0 0 1px var(--color-rule-focus);
 }
 
 [data-iii-ui="eval"] .eval-ui-link {
@@ -726,7 +726,7 @@
 }
 
 [data-iii-ui="eval"] .eval-ui-input:focus {
-  border-color: var(--color-accent);
+  border-color: var(--color-rule-focus);
 }
 
 [data-iii-ui="eval"] .eval-ui-session-list {

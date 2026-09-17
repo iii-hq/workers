@@ -24,6 +24,10 @@ import {
 } from './system-prompt-selection'
 import './EmptyState.css'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 /**
  * The chat empty state, as a small set of presentational variants:
  *
@@ -100,7 +104,8 @@ export function EmptyState({
   agentProfile,
   onAgentProfileChange,
 }: EmptyStateProps) {
-  const emptyPad = density === 'dock' ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
+  const emptyPad =
+    density === 'dock' ? 'px-3 @2xl:px-4' : 'px-3 @2xl:px-6 @5xl:px-9'
   const eyebrow = variant === 'no-provider' ? 'New session' : 'Setup'
 
   return (
@@ -401,12 +406,12 @@ function AgentChoiceCard({
       aria-pressed={selected}
       onClick={onSelect}
       className={cn(
-        'group/agent relative flex h-full w-full cursor-pointer flex-col rounded-lg bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[transform,box-shadow] duration-150 hover:-translate-y-px hover:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent @lg:min-h-40',
-        selected && 'ring-2 ring-accent',
+        'group/agent relative flex h-full w-full cursor-pointer flex-col rounded-lg bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[transform,box-shadow] duration-[var(--motion-duration-control)] hover:-translate-y-px hover:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus @lg:min-h-40',
+        selected && 'bg-surface-selected',
       )}
     >
       {selected ? (
-        <span className="absolute right-3 top-3 flex size-5 items-center justify-center rounded-full bg-accent text-white shadow-xs">
+        <span className="absolute right-3 top-3 flex size-5 items-center justify-center rounded-full bg-ink text-bg shadow-xs">
           <Check aria-hidden className="size-4" strokeWidth={3} />
         </span>
       ) : null}
@@ -480,8 +485,8 @@ function NoHarnessBody({
           </Button>
         </div>
         <div className="flex flex-col gap-1.5">
-          <span className="font-mono text-[12px] text-ink-ghost lowercase">
-            prefer the terminal? run:
+          <span className="font-mono text-[12px] text-ink-ghost">
+            Prefer the terminal? Run:
           </span>
           <Terminal
             command={HARNESS_INSTALL_COMMAND}
@@ -520,7 +525,7 @@ function InstallingBody({
       {failed ? (
         <div className="flex flex-col gap-3">
           {errorMessage && stages.length === 0 ? (
-            <span className="font-mono text-[12.5px] text-alert lowercase break-all">
+            <span className="font-mono text-[12.5px] text-alert break-all">
               {errorMessage}
             </span>
           ) : null}

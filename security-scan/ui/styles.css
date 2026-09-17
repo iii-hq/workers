@@ -306,7 +306,7 @@
   left: 4px;
   width: 2px;
   border-radius: 2px;
-  background: var(--color-accent);
+  background: var(--color-edge);
   content: "";
 }
 
@@ -656,7 +656,7 @@
 }
 
 [data-iii-ui="security-scan"] .security-scan-ui-progress li[data-state="current"] .security-scan-ui-progress-mark {
-  border: 3px solid var(--color-accent);
+  border: 3px solid var(--color-ink);
 }
 
 [data-iii-ui="security-scan"] .security-scan-ui-progress li[data-state="failed"] {

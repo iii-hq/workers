@@ -17,6 +17,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { AlertCircle, ChevronRight } from 'lucide-react'
+import { Eyebrow } from '@/components/ui/Eyebrow'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { fetchEngineWorkerInfo } from '../api/workers'
 
@@ -57,7 +58,7 @@ export function WorkerSurface({ name }: WorkerSurfaceProps) {
   const { functions, trigger_types: triggerTypes } = query.data
 
   return (
-    <div className="grid gap-x-8 gap-y-6 py-3 md:grid-cols-2">
+    <div className="grid gap-x-8 gap-y-6 py-3 @3xl:grid-cols-2">
       <Section title="functions" count={functions.length}>
         {functions.length === 0 ? (
           <Empty>This worker registered no functions.</Empty>
@@ -110,11 +111,11 @@ function Section({
 }) {
   return (
     <section className="min-w-0 space-y-2">
-      <h3 className="flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.1em] text-ink-faint">
+      <Eyebrow as="h3" className="flex items-center gap-2">
         <ChevronRight className="size-4" aria-hidden />
         {title}
         <span className="tabular-nums text-ink-ghost">{count}</span>
-      </h3>
+      </Eyebrow>
       <div className="space-y-2">{children}</div>
     </section>
   )

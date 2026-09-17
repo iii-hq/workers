@@ -13,6 +13,10 @@ import {
 } from './BottomSheet'
 import { SheetPage } from './SheetNavigation'
 
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
+
 interface SelectOption<T extends string> {
   value: T
   label: string
@@ -171,7 +175,10 @@ export function Select<T extends string>({
 
   function handleOpenChange(nextOpen: boolean) {
     setOpen(nextOpen)
-    if (nextOpen) setPanelBoundary(triggerRef.current?.closest('[data-workspace-panel]') ?? null)
+    if (nextOpen)
+      setPanelBoundary(
+        triggerRef.current?.closest('[data-workspace-panel]') ?? null,
+      )
     if (!embeddedInSheet || !pageNavigation) return
     if (nextOpen) {
       pageNavigation.openPage(

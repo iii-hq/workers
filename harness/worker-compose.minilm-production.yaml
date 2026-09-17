@@ -96,10 +96,6 @@ containers:
   document:
     worker: path://../document
     scripts: { run: cargo run --locked --bin document }
-  editor:
-    worker: path://../editor
-    start_after: [ide, state]
-    scripts: { run: cargo run --locked --bin editor }
   email:
     worker: path://../email
     start_after: [state]

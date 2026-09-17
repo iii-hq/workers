@@ -18,6 +18,7 @@ import {
   PageShell,
   PageSidebar,
   StatusPanel,
+  useConfirm,
 } from '@iii-dev/console-ui'
 import { strToU8, zipSync } from 'fflate'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -56,6 +57,7 @@ export function A2uiPage({
   const [exporting, setExporting] = useState(false)
   const [templates, setTemplates] = useState<SurfaceTemplate[]>([])
   const [error, setError] = useState<string | null>(null)
+  const { confirm, dialog } = useConfirm()
   const [workspaceExport, setWorkspaceExport] =
     useState<WorkspaceExport | null>(null)
   const importInput = useRef<HTMLInputElement>(null)
@@ -291,6 +293,7 @@ export function A2uiPage({
 
   return (
     <PageShell className="a2ui-page">
+      {dialog}
       <PageHeader
         title="A2UI"
         description={
@@ -408,9 +411,13 @@ export function A2uiPage({
                   size="sm"
                   aria-label={`delete template ${template.title}`}
                   title="Delete this saved template"
-                  onClick={() => {
+                  onClick={async () => {
                     if (
-                      window.confirm(`Delete template “${template.title}”?`)
+                      await confirm({
+                        title: `Delete template “${template.title}”?`,
+                        confirmLabel: 'Delete',
+                        tone: 'danger',
+                      })
                     ) {
                       void run('a2ui::template::delete', {
                         template_id: template.template_id,
@@ -565,11 +572,13 @@ export function A2uiPage({
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         title="Permanently remove this surface"
-                        onSelect={() => {
+                        onSelect={async () => {
                           if (
-                            window.confirm(
-                              `Delete surface “${selected.title}”?`,
-                            )
+                            await confirm({
+                              title: `Delete surface “${selected.title}”?`,
+                              confirmLabel: 'Delete',
+                              tone: 'danger',
+                            })
                           ) {
                             void run('a2ui::surface::delete', {
                               surface_id: selected.surface_id,

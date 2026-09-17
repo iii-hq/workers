@@ -51,7 +51,7 @@ export function SpanLinksTab({
 
   return (
     <div className="p-3 space-y-2">
-      <div className="font-mono text-[11px] text-ink-faint uppercase tracking-[0.06em] px-1 mb-2">
+      <div className="iii-ui-eyebrow px-1 mb-2">
         linked traces ({links.length})
       </div>
       {links.map(({ link, id }) => {
@@ -75,15 +75,15 @@ export function SpanLinksTab({
           >
             <ExternalLink className="size-4 text-ink-faint group-hover:text-accent flex-shrink-0" />
             <div className="flex-1 min-w-0">
-              <div className="font-mono text-[11px] text-ink-faint truncate group-hover:text-ink tabular-nums lowercase">
+              <div className="font-mono text-[11px] text-ink-faint truncate group-hover:text-ink tabular-nums">
                 {link.trace_id.slice(0, 16)}…
               </div>
-              <div className="font-mono text-[10px] text-ink-ghost tabular-nums lowercase">
-                span: {link.span_id.slice(0, 12)}
+              <div className="font-mono text-[11px] text-ink-ghost tabular-nums">
+                Span: {link.span_id.slice(0, 12)}
               </div>
             </div>
             {attrCount > 0 && (
-              <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-ink-faint rounded-xs bg-paper-2 px-1.5 py-0.5 flex-shrink-0 tabular-nums">
+              <span className="iii-ui-eyebrow rounded-xs bg-paper-2 px-1.5 py-0.5 flex-shrink-0 tabular-nums">
                 +{attrCount} attrs
               </span>
             )}

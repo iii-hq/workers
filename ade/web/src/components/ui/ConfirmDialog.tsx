@@ -11,6 +11,8 @@ export interface ConfirmDialogProps {
   details?: readonly string[]
   confirmLabel?: string
   cancelLabel?: string
+  /** `danger` paints the confirm control in `alert` for destructive actions. */
+  tone?: 'default' | 'danger'
   onConfirm: () => void
   onCancel?: () => void
 }
@@ -24,6 +26,7 @@ export function ConfirmDialog({
   details,
   confirmLabel = 'Continue',
   cancelLabel = 'Cancel',
+  tone = 'default',
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -81,6 +84,11 @@ export function ConfirmDialog({
             type="button"
             variant="primary"
             size="sm"
+            className={
+              tone === 'danger'
+                ? 'bg-alert text-white hover:bg-alert/90'
+                : undefined
+            }
             onClick={() => settle(true)}
           >
             {confirmLabel}
@@ -89,4 +97,62 @@ export function ConfirmDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+export interface ConfirmOptions
+  extends Pick<
+    ConfirmDialogProps,
+    | 'title'
+    | 'description'
+    | 'details'
+    | 'confirmLabel'
+    | 'cancelLabel'
+    | 'tone'
+  > {}
+
+/**
+ * `window.confirm` shaped around `ConfirmDialog`: render `dialog` once in the
+ * component, then `await confirm({ title, … })` where the native box used to
+ * be. Escape, the close control and Cancel resolve `false`; a second call
+ * while one is open cancels the first; unmounting cancels whatever is open.
+ */
+export function useConfirm(): {
+  confirm: (options: ConfirmOptions) => Promise<boolean>
+  dialog: React.ReactNode
+} {
+  const [options, setOptions] = React.useState<ConfirmOptions | null>(null)
+  const resolveRef = React.useRef<((confirmed: boolean) => void) | null>(null)
+  const resolve = (confirmed: boolean) => {
+    resolveRef.current?.(confirmed)
+    resolveRef.current = null
+  }
+  const confirm = React.useCallback(
+    (next: ConfirmOptions) =>
+      new Promise<boolean>((resolvePromise) => {
+        resolveRef.current?.(false)
+        resolveRef.current = resolvePromise
+        setOptions(next)
+      }),
+    [],
+  )
+  React.useEffect(() => () => resolveRef.current?.(false), [])
+  // ConfirmDialog closes (onOpenChange) before it reports the outcome, so
+  // only onConfirm/onCancel settle the promise.
+  const dialog = (
+    <ConfirmDialog
+      open={options !== null}
+      onOpenChange={(open) => {
+        if (!open) setOptions(null)
+      }}
+      title={options?.title ?? ''}
+      description={options?.description}
+      details={options?.details}
+      confirmLabel={options?.confirmLabel}
+      cancelLabel={options?.cancelLabel}
+      tone={options?.tone}
+      onConfirm={() => resolve(true)}
+      onCancel={() => resolve(false)}
+    />
+  )
+  return { confirm, dialog }
 }

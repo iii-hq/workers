@@ -1,4 +1,5 @@
 import * as ConsoleUi from '@iii-dev/console-ui'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   type BrowserClickOptions,
@@ -113,6 +114,8 @@ interface ViewportProps {
   loading: boolean
   /** What the empty surface says while there is no frame. */
   emptyLabel: string
+  /** The live view failed: shown instead of the waiting copy. */
+  error?: string | null
   onClickAt: (x: number, y: number, options?: BrowserClickOptions) => void
   onScrollAt: (x: number, y: number, deltaY: number) => void
   onTextInput: (text: string) => void
@@ -130,6 +133,7 @@ export function Viewport({
   frame,
   loading,
   emptyLabel,
+  error = null,
   onClickAt,
   onScrollAt,
   onTextInput,
@@ -449,7 +453,16 @@ export function Viewport({
           className="br-ui-vp-img"
         />
       ) : (
-        <p className={cn('br-ui-vp-empty', loading && 'is-loading')}>{emptyLabel}</p>
+        <div className={cn('br-ui-vp-empty', loading && !error && uiClasses.pulse)}>
+          {error ? (
+            <ConsoleUi.StatusPanel variant="alert" headline="Live view failed" detail={error} />
+          ) : (
+            <ConsoleUi.EmptyState
+              title={emptyLabel}
+              description="The page streams here as soon as its first frame arrives."
+            />
+          )}
+        </div>
       )}
       {hint ? (
         <div

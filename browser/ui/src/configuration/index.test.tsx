@@ -6,6 +6,20 @@ import { BrowserConfigEditor, browserConfigurationValue, focusBrowserNarrowPane,
 import { booleanLiteralForRawValue, numberLiteralForRawValue } from './template-values'
 
 vi.mock('@iii-dev/console-ui', () => ({
+  Badge: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  Button: ({ children, ...props }: ComponentProps<'button'>) => (
+    <button type="button" {...props}>
+      {children}
+    </button>
+  ),
+  Card: ({ children, ...props }: { children?: ReactNode }) => <div {...props}>{children}</div>,
+  Eyebrow: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  IconButton: ({ children, ...props }: ComponentProps<'button'>) => (
+    <button type="button" {...props}>
+      {children}
+    </button>
+  ),
+  StatusDot: () => null,
   Input: ({ preserveCase: _preserveCase, onChange: _onChange, ...props }: Record<string, unknown>) => (
     <input {...props} />
   ),

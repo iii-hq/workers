@@ -418,7 +418,7 @@
   max-width: 420px;
 }
 [data-iii-ui="code-runner"] .cr-cfg-input:focus {
-  outline: 1px solid var(--color-accent);
+  outline: 1px solid var(--color-rule-focus);
   outline-offset: -1px;
 }
 [data-iii-ui="code-runner"] .cr-cfg-error {

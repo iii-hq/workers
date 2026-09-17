@@ -25,6 +25,12 @@ import { MemoryChip } from './MemoryChip'
 import { SystemNotice } from './SystemNotice'
 import { ThoughtMessage } from './ThoughtMessage'
 import './streaming-message.css'
+import { Eyebrow, eyebrowClassName } from '@/components/ui/Eyebrow'
+import { cn } from '@/lib/utils'
+
+// viewport: phone chrome — the sm and md utilities here are the console's
+// phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
+// not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 interface MessageProps {
   message: MessageType
@@ -179,7 +185,10 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
       <details className="group">
         <summary className="flex items-center gap-3 cursor-pointer list-none select-none">
           <span className="flex-1 h-px bg-edge" aria-hidden="true" />
-          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint flex items-center gap-2 group-hover:text-ink transition-colors">
+          <Eyebrow
+            size="lg"
+            className="flex items-center gap-2 group-hover:text-ink transition-colors"
+          >
             <span>Compacted</span>
             {tokens > 0 ? (
               <>
@@ -189,10 +198,10 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
                 </span>
               </>
             ) : null}
-            <span className="text-ink-ghost normal-case tracking-normal text-[10px]">
+            <span className="text-ink-ghost normal-case tracking-normal text-[11px]">
               show summary
             </span>
-          </span>
+          </Eyebrow>
           <span className="flex-1 h-px bg-edge" aria-hidden="true" />
         </summary>
         {summary ? (
@@ -242,19 +251,24 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
   const hint = event ? reactionEventHint(event) : null
   return (
     <article className="flex flex-col items-start gap-2">
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
+      <Eyebrow as="header" className="text-ink-ghost">
         <Prompt symbol="⚡">Trigger · reaction task</Prompt>
-      </header>
+      </Eyebrow>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
         <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
           {message.content}
         </Markdown>
         {event ? (
           <details className="mt-2 group">
-            <summary className="cursor-pointer list-none select-none font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost group-hover:text-ink transition-colors">
+            <summary
+              className={cn(
+                eyebrowClassName,
+                'cursor-pointer list-none select-none text-ink-ghost group-hover:text-ink transition-colors',
+              )}
+            >
               firing event
               {hint ? ` · ${hint}` : ''}
-              <span className="normal-case tracking-normal text-[10px]">
+              <span className="normal-case tracking-normal text-[11px]">
                 {' '}
                 · show json
               </span>
@@ -279,9 +293,9 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
 function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
   return (
     <article className="flex flex-col items-start gap-2">
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
+      <Eyebrow as="header" className="text-ink-ghost">
         <Prompt symbol="⟳">Validator · corrective prompt</Prompt>
-      </header>
+      </Eyebrow>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
         <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
           {message.content}
@@ -402,13 +416,13 @@ function UserMessage({
         ) : null}
         <span>You</span>
       </header>
-      <div className="max-w-[92%] break-words rounded-sm bg-surface px-3.5 py-2.5 sm:max-w-[80%]">
+      <div className="max-w-[92%] break-words rounded-sm bg-surface px-3.5 py-2.5 @2xl:max-w-[80%]">
         <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
           {message.content}
         </Markdown>
       </div>
       {chips.length > 0 ? (
-        <div className="flex max-w-[92%] flex-wrap justify-end gap-2 sm:max-w-[80%]">
+        <div className="flex max-w-[92%] flex-wrap justify-end gap-2 @2xl:max-w-[80%]">
           {chips.map((a) => (
             <AttachmentChip key={a.id} attachment={a} sessionId={sessionId} />
           ))}
