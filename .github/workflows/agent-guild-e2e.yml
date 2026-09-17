@@ -1,0 +1,68 @@
+name: agent-guild E2E
+on:
+  pull_request:
+    paths:
+      - 'agent-guild/**'
+      - '.github/workflows/agent-guild-e2e.yml'
+      - '.github/scripts/collect_worker_interface.py'
+      - '.github/scripts/deployment_compiler.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: agent-guild-e2e-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: |
+          python3 -m pip install pytest==8.3.5 pyyaml==6.0.2
+          npm --prefix agent-guild ci --ignore-scripts
+      - name: Native language and catalog checks
+        run: |
+          npm --prefix agent-guild test
+          npm --prefix agent-guild run lint
+          python3 -m pytest .github/scripts/tests/test_agent_guild_catalog.py
+          python3 .github/scripts/validate_worker.py --worker agent-guild --base-ref origin/main --source-changed '["agent-guild"]'
+          python3 .github/scripts/deployment_compiler.py compile-index --source-sha "$(git rev-parse HEAD)" --compiler-repository iii-hq/workers --output-dir "$RUNNER_TEMP/agent-guild-descriptors"
+      - name: Install pinned local-test engine
+        run: |
+          mkdir -p "$RUNNER_TEMP/agent-guild-engine"
+          curl --fail --silent --show-error --location 'https://github.com/iii-hq/iii/releases/download/iii/v0.23.0/iii-x86_64-unknown-linux-gnu.tar.gz' -o "$RUNNER_TEMP/agent-guild-engine/iii.tar.gz"
+          echo '213e4bcfd413b50e8d97316fdadb4d78f0919436d3e64e4051d56fc8ff41decb  '"$RUNNER_TEMP/agent-guild-engine/iii.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/agent-guild-engine/iii.tar.gz" -C "$RUNNER_TEMP/agent-guild-engine"
+      - name: Real engine, interface capture and local HTTP protocol
+        env:
+          III_TELEMETRY_ENABLED: 'false'
+          OTEL_ENABLED: 'false'
+          III_DISABLE_TRACE_PAYLOADS: '1'
+        run: |
+          export III_BIN="$RUNNER_TEMP/agent-guild-engine/iii"
+          export PATH="$RUNNER_TEMP/agent-guild-engine:$PATH"
+          npm --prefix agent-guild run test:e2e
+      - name: Retain protocol results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: agent-guild-protocol-results
+          path: |
+            agent-guild/tests/e2e/results/RESULT.json
+            agent-guild/tests/e2e/results/worker-interface.json
+            agent-guild/tests/e2e/results/function-details.json
+            agent-guild/tests/e2e/results/*.log
+            agent-guild/tests/e2e/results/interface-capture.*
+          if-no-files-found: error
