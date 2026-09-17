@@ -497,11 +497,12 @@ function Stage({
     // biome-ignore lint/a11y/noStaticElementInteractions: focusable root (tabIndex -1) that owns the viewer keys.
     <div
       data-image-viewer-root
+      data-image-zoom-exempt
       tabIndex={-1}
       className="@container relative flex min-h-0 flex-1 flex-col outline-none"
       onKeyDown={onKeyDown}
     >
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-col items-end gap-2 p-3 @2xl:flex-row @2xl:items-start @2xl:justify-between @2xl:gap-3 @2xl:p-4">
+      <div className="relative z-10 flex shrink-0 flex-col items-end gap-2 p-3 @2xl:flex-row @2xl:items-start @2xl:justify-between @2xl:gap-3 @2xl:p-4">
         <div className="pointer-events-auto order-2 max-w-full min-w-0 rounded-md bg-panel-raised/95 px-3 py-2 shadow-floating @2xl:order-1 @2xl:max-w-[40%]">
           <div className="truncate font-sans text-[13px] font-medium text-ink">
             {title ?? 'Image'}
@@ -618,7 +619,7 @@ function Stage({
               })
             }
             className={cn(
-              'max-w-none origin-center select-none',
+              'max-w-none shrink-0 origin-center select-none',
               phase.kind === 'ready' ? 'opacity-100' : 'opacity-0',
               animated &&
                 'transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard)',

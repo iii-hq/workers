@@ -600,7 +600,10 @@ function StreamingMarkdown({
       }
       data-assistant-stream-surface=""
     >
-      <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+      <Markdown
+        streaming={streaming}
+        className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base"
+      >
         {content}
       </Markdown>
     </div>
