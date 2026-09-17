@@ -51,6 +51,14 @@ describe('parseDiscoverResponse', () => {
     expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [], skills: [] })
   })
 
+  it('parses the search mode when present and rejects an unknown one', () => {
+    const parsed = parseDiscoverResponse({ ...response, search_mode: 'jev' })
+    expect(parsed?.searchMode).toBe('jev')
+    expect(parseDiscoverResponse({ ...response, search_mode: 'quantum' })).toBeNull()
+    // Absent on legacy rows: the field is simply omitted.
+    expect('searchMode' in (parseDiscoverResponse(response) as object)).toBe(false)
+  })
+
   it('parses the installed skills section when present', () => {
     const parsed = parseDiscoverResponse({
       guidance: 'The `skills` entries are installed how-to documents…',

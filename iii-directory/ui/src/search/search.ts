@@ -29,11 +29,17 @@ export interface DiscoverSkillView {
   description: string
 }
 
+/** The search mode that actually ranked the results: remote relevance (`jev`),
+ * local BM25+MiniLM (`hybrid`), or BM25 only (`lexical`). Absent on transcript
+ * rows from workers that predate the field. */
+export type DiscoverSearchMode = 'lexical' | 'hybrid' | 'jev'
+
 export interface DiscoverView {
   guidance: string
   workers: DiscoverWorkerView[]
   installable: DiscoverInstallableView[]
   skills: DiscoverSkillView[]
+  searchMode?: DiscoverSearchMode
   latency_ms: number
 }
 
@@ -147,7 +153,21 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
       skills.push({ id: skill.id, title: skill.title, description: skill.description })
     }
   }
-  return { guidance: value.guidance, workers, installable, skills, latency_ms: value.latency_ms }
+  let searchMode: DiscoverSearchMode | undefined
+  if ('search_mode' in value && value.search_mode !== undefined) {
+    if (value.search_mode !== 'lexical' && value.search_mode !== 'hybrid' && value.search_mode !== 'jev') {
+      return null
+    }
+    searchMode = value.search_mode
+  }
+  return {
+    guidance: value.guidance,
+    workers,
+    installable,
+    skills,
+    ...(searchMode ? { searchMode } : {}),
+    latency_ms: value.latency_ms,
+  }
 }
 
 export function functionCount(view: DiscoverView): number {

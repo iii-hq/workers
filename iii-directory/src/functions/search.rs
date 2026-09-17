@@ -470,6 +470,10 @@ pub struct SearchFunctionsResponse {
     /// Read one with `directory::skills::get { id }` before acting on it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillCandidate>,
+    /// The search mode that actually produced these results: `jev`, `hybrid`
+    /// or `lexical`. It can be lower than the configured mode when a batch
+    /// fell back (missing key, remote failure, or no local model).
+    pub search_mode: FunctionSearchMode,
     pub latency_ms: f64,
 }
 
@@ -1281,8 +1285,13 @@ pub async fn search_functions(
     let function_search = async {
         let mut selected: Vec<String> = Vec::new();
         let mut installable: Vec<InstallableWorker> = Vec::new();
+        // The mode actually used, as the highest tier any batch reached.
+        // ponytail: a multi-batch search that partly fell back reports the
+        // best tier; split per batch only if that ambiguity ever bites.
+        let mut effective_mode = FunctionSearchMode::Lexical;
         for batch in request.capabilities.chunks(MAX_SEARCH_QUERIES) {
             let outcome = search_batch(deps, &cfg, &tools, &fingerprint, batch, jev_deadline).await;
+            effective_mode = effective_mode.max(outcome.effective_mode);
             for function_id in outcome.selected {
                 if !selected.contains(&function_id) {
                     selected.push(function_id);
@@ -1290,7 +1299,7 @@ pub async fn search_functions(
             }
             merge_installable(&mut installable, outcome.installable);
         }
-        (selected, installable)
+        (selected, installable, effective_mode)
     };
     // Skill documents are judged by the same remote model, so the section
     // exists only in Jev mode; it shares the Jev deadline with the batches.
@@ -1301,7 +1310,8 @@ pub async fn search_functions(
             Vec::new()
         }
     };
-    let ((mut selected, installable), skills) = tokio::join!(function_search, skill_search);
+    let ((mut selected, installable, search_mode), skills) =
+        tokio::join!(function_search, skill_search);
     let batches = request.capabilities.len().div_ceil(MAX_SEARCH_QUERIES);
     let session_id = baggage_session_id();
     // Repeat queries in one session skip candidates the session already
@@ -1389,6 +1399,7 @@ search again for: {}.",
         workers,
         installable,
         skills,
+        search_mode,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
 }
@@ -1562,6 +1573,8 @@ fn merge_installable(merged: &mut Vec<InstallableWorker>, batch: Vec<Installable
 struct BatchOutcome {
     selected: Vec<String>,
     installable: Vec<InstallableWorker>,
+    /// The mode that actually ranked this batch's installed candidates.
+    effective_mode: FunctionSearchMode,
 }
 
 /// Diagnostic result for the opt-in benchmark. Not part of the search wire schema.
@@ -1722,6 +1735,14 @@ async fn search_batch(
 ) -> BatchOutcome {
     let queries = search_queries(capabilities);
     let installed = installed_search(deps, cfg, tools, fingerprint, &queries, jev_deadline).await;
+    // Mirror installed_search's own effective-mode ladder from its flags.
+    let effective_mode = if installed.jev_complete {
+        FunctionSearchMode::Jev
+    } else if installed.hybrid_complete {
+        FunctionSearchMode::Hybrid
+    } else {
+        FunctionSearchMode::Lexical
+    };
     let installable = if cfg.registry_search {
         registry_installable(
             cfg,
@@ -1741,6 +1762,7 @@ async fn search_batch(
     BatchOutcome {
         selected: installed.selected,
         installable,
+        effective_mode,
     }
 }
 

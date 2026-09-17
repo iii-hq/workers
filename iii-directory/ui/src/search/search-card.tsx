@@ -118,7 +118,7 @@ export function DiscoverCard({ capabilities, view }: { capabilities: string[]; v
           ['latency', `${Math.round(view.latency_ms)}ms`],
         ])}
       >
-        <Badge variant="accent">search</Badge>
+        <Badge variant="accent">{view.searchMode ?? 'search'}</Badge>
       </MetaRow>
       {capabilities.length > 0 ? (
         <section aria-label="capabilities">

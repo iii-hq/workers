@@ -78,4 +78,23 @@ describe('search trigger renderer', () => {
     expect(serialized).toContain('Schedule any registered function.')
     expect(serialized).not.toContain('No functions matched')
   })
+
+  it('labels the card with the search mode when present', () => {
+    const rendered = createSearchTriggerRenderer().tryRender({
+      functionId: 'directory::search_functions',
+      input: { capabilities: ['x'] },
+      output: {
+        guidance: 'g',
+        workers: [{ namespace: 'browser', functions: [{ function_id: 'browser::fetch', description: 'Fetch.' }] }],
+        search_mode: 'jev',
+        latency_ms: 10,
+      },
+    } as FunctionTriggerMessage) as {
+      type: (props: Record<string, unknown>) => unknown
+      props: Record<string, unknown>
+    }
+    const serialized = JSON.stringify(rendered.type(rendered.props))
+    expect(serialized).toContain('jev')
+    expect(serialized).not.toContain('>search<')
+  })
 })

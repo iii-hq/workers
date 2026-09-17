@@ -40,6 +40,14 @@
         ],
         "type": "object"
       },
+      "FunctionSearchMode": {
+        "enum": [
+          "lexical",
+          "hybrid",
+          "jev"
+        ],
+        "type": "string"
+      },
       "InstallCall": {
         "description": "A ready-made `compose::add` target and payload. Under agent-trigger exposure, the caller still supplies the wrapper's user-facing `description`.",
         "properties": {
@@ -147,6 +155,14 @@
         "format": "double",
         "type": "number"
       },
+      "search_mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/FunctionSearchMode"
+          }
+        ],
+        "description": "The search mode that actually produced these results: `jev`, `hybrid` or `lexical`. It can be lower than the configured mode when a batch fell back (missing key, remote failure, or no local model)."
+      },
       "skills": {
         "description": "Installed skill documents matching the capabilities (Jev mode only). Read one with `directory::skills::get { id }` before acting on it.",
         "items": {
@@ -165,6 +181,7 @@
       "guidance",
       "installable",
       "latency_ms",
+      "search_mode",
       "skills",
       "workers"
     ],

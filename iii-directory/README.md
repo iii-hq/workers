@@ -488,7 +488,7 @@ catalog with `engine::functions::list`.
 
 | Function | Kind | What it does |
 |---|---|---|
-| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, skills[]?, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
+| `directory::search_functions` | public | `{ capabilities }` → `{ guidance, workers[], installable[]?, skills[]?, search_mode, latency_ms }`: rank with the configured mode over the live engine catalog in batches of six capabilities (12 candidates per batch across at most max(6, 2 × capabilities) workers, up to 3 batches) plus matching NOT-installed registry workers under `installable`. `capabilities` is a required list of non-empty unmet external capability searches (one to six is the norm); entries past the 18th are not searched and are named in `guidance`. Requests to summarize provided text/content are ignored. |
 | `directory::pre-generate` | internal hook | Injects the conditional search hint into a harness generation (at most once per turn). |
 | `directory::on-functions-change` | internal | Refreshes the search catalog on the engine's functions-available push. |
 | `directory::hint-preview` | internal | The exact hint text per exposure mode, for the configuration UI. |
@@ -573,6 +573,12 @@ download a missing bundle; automatic boot-time downloads remain tied to Hybrid m
 Registry discovery still starts with the registry API's lexical search. Jev
 evaluates the returned contract pool and **cannot recover workers that upstream
 search did not return**. Installable results remain suggestions until installation.
+
+Every response carries `search_mode` — the mode that actually ranked the results
+(`jev`, `hybrid` or `lexical`), which can be lower than the configured mode when a
+batch fell back on a missing key, a remote failure, or a local model that is not
+loaded yet. The console's search card shows it as the card's badge. A multi-batch
+search that partly fell back reports the highest tier any batch reached.
 
 Jev mode also judges the installed skill documents (the rows
 `directory::skills::list` serves, minus `disable_model_invocation` ones) against
