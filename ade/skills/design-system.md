@@ -1919,7 +1919,8 @@ worker's `data-iii-ui` scope automatically.
 ### Navigation tree rows
 
 `uiClasses.tree` / `treeItem` / `treeItemIcon` / `treeItemLabel` /
-`treeItemCaret` / `treeItemTrailing` / `treeItemMeta` / `treeItemAction` are
+`treeItemCaret` / `treeItemTrailing` / `treeItemMeta` / `treeItemActions` /
+`treeItemAction` are
 the compact sidebar hierarchy — the conversation tree (chats and their
 sub-agents), a worker's folders or scopes. The comfortable `ListItem` stays
 the list/detail row; the tree is denser and reads as one column of marks:
@@ -1941,15 +1942,31 @@ the list/detail row; the tree is denser and reads as one column of marks:
   edge — `treeItemCaret` with `aria-expanded`; a `ChevronRight` turns 90°
   when open instead of swapping icons. Rows without children render no caret.
 - **Trailing:** `treeItemTrailing` collects a status dot, `treeItemMeta`
-  (11 px tabular `ink-ghost` timestamps) and `treeItemAction` — the X
-  (Lucide `X`, never a trash can) that removes the row, revealed on hover or
-  focus-within, always visible where hover does not exist. `data-tone="alert"`
-  on the action warms it to `alert` on hover.
+  (11 px tabular `ink-ghost` timestamps) and the row's actions — the X
+  (Lucide `X`, never a trash can) that removes the row, a pencil that renames
+  it — each a `treeItemAction`, revealed on hover or focus-within and always
+  visible where hover does not exist. `data-tone="alert"` on an action warms
+  it to `alert` on hover. Pointer-dependent actions say so with
+  `data-pointer="fine"`: renaming is a desktop affordance that pairs with
+  double-click and F2, so its pencil carries the attribute and coarse
+  pointers drop it, leaving touch rows the single trailing action. Reach for
+  the attribute, never a Tailwind `pointer-coarse:hidden` — these recipes are
+  unlayered, so a recipe's `display` beats any layered utility.
+- **Action cluster:** wrap the actions in `treeItemActions`, always, even
+  when there is only one. Where hover reveals them the cluster leaves the
+  flow and anchors to the trailing edge, so a hidden action never holds
+  width: reserving it costs the label 26 px per action and reads as a dead
+  gutter down the list. The metadata fades out under the cluster as it fades
+  in, so nothing reflows on hover and a row can gain an action without
+  narrowing every label.
 - **Narrow panes:** `data-narrow` on the tree lifts rows to 44 px, grows the
-  caret and action to 40 px, and keeps the action visible; coarse pointers
-  get a 48 px hit area on both controls without changing the layout.
-- **Motion:** the row wash, caret turn and action reveal use
-  `--motion-duration-control`; reduced motion makes them immediate.
+  caret and actions to 40 px, and keeps the actions visible; the cluster
+  stays in flow beside the metadata there and wherever hover does not exist.
+  Coarse pointers get a 48 px hit area on every control without changing the
+  layout.
+- **Motion:** the row wash, caret turn, action reveal and the metadata fade
+  beneath it use `--motion-duration-control`; reduced motion makes them
+  immediate.
 
 ### Simple tables
 

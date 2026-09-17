@@ -343,6 +343,24 @@ describe('@iii-dev/console-ui surface', () => {
     }
   })
 
+  it('lifts the tree action cluster out of flow where hover reveals it', () => {
+    /* Hiding an action with `opacity` alone leaves it holding its width, so
+       every action a row gains narrows every label in the tree. */
+    const recipesCss = readFileSync(
+      new URL('../styles/ui-recipes.css', import.meta.url),
+      'utf8',
+    )
+    const hoverOnly = recipesCss.match(
+      /@media \(hover: hover\) \{\n([\s\S]*?)\n\}\n/,
+    )?.[1]
+
+    expect(hoverOnly, 'hover-only tree rules').toContain(
+      '.iii-ui-tree-item__actions',
+    )
+    expect(hoverOnly).toContain('position: absolute')
+    expect(hoverOnly).toContain(':not([data-narrow])')
+  })
+
   it('publishes the borderless card-highlight inset in both themes', () => {
     const themeCss = readFileSync(
       new URL('../index.css', import.meta.url),

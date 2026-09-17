@@ -16,6 +16,7 @@ export interface UiClasses {
   readonly treeItemTrailing: 'iii-ui-tree-item__trailing'
   readonly treeItemMeta: 'iii-ui-tree-item__meta'
   readonly treeItemAction: 'iii-ui-tree-item__action'
+  readonly treeItemActions: 'iii-ui-tree-item__actions'
   readonly card: 'iii-ui-card'
   readonly cardHeader: 'iii-ui-card__header'
   readonly cardBody: 'iii-ui-card__body'

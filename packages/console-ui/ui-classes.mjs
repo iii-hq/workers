@@ -23,6 +23,7 @@ export const uiClasses = Object.freeze({
   treeItemTrailing: 'iii-ui-tree-item__trailing',
   treeItemMeta: 'iii-ui-tree-item__meta',
   treeItemAction: 'iii-ui-tree-item__action',
+  treeItemActions: 'iii-ui-tree-item__actions',
   card: 'iii-ui-card',
   cardHeader: 'iii-ui-card__header',
   cardBody: 'iii-ui-card__body',

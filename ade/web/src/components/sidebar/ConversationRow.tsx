@@ -16,6 +16,15 @@ import type { Conversation, SubagentColor } from '@/types/chat'
 
 const rowActionClassName = `${uiClasses.treeItemAction} pointer-coarse:min-h-12 pointer-coarse:min-w-12`
 
+/**
+ * Renaming is a desktop affordance — it pairs with double-click and F2, and
+ * its editor is a cramped inline field on a phone. `data-pointer="fine"`
+ * drops the pencil on coarse pointers, which also returns touch rows to the
+ * single trailing action the tree recipe is built around. No coarse hit area
+ * here on purpose: it is never shown to one.
+ */
+const renameActionClassName = uiClasses.treeItemAction
+
 interface ConversationRowProps {
   conversation: Conversation
   active: boolean
@@ -235,30 +244,33 @@ export function ConversationRow({
           <span className={uiClasses.treeItemMeta}>
             {formatRelative(conversation.updatedAt)}
           </span>
-          <button
-            type="button"
-            className={rowActionClassName}
-            aria-label={`rename ${conversation.title}`}
-            title="Rename conversation"
-            onClick={(e) => {
-              e.stopPropagation()
-              setEditing(true)
-            }}
-          >
-            <Pencil aria-hidden />
-          </button>
-          <button
-            type="button"
-            className={rowActionClassName}
-            data-tone="alert"
-            aria-label={`delete ${conversation.title}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              onRemove()
-            }}
-          >
-            <X aria-hidden />
-          </button>
+          <span className={uiClasses.treeItemActions}>
+            <button
+              type="button"
+              className={renameActionClassName}
+              data-pointer="fine"
+              aria-label={`rename ${conversation.title}`}
+              title="Rename conversation"
+              onClick={(e) => {
+                e.stopPropagation()
+                setEditing(true)
+              }}
+            >
+              <Pencil aria-hidden />
+            </button>
+            <button
+              type="button"
+              className={rowActionClassName}
+              data-tone="alert"
+              aria-label={`delete ${conversation.title}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                onRemove()
+              }}
+            >
+              <X aria-hidden />
+            </button>
+          </span>
         </span>
       ) : null}
     </div>

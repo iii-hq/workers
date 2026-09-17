@@ -324,7 +324,47 @@ a.iii-ui-tree-item {
   line-height: 1rem;
 }
 
-/* The row action (remove, pin) appears on hover or keyboard focus and
+/* Everything quiet on the trailing edge — the timestamp, a status dot —
+   gives way to the actions rather than showing between them. */
+.iii-ui-tree-item__trailing > :not(.iii-ui-tree-item__actions) {
+  transition: opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+/* A row's actions travel as one cluster. Where they are hover-revealed it
+   rides the trailing edge out of flow, so however many actions a row carries
+   they cost the label no width at rest — hiding with `opacity` alone leaves
+   them holding their width, which reads as a dead gutter down the list. The
+   metadata they cover fades out as they fade in. Panes that keep actions on
+   show — touch, and the narrow drill-in — leave the cluster in flow, beside
+   the metadata. */
+.iii-ui-tree-item__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+@media (hover: hover) {
+  .iii-ui-tree:not([data-narrow]) .iii-ui-tree-item__actions {
+    position: absolute;
+    top: 50%;
+    right: var(--iii-ui-tree-trailing);
+    transform: translateY(-50%);
+  }
+
+  .iii-ui-tree:not([data-narrow])
+    .iii-ui-tree-item:hover
+    .iii-ui-tree-item__trailing
+    > :not(.iii-ui-tree-item__actions),
+  .iii-ui-tree:not([data-narrow])
+    .iii-ui-tree-item:focus-within
+    .iii-ui-tree-item__trailing
+    > :not(.iii-ui-tree-item__actions) {
+    opacity: 0;
+  }
+}
+
+/* An action (rename, remove, pin) appears on hover or keyboard focus and
    stays visible wherever hover does not exist. */
 .iii-ui-tree-item__action {
   opacity: 0;
@@ -347,6 +387,15 @@ a.iii-ui-tree-item {
 }
 
 @media (pointer: coarse) {
+  /* An action that needs a precise pointer to make sense — renaming, which
+     pairs with double-click and F2 — leaves the row entirely rather than
+     shrinking; the row keeps the single trailing action this recipe sizes
+     for. A Tailwind `pointer-coarse:hidden` cannot do this: utilities are
+     layered and these recipes are not, so the recipe's `display` wins. */
+  .iii-ui-tree-item__action[data-pointer="fine"] {
+    display: none;
+  }
+
   .iii-ui-tree-item__caret::before,
   .iii-ui-tree-item__action::before {
     content: "";
