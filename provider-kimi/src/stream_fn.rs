@@ -16,15 +16,19 @@ use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
 use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::pump::pump_abortable;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
-use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
+use llm_router::types::router::{PromptCacheIntent, ProviderStreamInput, ProviderStreamOutput};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Heartbeat cadence while the upstream is silent (spec: at least every 30s).
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Body cache key: a caller override, else the shared profile surface (every
+/// session on the same frozen prefix routes to one cache shard), else the
+/// session itself.
 fn resolve_prompt_cache_key(
     provider_options: Option<&serde_json::Value>,
+    cache_intent: Option<&PromptCacheIntent>,
     session_id: Option<&str>,
 ) -> Option<String> {
     provider_options
@@ -32,6 +36,7 @@ fn resolve_prompt_cache_key(
         .and_then(serde_json::Value::as_str)
         .filter(|key| !key.trim().is_empty())
         .map(str::to_string)
+        .or_else(|| cache_intent.and_then(|intent| derive_affinity_id(&intent.surface_digest)))
         .or_else(|| session_id.and_then(derive_affinity_id))
 }
 
@@ -136,6 +141,7 @@ async fn run_stream_call(
         response_format: input.response_format,
         prompt_cache_key: resolve_prompt_cache_key(
             input.provider_options.as_ref(),
+            input.cache_intent.as_ref(),
             input.session_id.as_deref(),
         ),
     });
@@ -213,25 +219,34 @@ mod tests {
     }
 
     #[test]
-    fn prompt_cache_key_prefers_an_explicit_option_then_session_affinity() {
+    fn prompt_cache_key_prefers_an_explicit_option_then_shared_surface_then_session() {
         let options = serde_json::json!({ "prompt_cache_key": "caller-key" });
+        let intent = PromptCacheIntent {
+            surface_digest: "sha256:abc".into(),
+        };
         assert_eq!(
-            resolve_prompt_cache_key(Some(&options), Some("s_conversation")).as_deref(),
+            resolve_prompt_cache_key(Some(&options), Some(&intent), Some("s_conversation"))
+                .as_deref(),
             Some("caller-key")
         );
         assert_eq!(
-            resolve_prompt_cache_key(None, Some("s_conversation")),
+            resolve_prompt_cache_key(None, Some(&intent), Some("s_conversation")),
+            llm_router::provider_scaffold::cache::derive_affinity_id("sha256:abc"),
+            "a shared surface outranks the session"
+        );
+        assert_eq!(
+            resolve_prompt_cache_key(None, None, Some("s_conversation")),
             llm_router::provider_scaffold::cache::derive_affinity_id("s_conversation")
         );
         for blank in ["", "   "] {
             let options = serde_json::json!({ "prompt_cache_key": blank });
             assert_eq!(
-                resolve_prompt_cache_key(Some(&options), Some("s_conversation")),
+                resolve_prompt_cache_key(Some(&options), None, Some("s_conversation")),
                 llm_router::provider_scaffold::cache::derive_affinity_id("s_conversation")
             );
         }
-        assert_eq!(resolve_prompt_cache_key(None, Some("   ")), None);
-        assert_eq!(resolve_prompt_cache_key(None, None), None);
+        assert_eq!(resolve_prompt_cache_key(None, None, Some("   ")), None);
+        assert_eq!(resolve_prompt_cache_key(None, None, None), None);
     }
 
     #[tokio::test(flavor = "multi_thread")]
