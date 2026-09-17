@@ -71,6 +71,9 @@ Downloads are staged before copying, so fetch failures and missing templates do
 not change the destination. Existing folders are updated file by file, without
 promising an atomic or crash-safe project update. Filesystem safeguards prevent
 writes through local symlink parents or over the versioned tooling directories.
+The full upstream tree is checked before staging: ambiguous file/directory names
+that collide after Unicode normalization or case folding (for example `Config`
+and `config/file`) are rejected, including on case-sensitive hosts.
 A lock prevents concurrent syncs; it does not inspect project state. Remove a
 stale `.sync.lock/` only after confirming that no sync is running.
 

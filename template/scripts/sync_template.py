@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import tempfile
+import unicodedata
 
 RESERVED_NAMES = {"agents", "config", "data", "scripts", "skills", "tests", "upstream"}
 
@@ -34,7 +35,8 @@ def stage_download(args, stage):
     if tree.returncode or git(args, "cat-file", "-t", tree.stdout.decode().strip()).strip() != b"tree":
         raise ValueError(f"Template folder not found: {source}")
     listing = git(args, "ls-tree", "-rz", tree.stdout.decode().strip())
-    paths = []
+    entries = []
+    namespace = {}
     for record in listing.split(b"\0"):
         if not record:
             continue
@@ -48,6 +50,20 @@ def stage_download(args, stage):
         # A gitlink points outside this repository's contents; do not silently omit it.
         if kind != "blob" or mode not in ("100644", "100755", "120000"):
             raise ValueError(f"Unsupported Git entry ({mode} {kind}): {relative}")
+        # Validate the complete tree before materializing even the first blob.
+        # Track ancestors too: Config (symlink) must conflict with config/file.
+        # Unicode normalization also accounts for decomposing macOS filesystems.
+        for length in range(1, len(relative.parts) + 1):
+            prefix = relative.parts[:length]
+            key = tuple(unicodedata.normalize("NFC", part.casefold()) for part in prefix)
+            directory = length < len(relative.parts)
+            previous = namespace.get(key)
+            if previous is not None and (previous != (prefix, directory) or not directory):
+                raise ValueError(f"Conflicting download paths: {PurePosixPath(*previous[0])} and {relative}")
+            namespace[key] = (prefix, directory)
+        entries.append((relative, mode, oid))
+
+    for relative, mode, oid in entries:
         content = git(args, "cat-file", "blob", oid)
         target = stage / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -56,8 +72,7 @@ def stage_download(args, stage):
         else:
             target.write_bytes(content)
             target.chmod(0o755 if mode == "100755" else 0o644)
-        paths.append(relative)
-    return paths
+    return [relative for relative, _, _ in entries]
 
 
 def check_destination(destination, paths):

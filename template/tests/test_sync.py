@@ -291,6 +291,64 @@ class SyncTests(unittest.TestCase):
                     self.assertEqual(read.call_count, 2)
                 self.assertEqual(list(stage.iterdir()), [])
 
+    def test_conflicting_tree_paths_are_rejected_before_any_staging(self):
+        """Preflight leaves, directories and ancestors in either tree order."""
+        stage = self.root / "collision-stage"
+        stage.mkdir()
+        args = SimpleNamespace(checkout=str(self.upstream), commit="HEAD", template="harness")
+        collisions = [
+            (("120000", "Config"), ("100644", "config/file")),
+            (("120000", "File"), ("100644", "file")),
+            (("100644", "Dir/a"), ("100644", "dir/b")),
+            (("100644", "nested/Config"), ("100644", "nested/config/file")),
+            (("100644", "same"), ("100644", "same/file")),
+            (("100644", "caf\u00e9/a"), ("100644", "cafe\u0301/b")),
+        ]
+        for pair in collisions:
+            for ordered in (pair, pair[::-1]):
+                with self.subTest(entries=ordered):
+                    # A valid entry before the collision must not be staged either.
+                    listing = b"100644 blob benign\tREADME.md\0" + b"".join(
+                        f"{mode} blob fake-blob\t{path}\0".encode() for mode, path in ordered
+                    )
+                    resolved = subprocess.CompletedProcess([], 0, stdout=b"fake-tree\n")
+                    with mock.patch.object(SYNC.subprocess, "run", return_value=resolved), \
+                            mock.patch.object(SYNC, "git", side_effect=(b"tree\n", listing)) as read:
+                        with self.assertRaisesRegex(ValueError, "Conflicting download paths"):
+                            SYNC.stage_download(args, stage)
+                        self.assertEqual(read.call_count, 2)
+                    self.assertEqual(list(stage.iterdir()), [])
+
+    def test_case_variant_symlink_tree_cannot_write_outside_before_confirmation(self):
+        """Use real Git objects, even on macOS where this tree cannot be checked out."""
+        outside = self.root / "outside"
+        outside.mkdir()
+        victim = outside / "file"
+        victim.write_text("Must remain unchanged\n")
+
+        def object_from_input(command, content):
+            return subprocess.check_output(
+                ["git", "-C", str(self.upstream), *command], input=content, text=True,
+            ).strip()
+
+        link = object_from_input(["hash-object", "-w", "--stdin"], str(outside))
+        blob = object_from_input(["hash-object", "-w", "--stdin"], "Overwrite attempt\n")
+        config = object_from_input(["mktree"], f"100644 blob {blob}\tfile\n")
+        harness = object_from_input(["mktree"], f"120000 blob {link}\tConfig\n040000 tree {config}\tconfig\n")
+        iii = object_from_input(["mktree"], f"040000 tree {harness}\tharness\n")
+        root = object_from_input(["mktree"], f"040000 tree {iii}\tiii\n")
+        commit = object_from_input(["commit-tree", root, "-p", "HEAD"], "Malicious case collision fixture\n")
+        self.destination.mkdir()
+        (self.destination / "keep.txt").write_text("Local file\n")
+        before = self.files()
+        for flags in ((), ("--dry-run",)):
+            with self.subTest(flags=flags):
+                result = self.run_sync("--ref", commit, *flags, input_text="no\n", success=False)
+                self.assertIn("Conflicting download paths", result.stderr)
+                self.assertNotIn("Do you really want to overwrite", result.stdout)
+                self.assertEqual(victim.read_text(), "Must remain unchanged\n")
+                self.assertEqual(self.files(), before)
+
     def test_parent_swapped_after_validation_cannot_redirect_update(self):
         """A symlink substituted after the last validation is rejected on open."""
         self.run_sync()
