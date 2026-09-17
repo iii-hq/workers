@@ -479,7 +479,7 @@ There is **no** `directory::skills::register` — see
 One-shot function search over the live engine catalog (hybrid by default:
 BM25 fused with the local MiniLM model, reranked). Set `function_search_mode:
 lexical` for BM25 only, or `jev` for remote relevance evaluation through
-TypeSafe, independently of MiniLM. Absorbed from the former `discovery` worker,
+TypeSafe with Hybrid, then Lexical fallback. Absorbed from the former `discovery` worker,
 it returns only compact `{ function_id,
 description }` candidates, grouped by worker in rank order. The model chooses
 the candidates it needs, then fetches their contracts in one
@@ -539,9 +539,9 @@ configuration service and omitted from the worker's configuration debug output.
 Alternatively, leave the field unset and provide `TYPESAFE_API_KEY` through the
 worker service or container environment before starting `iii-directory`.
 The configured key takes precedence. Clearing it (or setting null/blank) restores
-the environment key without a restart. If neither is available, search uses
-lexical fallback. A rejected configured key also uses lexical fallback; it does
-not retry with the environment credential.
+the environment key without a restart. If neither is available, search falls back
+to Hybrid, then Lexical if the local model is unavailable. A rejected configured
+key uses the same fallback chain; it does not retry with the environment credential.
 
 Select **Jev** in the console's Function search settings, or set:
 
@@ -564,8 +564,11 @@ shortlist or a MiniLM dependency. It sends normalized capabilities, function IDs
 short descriptions and parameter names to TypeSafe; it does not send conversation
 history or function argument values. Exact eligible IDs, internal-function
 exclusions, session deduplication and result limits remain enforced locally.
-`function_search_model_path: null` is valid in Jev mode; Jev does not download,
-index or run MiniLM.
+`function_search_model_path: null` is valid in Jev mode and disables the Hybrid
+fallback. With a configured path, Jev prepares an installed MiniLM bundle and
+keeps its catalog index current in the background so Hybrid can take over on
+failure. Successful Jev responses do not run local query inference. Jev does not
+download a missing bundle; automatic boot-time downloads remain tied to Hybrid mode.
 
 Registry discovery still starts with the registry API's lexical search. Jev
 evaluates the returned contract pool and **cannot recover workers that upstream
@@ -573,12 +576,15 @@ search did not return**. Installable results remain suggestions until installati
 
 A valid response with no functions at or above the relevance threshold stays
 empty. Missing credentials, timeouts, HTTP failures and invalid/incomplete service
-responses instead trigger lexical fallback for the affected batch or registry
-pool. A registry failure still omits the installable section.
+responses instead trigger **Jev → Hybrid → Lexical** fallback for the affected
+batch or registry pool. Hybrid uses the existing local ranking policy; if the
+model is disabled, missing, not yet indexed for the current catalog, or fails,
+Lexical serves the results. A registry HTTP failure still omits the installable section.
 
 The Jev deadline is shared across all batches in one public search, including
-waiting for a request slot and reading responses. Registry HTTP timeouts are
-separate, so total search latency may exceed the Jev deadline. Requests use up to
+waiting for a request slot and reading responses. Local Hybrid fallback and
+registry HTTP requests run outside this budget, so total search latency may
+exceed the Jev deadline. Requests use up to
 16 functions × 6 capabilities per block and at most four concurrent requests per
 client; payloads are split at the local byte limits (48 KiB total JSON and 16 KiB
 for state plus the largest question). These byte guards are not token counts.
@@ -587,8 +593,8 @@ Cost and latency grow with catalog size and capability count. Use the
 telemetry to measure your workload; this
 configuration change supplies no measured remote quality, latency or cost result.
 
-Switch back to `lexical` at any time to use BM25 only. Switching to `hybrid`
-reactivates the local index from the current catalog. If the MiniLM bundle is
+Switch back to `lexical` at any time to use BM25 only. Switching from `lexical`
+to `hybrid` or `jev` prepares the local index from the current catalog. If the MiniLM bundle is
 missing, Hybrid uses lexical fallback; its boot-time download and changes to the
 local model path require a worker restart. Only Hybrid shows the local-model warning.
 

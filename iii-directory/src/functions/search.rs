@@ -899,6 +899,7 @@ fn rank_registry_contracts(
     let corpus = canonical_tools(&contracts);
     let index = Bm25Index::build(&corpus);
     let rankings = fuse_admitted(lexical_rankings(&index, search_queries), dense);
+    let rankings = production_fallback_rankings(&corpus, search_queries, &rankings);
     round_robin_rankings(&rankings, budget)
         .into_iter()
         .filter_map(|id| contracts.iter().find(|tool| tool.name == id).cloned())
@@ -1112,18 +1113,19 @@ async fn installable_from_candidates(
             }
         }
     }
-    let ranked = if let Some((jev, deadline)) = jev {
-        let rankings = match rank_with_jev(jev, cfg, &pooled, search_queries, deadline).await {
-            Ok(outcome) => outcome.rankings,
+    let jev_rankings = if let Some((jev, deadline)) = jev {
+        match rank_with_jev(jev, cfg, &pooled, search_queries, deadline).await {
+            Ok(outcome) => Some(outcome.rankings),
             Err(error) => {
-                tracing::warn!(%error, requested_mode = "jev", effective_mode = "lexical",
-                    "registry function search fell back to lexical");
-                let corpus = canonical_tools(&pooled);
-                let index = Bm25Index::build(&corpus);
-                let lexical = lexical_rankings(&index, search_queries);
-                production_fallback_rankings(&corpus, search_queries, &lexical)
+                tracing::warn!(%error, requested_mode = "jev",
+                    "registry Jev search failed; trying Hybrid with lexical fallback");
+                None
             }
-        };
+        }
+    } else {
+        None
+    };
+    let ranked = if let Some(rankings) = jev_rankings {
         round_robin_rankings(&rankings, MAX_INSTALLABLE_FUNCTIONS)
             .into_iter()
             .filter_map(|id| pooled.iter().find(|tool| tool.name == id).cloned())
@@ -1456,55 +1458,51 @@ async fn installed_search(
         rankings: production_fallback_rankings(&corpus, queries, &lexical),
         ..BenchmarkOutcome::default()
     };
-    match cfg.function_search_mode {
-        FunctionSearchMode::Lexical => {}
-        FunctionSearchMode::Hybrid => {
-            if deps.semantic.is_production_minilm() {
-                if let Some(outcome) = production_minilm_rankings(
-                    &deps.semantic,
-                    fingerprint,
-                    tools,
-                    queries,
-                    &lexical,
-                )
-                .await
-                {
-                    result.rankings = outcome.rankings;
-                    result.hybrid_complete = outcome.complete;
-                }
+    let mut effective_mode = FunctionSearchMode::Lexical;
+    if cfg.function_search_mode == FunctionSearchMode::Jev {
+        let stats = match rank_with_jev(&deps.jev, cfg, &corpus, queries, deadline).await {
+            Ok(outcome) => {
+                result.rankings = outcome.rankings;
+                result.jev_complete = true;
+                effective_mode = FunctionSearchMode::Jev;
+                tracing::debug!(model = %outcome.model, requests = outcome.stats.requests,
+                    questions = outcome.stats.questions, input_tokens = outcome.stats.input_tokens,
+                    output_tokens = outcome.stats.output_tokens, elapsed_ms = outcome.stats.elapsed_ms,
+                    "Jev function evaluation completed");
+                outcome.stats
             }
-            tracing::debug!(complete = result.hybrid_complete, %fingerprint,
-                repository = deps.semantic.model_repository(),
-                revision = deps.semantic.model_revision(),
-                reranker_repository = deps.semantic.reranker_repository(),
-                reranker_revision = deps.semantic.reranker_revision(),
-                "production MiniLM retrieval and reranking completed");
+            Err(error) => {
+                tracing::warn!(%error, requested_mode = "jev",
+                    requests = error.stats.requests, questions = error.stats.questions,
+                    input_tokens = error.stats.input_tokens, output_tokens = error.stats.output_tokens,
+                    elapsed_ms = error.stats.elapsed_ms,
+                    "Jev function search failed; trying Hybrid with lexical fallback");
+                error.stats
+            }
+        };
+        result.jev_requests = stats.requests;
+        result.jev_questions = stats.questions;
+        result.input_tokens = stats.input_tokens;
+        result.output_tokens = stats.output_tokens;
+        result.jev_elapsed_ms = stats.elapsed_ms;
+    }
+    if cfg.function_search_mode != FunctionSearchMode::Lexical && !result.jev_complete {
+        if deps.semantic.is_production_minilm() {
+            if let Some(outcome) =
+                production_minilm_rankings(&deps.semantic, fingerprint, tools, queries, &lexical)
+                    .await
+            {
+                result.rankings = outcome.rankings;
+                result.hybrid_complete = outcome.complete;
+                effective_mode = FunctionSearchMode::Hybrid;
+            }
         }
-        FunctionSearchMode::Jev => {
-            let stats = match rank_with_jev(&deps.jev, cfg, &corpus, queries, deadline).await {
-                Ok(outcome) => {
-                    result.rankings = outcome.rankings;
-                    result.jev_complete = true;
-                    tracing::debug!(model = %outcome.model, requests = outcome.stats.requests,
-                        questions = outcome.stats.questions, input_tokens = outcome.stats.input_tokens,
-                        output_tokens = outcome.stats.output_tokens, elapsed_ms = outcome.stats.elapsed_ms,
-                        "Jev function evaluation completed");
-                    outcome.stats
-                }
-                Err(error) => {
-                    tracing::warn!(%error, requested_mode = "jev", effective_mode = "lexical",
-                        requests = error.stats.requests, questions = error.stats.questions,
-                        input_tokens = error.stats.input_tokens, output_tokens = error.stats.output_tokens,
-                        elapsed_ms = error.stats.elapsed_ms, "function search fell back to lexical");
-                    error.stats
-                }
-            };
-            result.jev_requests = stats.requests;
-            result.jev_questions = stats.questions;
-            result.input_tokens = stats.input_tokens;
-            result.output_tokens = stats.output_tokens;
-            result.jev_elapsed_ms = stats.elapsed_ms;
-        }
+        tracing::debug!(complete = result.hybrid_complete, %fingerprint,
+            repository = deps.semantic.model_repository(),
+            revision = deps.semantic.model_revision(),
+            reranker_repository = deps.semantic.reranker_repository(),
+            reranker_revision = deps.semantic.reranker_revision(),
+            "production MiniLM retrieval and reranking completed");
     }
     result.selected = if cfg.function_search_mode == FunctionSearchMode::Jev && result.jev_complete
     {
@@ -1516,7 +1514,7 @@ async fn installed_search(
         select_preordered_ids(result.rankings.clone())
     };
     result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-    tracing::debug!(mode = ?cfg.function_search_mode, elapsed_ms = result.elapsed_ms,
+    tracing::debug!(mode = ?cfg.function_search_mode, ?effective_mode, elapsed_ms = result.elapsed_ms,
         hybrid_complete = result.hybrid_complete, jev_complete = result.jev_complete,
         "installed function search completed");
     result
@@ -1536,7 +1534,7 @@ async fn search_batch(
         registry_installable(
             cfg,
             &deps.registry_cache,
-            (cfg.function_search_mode == FunctionSearchMode::Hybrid
+            (cfg.function_search_mode != FunctionSearchMode::Lexical
                 && deps.semantic.is_production_minilm())
             .then_some(&deps.semantic),
             tools,
@@ -1564,7 +1562,7 @@ pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> Benchm
     let deadline = tokio::time::Instant::now()
         + std::time::Duration::from_millis(cfg.function_search_jev_timeout_ms);
     let mut total = BenchmarkOutcome {
-        hybrid_complete: cfg.function_search_mode == FunctionSearchMode::Hybrid,
+        hybrid_complete: cfg.function_search_mode != FunctionSearchMode::Lexical,
         jev_complete: cfg.function_search_mode == FunctionSearchMode::Jev,
         ..BenchmarkOutcome::default()
     };

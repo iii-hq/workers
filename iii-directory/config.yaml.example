@@ -64,8 +64,8 @@ download_timeout_ms: 60000
 
 # Search lane: hybrid (BM25 fused with the local MiniLM model) is the default.
 # Lexical is BM25 only. Hybrid serves BM25 until the model bundle below is ready.
-# Jev uses the remote TypeSafe service independently of MiniLM, including when
-# function_search_model_path is null. Set function_search_mode: jev to enable it.
+# Jev uses TypeSafe, falling back to Hybrid on failure, then Lexical if the local
+# model is unavailable. Set function_search_mode: jev to enable it.
 function_search_mode: hybrid
 
 # Jev options (hot-reloadable, including the credential).
@@ -78,17 +78,19 @@ function_search_jev_api_key: null
 # The model must be a non-empty string.
 function_search_jev_model: jev-1.13.0
 # Integer 1..30000 ms for all Jev calls in a public search, shared across batches.
-# Registry HTTP requests have separate timeouts, so total search time may exceed it.
+# Excludes Hybrid fallback and registry HTTP requests; total search time may exceed it.
 function_search_jev_timeout_ms: 3000
 # Finite 0..1 inclusive; 0.5 is an initial calibration value.
 function_search_jev_min_relevance: 0.5
 # A valid result with no relevant functions stays empty. Missing credentials,
-# timeouts and service/protocol errors use lexical fallback for the affected batch.
+# timeouts and service/protocol errors try Hybrid for the affected batch or registry
+# pool, then Lexical if the local model is disabled, missing, unready or fails.
 # Registry Jev ranking evaluates only the pool returned by upstream lexical search;
 # it cannot recover workers that the registry did not return.
 
 # Local semantic model directory: the pinned MiniLM bundle. Changing it
-# requires restart; `null` disables the Hybrid semantic lane, not Jev.
+# requires restart; `null` disables Hybrid, including Jev's Hybrid fallback.
+# Jev prepares an installed bundle in the background but does not download one.
 # function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf
 
 # With Hybrid and a missing/incomplete bundle at boot, download the

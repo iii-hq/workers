@@ -346,7 +346,8 @@ pub struct SkillsConfig {
     /// MiniLM model) is the default; lexical is BM25 only. Hybrid needs the bundle at
     /// `function_search_model_path` (downloaded on first run by default) and
     /// serves BM25 until it is ready. Jev evaluates relevance remotely with
-    /// TypeSafe, independently of MiniLM. Mode changes apply without restart.
+    /// TypeSafe, falling back to Hybrid on failure and then lexical if the
+    /// local model is unavailable. Mode changes apply without restart.
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
 
@@ -366,7 +367,7 @@ pub struct SkillsConfig {
     pub function_search_jev_model: String,
 
     /// Total Jev deadline per public search call, in milliseconds (1..=30000).
-    /// Registry requests have their own timeouts. Hot-reloadable.
+    /// Excludes local Hybrid fallback and registry HTTP requests. Hot-reloadable.
     #[serde(
         default = "default_function_search_jev_timeout_ms",
         deserialize_with = "deserialize_jev_timeout_ms"
@@ -375,7 +376,7 @@ pub struct SkillsConfig {
     pub function_search_jev_timeout_ms: u64,
 
     /// Minimum Jev relevance, finite and between 0 and 1 inclusive.
-    /// A valid empty result stays empty; errors use lexical fallback.
+    /// A valid empty result stays empty; errors try Hybrid, then lexical.
     /// The default is an initial calibration value. Hot-reloadable.
     #[serde(
         default = "default_function_search_jev_min_relevance",
@@ -386,7 +387,7 @@ pub struct SkillsConfig {
 
     /// Local semantic model directory: the pinned MiniLM bundle (embedding
     /// files at the root, reranker files under `reranker/`). Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
-    /// `null` disables the local Hybrid lane; Jev is unaffected.
+    /// `null` disables the local Hybrid lane, including Jev's Hybrid fallback.
     /// Changing it requires a restart.
     #[serde(
         default = "default_function_search_model_path",

@@ -115,7 +115,7 @@ describe('DirectoryConfigForm function search settings', () => {
     expect(html).toContain('Restart required')
   })
 
-  it('renders Jev without a MiniLM notice and explains key precedence and lexical fallback', () => {
+  it('renders Jev without a MiniLM notice and explains key precedence and the fallback chain', () => {
     const html = renderConfiguration({ function_search_mode: 'jev', function_search_model_path: null })
 
     expect(html).toContain('<option value="jev" selected="">')
@@ -124,7 +124,7 @@ describe('DirectoryConfigForm function search settings', () => {
     expect(html).toContain('TYPESAFE_API_KEY')
     expect(html).toContain('worker process')
     expect(html).toContain('takes precedence')
-    expect(html).toContain('lexical fallback')
+    expect(html).toContain('try Hybrid, then Lexical if unavailable')
     expect(html).toContain('valid empty result')
     const input = html.match(/<input[^>]*name="function_search_jev_api_key"[^>]*>/)?.[0]
     expect(input).toContain('type="password"')

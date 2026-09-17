@@ -286,7 +286,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             field="function_search_jev_timeout_ms"
             label="Jev timeout (ms)"
             placeholder="3000"
-            hint="1–30000 ms for all Jev requests in one search. Registry requests have separate timeouts. Missing credentials or service errors use lexical fallback; a valid empty result stays empty."
+            hint="1–30000 ms for all Jev requests in one search, excluding Hybrid fallback and registry requests. Missing credentials or service errors try Hybrid, then Lexical if unavailable; a valid empty result stays empty."
             min={1}
             max={30000}
             step={1}
@@ -310,7 +310,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             field="function_search_model_path"
             label="Semantic model directory"
             placeholder="not set — e.g. ~/.cache/iii/all-MiniLM-L6-v2-<revision>"
-            hint="Directory holding the pinned MiniLM bundle for Hybrid (default under ~/.cache/iii). Jev does not use it. Changing this path requires a worker restart."
+            hint="Directory holding the pinned MiniLM bundle for Hybrid and Jev's fallback (default under ~/.cache/iii). If unavailable, fallback uses Lexical. Changing this path requires a worker restart."
             value={asString(value.function_search_model_path)}
             onChange={setString}
             errors={props.errors}
@@ -530,7 +530,7 @@ function SearchModeField({
   errors?: ConfigFormProps['errors']
 }) {
   const field = 'function_search_mode'
-  const hint = 'Hybrid (default) fuses BM25 with the local semantic model. Lexical uses BM25. Jev evaluates relevance remotely with TypeSafe, without MiniLM.'
+  const hint = 'Hybrid (default) fuses BM25 with the local semantic model. Lexical uses BM25. Jev evaluates relevance remotely with TypeSafe and falls back to Hybrid, then Lexical.'
   const presentation = fieldPresentation(field, hint, errors)
   const needsModel = semanticModeNeedsModel(value, modelPath)
   const noticeId = needsModel ? `${presentation.id}-model-notice` : undefined

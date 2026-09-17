@@ -166,12 +166,12 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
 /// takes effect immediately and stale entries from the old registry drop.
 pub async fn apply_config(state: &SharedState, cfg: SkillsConfig) {
     let _apply = state.apply_lock.lock().await;
-    let activate_semantic = cfg.function_search_mode == FunctionSearchMode::Hybrid
-        && state.config.load().function_search_mode != FunctionSearchMode::Hybrid;
+    let activate_semantic = cfg.function_search_mode != FunctionSearchMode::Lexical
+        && state.config.load().function_search_mode == FunctionSearchMode::Lexical;
     state
         .search
         .semantic
-        .set_enabled(cfg.function_search_mode == FunctionSearchMode::Hybrid);
+        .set_enabled(cfg.function_search_mode != FunctionSearchMode::Lexical);
     state
         .cache_ttl_ms
         .store(cfg.registry_cache_ttl_ms, Ordering::Relaxed);

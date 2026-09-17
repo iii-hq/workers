@@ -204,7 +204,9 @@ async fn main() -> Result<()> {
         Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
     let semantic =
         functions::search_semantic::SemanticSearch::new(function_search_model_path.clone());
-    semantic.set_enabled(cfg_handle.load().function_search_mode == FunctionSearchMode::Hybrid);
+    // Keep an installed model ready for Jev's Hybrid fallback as well.
+    // Only Hybrid mode downloads a missing bundle at startup.
+    semantic.set_enabled(cfg_handle.load().function_search_mode != FunctionSearchMode::Lexical);
     if functions::search::refresh_catalog(&iii, &search_catalog, &semantic)
         .await
         .is_err()

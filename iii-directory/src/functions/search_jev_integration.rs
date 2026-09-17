@@ -238,21 +238,169 @@ async fn valid_no_match_does_not_restore_lexical_candidates() {
 }
 
 #[tokio::test]
-async fn failed_jev_uses_the_lexical_baseline() {
+async fn failed_jev_uses_lexical_when_hybrid_is_unavailable() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(429))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let mut deps = deps(&server);
+    let missing_bundle = tempfile::tempdir().unwrap();
+    for semantic in [
+        SemanticSearch::default(),
+        SemanticSearch::new(Some(missing_bundle.path().into())),
+    ] {
+        deps.semantic = semantic;
+        let outcome = benchmark_installed(&deps, &["send an email message".into()]).await;
+        assert!(!outcome.jev_complete);
+        assert!(!outcome.hybrid_complete);
+        assert_eq!(outcome.selected, ["mail::send"]);
+    }
+}
+
+#[cfg(minilm)]
+async fn load_local_model(deps: &mut Deps) {
+    let path = std::env::var("III_DIRECTORY_MINILM_MODEL_PATH")
+        .expect("set III_DIRECTORY_MINILM_MODEL_PATH to the pinned local bundle");
+    deps.semantic = SemanticSearch::new(Some(path.into()));
+    let tools = deps.catalog.read().await.clone();
+    let fingerprint = tool_fingerprint(&tools);
+    deps.semantic.rebuild(tools);
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while deps
+            .semantic
+            .rank(&fingerprint, &["compose an email".into()], -1.0)
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("local MiniLM index must become ready");
+}
+
+#[cfg(minilm)]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires III_DIRECTORY_MINILM_MODEL_PATH and the pinned ONNX runtime"]
+async fn jev_failures_use_the_available_hybrid_ranking() {
+    let server = MockServer::start().await;
+    let mut deps = deps(&server);
+    load_local_model(&mut deps).await;
+    let query = ["compose an email".into()];
+    let mut cfg = (**deps.config.load()).clone();
+    cfg.function_search_mode = FunctionSearchMode::Hybrid;
+    deps.config.store(Arc::new(cfg.clone()));
+    let hybrid = benchmark_installed(&deps, &query).await;
+    assert!(hybrid.hybrid_complete);
+    assert!(hybrid.selected.contains(&"mail::send".into()));
+    cfg.function_search_mode = FunctionSearchMode::Lexical;
+    deps.config.store(Arc::new(cfg.clone()));
+    assert!(benchmark_installed(&deps, &query).await.selected.is_empty());
+    cfg.function_search_mode = FunctionSearchMode::Jev;
+    cfg.function_search_jev_timeout_ms = 40;
+    deps.config.store(Arc::new(cfg));
+    for response in [
+        ResponseTemplate::new(401),
+        ResponseTemplate::new(429),
+        ResponseTemplate::new(500),
+        ResponseTemplate::new(200).set_body_json(json!({"answers":{}})),
+        ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(200)),
+    ] {
+        server.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(response)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let fallback = benchmark_installed(&deps, &query).await;
+        assert!(!fallback.jev_complete);
+        assert!(fallback.hybrid_complete);
+        assert_eq!(fallback.selected, hybrid.selected);
+        assert_eq!(fallback.rankings, hybrid.rankings);
+    }
+    server.reset().await;
+    deps.jev = JevSearch::for_test(format!("{}/v1/systemone", server.uri()), None);
+    let missing_key = benchmark_installed(&deps, &query).await;
+    assert!(!missing_key.jev_complete);
+    assert!(missing_key.hybrid_complete);
+    assert_eq!(missing_key.selected, hybrid.selected);
+    assert!(server.received_requests().await.unwrap().is_empty());
+
+    deps.jev = JevSearch::for_test(
+        format!("{}/v1/systemone", server.uri()),
+        Some("test-key".into()),
+    );
+    Mock::given(method("POST"))
+        .respond_with(|request: &Request| reply(request, 0.1))
         .expect(1)
         .mount(&server)
         .await;
-    let deps = deps(&server);
-    let remote = ask(&deps, &["send an email message"]).await;
+    let no_match = benchmark_installed(&deps, &query).await;
+    assert!(no_match.jev_complete);
+    assert!(!no_match.hybrid_complete);
+    assert!(
+        no_match.selected.is_empty(),
+        "valid no-match must not fall back"
+    );
+
+    // A stale local index must not be used for a changed catalog after Jev fails.
+    server.reset().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut next = tools();
+    next[0].name = "mail::deliver".into();
+    *deps.catalog.write().await = Arc::new(next);
+    let stale = benchmark_installed(&deps, &["send an email message".into()]).await;
+    assert!(!stale.jev_complete);
+    assert!(!stale.hybrid_complete);
+    assert_eq!(stale.selected, ["mail::deliver"]);
+}
+
+#[cfg(minilm)]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires III_DIRECTORY_MINILM_MODEL_PATH and the pinned ONNX runtime"]
+async fn registry_jev_failure_uses_the_available_hybrid_ranking() {
+    let remote = MockServer::start().await;
+    let registry = MockServer::start().await;
+    registry_fixture(&registry).await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(2)
+        .mount(&remote)
+        .await;
+    let mut deps = deps(&remote);
+    load_local_model(&mut deps).await;
     let mut cfg = (**deps.config.load()).clone();
+    cfg.registry_search = true;
+    cfg.registry_url = registry.uri();
+    deps.config.store(Arc::new(cfg.clone()));
+    let fallback = ask(&deps, &["compose an email"]).await;
+    assert!(ids(&fallback).contains(&"mail::send"));
+    assert_eq!(fallback.installable.len(), 1);
+    assert_eq!(fallback.installable[0].name, "courier");
+    assert_eq!(fallback.installable[0].version, "1.2.3");
+    assert_eq!(
+        fallback.installable[0].functions.len(),
+        MAX_INSTALLABLE_FUNCTIONS
+    );
+    cfg.function_search_mode = FunctionSearchMode::Hybrid;
+    deps.config.store(Arc::new(cfg.clone()));
+    let hybrid = ask(&deps, &["compose an email"]).await;
+    assert_eq!(
+        serde_json::to_value(&fallback.installable).unwrap(),
+        serde_json::to_value(&hybrid.installable).unwrap()
+    );
     cfg.function_search_mode = FunctionSearchMode::Lexical;
     deps.config.store(Arc::new(cfg));
-    let lexical = ask(&deps, &["send an email message"]).await;
-    assert_eq!(ids(&remote), ids(&lexical));
-    assert_eq!(ids(&remote), ["mail::send"]);
+    assert!(ask(&deps, &["compose an email"])
+        .await
+        .installable
+        .is_empty());
 }
 
 #[tokio::test]
@@ -517,6 +665,9 @@ async fn mode_reload_waits_for_an_in_progress_hybrid_activation() {
     let server = MockServer::start().await;
     let deps = deps(&server);
     deps.semantic.set_enabled(false);
+    let mut initial = (**deps.config.load()).clone();
+    initial.function_search_mode = FunctionSearchMode::Lexical;
+    deps.config.store(Arc::new(initial));
     let cfg = (**deps.config.load()).clone();
     let state = SharedState::new(
         deps.config.clone(),
@@ -540,7 +691,9 @@ async fn mode_reload_waits_for_an_in_progress_hybrid_activation() {
     })
     .await
     .unwrap();
-    let mut jev = tokio::spawn(async move { apply_config(&state, cfg).await });
+    let mut jev_cfg = cfg;
+    jev_cfg.function_search_mode = FunctionSearchMode::Jev;
+    let mut jev = tokio::spawn(async move { apply_config(&state, jev_cfg).await });
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(20), &mut jev)
             .await
@@ -553,11 +706,13 @@ async fn mode_reload_waits_for_an_in_progress_hybrid_activation() {
         deps.config.load().function_search_mode,
         FunctionSearchMode::Jev
     );
-    let previous = deps.semantic.requested_fingerprint();
     let mut next = tools();
     next[0].description = "Later catalog while Jev is active.".into();
     activate_catalog(&deps.catalog, &deps.semantic, next).await;
-    assert_eq!(deps.semantic.requested_fingerprint(), previous);
+    assert_eq!(
+        deps.semantic.requested_fingerprint(),
+        Some(tool_fingerprint(&deps.catalog.read().await))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -583,13 +738,16 @@ async fn concurrent_refreshes_keep_the_requested_index_on_the_current_catalog() 
 }
 
 #[tokio::test]
-async fn switching_back_to_hybrid_rebuilds_an_unchanged_catalog() {
+async fn switching_from_lexical_to_jev_prepares_hybrid_and_keeps_the_index_fresh() {
     use crate::configuration::{apply_config, SharedState};
     use crate::functions::skills::RegisteredWorkersCache;
     let server = MockServer::start().await;
     let deps = deps(&server);
     deps.semantic.set_enabled(false);
-    // Refreshing the catalog in Jev mode still publishes its new entries.
+    let mut initial = (**deps.config.load()).clone();
+    initial.function_search_mode = FunctionSearchMode::Lexical;
+    deps.config.store(Arc::new(initial));
+    // Refreshing the catalog in Lexical mode still publishes its new entries.
     let mut next = tools();
     next[0].description = "Deliver correspondence.".into();
     assert!(activate_catalog(&deps.catalog, &deps.semantic, next).await);
@@ -604,22 +762,29 @@ async fn switching_back_to_hybrid_rebuilds_an_unchanged_catalog() {
         crate::hook::HintBindingState::default(),
         deps.clone(),
     );
-    let mut hybrid = cfg.clone();
-    hybrid.function_search_mode = FunctionSearchMode::Hybrid;
-    apply_config(&state, hybrid).await;
+    let mut jev = cfg.clone();
+    jev.function_search_mode = FunctionSearchMode::Jev;
+    apply_config(&state, jev).await;
     let fingerprint = tool_fingerprint(&deps.catalog.read().await);
     assert_eq!(
         deps.semantic.requested_fingerprint().as_deref(),
         Some(fingerprint.as_str())
     );
-    apply_config(&state, cfg).await;
     let mut next = tools();
     next[0].description = "A later catalog.".into();
     assert!(activate_catalog(&deps.catalog, &deps.semantic, next).await);
     assert_eq!(
-        deps.semantic.requested_fingerprint().as_deref(),
-        Some(fingerprint.as_str()),
-        "Jev catalog refresh must not schedule another dense rebuild"
+        deps.semantic.requested_fingerprint(),
+        Some(tool_fingerprint(&deps.catalog.read().await)),
+        "Jev catalog refresh must keep its hybrid fallback current"
+    );
+    apply_config(&state, cfg).await;
+    let previous = deps.semantic.requested_fingerprint();
+    activate_catalog(&deps.catalog, &deps.semantic, tools()).await;
+    assert_eq!(
+        deps.semantic.requested_fingerprint(),
+        previous,
+        "Lexical must disable local rebuilds"
     );
 }
 
