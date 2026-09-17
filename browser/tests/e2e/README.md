@@ -29,8 +29,7 @@ Runs locally and in CI (`.github/workflows/browser-scrapling-e2e.yml`).
 ## IMPORTANT: port isolation
 
 **Do not run this suite against a stack that has another browser worker
-registered.** Python uses distinct `scrapling::*` ids; this native worker uses
-root `browser::*` ids. A second browser worker at the same ids can still win
+registered.** A second worker at the same root `browser::*` ids can win
 dispatch and silently test the wrong implementation.
 
 For that reason this suite does **not** default to the iii engine's own

@@ -22,7 +22,7 @@ use crate::ssrf::SsrfPolicy;
 /// The frozen Tier-1 Chromium builds compat mode certifies against: the
 /// x86_64 Chrome-for-Testing 148 build and the aarch64 Playwright chromium
 /// build 1223 (same 148 milestone; Playwright snapshots report patch .0).
-/// Both are pinned by sha256 in oracle/manifest.json and fetched by
+/// Both are pinned by sha256 in artifacts/manifest.json and fetched by
 /// scripts/fetch_chromium_artifacts.sh.
 pub(crate) const CERTIFIED_CHROME_VERSIONS: &[&str] = &["148.0.7778.96", "148.0.7778.0"];
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";

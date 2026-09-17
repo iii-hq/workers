@@ -1,48 +1,24 @@
-# Frozen Scrapling oracle
+# Pinned browser artifacts
 
-`requirements.lock` is the hashed Python 3.12 resolution used to capture the
-standalone worker's observable contract. Regenerate it with:
-
-```sh
-uv pip compile oracle/requirements.in \
-  --python-version 3.12 \
-  --python-platform linux \
-  --generate-hashes \
-  --output-file oracle/requirements.lock \
-  --custom-compile-command 'scripts/update_oracle.sh'
-```
-
-`manifest.json` records the worker source, runtime, browser, and host data that
-can change observable output. Build and verify the oracle with:
+`manifest.json` pins the Tier-1 Chromium builds that `security_mode: compat`
+certifies against: the x86_64 Chrome-for-Testing 148 build and the aarch64
+Playwright chromium build 1223. Each archive is recorded with its url, size
+and SHA-256, and `scripts/fetch_chromium_artifacts.sh` fetches and verifies
+them:
 
 ```sh
-uv venv --python 3.12.13 .oracle
-uv pip sync --python .oracle/bin/python --require-hashes oracle/requirements.lock
-PYTHONHASHSEED=0 .oracle/bin/python scripts/verify_oracle.py
+./scripts/fetch_chromium_artifacts.sh fetch x86_64-unknown-linux-gnu
+./scripts/fetch_chromium_artifacts.sh verify x86_64-unknown-linux-gnu
 ```
 
-`scripts/gen_goldens.py` runs that verification before writing anything. A
-release verification also passes `--archive-dir DIR`; `DIR` must contain the
-six archive filenames recorded in `manifest.json`. `--write` is reserved for
-an intentional oracle refresh and also requires the archive directory.
+`CERTIFIED_CHROME_VERSIONS` in `src/scrapling/raw_browser.rs` must list the
+same versions; a build without the pinned artifacts returns a capability
+error instead of degrading to an uncertified browser.
 
-Pull-request differentials install the same hashed lock into a fresh virtual
-environment and use `verify_oracle.py --parser-runtime`. That mode still hashes
-the standalone source, every immutable package file, and every parser data
-asset; it excludes only browser archives and host-specific executable, font,
-locale, timezone, and CA-bundle records. Run the public-wrapper comparators with:
+The curl-impersonate archives are pinned separately in
+`vendor/curl_impersonate_sys/artifacts.manifest`.
 
-```sh
-PYTHONHASHSEED=0 .oracle/bin/python scripts/differential_parser.py --oracle-check parser-runtime --cases 10000
-PYTHONHASHSEED=0 .oracle/bin/python scripts/differential_http.py --oracle-check parser-runtime
-```
-
-CI also regenerates every schema and behavior fixture in a temporary directory
-and byte-compares it with the committed goldens:
-
-```sh
-PYTHONHASHSEED=0 .oracle/bin/python scripts/gen_goldens.py check --parser-runtime
-```
-
-The scheduled certification job raises each HTML/CSS/XPath and regex grammar
-to one million deterministic cases.
+This file used to also record the frozen Python oracle (the standalone
+`scrapling` worker's source, its pinned interpreter and packages, and the
+capture host). That worker is gone and the Python differentials with it; the
+goldens under `tests/golden/` stay as frozen regression fixtures.

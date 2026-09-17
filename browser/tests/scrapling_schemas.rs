@@ -2,10 +2,10 @@
 //! vs Python-generated goldens, byte-for-byte.
 //!
 //! These goldens are read-only (see `support::check_golden_readonly`) — they
-//! come from `scripts/gen_goldens.py` running real scrapling 0.4.9, so a pass
-//! means the Rust literals still mirror `scrapling/src/schemas.py`. The
-//! `browser::` id prefix is the one deliberate divergence; the generator
-//! applies it via `wire_id()`.
+//! were captured from real scrapling 0.4.9 through the Python worker that this
+//! surface replaced, so a pass means the Rust literals still mirror the wire
+//! schemas that worker served. The `browser::` id prefix is the one deliberate
+//! divergence, applied when the goldens were captured.
 
 mod support;
 

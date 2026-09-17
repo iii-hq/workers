@@ -237,8 +237,8 @@ available.
 
 ## Scraping and HTML parsing (`browser::*`)
 
-The worker also ships a native Rust port of the [scrapling](https://github.com/D4Vinci/Scrapling)
-worker's surface: 19 functions covering HTTP and browser fetching, screenshots,
+The worker also ships a native Rust port of the [Scrapling](https://github.com/D4Vinci/Scrapling)
+surface: 19 functions covering HTTP and browser fetching, screenshots,
 persistent sessions, crawling, and — the part that needs no browser at all —
 parsing HTML you already have.
 
@@ -332,7 +332,7 @@ Safe mode rejects caller proxies and checks every connection against private,
 loopback, link-local (including cloud metadata), CGNAT, multicast and reserved
 ranges. Set `browser.scrapling.allow_loopback: true` to scrape a local dev
 server; every other private range stays blocked. Compat mode intentionally
-reproduces the standalone worker's unrestricted network behavior and should be
+reproduces the Python wrapper's unrestricted network behavior and should be
 enabled only for trusted calls. All nine functions remain at the
 `needs_approval` default in `iii-permissions.yaml`, unlike the ten parse
 functions.
@@ -356,11 +356,11 @@ worker's unbounded response and retry/redirect quirks.
 
 ### Compatibility modes and certification
 
-Request/response schemas are golden-pinned to the frozen Python wrapper apart
-from provider-id mapping. Native calls use `browser::<leaf>`; Python keeps
-`scrapling::<leaf>`. Python `scrapling::screenshot` maps to native
-`browser::screenshot-url`, while `browser::screenshot` remains the interactive
-session screenshot. Crawl streams default to `browser::crawl`.
+Request/response schemas are golden-pinned to the Python wrapper this
+surface replaced. Every call is `browser::<leaf>`: the wrapper's
+`scrapling::screenshot` is `browser::screenshot-url` here, while
+`browser::screenshot` is the interactive session screenshot, and crawl
+streams default to `browser::crawl`.
 
 `security_mode: safe` is the default. It keeps SSRF checks and resource
 ceilings, refuses network options the safe engine cannot enforce, rejects
@@ -369,7 +369,7 @@ eligible on Tier-1 Linux x86_64/aarch64 builds produced with the certified
 curl-impersonate and Chromium artifacts. Other targets reject compat instead
 of silently degrading. Eligibility is not a claim that an arbitrary local
 build is certified: builds without the frozen artifacts return a capability
-error, and callers should keep using safe mode or the standalone worker.
+error, and callers should keep using safe mode.
 
 The parser/query core, CSS-to-XPath translation, XPath 1.0 evaluation, Python
 regex behavior, Markdown conversion, selector generation, and adaptive
@@ -388,23 +388,18 @@ Cloudflare handling and screenshot transforms use that same private runtime.
 Certified builds fail when pinned artifacts are absent or mismatched; there is
 no silent fallback from compat to safe.
 
-The standalone worker remains the oracle and production fallback during
-rollout. Migrate calls to `browser::<leaf>` (with screenshot mapped to
-`browser::screenshot-url`) only after draining its sessions, then compare both
-providers through one stable release and at least 30 days without an
-untriaged mismatch. Removing the standalone worker is a separate change.
+The standalone `scrapling` worker was the oracle and the production
+fallback during rollout. It has been removed, and with it the Python
+differentials that compared the two implementations call by call.
 
-### Regenerating the parse goldens
+### The parse goldens
 
-`tests/golden/schemas/browser.*.json` and `tests/golden/behavior/**`
-are written **only** by `scripts/gen_goldens.py`, run against the reference
-Python implementation — never by `UPDATE_GOLDENS=1`, so a passing test always
-means "Rust still agrees with Python":
-
-```bash
-~/.iii/managed/scrapling/usr/local/bin/python3.12 scripts/gen_goldens.py schemas
-~/.iii/managed/scrapling/usr/local/bin/python3.12 scripts/gen_goldens.py behavior
-```
+`tests/golden/schemas/browser.*.json` and `tests/golden/behavior/**` are the
+frozen record of what the Python implementation answered, captured while both
+ran side by side. They are no longer regenerable — the generator ran against
+that implementation — so they are now ordinary regression fixtures: a test
+failure means this worker's behavior moved, and the fixture is only ever
+updated by hand, deliberately, with the change explained.
 
 ## Configuration
 
@@ -463,7 +458,7 @@ browser:
     max_sessions: 8
     session_idle_timeout_s: 900
     adaptive_storage_path: data/scrapling/elements.db # relative to III_COMPOSE_DIR
-    adaptive_max_bytes: 268435456 # safe only; compat preserves unbounded oracle behavior
+    adaptive_max_bytes: 268435456 # safe only; compat preserves the unbounded wrapper behavior
 ```
 
 `file` is on the default scheme list so a local document can be opened and
