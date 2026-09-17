@@ -207,8 +207,9 @@ describe('screen mapping + labels', () => {
   })
 
   it('resolves deep links to screens and ignores everything else', () => {
-    expect(deepLinkScreen('#/traces')).toBe('traces')
     expect(deepLinkScreen('#/workers')).toBe('workers')
+    // `#/traces` is a standalone surface, never a workspace deep link.
+    expect(deepLinkScreen('#/traces')).toBeNull()
     // The bare hash is what a consumed deep link leaves behind: not a link.
     expect(deepLinkScreen('')).toBeNull()
     expect(deepLinkScreen('#/')).toBeNull()
@@ -422,9 +423,9 @@ describe('withScreenOpenedBeside', () => {
       columns: 2,
       screens: [CHAT_SCREEN, null],
     }
-    expect(withScreenOpenedBeside(tab, 'ext:shell')?.screens).toEqual([
+    expect(withScreenOpenedBeside(tab, 'ext:ide')?.screens).toEqual([
       CHAT_SCREEN,
-      'ext:shell',
+      'ext:ide',
     ])
   })
 
@@ -435,8 +436,8 @@ describe('withScreenOpenedBeside', () => {
       screens: [CHAT_SCREEN, 'traces'],
       paneIds: ['pane-chat', 'pane-traces'],
     }
-    const next = withScreenOpenedBeside(tab, 'ext:shell')
-    expect(next?.screens).toEqual([CHAT_SCREEN, 'ext:shell', 'traces'])
+    const next = withScreenOpenedBeside(tab, 'ext:ide')
+    expect(next?.screens).toEqual([CHAT_SCREEN, 'ext:ide', 'traces'])
     expect(next?.paneIds?.[0]).toBe('pane-chat')
     expect(next?.paneIds?.[2]).toBe('pane-traces')
     expect(next?.sizes?.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1)
@@ -459,9 +460,9 @@ describe('withScreenOpenedBeside', () => {
     const existing: WorkspaceTab = {
       id: 'a',
       columns: 2,
-      screens: [CHAT_SCREEN, 'ext:shell'],
+      screens: [CHAT_SCREEN, 'ext:ide'],
     }
-    expect(withScreenOpenedBeside(existing, 'ext:shell')).toBe(existing)
+    expect(withScreenOpenedBeside(existing, 'ext:ide')).toBe(existing)
 
     const fullScreens = [
       CHAT_SCREEN,
@@ -475,7 +476,7 @@ describe('withScreenOpenedBeside', () => {
       columns: MAX_COLUMNS,
       screens: fullScreens,
     }
-    expect(withScreenOpenedBeside(full, 'ext:shell')).toBeNull()
+    expect(withScreenOpenedBeside(full, 'ext:ide')).toBeNull()
   })
 })
 
@@ -483,10 +484,10 @@ describe('withWorkspaceScreenOpened', () => {
   it('activates an already-open panel without duplicating it', () => {
     const tabs: WorkspaceTab[] = [
       { id: 'chat', screens: [CHAT_SCREEN, 'traces'] },
-      { id: 'shell', screens: ['ext:shell'] },
+      { id: 'shell', screens: ['ext:ide'] },
     ]
     expect(
-      withWorkspaceScreenOpened(tabs, 'chat', 'ext:shell', () => 'new'),
+      withWorkspaceScreenOpened(tabs, 'chat', 'ext:ide', () => 'new'),
     ).toEqual({
       tabs,
       activeTabId: 'shell',
@@ -496,7 +497,7 @@ describe('withWorkspaceScreenOpened', () => {
   it('stays put when the workspace you are on already shows that screen', () => {
     const tabs: WorkspaceTab[] = [
       { id: 'first-chat', screens: [CHAT_SCREEN] },
-      { id: 'chat-and-shell', screens: [CHAT_SCREEN, 'ext:shell'] },
+      { id: 'chat-and-shell', screens: [CHAT_SCREEN, 'ext:ide'] },
     ]
     // Opening chat from the second tab must not send you to the first one
     // just because it was created earlier.
@@ -545,10 +546,10 @@ describe('withWorkspaceScreenOpened', () => {
     const open = withWorkspaceScreenOpened(
       [{ id: 'chat', columns: 2, screens: [CHAT_SCREEN, 'traces'] }],
       'chat',
-      'ext:shell',
+      'ext:ide',
       () => 'new',
     )
-    expect(open.tabs[0].screens).toEqual([CHAT_SCREEN, 'ext:shell', 'traces'])
+    expect(open.tabs[0].screens).toEqual([CHAT_SCREEN, 'ext:ide', 'traces'])
 
     const fullScreens = [
       CHAT_SCREEN,
@@ -566,14 +567,14 @@ describe('withWorkspaceScreenOpened', () => {
         },
       ],
       'full',
-      'ext:shell',
+      'ext:ide',
       () => 'new',
     )
     expect(full.activeTabId).toBe('new')
     expect(full.tabs[1]).toEqual({
       id: 'new',
       columns: 2,
-      screens: [CHAT_SCREEN, 'ext:shell'],
+      screens: [CHAT_SCREEN, 'ext:ide'],
     })
   })
 
@@ -809,7 +810,7 @@ describe('persisted shapes from earlier releases', () => {
       workspace: {
         tabs: [
           { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },
-          { id: 'tab-2', name: 'Shell', screens: ['ext:shell'] },
+          { id: 'tab-2', name: 'Shell', screens: ['ext:ide'] },
         ],
         activeTabId: 'tab-2',
       },

@@ -69,7 +69,7 @@ function OpenAgentTerminal({ host, cwd, command }: { host: Host; cwd: string; co
         }
         onClick={() =>
           host.panels?.open({
-            pageId: 'shell',
+            pageId: 'ide',
             context: { type: 'agent-terminal', cwd, command },
           })
         }
@@ -97,7 +97,7 @@ export function createAgentRunRenderer(host: Host): FunctionTriggerRenderer {
     return <OpenAgentTerminal host={host} cwd={cwd} command={cliOf(message.functionId)} />
   }
   return {
-    id: 'shell/page.js#agent-run',
+    id: 'ide/page.js#agent-run',
     isMatch: isAgentRunFunction,
     tryRenderRunning: control,
     tryRender: control,

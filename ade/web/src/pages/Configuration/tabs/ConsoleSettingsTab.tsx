@@ -38,7 +38,7 @@ import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 const HARNESS_CONFIG_HASH = hashForWorkersConfiguration('llm-router')
 // Shell's permanent `fs.host_roots` list — do NOT build a second editor for
 // it here; deep-link to the worker-owned configuration interface instead.
-const SHELL_CONFIG_HASH = hashForWorkersConfiguration('shell')
+const SHELL_CONFIG_HASH = hashForWorkersConfiguration('ide')
 
 interface ConsoleSettingsTabProps {
   theme: Theme

@@ -144,7 +144,7 @@ function focusRequestedPane(tab: WorkspaceTab): void {
  * so their keys fire only while focus is inside it, and every one still
  * registered when the pane unmounts is removed with it.
  */
-function usePaneCommandsApi(
+export function usePaneCommandsApi(
   pageId: string,
   pageTitle: string | undefined,
   paneId: string,
@@ -1783,7 +1783,7 @@ interface ConfigurationOverlayProps {
  * stays mounted underneath, so closing restores the panes exactly as they
  * were. Deep-linkable via `#/configuration` and its worker sub-routes.
  */
-function ConfigurationOverlay({
+export function ConfigurationOverlay({
   theme,
   onThemeChange,
   onDirtyChange,

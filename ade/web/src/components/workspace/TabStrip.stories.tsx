@@ -21,7 +21,7 @@ function tabsOf(count: number): WorkspaceTab[] {
   const screens = [
     'traces',
     'workers',
-    'ext:shell',
+    'ext:ide',
     'ext:browser',
     'ext:github',
     'ext:database',

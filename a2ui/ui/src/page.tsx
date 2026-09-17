@@ -460,7 +460,7 @@ export function A2uiPage({
               <button
                 type="button"
                 className="a2ui-workspace-export-open"
-                onClick={() => host.panels?.open({ pageId: 'shell' })}
+                onClick={() => host.panels?.open({ pageId: 'ide' })}
               >
                 open Shell
               </button>

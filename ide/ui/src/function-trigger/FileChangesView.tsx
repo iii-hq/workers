@@ -38,7 +38,7 @@ function render(host: Host, message: FunctionTriggerMessage): React.ReactNode | 
 
 export function createFileChangesRenderer(host: Host): FunctionTriggerRenderer {
   return {
-    id: 'shell/page.js#file-changes',
+    id: 'ide/page.js#file-changes',
     isMatch: (functionId) => FILE_CHANGE_IDS.has(functionId),
     tryRender: (message) => render(host, message),
     tryRenderRunning: (message) => render(host, message),

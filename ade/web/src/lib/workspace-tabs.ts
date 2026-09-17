@@ -12,7 +12,11 @@
  * the same tabs.
  */
 
-import { routeFromHash, type View } from '@/hooks/use-hash-route'
+import {
+  routeFromHash,
+  standaloneRouteFromHash,
+  type View,
+} from '@/hooks/use-hash-route'
 import { moveItem } from '@/lib/reorder'
 
 /** `chat`, `chat:<session-id>`, a routed view, or `ext:<page-id>`. */
@@ -315,6 +319,8 @@ const MIGRATED_SCREENS: Record<string, string> = {
   memory: 'memory',
   browser: 'browser',
   github: 'github',
+  // The ide worker's page was `shell` until its UI/configuration rename.
+  'ext:shell': 'ide',
 }
 
 /** Configuration is deliberately NOT here: console settings open as an
@@ -346,13 +352,15 @@ export function screenForView(view: View): TabScreen | null {
 }
 
 /**
- * The screen a deep link names (`#/traces`, `#/workers`), or `null` for the
- * bare hash, settings, `#/worker/…` and anything unknown. A deep link is a
- * one-shot command — App opens the screen and drops the hash — never state:
- * the tab store is the only memory of what is open.
+ * The screen a deep link names (`#/workers`), or `null` for the bare hash,
+ * settings, the standalone routes (`#/traces`, `#/worker/…` — those boot
+ * their own shell, main.tsx) and anything unknown. A deep link is a one-shot
+ * command — App opens the screen and drops the hash — never state: the tab
+ * store is the only memory of what is open.
  */
 export function deepLinkScreen(hash: string): TabScreen | null {
   if (hash === '' || hash === '#' || hash === '#/') return null
+  if (standaloneRouteFromHash(hash) !== null) return null
   const view = routeFromHash(hash)
   return view === null ? null : screenForView(view)
 }

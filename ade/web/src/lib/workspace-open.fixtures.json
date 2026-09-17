@@ -3,16 +3,16 @@
     {
       "name": "stays on the active tab when it already shows the screen",
       "tabs": [
-        { "id": "a", "columns": 1, "screens": ["ext:shell"] },
-        { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+        { "id": "a", "columns": 1, "screens": ["ext:ide"] },
+        { "id": "b", "columns": 2, "screens": ["chat", "ext:ide"] }
       ],
       "activeTabId": "a",
-      "screen": "ext:shell",
+      "screen": "ext:ide",
       "expect": {
         "activeTabId": "a",
         "tabs": [
-          { "id": "a", "columns": 1, "screens": ["ext:shell"] },
-          { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+          { "id": "a", "columns": 1, "screens": ["ext:ide"] },
+          { "id": "b", "columns": 2, "screens": ["chat", "ext:ide"] }
         ]
       }
     },
@@ -20,15 +20,15 @@
       "name": "switches to the tab that already shows the screen",
       "tabs": [
         { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
-        { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+        { "id": "b", "columns": 2, "screens": ["chat", "ext:ide"] }
       ],
       "activeTabId": "a",
-      "screen": "ext:shell",
+      "screen": "ext:ide",
       "expect": {
         "activeTabId": "b",
         "tabs": [
           { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
-          { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+          { "id": "b", "columns": 2, "screens": ["chat", "ext:ide"] }
         ]
       }
     },
@@ -126,14 +126,14 @@
         }
       ],
       "activeTabId": "a",
-      "screen": "ext:shell",
+      "screen": "ext:ide",
       "expect": {
         "activeTabId": "a",
         "tabs": [
           {
             "id": "a",
             "columns": 3,
-            "screens": ["chat", "ext:shell", "traces"],
+            "screens": ["chat", "ext:ide", "traces"],
             "paneIds": ["a:pane:0", "pane-new", "a:pane:1"],
             "sizes": [
               0.33333333333333337, 0.3333333333333333, 0.33333333333333337
@@ -223,13 +223,13 @@
         {
           "id": "a",
           "columns": 2,
-          "screens": ["chat", "ext:shell"],
+          "screens": ["chat", "ext:ide"],
           "sizes": [0.25, 0.75]
         },
-        { "id": "b", "columns": 1, "screens": ["ext:shell"] },
+        { "id": "b", "columns": 1, "screens": ["ext:ide"] },
         { "id": "c", "columns": 2, "screens": ["chat", "traces"] }
       ],
-      "screen": "ext:shell",
+      "screen": "ext:ide",
       "expect": {
         "tabIds": ["a", "b"],
         "tabs": [

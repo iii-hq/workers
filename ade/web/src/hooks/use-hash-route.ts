@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -13,9 +12,9 @@ import type { JsonValue } from '@/types/injectable-ui'
 // component spec sheet + streaming playground moved to Storybook, so the
 // first-party routed views are `traces`, `workers`, and `configuration`.
 // Worker pages have no workspace route: they open through `host.panels.open`
-// or `console::workspace::open` and live in the tab store. Their one hash is
-// `#/worker/<scope>` — the isolated shell (WorkerOnly.tsx) that renders a
-// single injected page with no workspace at all.
+// or `console::workspace::open` and live in the tab store. `#/worker/<scope>`
+// and `#/traces` are standalone routes instead — Standalone.tsx renders that
+// one surface with no workspace at all.
 export type View = 'configuration' | 'traces' | 'workers'
 
 export interface WorkersConfigurationRoute {
@@ -243,12 +242,33 @@ export function workerRouteFromHash(hash: string): WorkerRoute | null {
 
 export function hashForWorkerPage(
   scope: string,
-  pageId: string,
+  pageId: string | null,
   context: JsonValue | null | undefined = null,
 ): string {
-  const base = `${WORKER_HASH_PREFIX}${encodePath([scope, pageId])}`
+  const base = `${WORKER_HASH_PREFIX}${encodePath(
+    pageId === null ? [scope] : [scope, pageId],
+  )}`
   if (context === null || context === undefined) return base
   return `${base}?context=${encodeURIComponent(JSON.stringify(context))}`
+}
+
+/**
+ * A surface the console renders alone — no tab strip, chat or palette:
+ * one worker page (`#/worker/…`) or the traces explorer (`#/traces`).
+ */
+export type StandaloneRoute =
+  | ({ kind: 'worker' } & WorkerRoute)
+  | { kind: 'traces' }
+
+export function standaloneRouteFromHash(hash: string): StandaloneRoute | null {
+  if (hash === '#/traces') return { kind: 'traces' }
+  const worker = workerRouteFromHash(hash)
+  return worker ? { kind: 'worker', ...worker } : null
+}
+
+export function hashForStandalone(route: StandaloneRoute): string {
+  if (route.kind === 'traces') return '#/traces'
+  return hashForWorkerPage(route.scope, route.pageId, route.context)
 }
 
 function subscribeHash(listener: () => void): () => void {
@@ -256,14 +276,13 @@ function subscribeHash(listener: () => void): () => void {
   return () => window.removeEventListener('hashchange', listener)
 }
 
-/** The live `#/worker/…` route; null outside the isolated shell. */
-export function useWorkerRoute(): WorkerRoute | null {
-  const hash = useSyncExternalStore(
+/** The live location hash. */
+export function useHash(): string {
+  return useSyncExternalStore(
     subscribeHash,
     () => window.location.hash,
     () => '',
   )
-  return useMemo(() => workerRouteFromHash(hash), [hash])
 }
 
 export function useWorkersConfigurationRoute(): [

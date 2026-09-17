@@ -1,5 +1,5 @@
 /**
- * The shell explorer page (page `shell`): an editor-shaped surface over
+ * The shell explorer page (page `ide`): an editor-shaped surface over
  * the worker's own functions. One tab strip holds everything the main
  * pane can show: a file (its real content, editable), a diff (one file
  * against one source: the index, a Harness turn, a revision, a recorded

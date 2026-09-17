@@ -42,7 +42,7 @@ directly instead.
   inter-function calls go through the engine. No direct in-process calls between
   capabilities, no scheduler (use `cron`), no sub-agent fan-out (use `harness::spawn`),
   no state shadow of a vendor's own store, no polling (push through trigger types).
-- Delegation sweep before building: read the READMEs and function tables of `shell`,
+- Delegation sweep before building: read the READMEs and function tables of `ide`,
   `state`, `storage`, `fp`, `web`, `cron`, `queue`, `github` and the registry
   (`directory::registry::workers::list`) before reimplementing anything. If a worker
   already covers the capability, extend it or stop and tell the user.

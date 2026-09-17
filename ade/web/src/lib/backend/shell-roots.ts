@@ -1,6 +1,6 @@
 /**
  * Read-only peek at shell's permanent allowed folders
- * (`configuration::get { id: 'shell' }` → `value.fs.host_roots`), for the
+ * (`configuration::get { id: 'ide' }` → `value.fs.host_roots`), for the
  * filesystem-access management dialog's "always allowed (all sessions)" group.
  * Editing happens on the existing configuration editor
  * (`#/configuration/workers/ide`) — this is read-only here on purpose.
@@ -8,7 +8,7 @@
 
 import { getIiiClient } from '@/lib/iii-client'
 
-const SHELL_CONFIG_ID = 'shell'
+const SHELL_CONFIG_ID = 'ide'
 
 interface ShellConfigValue {
   fs?: { host_roots?: unknown }

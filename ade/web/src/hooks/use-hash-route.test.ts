@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   hashForSettingsLanding,
+  hashForStandalone,
   hashForWorkerPage,
   hashForWorkersConfiguration,
   normalizeWorkersConfigurationHash,
   routeFromHash,
+  standaloneRouteFromHash,
   workerRouteFromHash,
   workersConfigurationRouteFromHash,
 } from './use-hash-route'
@@ -129,6 +131,29 @@ describe('isolated worker route', () => {
     })
     expect(hashForWorkerPage('x', 'p')).toBe('#/worker/x/p')
     expect(hashForWorkerPage('x', 'p', null)).toBe('#/worker/x/p')
+    expect(hashForWorkerPage('x', null)).toBe('#/worker/x')
+  })
+
+  it('names the standalone surfaces: a worker page or the traces explorer', () => {
+    expect(standaloneRouteFromHash('#/traces')).toEqual({ kind: 'traces' })
+    expect(standaloneRouteFromHash('#/worker/ide')).toEqual({
+      kind: 'worker',
+      scope: 'ide',
+      pageId: null,
+      context: null,
+    })
+    expect(standaloneRouteFromHash('#/workers')).toBeNull()
+    expect(standaloneRouteFromHash('#/configuration')).toBeNull()
+    expect(standaloneRouteFromHash('#/')).toBeNull()
+    expect(hashForStandalone({ kind: 'traces' })).toBe('#/traces')
+    expect(
+      hashForStandalone({
+        kind: 'worker',
+        scope: 'ide',
+        pageId: 'ide',
+        context: { a: 1 },
+      }),
+    ).toBe(hashForWorkerPage('ide', 'ide', { a: 1 }))
   })
 
   it('tolerates a malformed context and rejects other hashes', () => {

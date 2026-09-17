@@ -117,7 +117,7 @@ function tryRenderPreview(
 
 export function createShellTriggerRenderer(): FunctionTriggerRenderer {
   return {
-    id: 'shell/page.js#shell',
+    id: 'ide/page.js#shell',
     isMatch: isShellFunction,
     tryRender: render,
     /** Alias kept deliberately; running state lives inside `render`. */

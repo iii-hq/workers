@@ -861,7 +861,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         })
         .description(
             "Show a screen in the console workspace next to the conversation (reusing the tab \
-             that already shows it). Screens: `ext:shell` (files), `ext:browser`, \
+             that already shows it). Screens: `ext:ide` (files), `ext:browser`, \
              `ext:editor`, `workers`, or `{\"screen\":\"chat\",\"session_id\":\"<id>\"}` \
              for a pinned chat. It lands right of the chat panel unless \
              `relative_to` names another mounted screen, and `direction` picks the side \
@@ -922,7 +922,7 @@ mod tests {
             "chat:child:attempt:2",
             "traces",
             "workers",
-            "ext:shell",
+            "ext:ide",
             "ext:browser",
         ] {
             assert!(is_valid_screen(ok), "{ok}");
@@ -1031,12 +1031,12 @@ mod tests {
     #[test]
     fn existing_screen_leaves_the_layout_untouched() {
         let tabs = tabs_from(&json!([
-            { "id": "a", "columns": 2, "screens": ["chat", "ext:shell"] }
+            { "id": "a", "columns": 2, "screens": ["chat", "ext:ide"] }
         ]));
         let opened = open_screen(
             &tabs,
             "a",
-            "ext:shell",
+            "ext:ide",
             CHAT_SCREEN,
             Direction::Right,
             fixed_id,
@@ -1060,7 +1060,7 @@ mod tests {
         let opened = open_screen(
             &tabs,
             "a",
-            "ext:shell",
+            "ext:ide",
             CHAT_SCREEN,
             Direction::Right,
             fixed_id,
@@ -1072,7 +1072,7 @@ mod tests {
             Some(&json!(["pane-chat", "pane-new", "pane-traces"]))
         );
 
-        let (closed, touched) = close_screen(&opened_tabs, "ext:shell");
+        let (closed, touched) = close_screen(&opened_tabs, "ext:ide");
         assert_eq!(touched, vec!["a"]);
         assert_eq!(
             closed[0].rest.get("paneIds"),
@@ -1102,7 +1102,7 @@ mod tests {
         let opened = open_screen(
             &[full],
             "a",
-            "ext:shell",
+            "ext:ide",
             CHAT_SCREEN,
             Direction::Right,
             fixed_id,
@@ -1114,7 +1114,7 @@ mod tests {
         assert_eq!(next.len(), 2);
         assert_eq!(
             next[1].screens,
-            vec![Some("chat".to_string()), Some("ext:shell".to_string())]
+            vec![Some("chat".to_string()), Some("ext:ide".to_string())]
         );
     }
 
@@ -1186,7 +1186,7 @@ mod tests {
         let opened = open_screen(
             &tabs,
             "a",
-            "ext:shell",
+            "ext:ide",
             CHAT_SCREEN,
             Direction::Right,
             fixed_id,
@@ -1194,7 +1194,7 @@ mod tests {
         );
         let merged = merge_tabs(&raw, &opened.tabs.unwrap());
         assert_eq!(merged.len(), 3);
-        assert_eq!(merged[0]["screens"], json!(["chat", "ext:shell"]));
+        assert_eq!(merged[0]["screens"], json!(["chat", "ext:ide"]));
         assert_eq!(merged[0]["pinned"], json!(true));
         assert_eq!(merged[1], raw[1]);
         assert_eq!(merged[2], raw[2]);

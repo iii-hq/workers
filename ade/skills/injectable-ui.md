@@ -449,16 +449,19 @@ Validate all four layers; a green build alone is not enough.
    action fallback, fail-closed redaction, and disable/disconnect fallback.
 
 **The page alone: `#/worker/<scope>[/<page-id>][?context=<json>]`.** The
-console renders that one page over the full viewport — no tab strip, chat,
-palette or keybindings — and never reads or writes the shared workspace
-layout, so a Playwright or `browser`-worker session can open a worker's page
-directly for screenshots and drive-through. `scope` is the worker's asset
-namespace (`browser/page.js` → `browser`, the `data-iii-ui` value); omit the
-page id for the worker's first page. `context` replays a `host.panels.open`
-context on load. Inside that shell `host.panels.open` delivers context in
-place for the page on screen and opens any other page in a new browser tab.
-Chat slots, palette commands and configuration forms are out of its scope:
-validate those in the full console, opened through `console::workspace::open`.
+console renders that one page over the full viewport — no tab strip, chat or
+palette; the tab title is `iii - <scope>` — and never reads or writes the
+shared workspace layout, so a Playwright or `browser`-worker session can open
+a worker's page directly for screenshots and drive-through. `scope` is the
+worker's asset namespace (`browser/page.js` → `browser`, the `data-iii-ui`
+value); omit the page id for the worker's first page. `context` replays a
+`host.panels.open` context on load. What still works there: the page's
+settings action and the settings shortcut (the configuration overlay opens in
+place), the page's keyed commands, hot reload and the worker's overlays.
+`host.panels.open` delivers context in place for the page on screen and opens
+any other page in a new browser tab. `#/traces` renders the traces explorer
+the same way. Chat slots and the palette are out of its scope: validate those
+in the full console, opened through `console::workspace::open`.
 
 ## Definition of done
 

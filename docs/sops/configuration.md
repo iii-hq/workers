@@ -8,7 +8,7 @@ edit on a live bus.
 This is the **advanced** alternative to the baseline static-config pattern in
 [`binary-worker.md`](binary-worker.md) §5 Path A. Reach for it when config must
 be observable, hot-reloadable, or shared. Reference implementations:
-`session-manager`, `context-manager`, `approval-gate`, `shell`, `storage`,
+`session-manager`, `context-manager`, `approval-gate`, `ide`, `storage`,
 `database`, `coder`.
 
 ## 1. What the `configuration` worker is
@@ -233,7 +233,7 @@ A local seed file for development may exist but should stay **uncommitted** or
 live under docs/examples — it is not loaded by default at runtime.
 `session-manager`, `context-manager`, and `approval-gate` ship **zero**
 `config.yaml` — that is the canonical pattern. Some older workers (e.g. `coder`,
-and `shell` / `storage` pending migration) still ship one; treat that as legacy,
+and `ide` / `storage` pending migration) still ship one; treat that as legacy,
 not a precedent for new or freshly-migrated integrations.
 
 ### e. `iii-permissions.yaml` — deny reload hooks
@@ -244,7 +244,7 @@ Add defense-in-depth denies next to the existing storage/database/shell entries:
   **every** integrated worker (the live deny list includes `session::`,
   `context::`, `approval::`, `storage::`, `database::`, and `shell::`).
 - `'!<worker>::config-status'` — only when the worker exposes one (Tier 2;
-  precedent: `session-manager`, `shell`). Tier 1 ConfigCell-only workers
+  precedent: `session-manager`, `ide`). Tier 1 ConfigCell-only workers
   (`context-manager`, `approval-gate`) do not register a `config-status`
   surface, so there is nothing to deny.
 
@@ -287,7 +287,7 @@ workers below have **no** restart-required fields.
 | `context-manager` | ConfigCell + rebuild | `lease_dir` rebuilds the `FsLeaseStore`; `summarizer_timeout_ms` + other knobs read per call |
 | `approval-gate` | ConfigCell + re-bind | `hook` / `sweep_expression` re-bind the harness-hook / cron triggers live; timeouts + approval defaults read per call |
 | `storage` | partial runtime | topology frozen; connection settings reload |
-| `shell`, `database` | full runtime swap | yes |
+| `ide`, `database` | full runtime swap | yes |
 | **`session-manager`** | full runtime + **resync** | yes (fs/bridge, `data_dir`, bridge `url`/`timeout_ms`) |
 
 ```mermaid

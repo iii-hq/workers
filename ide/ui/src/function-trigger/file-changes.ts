@@ -77,7 +77,7 @@ export interface FileChangesSummary {
 
 export function diffPanelRequest(row: FileChangeRow): PanelOpenRequest {
   return {
-    pageId: 'shell',
+    pageId: 'ide',
     context: {
       type: 'change-diff',
       changeId: row.changeId ?? '',

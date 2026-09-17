@@ -29,7 +29,7 @@ const activateSecondTab: WorkspaceTransform = (state) => ({
 const openShellScreen: WorkspaceTransform = (state) => ({
   tabs: [
     ...state.tabs,
-    { id: 'tab-shell', columns: 1 as const, screens: ['ext:shell'] },
+    { id: 'tab-shell', columns: 1 as const, screens: ['ext:ide'] },
   ],
   activeTabId: 'tab-shell',
 })
@@ -104,7 +104,7 @@ describe('pointer provenance on the server', () => {
     workspace: {
       tabs: [
         { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },
-        { id: 'tab-shell', columns: 1, screens: ['ext:shell'] },
+        { id: 'tab-shell', columns: 1, screens: ['ext:ide'] },
       ],
       activeTabId: 'tab-shell',
       activatedAt: 500,

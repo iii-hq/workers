@@ -1,11 +1,11 @@
 @import "@xterm/xterm/css/xterm.css";
 
-/* The ide worker's console stylesheet (asset shell/styles.css): every rule
-   nests under [data-iii-ui="shell"], the wrapper the console mounts around
+/* The ide worker's console stylesheet (asset ide/styles.css): every rule
+   nests under [data-iii-ui="ide"], the wrapper the console mounts around
    the page and the shell::* function-trigger cards. Console design tokens
    only, so light and dark come for free; the shared components style themselves. */
 
-[data-iii-ui="shell"] {
+[data-iii-ui="ide"] {
   --shui-status-added: var(--color-ok);
   --shui-status-deleted: var(--color-alert);
   --shui-status-modified: var(--color-warn);
@@ -2302,7 +2302,7 @@
    fills the screen, and only the viewport knows that.
    lint-allow viewport-media */
 @media (max-width: 639px) {
-  [data-iii-ui="shell"] .shui-quick-open {
+  [data-iii-ui="ide"] .shui-quick-open {
     inset: 0;
     width: 100%;
     height: 100dvh;
@@ -2310,10 +2310,10 @@
     translate: none;
     border-radius: 0;
   }
-  [data-iii-ui="shell"] .shui-quick-open-search { min-height: 52px; padding-right: 56px; }
-  [data-iii-ui="shell"] .shui-quick-open-input { font-size: 16px; }
-  [data-iii-ui="shell"] .shui-quick-open-row { min-height: 48px; }
-  [data-iii-ui="shell"] .shui-quick-open-foot { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+  [data-iii-ui="ide"] .shui-quick-open-search { min-height: 52px; padding-right: 56px; }
+  [data-iii-ui="ide"] .shui-quick-open-input { font-size: 16px; }
+  [data-iii-ui="ide"] .shui-quick-open-row { min-height: 48px; }
+  [data-iii-ui="ide"] .shui-quick-open-foot { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
 }
 
 @keyframes shui-file-change-metric-in {
@@ -2322,7 +2322,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-iii-ui="shell"] :is(
+  [data-iii-ui="ide"] :is(
     .shui-file-changes-title-state,
     .shui-file-changes-metric,
     .shui-file-changes-metric-value,

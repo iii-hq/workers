@@ -305,7 +305,7 @@ export function ChatView({
           : null
       if (!path) return
       requestPanelOpen({
-        pageId: 'shell',
+        pageId: 'ide',
         context: {
           type: 'file',
           path,

@@ -17,7 +17,7 @@ use crate::config::ShellConfig;
 use crate::fs::host::{HostFsBackend, HostFsConfig, IiiChannelMaker};
 use crate::fs::FsBackend;
 
-pub const DEFAULT_CONFIG_ID: &str = "shell";
+pub const DEFAULT_CONFIG_ID: &str = "ide";
 
 /// The configuration entry this worker owns.
 ///
@@ -180,7 +180,7 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
     })
 }
 
-/// Register the `shell` configuration schema with the configuration worker.
+/// Register the `ide` configuration schema with the configuration worker.
 ///
 /// `initial_value` is taken from an explicit `--config` seed when given,
 /// otherwise from the built-in zero-config default — so the worker boots with
@@ -206,9 +206,19 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if stored_value_absent(iii).await? {
-        let candidate = match seed {
-            Some(s) => s.clone(),
-            None => ShellConfig::seed_default(),
+        // The entry was `shell` until the worker's UI/configuration rename to
+        // `ide`: a value stored there is carried over once so the jail and
+        // denylist survive the rename. It beats a `--config` seed the way any
+        // live value beats the seed once an entry exists.
+        let legacy = if config_id() == DEFAULT_CONFIG_ID {
+            legacy_stored_value(iii).await
+        } else {
+            None
+        };
+        let candidate = match (legacy, seed) {
+            (Some(carried), _) => carried,
+            (None, Some(s)) => s.clone(),
+            (None, None) => ShellConfig::seed_default(),
         };
         // Validate with the SAME checks build_runtime uses (denylist regex
         // compile, fs-jail rule, host_roots/denylist reachability) BEFORE
@@ -225,6 +235,32 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
+}
+
+/// The configuration entry id before the rename to `ide`.
+const LEGACY_CONFIG_ID: &str = "shell";
+
+/// The value stored under the pre-rename `shell` entry, when there is one
+/// that still parses. Read raw so `${VAR}` references carry over unexpanded.
+async fn legacy_stored_value(iii: &IIIClient) -> Option<ShellConfig> {
+    let value = match try_get_value(iii, LEGACY_CONFIG_ID, true).await {
+        Ok(Some(value)) if !value.is_null() => value,
+        Ok(_) => return None,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the legacy `shell` configuration entry");
+            return None;
+        }
+    };
+    match ShellConfig::from_json(&value) {
+        Ok(cfg) => {
+            tracing::info!("carrying the stored `shell` configuration over to `ide`");
+            Some(cfg)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "ignoring the legacy `shell` configuration value");
+            None
+        }
+    }
 }
 
 /// True when no usable value is stored yet (entry missing or value null) —

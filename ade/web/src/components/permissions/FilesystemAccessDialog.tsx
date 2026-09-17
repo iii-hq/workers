@@ -10,7 +10,7 @@ import {
 import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import { getShellHostRoots } from '@/lib/backend/shell-roots'
 
-const SHELL_HOST_ROOTS_HASH = hashForWorkersConfiguration('shell', [
+const SHELL_HOST_ROOTS_HASH = hashForWorkersConfiguration('ide', [
   'fs',
   'host_roots',
 ])

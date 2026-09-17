@@ -8,7 +8,8 @@ This worker used to be called `shell`. Only its identity changed, so nothing tha
 
 - worker name, binary, Cargo package and registry entry: `shell` → `ide` (`iii trigger compose::add worker=ide`, `npx skills add iii-hq/workers --skill ide`)
 - source directory: `shell/` → `ide/`; dependents pin `ide` in their `iii.worker.yaml`
-- unchanged on purpose: the `shell::*` function ids (`shell::exec`, `shell::fs::*`, `shell::pty::*`, …), `coder::*`, the `shell::changed` trigger type, the `shell` configuration entry, the `data/shell/` data directory and the `shell` console page id
+- renamed with it (2026-09-17): the console page id, the UI asset scope (`ide/page.js`, `data-iii-ui="ide"`) and the configuration entry are `ide`; a stored `shell` configuration value is carried over to `ide` once on boot
+- unchanged on purpose: the `shell::*` function ids (`shell::exec`, `shell::fs::*`, `shell::pty::*`, …), `coder::*`, the `shell::changed` trigger type and the `data/shell/` data directory
 
 ## Install
 
