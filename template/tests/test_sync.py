@@ -323,7 +323,10 @@ class SyncTests(unittest.TestCase):
         return {**os.environ, "PATH": str(binary_dir)}, trace
 
     def test_python_command_selection_uses_the_validated_interpreter(self):
-        """Prefer python3, falling back to python if missing, old or broken."""
+        """Prefer a compatible interpreter, including symlinked checkout paths."""
+        launcher_alias = self.root / "launcher alias"
+        launcher_alias.symlink_to(self.launcher, target_is_directory=True)
+        self.launcher = launcher_alias
         cases = [
             ({"python3": "valid"}, "python3"),
             ({"python": "valid"}, "python"),
@@ -337,7 +340,7 @@ class SyncTests(unittest.TestCase):
                 self.run_sync("--dry-run", env=env)
                 calls = trace.read_text().splitlines()
                 self.assertIn(f"{selected} -c", calls)
-                self.assertEqual(calls[-1], f"{selected} {self.launcher / 'scripts/sync_template.py'}")
+                self.assertEqual(calls[-1], f"{selected} {(self.launcher / 'scripts/sync_template.py').resolve()}")
                 if selected == "python3":
                     self.assertFalse(any(call.startswith("python ") for call in calls))
                 self.assertFalse(self.destination.exists())
