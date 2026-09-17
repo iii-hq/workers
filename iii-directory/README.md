@@ -583,7 +583,7 @@ separate, so total search latency may exceed the Jev deadline. Requests use up t
 client; payloads are split at the local byte limits (48 KiB total JSON and 16 KiB
 for state plus the largest question). These byte guards are not token counts.
 Cost and latency grow with catalog size and capability count. Use the
-[opt-in benchmark](architecture/jev-search-evaluation.md) and returned token-usage
+[opt-in benchmark](examples/benchmark_jev_search.rs) and returned token-usage
 telemetry to measure your workload; this
 configuration change supplies no measured remote quality, latency or cost result.
 

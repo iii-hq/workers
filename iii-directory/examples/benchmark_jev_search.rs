@@ -1,4 +1,4 @@
-//! Opt-in installed-search evaluation. See architecture/jev-search-evaluation.md.
+//! Opt-in installed-search evaluation. Run with --help for usage.
 //! No engine, registry, model downloads, or remote warmup.
 
 use std::collections::{BTreeMap, HashSet};
