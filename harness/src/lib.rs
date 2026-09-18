@@ -43,3 +43,4 @@ pub(crate) mod trace_tags;
 pub mod trigger;
 pub mod turn_loop;
 pub mod types;
+pub mod usage_report;
