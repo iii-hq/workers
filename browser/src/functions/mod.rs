@@ -579,6 +579,7 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             session_id: session.id.clone(),
                             url: url.clone(),
                             headless: session.headless,
+                            preview: req.preview.unwrap_or(true),
                             timestamp: now_ms(),
                         },
                     )
@@ -720,6 +721,7 @@ fn register_sessions_attach(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             session_id: session.id.clone(),
                             url: url.clone(),
                             headless: session.headless,
+                            preview: true,
                             timestamp: now_ms(),
                         },
                     )

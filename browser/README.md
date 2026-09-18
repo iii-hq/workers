@@ -495,7 +495,7 @@ bindings accept an optional `{ "session_id": "..." }` filter.
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
-| `browser::session-started` | A tab opened and is ready | `{ session_id, url, headless, timestamp }` |
+| `browser::session-started` | A tab opened and is ready | `{ session_id, url, headless, preview, timestamp }` — `preview: false` when the opener passed `preview: false` to `sessions::start` (the console's own tab controls do) |
 | `browser::session-stopped` | A tab closed for good | `{ session_id, reason: "stopped" \| "idle" \| "expired" \| "crashed", timestamp }` |
 | `browser::session-updated` | A tab woke (`active: true`) or went to sleep (`active: false`) | `{ session_id, active, url, title, timestamp }` |
 | `browser::navigated` | The page committed a navigation | `{ session_id, url, timestamp }` |

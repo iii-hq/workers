@@ -2548,7 +2548,7 @@ export function ChatView({
                 lines (index.css:44-52 — rule/rule-2 are transparent in both
                 themes), so a group is a fill, not a run of dividers. It also
                 keeps the related session metadata visually together. */}
-            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5 @max-5xl:hidden">
+            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5 @max-2xl:hidden">
               {sessionChips}
               {hasInjectedContextChip ? null : (
                 <ContextUsage

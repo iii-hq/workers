@@ -25,7 +25,7 @@ export function OpenInBrowser({ host, url }: { host: Host; url: string }) {
       }
       onClick={() => {
         setState('opening')
-        startBrowserSession(host.iii, { url })
+        startBrowserSession(host.iii, { url, preview: false })
           .then((started) => {
             setState('idle')
             if (started) openBrowserPane(host, started.session_id)

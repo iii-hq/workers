@@ -2,6 +2,7 @@ import { Card, type Host, IconButton } from '@iii-dev/console-ui'
 import { usePaneState } from '@iii-dev/console-ui/hooks'
 import { Maximize, X } from 'lucide-react'
 import {
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
@@ -26,6 +27,7 @@ import {
   isStill,
   overshoot,
   type Point,
+  resizedFromBottomRight,
   rubberBandPoint,
   type Sample,
   velocityFromSamples,
@@ -36,12 +38,12 @@ import {
   pinchDistance,
   pinchWidth,
   settleWidth,
+  toggledWidth,
 } from './overlay-size'
 import {
   bringBrowserOverlayToFront,
   browserOverlaySessions,
-  dismissBrowserOverlay,
-  forgetBrowserOverlay,
+  hideBrowserOverlay,
   openBrowserPane,
   showBrowserOverlay,
   subscribeBrowserOverlay,
@@ -65,7 +67,13 @@ import {
 
 const WIDTH_KEY = 'browser-ui:overlay:width'
 const POSITION_KEY = 'browser-ui:overlay:position'
-const DEFAULT_WIDTH = 220
+const POINTER_LAYOUT = '(hover: hover) and (pointer: fine)'
+/** Width before any pinch or double-click: a mouse layout, with the room
+ * and no pinch, starts at twice a touch one's. */
+const TOUCH_WIDTH = 220
+const POINTER_WIDTH = 440
+const defaultWidth = () =>
+  window.matchMedia(POINTER_LAYOUT).matches ? POINTER_WIDTH : TOUCH_WIDTH
 /** Matches `--motion-duration-panel`: the element unmounts after its exit ran. */
 const CLOSE_MS = 220
 /** Longest frame a fling integrates over (a background tab's rAF pause). */
@@ -123,8 +131,15 @@ export function BrowserOverlay({ host }: { host: Host }) {
     triggerType: BROWSER_SESSION_STARTED_TRIGGER,
     fnId: 'iii::browser-ui::overlay-started',
     onEvent: (payload) => {
-      const event = payload as { session_id?: unknown; url?: unknown } | null
+      const event = payload as {
+        session_id?: unknown
+        url?: unknown
+        preview?: unknown
+      } | null
       if (typeof event?.session_id !== 'string' || !event.session_id) return
+      // Opened by a surface that shows it (the page's new-tab button,
+      // "Open in browser"), in this window or another: nothing to preview.
+      if (event.preview === false) return
       const url = typeof event.url === 'string' ? event.url : undefined
       if (!shouldOpenBrowserSession(url, window.location.origin)) return
       showBrowserOverlay(event.session_id)
@@ -137,7 +152,7 @@ export function BrowserOverlay({ host }: { host: Host }) {
     fnId: 'iii::browser-ui::overlay-stopped',
     onEvent: (payload) => {
       const id = (payload as { session_id?: unknown } | null)?.session_id
-      if (typeof id === 'string') forgetBrowserOverlay(id)
+      if (typeof id === 'string') hideBrowserOverlay(id)
     },
   })
 
@@ -179,12 +194,12 @@ export function BrowserOverlay({ host }: { host: Host }) {
   // while a finger or a fling drives the box, so they stay in plain state.
   const [storedWidth, setStoredWidth] = usePaneState<unknown>(
     WIDTH_KEY,
-    DEFAULT_WIDTH,
+    null,
   )
   const [width, setWidth] = useState(() =>
     typeof storedWidth === 'number' && Number.isFinite(storedWidth) && storedWidth > 0
       ? storedWidth
-      : DEFAULT_WIDTH,
+      : defaultWidth(),
   )
   const widthRef = useRef(width)
   widthRef.current = width
@@ -404,6 +419,40 @@ export function BrowserOverlay({ host }: { host: Host }) {
     setExpanded((value) => (isFront ? !value : false))
   }, [])
 
+  // With a mouse there is no pinch: a double-click on a card alternates
+  // the default width and twice it (the width transition animates it).
+  const onDoubleClick = useCallback(
+    (event: ReactMouseEvent<HTMLElement>) => {
+      if (!window.matchMedia(POINTER_LAYOUT).matches) return
+      if (!(event.target as Element).closest('.br-ui-pip-surface')) return
+      const next = toggledWidth(
+        widthRef.current,
+        POINTER_WIDTH,
+        overlayLimits(window.innerWidth),
+      )
+      // Growing from the anchored corner can push the far edges out of
+      // view: the box moves as it grows (width and transform share one
+      // transition) so all of it stays visible.
+      const node = rootRef.current
+      if (node) {
+        const bounds = boundsFor(
+          resizedFromBottomRight(node.getBoundingClientRect(), next),
+          positionRef.current,
+          { width: window.innerWidth, height: window.innerHeight },
+        )
+        const clamped = clampPoint(positionRef.current, bounds)
+        if (
+          clamped.x !== positionRef.current.x ||
+          clamped.y !== positionRef.current.y
+        )
+          settle(clamped)
+      }
+      setWidth(next)
+      setStoredWidth(next)
+    },
+    [setStoredWidth, settle],
+  )
+
   if (shown.length === 0) return null
 
   return (
@@ -423,6 +472,7 @@ export function BrowserOverlay({ host }: { host: Host }) {
         ['--fan-step' as string]: `${fan.step}px`,
       }}
       onPointerDown={onPointerDown}
+      onDoubleClick={onDoubleClick}
     >
       <div
         className="br-ui-pip-deck br-ui-pip-reveal"
@@ -447,7 +497,7 @@ export function BrowserOverlay({ host }: { host: Host }) {
               }}
               onHide={() => {
                 setExpanded(false)
-                dismissBrowserOverlay(sessionId)
+                hideBrowserOverlay(sessionId)
               }}
             />
           )

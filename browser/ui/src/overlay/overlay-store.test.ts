@@ -2,8 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   bringBrowserOverlayToFront,
   browserOverlaySessions,
-  dismissBrowserOverlay,
-  forgetBrowserOverlay,
+  hideBrowserOverlay,
   resetBrowserOverlayStore,
   showBrowserOverlay,
   subscribeBrowserOverlay,
@@ -35,26 +34,17 @@ describe('browser overlay store', () => {
     expect(browserOverlaySessions()).toEqual(['s2', 's3', 's1'])
   })
 
-  it('a dismissal removes the card and blocks a late start event for it', () => {
+  it('hiding removes the card and ignores ids not on the deck', () => {
     showBrowserOverlay('s1')
     showBrowserOverlay('s2')
-    dismissBrowserOverlay('s2')
+    hideBrowserOverlay('s2')
     expect(browserOverlaySessions()).toEqual(['s1'])
-    showBrowserOverlay('s2')
-    expect(browserOverlaySessions()).toEqual(['s1'])
-    // Dismissing before the event lands works the same way.
-    dismissBrowserOverlay('s3')
-    showBrowserOverlay('s3')
-    expect(browserOverlaySessions()).toEqual(['s1'])
-  })
-
-  it('a stopped session leaves the deck and clears its dismissal', () => {
-    showBrowserOverlay('s1')
-    forgetBrowserOverlay('s1')
-    expect(browserOverlaySessions()).toEqual([])
-    dismissBrowserOverlay('s2')
-    forgetBrowserOverlay('s2')
-    showBrowserOverlay('s2')
-    expect(browserOverlaySessions()).toEqual(['s2'])
+    let notified = 0
+    const off = subscribeBrowserOverlay(() => {
+      notified += 1
+    })
+    hideBrowserOverlay('nope')
+    expect(notified).toBe(0)
+    off()
   })
 })
