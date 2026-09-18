@@ -65,18 +65,17 @@ pub fn build_system_field(prompt: &str, enabled: bool) -> Value {
 }
 
 /// Sectioned prompt → wire `system` array: the identity block first, then one
-/// text block per non-empty section; `cache_control` on a boundary block once
-/// the cumulative text (identity included) clears the minimum, so the frozen
-/// profile prefix caches on its own ahead of the per-session tail.
+/// text block per non-empty section; `cache_control` on every boundary block,
+/// so the frozen profile prefix caches on its own ahead of the per-session
+/// tail. No byte gate: Anthropic applies its per-model token minimum over the
+/// whole prefix (tools included) and silently skips a short one.
 pub fn build_system_blocks(sections: &[PromptSection], enabled: bool, ttl: Option<&str>) -> Value {
     let mut blocks = vec![json!({ "type": "text", "text": CLAUDE_CODE_SYSTEM })];
-    let mut cumulative = CLAUDE_CODE_SYSTEM.len();
     let mut marked = 0usize;
     for section in sections.iter().filter(|s| !s.text.is_empty()) {
-        cumulative += section.text.len();
         let mut block = json!({ "type": "text", "text": section.text });
         // ponytail: cap 2 so the tools and messages anchors keep the total <= 4
-        if enabled && section.cache_boundary && cumulative >= CACHE_MIN_CHARS && marked < 2 {
+        if enabled && section.cache_boundary && marked < 2 {
             block["cache_control"] = ephemeral_ttl(ttl);
             marked += 1;
         }
@@ -198,12 +197,13 @@ mod tests {
         assert!(blocks[0].get("cache_control").is_none());
         assert_eq!(blocks[1]["cache_control"]["type"], "ephemeral");
         assert!(blocks[2].get("cache_control").is_none());
-        // below the minimum or disabled: no marker
-        assert!(
-            build_system_blocks(&[section("short", true)], true, None)[1]
-                .get("cache_control")
-                .is_none()
+        // a short boundary is still marked: Anthropic applies the token
+        // minimum over the whole prefix (tools included) and skips it itself
+        assert_eq!(
+            build_system_blocks(&[section("short", true)], true, None)[1]["cache_control"]["type"],
+            "ephemeral"
         );
+        // disabled: no marker
         assert!(build_system_blocks(&[section(&long, true)], false, None)[1]
             .get("cache_control")
             .is_none());

@@ -57,9 +57,10 @@ model.
   `supports_structured_output: true`.
 - **Prompt caching:** Moonshot context caching is automatic — no request
   markers. `prompt_cache_key` routes requests that share a prefix together: a
-  caller's `provider_options.kimi.prompt_cache_key` wins, else the router's
-  `cache_intent.surface_digest` (the frozen agent-profile prefix, so
-  independent sessions on one profile share it), else a key derived from the
+  caller's `provider_options.kimi.prompt_cache_key` wins, else a key derived
+  from the router's `cache_intent.surface_digest` (the frozen agent-profile
+  prefix, so independent sessions on one profile share it), else a key
+  derived from the
   session id. `prompt_tokens_details.cached_tokens` lands on `usage.cache_read`.
 - **Curated snapshot:** `src/curated.rs` carries display names / context
   windows / output ceilings / capability flags / pricing for known Kimi and

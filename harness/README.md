@@ -264,9 +264,10 @@ prompt plus the frozen skills index, `cache_boundary: true`) followed by the
 per-session tail (session id, working directory, policy aid, and whatever
 context assembly and hooks append). Two sessions on the same profile send
 the same stable bytes, and `cache_intent.surface_digest` (`sha256:` of that
-section) names them, so cache-aware providers keep one prefix entry for all
-of them: Anthropic puts its cache marker on the boundary block, OpenAI and
-Codex derive `prompt_cache_key` from the digest. The digest is a local
+section) names them, so cache-aware providers can keep one prefix entry for
+all of them — when the provider supports it and the prefix meets its minimum
+cacheable size: Anthropic puts its cache marker on the boundary block, OpenAI
+and Codex derive `prompt_cache_key` from the digest. The digest is a local
 identity, never evidence of a hit — `usage.cache_read` is. `harness::status`
 reports it as `context.prompt_surface_digest`, or
 `context.prompt_sections_fallback` when no sections went out: `disabled`

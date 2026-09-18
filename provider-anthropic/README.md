@@ -81,9 +81,10 @@ Prompt caching needs no setup: markers go on the system prompt, the tools
 tail, and the last stable assistant turn whenever the prefix is big enough
 to be worth a cache write. When the router forwards `system_sections`, the
 `system` field becomes one text block per section and the marker moves to the
-block flagged `cache_boundary` (the frozen agent-profile prefix) once the text
-up to it clears the minimum, so the per-session tail after it no longer
-invalidates the shared entry. At most two system blocks are marked, keeping
+block flagged `cache_boundary` (the frozen agent-profile prefix) whatever its
+size — Anthropic applies its per-model token minimum over the whole prefix,
+tools included, and silently skips a short one — so the per-session tail
+after it no longer invalidates the shared entry. At most two system blocks are marked, keeping
 the total at Anthropic's four. On that sectioned path the boundary block (and
 the tools marker ahead of it) use the 1-hour cache (`ttl: "1h"`, 2x base on
 the one write, reads unchanged) so a profile stays warm across sessions up to

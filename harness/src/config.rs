@@ -56,9 +56,10 @@ pub struct WorkerConfig {
 
     /// Send the system prompt to `router::chat` as `system_sections` (the
     /// frozen profile/identity prefix, then the per-session context) plus a
-    /// `cache_intent` digest, so cache-aware providers keep one prefix entry
-    /// for every session on the same profile (MOT-4798). `false` sends the
-    /// flat string only.
+    /// `cache_intent` digest, so cache-aware providers can route every session
+    /// on the same profile to one prefix entry — where the provider supports it
+    /// and the prefix meets its minimum cacheable size (MOT-4798). `false`
+    /// sends the flat string only.
     #[serde(default = "default_prompt_cache_sections")]
     pub prompt_cache_sections: bool,
 

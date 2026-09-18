@@ -56,23 +56,23 @@ pub fn build_system_field(prompt: &str, enabled: bool) -> Option<Value> {
 }
 
 /// Sectioned system prompt → wire `system` array: one text block per non-empty
-/// section, `cache_control` on a boundary block once the cumulative text up to
-/// it clears the minimum — so the frozen profile prefix caches on its own and
-/// the per-session tail after it does not invalidate it. None when every
-/// section is empty (omit the field).
+/// section, `cache_control` on every boundary block — so the frozen profile
+/// prefix caches on its own and the per-session tail after it does not
+/// invalidate it. No byte gate here: Anthropic applies its per-model token
+/// minimum over the whole prefix (tools included) and silently skips a short
+/// one, so a byte count of the system text alone would only lose eligible
+/// boundaries. None when every section is empty (omit the field).
 pub fn build_system_blocks(
     sections: &[PromptSection],
     enabled: bool,
     ttl: Option<&str>,
 ) -> Option<Value> {
     let mut blocks = Vec::new();
-    let mut cumulative = 0usize;
     let mut marked = 0usize;
     for section in sections.iter().filter(|s| !s.text.is_empty()) {
-        cumulative += section.text.len();
         let mut block = json!({ "type": "text", "text": section.text });
         // ponytail: cap 2 so the tools and messages anchors keep the total <= 4
-        if enabled && section.cache_boundary && cumulative >= CACHE_MIN_CHARS && marked < 2 {
+        if enabled && section.cache_boundary && marked < 2 {
             block["cache_control"] = ephemeral_ttl(ttl);
             marked += 1;
         }
@@ -181,13 +181,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_blocks_mark_boundary_at_cumulative_threshold() {
+    fn system_blocks_mark_every_declared_boundary() {
         let section = |text: &str, boundary: bool| PromptSection {
             text: text.into(),
             cache_boundary: boundary,
         };
         assert!(build_system_blocks(&[section("", true)], true, None).is_none());
-        // below the minimum: one block per section, no marker
+        // one block per section; the boundary is marked whatever its size
+        // (Anthropic applies the token minimum itself), the tail stays bare
         let v = build_system_blocks(
             &[section("stable", true), section("dyn", false)],
             true,
@@ -195,15 +196,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v.as_array().unwrap().len(), 2);
-        assert!(v[0].get("cache_control").is_none());
-        // boundary block past the minimum: marker on it, the tail stays bare
-        let long = "x".repeat(CACHE_MIN_CHARS);
-        let v = build_system_blocks(&[section(&long, true), section("dyn", false)], true, None)
-            .unwrap();
         assert_eq!(v[0]["cache_control"]["type"], "ephemeral");
         assert!(v[1].get("cache_control").is_none());
         assert_eq!(v[1]["text"], "dyn");
-        // disabled: no marker no matter the size
+        // disabled: no marker
+        let long = "x".repeat(CACHE_MIN_CHARS);
         let v = build_system_blocks(&[section(&long, true)], false, None).unwrap();
         assert!(v[0].get("cache_control").is_none());
         // three boundaries: at most two markers

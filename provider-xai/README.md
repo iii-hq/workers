@@ -50,9 +50,10 @@ tokenizer can disagree with what billing records.
   `thinking` blocks on the channel (`src/sse.rs`);
   `completion_tokens_details.reasoning_tokens` lands on `usage.reasoning`.
 - **Prompt caching:** automatic on xAI's side — no request markers. On the
-  Responses (Agent Tools) path the body `prompt_cache_key` is the router's
-  `cache_intent.surface_digest` (the frozen agent-profile prefix, so
-  independent sessions on one profile share it) when present, else a key
+  Responses (Agent Tools) path the body `prompt_cache_key` is a key derived
+  from the router's `cache_intent.surface_digest` (the frozen agent-profile
+  prefix, so independent sessions on one profile share it) when present, else
+  a key
   derived from the session id; the `x-grok-conv-id` header always stays the
   session. `prompt_tokens_details.cached_tokens` lands on `usage.cache_read`.
 - **Curated snapshot:** `src/curated.rs` carries windows / output ceilings /

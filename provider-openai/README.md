@@ -56,16 +56,18 @@ costs nothing, and needs no network).
   force `reasoning_effort: none`, matching that endpoint's compatibility rule.
 - **Prompt caching:** automatic on OpenAI's side — no request markers.
   `prompt_cache_key` routes requests that share a prefix to one cache shard:
-  a caller's `provider_options.openai.prompt_cache_key` wins, else the
-  router's `cache_intent.surface_digest` (the frozen agent-profile prefix, so
-  independent sessions on one profile share a shard), else a key derived from
+  a caller's `provider_options.openai.prompt_cache_key` wins, else a key
+  derived from the router's `cache_intent.surface_digest` (the frozen
+  agent-profile prefix, so independent sessions on one profile share a
+  shard), else a key derived from
   the session id. On GPT-5.6 and later (official endpoint only) the router's
   `system_sections` go out as one developer message each, with
   `prompt_cache_breakpoint: {"mode":"explicit"}` on the block flagged
-  `cache_boundary`: those models only look up the cache at explicit
-  breakpoints, the latest eligible message, and the end of the initial
-  developer block, so a single system message ending with per-session text
-  never matched across sessions (every new session paid a 1.25× cache write
+  `cache_boundary`: those models look up the cache only at message-level
+  boundaries — explicit breakpoints, the implicit breakpoint on the latest
+  eligible message, up to 20 earlier eligible message endings, and the end of
+  the initial developer block — so a single system message ending with
+  per-session text never matched across sessions (every new session paid a 1.25× cache write
   and read nothing). Implicit caching stays on for the conversation history;
   the key is accounting-only there. On the models that document extended
   retention (gpt-5.5, gpt-5.4, gpt-5.2, gpt-5.1*, gpt-5, gpt-5-codex, gpt-4.1

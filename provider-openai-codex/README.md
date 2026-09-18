@@ -105,9 +105,9 @@ provider id `openai`.
 - **Cache routing:** the `session-id` / `thread-id` / `x-client-request-id`
   headers always carry a UUID derived from the router's `session_id`. The body
   `prompt_cache_key` is resolved separately: a caller's
-  `provider_options.openai-codex.prompt_cache_key` override, else the router's
-  `cache_intent.surface_digest` (the frozen agent-profile prefix), else the
-  same session-derived UUID.
+  `provider_options.openai-codex.prompt_cache_key` override, else a UUID
+  derived from the router's `cache_intent.surface_digest` (the frozen
+  agent-profile prefix), else the same session-derived UUID.
 
   The subscription backend caches per session, not per content: a second turn
   in the same session reads the prefix from cache (`cached_tokens` ~17.9k on an

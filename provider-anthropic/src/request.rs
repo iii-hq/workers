@@ -186,15 +186,11 @@ mod tests {
         let body = build_body(&a, &mut Vec::new());
         assert_eq!(body["system"][0]["text"], "stable");
         assert_eq!(body["system"][1]["text"], "dynamic");
-        // a short stable section gets no marker at all, ttl or not
-        assert!(body["system"][0].get("cache_control").is_none());
-        // a long one carries the 1h ttl on the sectioned path only
-        a.system_sections = Some(vec![PromptSection {
-            text: "s".repeat(crate::wire::cache::CACHE_MIN_CHARS),
-            cache_boundary: true,
-        }]);
-        let body = build_body(&a, &mut Vec::new());
+        // the boundary carries the 1h ttl whatever its size (Anthropic applies
+        // the token minimum itself); the tail stays bare
         assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+        assert!(body["system"][1].get("cache_control").is_none());
+        // the flat path never gets the ttl
         a.system_sections = None;
         a.system_prompt = "p".repeat(crate::wire::cache::CACHE_MIN_CHARS);
         let flat = build_body(&a, &mut Vec::new());

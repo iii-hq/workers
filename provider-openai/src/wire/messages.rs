@@ -311,10 +311,11 @@ fn upsert_responses_output(out: &mut Vec<Value>, row: Value) {
 /// Sectioned variant for GPT-5.6 and later: one developer message per
 /// section, and `prompt_cache_breakpoint: explicit` on the `input_text` block
 /// of every section flagged `cache_boundary`. On those models a cache lookup
-/// only happens at explicit breakpoints, at the latest eligible message, and
-/// at the end of the initial developer block — a single system message that
-/// ends with per-session text never matches across sessions, so the frozen
-/// profile prefix gets its own boundary. Implicit caching stays on (no
+/// only happens at message-level boundaries (explicit breakpoints, the
+/// implicit breakpoint on the latest eligible message, up to 20 earlier
+/// eligible message endings, the end of the initial developer block) — a
+/// single system message that ends with per-session text never matches
+/// across sessions, so the frozen profile prefix gets its own boundary. Implicit caching stays on (no
 /// `prompt_cache_options.mode`), so the growing history still caches per
 /// conversation; at most three explicit marks, leaving the implicit slot.
 pub fn to_responses_input_sections(
