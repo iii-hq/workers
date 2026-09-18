@@ -521,7 +521,6 @@ export function App({
       }}
     >
       <Sheet>
-        <ConnectionNotice />
         <Header
           workspace={workspace}
           onOpenScreen={openWorkspaceScreen}
@@ -534,6 +533,7 @@ export function App({
             setPaletteOpen(true)
           }}
         />
+        <ConnectionNotice />
         <WorkspacePanes
           workspace={workspace}
           commandsRef={panelCommandsRef}
