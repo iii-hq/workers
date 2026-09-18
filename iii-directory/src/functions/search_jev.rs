@@ -110,26 +110,10 @@ struct State {
     skills: BTreeMap<String, Skill>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     triggers: BTreeMap<String, Trigger>,
-}
-
-impl State {
-    fn document_count(&self) -> usize {
-        self.functions.len() + self.skills.len() + self.triggers.len()
-    }
-
-    /// The id behind question column `f`, whichever corpus filled the state.
-    fn document_id(&self, f: usize) -> Option<&str> {
-        let key = format!("f{f}");
-        self.functions
-            .get(&key)
-            .map(|function| function.function_id.as_str())
-            .or_else(|| self.skills.get(&key).map(|skill| skill.skill_id.as_str()))
-            .or_else(|| {
-                self.triggers
-                    .get(&key)
-                    .map(|trigger| trigger.trigger_id.as_str())
-            })
-    }
+    /// Document id behind question column `f{i}`, whichever corpus filled
+    /// the state. Local bookkeeping, never sent.
+    #[serde(skip)]
+    ids: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -142,8 +126,6 @@ struct Skill {
 /// and only steer the judge; the model sees the description alone.
 #[derive(Serialize)]
 struct Trigger {
-    #[serde(skip_serializing)]
-    trigger_id: String,
     description: String,
 }
 
@@ -312,18 +294,7 @@ impl JevSearch {
             }
         }
         check_deadline(deadline)?;
-        for (lane, ranking) in outcome.rankings.iter_mut().enumerate() {
-            *ranking = admit(std::mem::take(ranking), 0.0);
-            tracing::debug!(
-                lane,
-                corpus = ?options.corpus,
-                top = ?ranking
-                    .iter()
-                    .take(5)
-                    .map(|(id, score)| format!("{id}={score:.2}"))
-                    .collect::<Vec<_>>(),
-                "Jev lane scored"
-            );
+        for ranking in &mut outcome.rankings {
             *ranking = admit(std::mem::take(ranking), options.min_relevance);
         }
         Ok(())
@@ -437,7 +408,7 @@ fn merge_response(
         return Err(JevError::InvalidResponse);
     }
     for c in 0..block.request.state.capabilities.len() {
-        for f in 0..block.request.state.document_count() {
+        for f in 0..block.request.state.ids.len() {
             let answer = response
                 .answers
                 .get(&format!("c{c}_f{f}"))
@@ -448,12 +419,8 @@ fn merge_response(
             {
                 return Err(JevError::InvalidResponse);
             }
-            let id = block
-                .request
-                .state
-                .document_id(f)
-                .ok_or(JevError::InvalidResponse)?;
-            outcome.rankings[block.query_start + c].push((id.to_string(), answer.noul));
+            let id = &block.request.state.ids[f];
+            outcome.rankings[block.query_start + c].push((id.clone(), answer.noul));
         }
     }
     tracing::debug!(
@@ -534,7 +501,6 @@ fn evaluation(
                 triggers.insert(
                     format!("f{f}"),
                     Trigger {
-                        trigger_id: tool.name.clone(),
                         description: tool.description.clone(),
                     },
                 );
@@ -580,6 +546,7 @@ fn evaluation(
             functions,
             skills,
             triggers,
+            ids: tools.iter().map(|tool| tool.name.clone()).collect(),
         },
         questions,
     }
@@ -624,6 +591,16 @@ mod tests {
             .unwrap();
         assert!(instructions.contains("state.triggers.f0"));
         assert!(instructions.contains("state.capabilities.c0"));
+    }
+
+    #[test]
+    fn new_drops_blank_api_keys() {
+        assert!(JevSearch::new(Some("   ".into())).api_key.is_none());
+        assert_eq!(
+            JevSearch::new(Some(" key ".into())).api_key.as_deref(),
+            Some("key")
+        );
+        assert!(JevSearch::new(None).api_key.is_none());
     }
 
     fn options() -> JevOptions {

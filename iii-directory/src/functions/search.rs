@@ -98,18 +98,11 @@ const MAX_SEARCH_QUERIES: usize = 6;
 /// mutex, so concurrent batches would only overlap their timeouts).
 /// Capabilities past the last batch are named in `guidance` instead.
 const MAX_SEARCH_BATCHES: usize = 3;
-/// Installed skill documents one Jev search returns, round-robin across
-/// the capabilities.
-const MAX_SEARCH_SKILLS: usize = 6;
-/// Bytes of `title: description` one skill document contributes to the
-/// Jev payload.
-const SKILL_DOC_BYTES: usize = 300;
-/// Registered trigger bindings one Jev search returns, round-robin across
-/// the capabilities.
-const MAX_SEARCH_TRIGGERS: usize = 6;
-/// Bytes of `type trigger runs function with config` one trigger contributes to the Jev
-/// payload.
-const TRIGGER_DOC_BYTES: usize = 300;
+/// Documents one side lane (installed skills, registered triggers) returns,
+/// round-robin across the capabilities.
+const SIDE_LANE_DOCS: usize = 6;
+/// Bytes of text one side-lane document contributes to the ranking payload.
+const SIDE_LANE_DOC_BYTES: usize = 300;
 /// Console tabs register ephemeral `iii::*` listeners and `console:*` asset
 /// triggers; neither is a binding an agent can reuse.
 /// ponytail: prefix heuristic; switch to an engine-side ephemeral flag if
@@ -497,12 +490,12 @@ pub struct SearchFunctionsResponse {
     /// NOT callable until the worker is installed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub installable: Vec<InstallableWorker>,
-    /// Installed skill documents matching the capabilities (Jev mode only).
-    /// Read one with `directory::skills::get { id }` before acting on it.
+    /// Installed skill documents matching the capabilities. Read one with
+    /// `directory::skills::get { id }` before acting on it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillCandidate>,
-    /// Registered trigger bindings matching the capabilities (Jev mode only):
-    /// what already fires, schedules, or hooks a function for them.
+    /// Registered trigger bindings matching the capabilities: what already
+    /// fires, schedules, or hooks a function for them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerCandidate>,
     /// The search mode that actually produced these results: `jev`, `hybrid`
@@ -1336,21 +1329,32 @@ pub async fn search_functions(
         }
         (selected, installable, effective_mode)
     };
-    // Skill documents are judged by the same remote model, so the section
-    // exists only in Jev mode; it shares the Jev deadline with the batches.
+    // Skills and triggers are ranked by the same mode as the functions:
+    // Jev judges the documents, lexical/hybrid rank them with BM25 (fused
+    // with the dense lane in hybrid). Both share the Jev deadline.
     let skill_search = async {
-        if cfg.function_search_mode == FunctionSearchMode::Jev {
-            jev_skills(deps, &cfg, &tools, &request.capabilities, jev_deadline).await
-        } else {
-            Vec::new()
-        }
+        let docs = installed_skill_docs(deps, &cfg, &tools).await;
+        side_lane(
+            deps,
+            &cfg,
+            &request.capabilities,
+            jev_deadline,
+            docs,
+            JevCorpus::Skills,
+        )
+        .await
     };
     let trigger_search = async {
-        if cfg.function_search_mode == FunctionSearchMode::Jev {
-            jev_triggers(deps, &cfg, &request.capabilities, jev_deadline).await
-        } else {
-            Vec::new()
-        }
+        let docs = registered_trigger_docs(deps).await;
+        side_lane(
+            deps,
+            &cfg,
+            &request.capabilities,
+            jev_deadline,
+            docs,
+            JevCorpus::Triggers,
+        )
+        .await
     };
     let ((mut selected, installable, search_mode), skills, triggers) =
         tokio::join!(function_search, skill_search, trigger_search);
@@ -1498,7 +1502,7 @@ async fn installed_skill_docs(
         .map(|entry| {
             let document = truncate_bytes(
                 &format!("{}: {}", entry.title, entry.description),
-                SKILL_DOC_BYTES,
+                SIDE_LANE_DOC_BYTES,
             );
             (
                 ToolSchema {
@@ -1526,64 +1530,58 @@ fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     text[..end].trim_end().to_string()
 }
 
-/// Jev-judged installed skills for the requested capabilities, at most
-/// `MAX_SEARCH_SKILLS` round-robin across capabilities. Any Jev failure
-/// omits the section: the function search never fails over skills.
-async fn jev_skills(
+/// One side lane: rank `docs` by the configured mode — Jev judges them,
+/// lexical/hybrid rank them locally with BM25 (fused with the dense lane in
+/// hybrid) — and return the rows of at most `SIDE_LANE_DOCS` ids, round-robin
+/// across capabilities. Any failure yields an empty section: the function
+/// search never fails over a side lane.
+async fn side_lane<C: Clone>(
     deps: &Deps,
     cfg: &SkillsConfig,
-    tools: &[ToolSchema],
     capabilities: &[String],
     deadline: tokio::time::Instant,
-) -> Vec<SkillCandidate> {
-    let (documents, candidates): (Vec<ToolSchema>, Vec<SkillCandidate>) =
-        installed_skill_docs(deps, cfg, tools)
-            .await
-            .into_iter()
-            .unzip();
-    let lane = JevLane {
-        corpus: JevCorpus::Skills,
-        budget: MAX_SEARCH_SKILLS,
-        name: "skill",
+    docs: Vec<(ToolSchema, C)>,
+    corpus: JevCorpus,
+) -> Vec<C> {
+    let (documents, candidates): (Vec<ToolSchema>, Vec<C>) = docs.into_iter().unzip();
+    let ranked = if cfg.function_search_mode == FunctionSearchMode::Jev {
+        jev_rank_documents(deps, cfg, capabilities, deadline, &documents, corpus).await
+    } else {
+        local_rank_documents(deps, cfg, capabilities, &documents).await
     };
-    jev_rank_documents(deps, cfg, capabilities, deadline, &documents, lane)
-        .await
+    ranked
         .into_iter()
-        .filter_map(|id| {
-            candidates
-                .iter()
-                .find(|candidate| candidate.id == id)
-                .cloned()
-        })
+        .filter_map(|id| documents.iter().position(|document| document.name == id))
+        .map(|position| candidates[position].clone())
         .collect()
 }
 
-/// Jev-judged registered trigger bindings for the requested capabilities,
-/// at most `MAX_SEARCH_TRIGGERS` round-robin across capabilities. A listing
-/// or Jev failure omits the section.
-async fn jev_triggers(
+/// Rank side-lane documents without the remote model: BM25 per capability
+/// (with the catalog's coverage pruning), fused with the dense lane for
+/// every capability MiniLM admits in Hybrid mode. Mirrors the registry
+/// section's ad-hoc document ranking. Returns at most `SIDE_LANE_DOCS` ids
+/// round-robin across capabilities.
+async fn local_rank_documents(
     deps: &Deps,
     cfg: &SkillsConfig,
     capabilities: &[String],
-    deadline: tokio::time::Instant,
-) -> Vec<TriggerCandidate> {
-    let (documents, candidates): (Vec<ToolSchema>, Vec<TriggerCandidate>) =
-        registered_trigger_docs(deps).await.into_iter().unzip();
-    let lane = JevLane {
-        corpus: JevCorpus::Triggers,
-        budget: MAX_SEARCH_TRIGGERS,
-        name: "trigger",
+    documents: &[ToolSchema],
+) -> Vec<String> {
+    let queries = search_queries(capabilities);
+    if queries.is_empty() || documents.is_empty() {
+        return Vec::new();
+    }
+    let corpus = canonical_tools(documents);
+    let index = Bm25Index::build(&corpus);
+    let dense = if cfg.function_search_mode != FunctionSearchMode::Lexical
+        && deps.semantic.is_production_minilm()
+    {
+        registry_dense_rankings(Some(&deps.semantic), &queries, documents, -1.0).await
+    } else {
+        None
     };
-    jev_rank_documents(deps, cfg, capabilities, deadline, &documents, lane)
-        .await
-        .into_iter()
-        .filter_map(|id| {
-            candidates
-                .iter()
-                .find(|candidate| candidate.id == id)
-                .cloned()
-        })
-        .collect()
+    let rankings = fuse_admitted(lexical_rankings(&index, &queries), dense);
+    round_robin_rankings(&rankings, SIDE_LANE_DOCS)
 }
 
 /// The registered trigger bindings a search may surface, as the Jev carrier
@@ -1608,6 +1606,12 @@ async fn registered_trigger_docs(deps: &Deps) -> Vec<(ToolSchema, TriggerCandida
             return Vec::new();
         }
     };
+    trigger_docs(&listed)
+}
+
+/// `registered_triggers[]` rows as side-lane documents plus response rows;
+/// malformed rows and ephemeral console bindings are skipped.
+fn trigger_docs(listed: &Value) -> Vec<(ToolSchema, TriggerCandidate)> {
     listed
         .get("registered_triggers")
         .and_then(Value::as_array)
@@ -1620,7 +1624,7 @@ async fn registered_trigger_docs(deps: &Deps) -> Vec<(ToolSchema, TriggerCandida
                     "{} trigger runs {} with config {}",
                     candidate.trigger_type, candidate.function_id, candidate.config
                 ),
-                TRIGGER_DOC_BYTES,
+                SIDE_LANE_DOC_BYTES,
             );
             (
                 ToolSchema {
@@ -1657,16 +1661,8 @@ fn trigger_candidate(row: &Value) -> Option<TriggerCandidate> {
     })
 }
 
-/// A Jev side lane: which corpus the questions judge, how many ids it
-/// returns, and its name in logs.
-struct JevLane {
-    corpus: JevCorpus,
-    budget: usize,
-    name: &'static str,
-}
-
 /// Rank `documents` against the capabilities with Jev and return at most
-/// `lane.budget` document ids round-robin across capabilities. Any Jev
+/// `SIDE_LANE_DOCS` document ids round-robin across capabilities. Any Jev
 /// failure yields an empty list: the function search never fails over a
 /// side lane.
 async fn jev_rank_documents(
@@ -1675,14 +1671,9 @@ async fn jev_rank_documents(
     capabilities: &[String],
     deadline: tokio::time::Instant,
     documents: &[ToolSchema],
-    lane: JevLane,
+    corpus: JevCorpus,
 ) -> Vec<String> {
     let queries = search_queries(capabilities);
-    tracing::debug!(
-        lane = lane.name,
-        documents = ?documents.iter().map(|document| document.name.as_str()).collect::<Vec<_>>(),
-        "Jev side-lane candidates"
-    );
     if queries.is_empty() || documents.is_empty() {
         return Vec::new();
     }
@@ -1698,7 +1689,7 @@ async fn jev_rank_documents(
             &JevOptions {
                 model: cfg.function_search_jev_model.clone(),
                 min_relevance: cfg.function_search_jev_side_lane_min_relevance,
-                corpus: lane.corpus,
+                corpus,
             },
             deadline,
         )
@@ -1706,18 +1697,18 @@ async fn jev_rank_documents(
     {
         Ok(outcome) => {
             tracing::debug!(
-                lane = lane.name,
+                ?corpus,
                 requests = outcome.stats.requests,
                 questions = outcome.stats.questions,
                 elapsed_ms = outcome.stats.elapsed_ms,
                 documents = documents.len(),
                 "Jev side-lane evaluation completed"
             );
-            round_robin_rankings(&outcome.rankings, lane.budget)
+            round_robin_rankings(&outcome.rankings, SIDE_LANE_DOCS)
         }
         Err(error) => {
-            tracing::warn!(%error, lane = lane.name, requests = error.stats.requests,
-                "Jev {} search failed; omitting the {}s section", lane.name, lane.name);
+            tracing::warn!(%error, ?corpus, requests = error.stats.requests,
+                "Jev side-lane search failed; omitting the section");
             Vec::new()
         }
     }
@@ -1760,6 +1751,8 @@ struct BatchOutcome {
 #[derive(Debug, Default, serde::Serialize)]
 pub struct BenchmarkOutcome {
     pub selected: Vec<String>,
+    /// The mode that actually ranked the installed candidates.
+    pub effective_mode: FunctionSearchMode,
     pub rankings: Vec<Vec<(String, f64)>>,
     pub hybrid_complete: bool,
     pub jev_complete: bool,
@@ -1839,15 +1832,15 @@ async fn installed_search(
     let lexical = lexical_rankings(&index, queries);
     let mut result = BenchmarkOutcome {
         rankings: production_fallback_rankings(&corpus, queries, &lexical),
+        effective_mode: FunctionSearchMode::Lexical,
         ..BenchmarkOutcome::default()
     };
-    let mut effective_mode = FunctionSearchMode::Lexical;
     if cfg.function_search_mode == FunctionSearchMode::Jev {
         let stats = match rank_with_jev(&deps.jev, cfg, &corpus, queries, deadline).await {
             Ok(outcome) => {
                 result.rankings = outcome.rankings;
                 result.jev_complete = true;
-                effective_mode = FunctionSearchMode::Jev;
+                result.effective_mode = FunctionSearchMode::Jev;
                 tracing::debug!(model = %outcome.model, requests = outcome.stats.requests,
                     questions = outcome.stats.questions, input_tokens = outcome.stats.input_tokens,
                     output_tokens = outcome.stats.output_tokens, elapsed_ms = outcome.stats.elapsed_ms,
@@ -1877,7 +1870,7 @@ async fn installed_search(
             {
                 result.rankings = outcome.rankings;
                 result.hybrid_complete = outcome.complete;
-                effective_mode = FunctionSearchMode::Hybrid;
+                result.effective_mode = FunctionSearchMode::Hybrid;
             }
         }
         tracing::debug!(complete = result.hybrid_complete, %fingerprint,
@@ -1897,7 +1890,7 @@ async fn installed_search(
         select_preordered_ids(result.rankings.clone())
     };
     result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-    tracing::debug!(mode = ?cfg.function_search_mode, ?effective_mode, elapsed_ms = result.elapsed_ms,
+    tracing::debug!(mode = ?cfg.function_search_mode, effective_mode = ?result.effective_mode, elapsed_ms = result.elapsed_ms,
         hybrid_complete = result.hybrid_complete, jev_complete = result.jev_complete,
         "installed function search completed");
     result
@@ -1913,14 +1906,6 @@ async fn search_batch(
 ) -> BatchOutcome {
     let queries = search_queries(capabilities);
     let installed = installed_search(deps, cfg, tools, fingerprint, &queries, jev_deadline).await;
-    // Mirror installed_search's own effective-mode ladder from its flags.
-    let effective_mode = if installed.jev_complete {
-        FunctionSearchMode::Jev
-    } else if installed.hybrid_complete {
-        FunctionSearchMode::Hybrid
-    } else {
-        FunctionSearchMode::Lexical
-    };
     let installable = if cfg.registry_search {
         registry_installable(
             cfg,
@@ -1940,7 +1925,7 @@ async fn search_batch(
     BatchOutcome {
         selected: installed.selected,
         installable,
-        effective_mode,
+        effective_mode: installed.effective_mode,
     }
 }
 
@@ -1956,6 +1941,7 @@ pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> Benchm
     let mut total = BenchmarkOutcome {
         hybrid_complete: cfg.function_search_mode != FunctionSearchMode::Lexical,
         jev_complete: cfg.function_search_mode == FunctionSearchMode::Jev,
+        effective_mode: FunctionSearchMode::Lexical,
         ..BenchmarkOutcome::default()
     };
     for batch in capabilities
@@ -1966,6 +1952,7 @@ pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> Benchm
         let outcome = installed_search(deps, &cfg, &tools, &fingerprint, &queries, deadline).await;
         total.hybrid_complete &= outcome.hybrid_complete;
         total.jev_complete &= outcome.jev_complete;
+        total.effective_mode = total.effective_mode.max(outcome.effective_mode);
         total.jev_requests += outcome.jev_requests;
         total.jev_questions += outcome.jev_questions;
         total.jev_elapsed_ms = total.jev_elapsed_ms.saturating_add(outcome.jev_elapsed_ms);
@@ -2306,6 +2293,75 @@ mod tests {
             );
         }
         assert!(trigger_candidate(&json!({ "id": "t" })).is_none());
+        let docs = trigger_docs(&json!({ "registered_triggers": [
+            cron,
+            { "id": "t", "trigger_type": "console:style", "function_id": "state::ui-content" },
+            { "id": "t" },
+        ] }));
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].0.name, "t-1");
+        assert_eq!(
+            docs[0].0.description,
+            "cron trigger runs harness::sweep-pending with config {\"expression\":\"0 0 0 * * *\"}"
+        );
+        assert!(trigger_docs(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn truncate_bytes_respects_char_boundaries() {
+        // "ação" is a(1) ç(2) ã(2) o(1): byte 4 falls inside "ã".
+        assert_eq!(truncate_bytes("ação", 4), "aç");
+        assert_eq!(truncate_bytes("ação", 5), "açã");
+        assert_eq!(truncate_bytes("ab ", 10), "ab");
+    }
+
+    /// The dense lane lets a paraphrase with no shared vocabulary reach the
+    /// side lanes; BM25 alone returns nothing for it. Same gate as the
+    /// real-model test in search_semantic.
+    #[cfg(minilm)]
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires III_DIRECTORY_MINILM_MODEL_PATH and the pinned ONNX runtime"]
+    async fn local_rank_documents_fuses_the_dense_lane_in_hybrid_mode() {
+        let Ok(path) = std::env::var("III_DIRECTORY_MINILM_MODEL_PATH") else {
+            return;
+        };
+        let mut deps = search_deps(Vec::new());
+        deps.semantic = SemanticSearch::new(Some(path.into()));
+        assert!(deps.semantic.is_production_minilm());
+        // The model loads on the first rebuild, not on construction.
+        deps.semantic.rebuild(Arc::new(Vec::new()));
+        let cfg = deps.config.load_full();
+        assert_eq!(cfg.function_search_mode, FunctionSearchMode::Hybrid);
+        let documents = vec![
+            ToolSchema {
+                name: "cron".into(),
+                description: "Schedule recurring function execution with cron expressions".into(),
+                parameters: json!({}),
+            },
+            ToolSchema {
+                name: "harness/frontend".into(),
+                description: "Build a browser UI with the frontend SDK".into(),
+                parameters: json!({}),
+            },
+        ];
+        let queries = ["execute a job on a nightly timetable".to_string()];
+        assert!(
+            lexical_rankings(&Bm25Index::build(&canonical_tools(&documents)), &queries)[0]
+                .is_empty(),
+            "the paraphrase shares no vocabulary with the documents"
+        );
+        let ranked = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            loop {
+                let ranked = local_rank_documents(&deps, &cfg, &queries, &documents).await;
+                if !ranked.is_empty() {
+                    break ranked;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("MiniLM model load timed out");
+        assert_eq!(ranked[0], "cron");
     }
     use crate::functions::search_index::SEARCH_FN;
     use crate::hook::ExposeKind;
@@ -2361,6 +2417,33 @@ mod tests {
             registered_workers: None,
             iii: None,
         }
+    }
+
+    #[tokio::test]
+    async fn local_rank_documents_ranks_relevant_docs_and_drops_the_tail() {
+        // Default SemanticSearch is not production MiniLM, so this exercises
+        // the pure BM25 (lexical) path used by the skills/triggers side lanes.
+        let deps = search_deps(Vec::new());
+        let documents = vec![
+            ToolSchema {
+                name: "cron".into(),
+                description: "Schedule recurring function execution with cron expressions".into(),
+                parameters: json!({}),
+            },
+            ToolSchema {
+                name: "harness/frontend".into(),
+                description: "Build a browser UI with the frontend SDK".into(),
+                parameters: json!({}),
+            },
+        ];
+        let ranked = local_rank_documents(
+            &deps,
+            &deps.config.load_full(),
+            &["schedule recurring cron execution".to_string()],
+            &documents,
+        )
+        .await;
+        assert_eq!(ranked, vec!["cron".to_string()]);
     }
 
     #[test]

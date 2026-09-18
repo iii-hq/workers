@@ -21,7 +21,7 @@ export interface DiscoverInstallableView {
 }
 
 /** An installed skill document the search judged relevant to the requested
- * capabilities (Jev mode only). Read one with `directory::skills::get { id }`
+ * capabilities. Read one with `directory::skills::get { id }`
  * before acting on it — it carries no callable function. */
 export interface DiscoverSkillView {
   id: string
@@ -30,7 +30,7 @@ export interface DiscoverSkillView {
 }
 
 /** A registered trigger binding the search judged relevant to the requested
- * capabilities (Jev mode only): what already fires, schedules, or hooks
+ * capabilities: what already fires, schedules, or hooks
  * `functionId`. Inspect the function with `engine::functions::info`. */
 export interface DiscoverTriggerView {
   id: string

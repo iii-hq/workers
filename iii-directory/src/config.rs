@@ -800,26 +800,15 @@ mod tests {
         assert_eq!(props["function_search_jev_timeout_ms"]["default"], 3000);
         assert_eq!(props["function_search_jev_timeout_ms"]["minimum"], 1.0);
         assert_eq!(props["function_search_jev_timeout_ms"]["maximum"], 30000.0);
-        assert_eq!(props["function_search_jev_min_relevance"]["type"], "number");
-        assert_eq!(props["function_search_jev_min_relevance"]["default"], 0.5);
-        assert_eq!(props["function_search_jev_min_relevance"]["minimum"], 0.0);
-        assert_eq!(props["function_search_jev_min_relevance"]["maximum"], 1.0);
-        assert_eq!(
-            props["function_search_jev_side_lane_min_relevance"]["type"],
-            "number"
-        );
-        assert_eq!(
-            props["function_search_jev_side_lane_min_relevance"]["default"],
-            0.3
-        );
-        assert_eq!(
-            props["function_search_jev_side_lane_min_relevance"]["minimum"],
-            0.0
-        );
-        assert_eq!(
-            props["function_search_jev_side_lane_min_relevance"]["maximum"],
-            1.0
-        );
+        for (field, default) in [
+            ("function_search_jev_min_relevance", 0.5),
+            ("function_search_jev_side_lane_min_relevance", 0.3),
+        ] {
+            assert_eq!(props[field]["type"], "number", "{field}");
+            assert_eq!(props[field]["default"], default, "{field}");
+            assert_eq!(props[field]["minimum"], 0.0, "{field}");
+            assert_eq!(props[field]["maximum"], 1.0, "{field}");
+        }
         assert_eq!(schema["example"], SkillsConfig::default().to_json());
         assert_eq!(props["function_search_jev_api_key"]["format"], "password");
         assert_eq!(

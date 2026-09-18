@@ -94,18 +94,11 @@ function SkillBlock({ skill }: { skill: DiscoverSkillView }) {
   )
 }
 
-/** The binding config as one compact line; empty for `{}`/null. */
-function configSummary(config: unknown): string {
-  if (config === null || config === undefined) return ''
-  if (typeof config === 'object' && Object.keys(config as object).length === 0) return ''
-  return JSON.stringify(config)
-}
-
 /** One registered trigger binding: its type, the function it runs (and the
  * owning worker), and the binding config. The function is inspectable with
  * `engine::functions::info`. */
 function TriggerBlock({ trigger }: { trigger: DiscoverTriggerView }) {
-  const config = configSummary(trigger.config)
+  const config = JSON.stringify(trigger.config)
   return (
     <details className="dir-ui-search-fn">
       <summary>
@@ -117,7 +110,7 @@ function TriggerBlock({ trigger }: { trigger: DiscoverTriggerView }) {
           {trigger.workerName ? ` · ${trigger.workerName}` : ''}
         </span>
       </summary>
-      {config.length > 0 ? <div className="dir-ui-search-desc">{config}</div> : null}
+      {config !== '{}' ? <div className="dir-ui-search-desc">{config}</div> : null}
       <TerminalCommandLine command={`engine::functions::info { "function_id": "${trigger.functionId}" }`} copy />
     </details>
   )

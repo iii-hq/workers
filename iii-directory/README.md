@@ -10,7 +10,7 @@ into five surfaces (all MCP-agnostic):
 | **Skills** (`directory::skills::*`) | Enriched listing via `directory::skills::list` (`{ id, title, type, function_id, disable_model_invocation, description, bytes, modified_at }` per row), a single-skill reader `directory::skills::get { id }` returning `{ id, title, type, function_id, disable_model_invocation, path, body, modified_at }` (the full body instead of the list teaser), and `directory::skills::index` which renders a short per-worker overview document (one `## <title>` + first paragraph + `read more` link per `type: index` skill). Authored by `create`, edited by `update`, removed by `delete`. `title` prefers the YAML frontmatter `title:` (then `name:`) over the body H1; `type` is lifted from frontmatter `type:` (e.g. `index`, `how-to`, `reference`) and serialised as `null` when absent. System-installed agent skills under the read-only `agents_skills_folder` are served too (see [On-disk layout](#on-disk-layout)). | Orientation: "when and why to use my worker's tools" |
 | **System prompts** (`directory::system-prompts::*`) | Identity prompts listed by `list`, read by `get`, authored by `create`, edited by `update`, and removed by `delete`. The list response keeps its `prompts` field name. Stored under any `system-prompts/` path segment; `create` writes `<skills_folder>/system-prompts/<name>.md`. | What the chat's system-prompt picker offers as an identity prompt (enrich or replace) |
 | **Agent Profiles** (`directory::agents::*`) | Reusable session identities whose file body is the system prompt, with display `name`, emoji `logo`, preloaded `skills` and `functions` (bodies and contracts the harness freezes into every session's prompt), and optional `model` + `reasoning_effort` in required frontmatter. `list` rows carry the display/configuration metadata and `get` adds `system_prompt` and `unknown_skills`. Stored as direct `<agents_folder>/<id>.md` files. See [Agent profile storage](../docs/architecture/agent-profile-storage.md). | A named identity selected with `harness::send { options: { agent } }` |
-| **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. In Jev mode the response also carries `skills` (installed how-to documents) and `triggers` (registered bindings that already fire, schedule, or hook a function, minus ephemeral console listeners); `search_mode` reports the mode that actually ranked. | "Which functions do I call for this task?" |
+| **Search** (`directory::search_functions`) | One to six external capabilities → compact function-id candidates (installed, plus registry workers under `installable`), with a conditional pre-generate hint pointing agents at it. The response also carries `skills` (installed how-to documents) and `triggers` (registered bindings that already fire, schedule, or hook a function, minus ephemeral console listeners), ranked in the same mode as the functions; `search_mode` reports the mode that actually ranked. | "Which functions do I call for this task?" |
 | **Registry** (`directory::registry::*`) | HTTP proxy over `api.workers.iii.dev` with `workers::{list,info}`. Rows share the core `name` / `description` / `version` fields with the engine's `engine::workers::list` and add publication metadata (`type`, `config`, `supported_targets`, `total_downloads`, `dependencies`, optional `image`). `workers::list` is cursor-paginated with a server-authored page size. | "What's published in the public registry?" |
 
 Engine introspection (functions / triggers / registered triggers /
@@ -581,17 +581,19 @@ batch fell back on a missing key, a remote failure, or a local model that is not
 loaded yet. The console's search card shows it as the card's badge. A multi-batch
 search that partly fell back reports the highest tier any batch reached.
 
-Jev mode also judges the installed skill documents (the rows
+Every mode also ranks the installed skill documents (the rows
 `directory::skills::list` serves, minus `disable_model_invocation` ones) against
 the same capabilities and lists the matches under `skills` as
 `{ id, title, description }`, at most six per call round-robin across the
 capabilities, with a guidance note to read them through
-`directory::skills::get { id }`. The evaluation sends each skill's id and a
-trimmed `title: description` (300 bytes) as `state.skills` with a how-to
-question, runs concurrently with the function batches under the same Jev
-deadline, and any failure only omits the section. "Installed" is read off the
-live function catalog: a worker with no registered functions contributes no
-skills. Lexical and Hybrid modes never search skills.
+`directory::skills::get { id }`. Each skill's id and a trimmed
+`title: description` (300 bytes) form the document. Jev judges them with a
+how-to question under the same deadline as the function batches; Lexical ranks
+them with BM25 and Hybrid fuses in the dense lane, the same ad-hoc document
+ranking the `installable` section uses. Any failure only omits the section.
+"Installed" is read off the live function catalog: a worker with no registered
+functions contributes no skills. The registered-trigger section (under
+`triggers`) is ranked the same way in every mode.
 
 A valid response with no functions at or above the relevance threshold stays
 empty. Missing credentials, timeouts, HTTP failures and invalid/incomplete service

@@ -898,6 +898,7 @@ async fn jev_lists_installed_skills_matching_the_capabilities() {
     )
     .await;
     assert_eq!(ids(&response), ["mail::send", "state::get"]);
+    assert_eq!(response.search_mode, FunctionSearchMode::Jev);
     let skills: Vec<(&str, &str, &str)> = response
         .skills
         .iter()
@@ -992,8 +993,10 @@ async fn a_failed_skill_evaluation_keeps_the_function_results() {
 }
 
 #[tokio::test]
-async fn hybrid_mode_never_evaluates_skills() {
+async fn lexical_mode_ranks_skills_without_calling_jev() {
     let server = MockServer::start().await;
+    // Lexical mode ranks the skills locally with BM25: the remote model is
+    // never called.
     Mock::given(method("POST"))
         .respond_with(|r: &Request| reply(r, 0.9))
         .expect(0)
@@ -1003,10 +1006,54 @@ async fn hybrid_mode_never_evaluates_skills() {
     let mut deps = deps_with_skill_root(&server, root.path());
     deps.config = SkillsConfig {
         function_search_mode: FunctionSearchMode::Lexical,
+        filter_unregistered: false,
         ..skill_roots(root.path())
     }
     .into_shared();
     let response = ask(&deps, &["send an email message"]).await;
     assert_eq!(ids(&response), ["mail::send"]);
-    assert!(response.skills.is_empty());
+    assert_eq!(response.search_mode, FunctionSearchMode::Lexical);
+    let skill_ids: Vec<&str> = response.skills.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(skill_ids, ["mail/compose"]);
+    assert!(response.guidance.contains("`skills` entries"));
+}
+
+#[tokio::test]
+async fn jev_ranks_registered_triggers_through_the_triggers_corpus() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|r: &Request| reply(r, 0.9))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let deps = deps(&server);
+    let docs = trigger_docs(&json!({ "registered_triggers": [
+        { "id": "t-1", "trigger_type": "cron", "function_id": "harness::sweep-pending",
+          "worker_name": "harness", "config": { "expression": "0 0 0 * * *" } },
+        { "id": "t-2", "trigger_type": "console:style", "function_id": "state::ui-content" },
+    ] }));
+    let ranked = side_lane(
+        &deps,
+        &deps.config.load_full(),
+        &["run a job every night".to_string()],
+        tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+        docs,
+        JevCorpus::Triggers,
+    )
+    .await;
+    let ids: Vec<&str> = ranked.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, ["t-1"]);
+    assert_eq!(ranked[0].function_id, "harness::sweep-pending");
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body["state"]["triggers"]["f0"]["description"]
+        .as_str()
+        .unwrap()
+        .starts_with("cron trigger runs harness::sweep-pending"));
+    assert!(body["state"]["triggers"]["f0"].get("trigger_id").is_none());
+    assert!(body["state"].get("functions").is_none());
+    assert!(body["questions"]["c0_f0"]["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("state.triggers.f0"));
 }
