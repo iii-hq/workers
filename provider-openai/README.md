@@ -59,8 +59,16 @@ costs nothing, and needs no network).
   a caller's `provider_options.openai.prompt_cache_key` wins, else the
   router's `cache_intent.surface_digest` (the frozen agent-profile prefix, so
   independent sessions on one profile share a shard), else a key derived from
-  the session id. `prompt_tokens_details.cached_tokens` lands on
-  `usage.cache_read`.
+  the session id. On GPT-5.6 and later (official endpoint only) the router's
+  `system_sections` go out as one developer message each, with
+  `prompt_cache_breakpoint: {"mode":"explicit"}` on the block flagged
+  `cache_boundary`: those models only look up the cache at explicit
+  breakpoints, the latest eligible message, and the end of the initial
+  developer block, so a single system message ending with per-session text
+  never matched across sessions (every new session paid a 1.25× cache write
+  and read nothing). Implicit caching stays on for the conversation history;
+  the key is accounting-only there. `prompt_tokens_details.cached_tokens`
+  lands on `usage.cache_read`.
 - **Curated snapshot:** `src/curated.rs` carries windows / output ceilings /
   capability flags / pricing (USD per MTok). Update it against models.dev
   when OpenAI ships new models — discovery only supplies bare ids.

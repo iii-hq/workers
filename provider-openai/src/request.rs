@@ -1,11 +1,11 @@
 //! Request assembly for the Responses API and the legacy Chat Completions
 //! compatibility path.
 use crate::config::{ApiMode, OpenaiConfig};
-use crate::wire::messages::{to_responses_input, to_wire_messages};
+use crate::wire::messages::{to_responses_input, to_responses_input_sections, to_wire_messages};
 use crate::wire::tools::{functions_to_responses_wire, functions_to_wire};
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
-use llm_router::types::router::ResponseFormat;
+use llm_router::types::router::{PromptSection, ResponseFormat};
 use serde_json::{json, Value};
 
 pub struct BodyArgs {
@@ -19,6 +19,38 @@ pub struct BodyArgs {
     pub reasoning_effort: Option<&'static str>,
     pub response_format: Option<ResponseFormat>,
     pub prompt_cache_key: Option<String>,
+    /// Ordered sections behind `system_prompt`; used on the Responses path
+    /// only when `explicit_cache_breakpoints` is set (GPT-5.6 and later).
+    pub system_sections: Option<Vec<PromptSection>>,
+    /// The model takes `prompt_cache_breakpoint` marks (see
+    /// [`supports_explicit_cache_breakpoints`]).
+    pub explicit_cache_breakpoints: bool,
+}
+
+/// Explicit cache breakpoints exist on GPT-5.6 and later, on the official
+/// endpoint only: a gateway that speaks Responses may reject the field, and
+/// earlier models document it as unsupported. `gpt-<major>[.<minor>]-…`
+/// compares as a (major, minor) pair, so `gpt-5.10` and `gpt-6-astra` count.
+pub fn supports_explicit_cache_breakpoints(model: &str, api_url: &str) -> bool {
+    let official = reqwest::Url::parse(api_url)
+        .ok()
+        .and_then(|url| url.host_str().map(|h| h == "api.openai.com"))
+        .unwrap_or(false);
+    let Some(rest) = model.strip_prefix("gpt-") else {
+        return false;
+    };
+    let version: Vec<u32> = rest
+        .split('-')
+        .next()
+        .unwrap_or_default()
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(u32::MAX))
+        .collect();
+    let (major, minor) = (
+        version.first().copied().unwrap_or(u32::MAX),
+        version.get(1).copied().unwrap_or(0),
+    );
+    official && major != u32::MAX && minor != u32::MAX && (major, minor) >= (5, 6)
 }
 
 /// `ResponseFormat { type: "json", schema? }` → native OpenAI knob.
@@ -81,9 +113,15 @@ fn build_responses_text(rf: &ResponseFormat) -> Value {
 }
 
 fn build_responses_body(args: &BodyArgs) -> Value {
+    let input = match args.system_sections.as_deref() {
+        Some(sections) if args.explicit_cache_breakpoints && !sections.is_empty() => {
+            to_responses_input_sections(&args.messages, sections)
+        }
+        _ => to_responses_input(&args.messages, &args.system_prompt),
+    };
     let mut body = json!({
         "model": args.model,
-        "input": to_responses_input(&args.messages, &args.system_prompt),
+        "input": input,
         "stream": true,
         "store": false,
     });
@@ -141,7 +179,83 @@ mod tests {
             reasoning_effort: None,
             response_format: None,
             prompt_cache_key: None,
+            system_sections: None,
+            explicit_cache_breakpoints: false,
         }
+    }
+
+    fn sections() -> Vec<PromptSection> {
+        vec![
+            PromptSection {
+                text: "stable profile".into(),
+                cache_boundary: true,
+            },
+            PromptSection {
+                text: "Your session id is s_1.".into(),
+                cache_boundary: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn sectioned_responses_body_marks_the_stable_developer_block() {
+        let mut a = args();
+        a.system_sections = Some(sections());
+        a.explicit_cache_breakpoints = true;
+        let body = build_body(&a, ApiMode::Responses);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[0]["role"], "developer");
+        assert_eq!(input[0]["content"][0]["text"], "stable profile");
+        assert_eq!(
+            input[0]["content"][0]["prompt_cache_breakpoint"]["mode"],
+            "explicit"
+        );
+        assert_eq!(input[1]["role"], "developer");
+        assert!(input[1]["content"][0]
+            .get("prompt_cache_breakpoint")
+            .is_none());
+        assert_eq!(input[2]["role"], "user");
+        // implicit caching stays on: no mode override on the request
+        assert!(body.get("prompt_cache_options").is_none());
+        // Chat Completions and pre-5.6 models keep the flat system message
+        assert_eq!(
+            build_body(&a, ApiMode::ChatCompletions)["messages"][0]["role"],
+            "system"
+        );
+        a.explicit_cache_breakpoints = false;
+        let flat = build_body(&a, ApiMode::Responses);
+        assert_eq!(flat["input"][0]["role"], "system");
+        assert_eq!(flat["input"][0]["content"][0]["text"], "be brief");
+        assert!(flat["input"][0]["content"][0]
+            .get("prompt_cache_breakpoint")
+            .is_none());
+    }
+
+    #[test]
+    fn explicit_breakpoints_only_for_gpt_5_6_and_later_on_the_official_endpoint() {
+        let official = crate::config::DEFAULT_API_URL;
+        for model in [
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.10-x",
+            "gpt-6-astra",
+            "gpt-7",
+        ] {
+            assert!(
+                supports_explicit_cache_breakpoints(model, official),
+                "{model}"
+            );
+        }
+        for model in ["gpt-5.5", "gpt-5-mini", "gpt-5.2", "gpt-4.1", "o3", "gpt-x"] {
+            assert!(
+                !supports_explicit_cache_breakpoints(model, official),
+                "{model}"
+            );
+        }
+        assert!(!supports_explicit_cache_breakpoints(
+            "gpt-5.6",
+            "https://gateway.example.com/v1/responses"
+        ));
     }
 
     #[test]
