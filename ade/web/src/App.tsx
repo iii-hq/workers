@@ -12,6 +12,7 @@ import {
   useState,
 } from 'react'
 import { ChatPanel } from '@/components/chat/ChatPanel'
+import { EmailPrompt } from '@/components/EmailPrompt'
 import { ExtOverlays } from '@/components/ExtOverlays'
 import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -562,6 +563,7 @@ export function App({
           />
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        <EmailPrompt />
         <PaletteHost
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
