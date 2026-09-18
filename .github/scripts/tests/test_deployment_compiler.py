@@ -5,6 +5,7 @@ import pytest
 
 import build_skills_payload
 import deployment_compiler
+import deployment_targets
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -129,3 +130,19 @@ def test_descriptor_schema_validates_the_skills_projection():
     broken["registry_projection"]["skills"] = {"../escape.md": "x"}
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(broken)
+
+
+def test_binary_catalog_restores_intel_macos_except_the_microvm_sandbox():
+    catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
+    checked = set()
+    for worker, value in catalog.items():
+        if value.get("publish") is not True or value["artifact"]["kind"] != "rust-binary":
+            continue
+        descriptor = deployment_compiler.compile_worker(ROOT, worker, value, "a" * 40, "b" * 64)
+        targets = descriptor["artifact"]["targets"]
+        assert "aarch64-apple-darwin" in targets, worker
+        assert ("x86_64-apple-darwin" in targets) == (worker != "sandbox-code-runner"), worker
+        assert set(deployment_targets.normalize_targets(targets)) == set(targets), worker
+        assert {unit["target"] for unit in descriptor["build_units"]} == set(targets), worker
+        checked.add(worker)
+    assert {"state", "http", "queue", "pubsub", "cron", "ide", "code-runner", "sandbox-code-runner"} <= checked

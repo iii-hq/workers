@@ -11,7 +11,12 @@ description: Run Node.js and Python in iii-sandbox microVMs — run code, regist
 dependencies:
   configuration: "latest"
 
-# sandbox-code-runner has no V8 (or any other platform-restricted)
-# dependency — everything it links (iii-sdk, tokio, serde, schemars, clap,
-# uuid, base64…) builds cleanly on every default triple. No `targets:`
-# restriction needed; the release matrix fans out to all default triples.
+# The client can compile on more platforms than the microVM sandbox backend
+# supports. Keep Intel macOS out of releases even though it is a default
+# target for other binary workers. This mirrors the private release catalog.
+targets:
+  - aarch64-apple-darwin
+  - x86_64-unknown-linux-gnu
+  - x86_64-unknown-linux-musl
+  - aarch64-unknown-linux-gnu
+  - armv7-unknown-linux-gnueabihf

@@ -56,8 +56,23 @@ all match. Versions, channels and retries are decided there, never here.
 
 ## Capacity
 
-If either physical macOS runner pool cannot schedule three independent jobs,
+Intel macOS (`x86_64-apple-darwin`) builds use the standard GitHub-hosted
+`macos-15-intel` runner. Do not restore or depend on the retired
+`workers-release-macos-12core` pool. Apple Silicon (`aarch64-apple-darwin`)
+continues to use `workers-release-macos-arm-5core`.
+
+If the dedicated Apple Silicon pool cannot schedule three independent jobs,
 stop and fix external capacity first. The diagnostic
 [`macos-runner-capacity.yml`](../../.github/workflows/macos-runner-capacity.yml)
-tests both Intel and Apple Silicon gates; this repository does not provision
-EC2 Mac hosts.
+tests that pool; it does not gate the standard Intel runner. This repository
+does not provision EC2 Mac hosts.
+
+The binary target policy lives in `.github/scripts/deployment_targets.py`, and
+each worker's actual matrix lives in `.deploy/workers.yaml`. Keep any explicit
+public `targets` list in `iii.worker.yaml` identical to the catalog. Intel macOS
+is included for binary workers except `sandbox-code-runner`, whose microVM
+backend is unsupported there. Bundle and OCI workers are unaffected.
+
+After merging a matrix change, use the descriptor index from the new source SHA
+and Release Control to build and publish new versions of the affected workers.
+Existing Registry versions and immutable assets keep their original target set.

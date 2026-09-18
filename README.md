@@ -151,20 +151,25 @@ deployment. GitHub Actions only executes its authenticated steps.
 See [`docs/sops/release.md`](docs/sops/release.md) for the sequence and recovery
 rules.
 
-Targets per build (Windows targets are skipped on POSIX-only workers such
-as `ide`):
+Default targets per build (workers with platform restrictions declare an
+explicit subset in `.deploy/workers.yaml`; for example, `ide` excludes Windows
+and `sandbox-code-runner` excludes Intel macOS):
 
 ```text
 aarch64-apple-darwin
 x86_64-apple-darwin
 x86_64-pc-windows-msvc
-i686-pc-windows-msvc
 aarch64-pc-windows-msvc
 x86_64-unknown-linux-gnu
 x86_64-unknown-linux-musl
 aarch64-unknown-linux-gnu
 armv7-unknown-linux-gnueabihf
 ```
+
+Intel macOS builds run natively on GitHub's `macos-15-intel` runner; Apple
+Silicon builds keep the dedicated `workers-release-macos-arm-5core` pool.
+Changes to this matrix take effect in newly built and published worker versions;
+existing Registry versions and immutable release assets are not retrofitted.
 
 ### Local binary matrix
 

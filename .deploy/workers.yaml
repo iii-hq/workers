@@ -11,6 +11,7 @@ workers:
       binary: a2ui
       targets: &id001
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -50,6 +51,7 @@ workers:
       binary: iii-acp
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -202,6 +204,7 @@ workers:
       binary: code-runner
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -287,6 +290,7 @@ workers:
       binary: compose-ui
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -408,6 +412,7 @@ workers:
       binary: context-manager
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -921,6 +926,7 @@ workers:
       binary: lsp
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -1729,6 +1735,7 @@ workers:
         name: rust
         version: 1.97.1
       binary: sandbox-code-runner
+      # Keep Intel macOS excluded: the microVM sandbox backend is unsupported.
       targets:
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
@@ -1813,6 +1820,7 @@ workers:
       binary: ide
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
@@ -2153,6 +2161,7 @@ workers:
       binary: workflow
       targets:
       - aarch64-apple-darwin
+      - x86_64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu

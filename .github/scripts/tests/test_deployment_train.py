@@ -468,3 +468,18 @@ def _init_release_repo(tmp_path: Path, tags: list[str]) -> str:
     ).strip()
 
 
+
+
+def test_matrix_schedules_intel_and_arm_macos_on_native_runners(tmp_path: Path, capsys) -> None:
+    targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+    selected = rust_descriptor("state", "a" * 40, targets)
+    path = tmp_path / "deployment-descriptor.json"
+    path.write_text(json.dumps(selected), encoding="utf-8")
+
+    assert matrix(argparse.Namespace(descriptor=path)) == 0
+    rows = json.loads(capsys.readouterr().out)["include"]
+    assert {row["target"]: row["runner"] for row in rows} == {
+        "aarch64-apple-darwin": "workers-release-macos-arm-5core",
+        "x86_64-apple-darwin": "macos-15-intel",
+    }
+    assert {row["unit"] for row in rows} == {f"state-{target}" for target in targets}

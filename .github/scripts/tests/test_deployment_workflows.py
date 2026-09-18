@@ -152,9 +152,8 @@ def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
 
 
 def test_macos_capacity_gate_proves_three_slots_in_the_release_pool():
-    """Only Apple Silicon is left to prove: the Intel pool was retired with
-    `x86_64-apple-darwin`, so a slot count for it would assert against a pool
-    that no longer exists."""
+    """Only Apple Silicon uses a dedicated pool. Intel builds use the standard
+    GitHub-hosted macos-15-intel runner, not the retired paid Intel pool."""
     workflow = yaml.safe_load(body("macos-runner-capacity.yml"))
     jobs = workflow["jobs"]
     pools = {job.get("runs-on") for job in jobs.values()}
