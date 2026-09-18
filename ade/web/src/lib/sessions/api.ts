@@ -46,7 +46,11 @@ export async function listSessions(): Promise<SessionMeta[]> {
   const resp = await client.trigger<{
     sessions?: SessionMeta[]
     next_cursor?: string | null
-  }>('session::list', { limit: LIST_PAGE_LIMIT, order: 'updated_desc' })
+  }>(
+    'session::list',
+    { limit: LIST_PAGE_LIMIT, order: 'updated_desc' },
+    { timeoutMs: 10_000 },
+  )
   return resp?.sessions ?? []
 }
 
@@ -57,6 +61,7 @@ export async function getSession(
   const resp = await client.trigger<{ meta: SessionMeta } | null>(
     'session::get',
     { session_id: sessionId },
+    { timeoutMs: 10_000 },
   )
   return resp?.meta ?? null
 }

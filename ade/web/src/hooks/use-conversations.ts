@@ -1084,6 +1084,10 @@ export interface ConversationsApi {
   active: Conversation | null
   /** Current engine connection, used to avoid presenting cached work as live. */
   connectionState: IIIConnectionState
+  conversationsLoading: boolean
+  conversationsError: string | null
+  conversationLoadErrors: Readonly<Record<string, string>>
+  retryConversations: () => void
   /** Exact session ids confirmed absent/deleted by session-manager. */
   missingConversationIds: ReadonlySet<string>
   createNew: (draft?: { text: string; title?: string }) => string
@@ -1461,6 +1465,28 @@ export function useConversations(
   const [connectionState, setConnectionState] = useState<IIIConnectionState>(
     serverEnabled ? 'connecting' : 'connected',
   )
+  const [conversationsLoading, setConversationsLoading] = useState(
+    Boolean(serverEnabled),
+  )
+  const [conversationsError, setConversationsError] = useState<string | null>(
+    null,
+  )
+  const [conversationLoadErrors, setConversationLoadErrors] = useState<
+    Record<string, string>
+  >({})
+  const [refreshRevision, setRefreshRevision] = useState(0)
+  const retryConversations = useCallback(
+    () => setRefreshRevision((revision) => revision + 1),
+    [],
+  )
+  const clearConversationLoadError = useCallback((id: string) => {
+    setConversationLoadErrors((current) => {
+      if (!(id in current)) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+  }, [])
   const [hydrationEpoch, setHydrationEpoch] = useState(0)
   const hydrationEpochRef = useRef(0)
   // The revision wakes effects after a same-commit unwatch -> watch, while
@@ -1580,6 +1606,13 @@ export function useConversations(
             ) {
               return
             }
+            setConversationLoadErrors((current) => {
+              if (current[sessionId] !== 'Unable to load this conversation.')
+                return current
+              const next = { ...current }
+              delete next[sessionId]
+              return next
+            })
             if (meta) {
               missingSessionLookupGenerationRef.current.delete(sessionId)
               clearConversationMissing(sessionId)
@@ -1636,6 +1669,10 @@ export function useConversations(
               !options.requireWatched ||
               (watchCountsRef.current.get(sessionId) ?? 0) > 0
             if (!stillCurrent || !stillWatched) return
+            setConversationLoadErrors((current) => ({
+              ...current,
+              [sessionId]: 'Unable to load this conversation.',
+            }))
             // No session-manager registered: a timer will not bring it back,
             // the `worker` lifecycle trigger re-enables the store when it
             // arrives. Retrying here only writes an engine error line every
@@ -1668,17 +1705,29 @@ export function useConversations(
   /* ── Boot + reconnect: refresh durable session metadata ───────────────── */
   useEffect(() => {
     if (!serverEnabled) {
+      setConversationsLoading(false)
+      setConversationsError(null)
       setConnectionState('connected')
       return
     }
+    // A manual retry reuses the same connection and refreshes durable data.
+    void refreshRevision
+    setConversationsLoading(true)
+    setConversationsError(null)
     let cancelled = false
     let off: (() => void) | undefined
-    void getIiiClient().then((client) => {
+    const subscription = getIiiClient().then((client) => {
       if (cancelled) return
       off = client.addConnectionStateListener((state) => {
         if (cancelled) return
         setConnectionState(state)
-        if (state !== 'connected') return
+        if (state !== 'connected') {
+          // Invalidate reads from the old socket, even before reconnect.
+          directoryRefreshGenerationRef.current += 1
+          return
+        }
+        setConversationsLoading(true)
+        setConversationsError(null)
         // Read the directory before issuing exact lookups. This gives the two
         // RPCs an unambiguous causal order: a later exact null may remove a
         // listed row, while a row created between the calls is seen by the
@@ -1746,6 +1795,8 @@ export function useConversations(
             ) {
               return
             }
+            setConversationsLoading(false)
+            setConversationsError(null)
             const safeMetas = metas.filter((meta) => {
               const currentGeneration =
                 sessionMetaLookupGenerationRef.current.get(meta.session_id) ?? 0
@@ -1774,6 +1825,13 @@ export function useConversations(
               mergeSessionListSnapshot(prev, safeMetas),
             )
           } catch (err) {
+            if (
+              cancelled ||
+              directoryRefreshGenerationRef.current !== refreshGeneration
+            )
+              return
+            setConversationsLoading(false)
+            setConversationsError('Unable to load conversations.')
             if (import.meta.env.DEV) {
               console.warn('[conversations] session::list failed', err)
             }
@@ -1795,18 +1853,24 @@ export function useConversations(
         })()
       })
     })
+    void subscription.catch(() => {
+      if (cancelled) return
+      setConnectionState('failed')
+      setConversationsLoading(false)
+      setConversationsError('Unable to load conversations.')
+    })
     return () => {
       cancelled = true
       off?.()
     }
-  }, [serverEnabled, lookupSessionMeta])
+  }, [serverEnabled, lookupSessionMeta, refreshRevision])
 
   /* ── Sidebar-level live events (all sessions) ─────────────────────────── */
   useEffect(() => {
     if (!serverEnabled) return
     let cancelled = false
     let off: (() => void) | null = null
-    void getIiiClient().then((client) => {
+    const subscription = getIiiClient().then((client) => {
       if (cancelled) return
       off = subscribeSessionDirectory(client, {
         onCreated: (event) => {
@@ -1951,6 +2015,9 @@ export function useConversations(
         },
       })
     })
+    void subscription.catch(() => {
+      // The connection notice and directory read own bootstrap feedback.
+    })
     return () => {
       cancelled = true
       off?.()
@@ -2019,7 +2086,7 @@ export function useConversations(
       return revisions
     }
 
-    void getIiiClient().then((client) => {
+    const subscription = getIiiClient().then((client) => {
       if (cancelled) return
       for (const sessionId of wanted) {
         if (subscriptions.has(sessionId)) continue
@@ -2091,6 +2158,9 @@ export function useConversations(
         }
       }
     })
+    void subscription.catch(() => {
+      // The connection notice and directory read own bootstrap feedback.
+    })
     return () => {
       cancelled = true
     }
@@ -2151,6 +2221,7 @@ export function useConversations(
           ) {
             return
           }
+          clearConversationLoadError(sessionId)
           patchConversation(sessionId, (conversation) =>
             mergeHydratedConversation(conversation, items, upserts, page),
           )
@@ -2167,6 +2238,11 @@ export function useConversations(
           ) {
             return
           }
+          setConversationLoadErrors((current) => ({
+            ...current,
+            [sessionId]:
+              'Unable to load messages. Showing any messages already available.',
+          }))
           patchConversation(sessionId, completeFailedHydration)
           // Same as the meta lookup: a missing session-manager is not a
           // transient read failure. Re-hydrating every 2 s against a
@@ -2210,6 +2286,7 @@ export function useConversations(
     hydrationEpoch,
     watchLifecycleRevision,
     patchConversation,
+    clearConversationLoadError,
   ])
 
   useEffect(
@@ -3046,6 +3123,10 @@ export function useConversations(
     activeId,
     active,
     connectionState,
+    conversationsLoading,
+    conversationsError,
+    conversationLoadErrors,
+    retryConversations,
     missingConversationIds,
     createNew,
     select,

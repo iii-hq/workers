@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { ConnectionNotice } from '@/components/ConnectionNotice'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { ExtOverlays } from '@/components/ExtOverlays'
 import { PaletteHost, type PaletteWorkspace } from '@/components/PaletteHost'
@@ -520,6 +521,7 @@ export function App({
       }}
     >
       <Sheet>
+        <ConnectionNotice />
         <Header
           workspace={workspace}
           onOpenScreen={openWorkspaceScreen}

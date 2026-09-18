@@ -304,7 +304,10 @@ async function resolveNamespace(): Promise<string | undefined> {
   const url = new URL('./runtime', window.location.href)
   let response: Response
   try {
-    response = await fetch(url, { cache: 'no-store' })
+    response = await fetch(url, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    })
   } catch (cause) {
     throw new Error(
       'Runtime namespace request failed; refusing to connect to default',
