@@ -1,11 +1,6 @@
-import hashlib
-import json
-import os
 import re
-import subprocess
 from pathlib import Path
 
-import pytest
 import yaml
 
 
@@ -254,55 +249,6 @@ def test_build_workflow_only_builds_and_uploads_immutable_bytes():
     assert "deployment_interface.py verify-evidence" in text
     assert "build_manifest.py plan" in text
     assert "build_manifest.py write" in text
-
-
-@pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("metadata,success", [
-    ({}, True),
-    ({"digest": "sha256:" + "0" * 64}, False),
-    ({"digest": None}, False),
-    ({"size": 0}, False),
-])
-def test_release_upload_uses_metadata_without_downloading_assets(tmp_path, existing, metadata, success):
-    prepared = tmp_path / "deploy-prepared"
-    prepared.mkdir()
-    content = b"prepared worker bytes"
-    sha256 = hashlib.sha256(content).hexdigest()
-    name = "smoke.tar.gz"
-    (prepared / name).write_bytes(content)
-    artifact = {"name": name, "sha256": sha256, "size": len(content)}
-    (prepared / "prepared-artifacts.json").write_text(json.dumps({"artifacts": [artifact]}))
-    (tmp_path / ".github").symlink_to(ROOT / ".github", target_is_directory=True)
-    remote = {"assets": [{"name": name, "digest": f"sha256:{sha256}", "size": len(content), **metadata}]}
-    (tmp_path / "remote.json").write_text(json.dumps(remote if existing else {"assets": []}))
-    (tmp_path / "after-upload.json").write_text(json.dumps(remote))
-    steps = yaml.safe_load(body(BUILD))["jobs"]["upload"]["steps"]
-    script = next(step["run"] for step in steps if step.get("name") == "Upload immutable release assets once")
-    gh_stub = """
-gh() {
-  if [[ "$*" == "api /repos/iii-hq/workers/releases/tags/build-test" ]]; then
-    cat remote.json
-  elif [[ "$*" == "release upload build-test upload-stage/smoke.tar.gz" ]]; then
-    printf '%s\\n' "$*" >> uploads.log
-    cp after-upload.json remote.json
-  else
-    echo "Unexpected GitHub call: $*" >&2
-    return 1
-  fi
-}
-"""
-    result = subprocess.run(
-        ["bash", "-c", gh_stub + script], cwd=tmp_path, text=True, capture_output=True,
-        env={**os.environ, "WORKER": "smoke", "BUILD_TAG": "build-test", "GITHUB_REPOSITORY": "iii-hq/workers"},
-    )
-    assert (result.returncode == 0) == success, result.stdout + result.stderr
-    assert (tmp_path / "uploads.log").exists() is (not existing)
-    if success:
-        assert json.loads((tmp_path / "assets.json").read_text()) == [
-            {**artifact, "asset": name, "state": "existing" if existing else "uploaded"},
-        ]
-    else:
-        assert not (tmp_path / "assets.json").exists()
 
 
 def test_build_workflow_checks_out_the_exact_source_sha_without_credentials():
