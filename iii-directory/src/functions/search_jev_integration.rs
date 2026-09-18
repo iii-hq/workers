@@ -1057,3 +1057,30 @@ async fn jev_ranks_registered_triggers_through_the_triggers_corpus() {
         .unwrap()
         .contains("state.triggers.f0"));
 }
+
+#[tokio::test]
+async fn a_jev_ranked_side_lane_keeps_search_mode_at_jev_when_functions_fell_back() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|r: &Request| {
+            if is_skill_block(r) {
+                reply(r, 0.9)
+            } else {
+                ResponseTemplate::new(500)
+            }
+        })
+        .mount(&server)
+        .await;
+    let root = skills_root(&[("skills/mail/compose.md", COMPOSE_SKILL)]);
+    let response = ask(
+        &deps_with_skill_root(&server, root.path()),
+        &["send an email message"],
+    )
+    .await;
+    // Functions fell back to BM25 (no local model in tests); the skill was
+    // still Jev-ranked, and the response says so.
+    assert_eq!(ids(&response), ["mail::send"]);
+    let skill_ids: Vec<&str> = response.skills.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(skill_ids, ["mail/compose"]);
+    assert_eq!(response.search_mode, FunctionSearchMode::Jev);
+}

@@ -32,8 +32,8 @@ pub enum JevCorpus {
     /// as `description`.
     Skills,
     /// Registered trigger bindings under `state.triggers`; the carrier holds
-    /// the trigger id as `name` and a `type trigger runs function with config` line as
-    /// `description`.
+    /// the trigger id as `name` and a `type trigger runs function configured by
+    /// <config keys>` line as `description` (config values never leave the worker).
     Triggers,
 }
 

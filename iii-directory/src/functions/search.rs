@@ -488,15 +488,17 @@ pub struct SearchFunctionsResponse {
     pub workers: Vec<SearchWorker>,
     /// Matching workers from the private registry. Their functions are
     /// NOT callable until the worker is installed.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    // `default` keeps the schema honest: these sections are omitted when
+    // empty, so they must not be `required`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub installable: Vec<InstallableWorker>,
     /// Installed skill documents matching the capabilities. Read one with
     /// `directory::skills::get { id }` before acting on it.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<SkillCandidate>,
     /// Registered trigger bindings matching the capabilities: what already
     /// fires, schedules, or hooks a function for them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerCandidate>,
     /// The search mode that actually produced these results: `jev`, `hybrid`
     /// or `lexical`. It can be lower than the configured mode when a batch
@@ -1358,6 +1360,15 @@ pub async fn search_functions(
     };
     let ((mut selected, installable, search_mode), skills, triggers) =
         tokio::join!(function_search, skill_search, trigger_search);
+    // Side lanes have no local fallback in Jev mode, so a non-empty section
+    // was Jev-ranked even when the function lane fell back.
+    let search_mode = if cfg.function_search_mode == FunctionSearchMode::Jev
+        && !(skills.is_empty() && triggers.is_empty())
+    {
+        FunctionSearchMode::Jev
+    } else {
+        search_mode
+    };
     let batches = request.capabilities.len().div_ceil(MAX_SEARCH_QUERIES);
     let session_id = baggage_session_id();
     // Repeat queries in one session skip candidates the session already
@@ -1473,24 +1484,29 @@ async fn installed_skill_docs(
     let local_root = cfg.local_skills_folder();
     let agents_roots = cfg.resolved_agents_skills_roots();
     let (merged, _skipped) = crate::fs_source::scan_skills_merged(&global_root, &local_root);
-    let visible = if cfg.filter_unregistered {
-        let mut registered: HashSet<String> = match (&deps.registered_workers, &deps.iii) {
-            (Some(cache), Some(iii)) => cache.get_or_fetch(iii).await.unwrap_or_default(),
-            _ => HashSet::new(),
-        };
-        registered.extend(
-            tools
+    // Same policy as `resolve_visible_skills`: a wired daemon that cannot be
+    // reached (no cached set either) yields the unfiltered set; without a
+    // daemon (tests, benchmarks) the catalog namespaces are the floor.
+    let registered: Option<HashSet<String>> = match (&deps.registered_workers, &deps.iii) {
+        _ if !cfg.filter_unregistered => None,
+        (Some(cache), Some(iii)) => cache.get_or_fetch(iii).await,
+        _ => Some(HashSet::new()),
+    };
+    let visible = match registered {
+        Some(mut registered) => {
+            registered.extend(
+                tools
+                    .iter()
+                    .filter_map(|tool| function_namespace(&tool.name))
+                    .map(str::to_string),
+            );
+            let agents_ns: Vec<String> = agents_roots
                 .iter()
-                .filter_map(|tool| function_namespace(&tool.name))
-                .map(str::to_string),
-        );
-        let agents_ns: Vec<String> = agents_roots
-            .iter()
-            .flat_map(|root| crate::fs_source::agents_namespaces(root))
-            .collect();
-        crate::functions::skills::filter_to_registered(merged, &registered, &agents_ns)
-    } else {
-        merged
+                .flat_map(|root| crate::fs_source::agents_namespaces(root))
+                .collect();
+            crate::functions::skills::filter_to_registered(merged, &registered, &agents_ns)
+        }
+        None => merged,
     };
     let visible =
         crate::fs_source::merge_agents_roots(visible, &global_root, &local_root, &agents_roots).0;
@@ -1584,9 +1600,10 @@ async fn local_rank_documents(
     round_robin_rankings(&rankings, SIDE_LANE_DOCS)
 }
 
-/// The registered trigger bindings a search may surface, as the Jev carrier
-/// (`name` = trigger id, `description` = `type trigger runs function with config`) plus the
-/// response row. Ephemeral console listeners are skipped.
+/// The registered trigger bindings a search may surface, as the ranking
+/// carrier (`name` = trigger id, `description` = `type trigger runs function
+/// configured by <config keys>`) plus the response row. Ephemeral console
+/// listeners are skipped.
 async fn registered_trigger_docs(deps: &Deps) -> Vec<(ToolSchema, TriggerCandidate)> {
     let Some(iii) = deps.iii.as_ref() else {
         return Vec::new();
@@ -1610,7 +1627,9 @@ async fn registered_trigger_docs(deps: &Deps) -> Vec<(ToolSchema, TriggerCandida
 }
 
 /// `registered_triggers[]` rows as side-lane documents plus response rows;
-/// malformed rows and ephemeral console bindings are skipped.
+/// malformed rows and ephemeral console bindings are skipped. The document
+/// names the config KEYS only: values (webhook URLs, headers, tokens) stay
+/// in the local response row and never reach the remote ranker.
 fn trigger_docs(listed: &Value) -> Vec<(ToolSchema, TriggerCandidate)> {
     listed
         .get("registered_triggers")
@@ -1619,13 +1638,20 @@ fn trigger_docs(listed: &Value) -> Vec<(ToolSchema, TriggerCandidate)> {
         .flatten()
         .filter_map(trigger_candidate)
         .map(|candidate| {
-            let document = truncate_bytes(
-                &format!(
-                    "{} trigger runs {} with config {}",
-                    candidate.trigger_type, candidate.function_id, candidate.config
-                ),
-                SIDE_LANE_DOC_BYTES,
+            let mut keys: Vec<&str> = candidate
+                .config
+                .as_object()
+                .map(|config| config.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            keys.sort_unstable();
+            let mut document = format!(
+                "{} trigger runs {}",
+                candidate.trigger_type, candidate.function_id
             );
+            if !keys.is_empty() {
+                document = format!("{document} configured by {}", keys.join(", "));
+            }
+            let document = truncate_bytes(&document, SIDE_LANE_DOC_BYTES);
             (
                 ToolSchema {
                     name: candidate.id.clone(),
@@ -2297,12 +2323,35 @@ mod tests {
             cron,
             { "id": "t", "trigger_type": "console:style", "function_id": "state::ui-content" },
             { "id": "t" },
+            { "id": "t-2", "trigger_type": "http", "function_id": "hooks::deliver",
+              "config": { "url": "https://x.test/?token=s3cr3t", "headers": { "authorization": "Bearer s3cr3t" } } },
+            { "id": "t-3", "trigger_type": "configuration", "function_id": "directory::on-config-change" },
         ] }));
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0].0.name, "t-1");
+        let described: Vec<(&str, &str)> = docs
+            .iter()
+            .map(|(doc, _)| (doc.name.as_str(), doc.description.as_str()))
+            .collect();
         assert_eq!(
-            docs[0].0.description,
-            "cron trigger runs harness::sweep-pending with config {\"expression\":\"0 0 0 * * *\"}"
+            described,
+            [
+                (
+                    "t-1",
+                    "cron trigger runs harness::sweep-pending configured by expression"
+                ),
+                (
+                    "t-2",
+                    "http trigger runs hooks::deliver configured by headers, url"
+                ),
+                (
+                    "t-3",
+                    "configuration trigger runs directory::on-config-change"
+                ),
+            ]
+        );
+        // Values stay in the response row only.
+        assert_eq!(
+            docs[1].1.config["headers"]["authorization"],
+            "Bearer s3cr3t"
         );
         assert!(trigger_docs(&json!({})).is_empty());
     }
