@@ -424,7 +424,7 @@ jobs:
           python3 .github/scripts/build_manifest.py plan \
             --worker "$WORKER" --prepared deploy-prepared/prepared-artifacts.json > asset-plan.tsv
           test -s asset-plan.tsv
-          mkdir -p upload-stage remote-assets
+          mkdir -p upload-stage
           gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release.json
           declare -A state=()
           to_upload=()
@@ -438,12 +438,9 @@ jobs:
               continue
             fi
             test "$count" = 1
-            id=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .id' release.json)
-            gh api -H 'Accept: application/octet-stream' \
-              "/repos/${GITHUB_REPOSITORY}/releases/assets/$id" > "remote-assets/$asset"
-            remote_sha=$(sha256sum "remote-assets/$asset" | cut -d' ' -f1)
-            if [[ "$remote_sha" != "$sha256" ]]; then
-              echo "::error::release $BUILD_TAG already carries $asset with sha256 $remote_sha but this build produced $sha256; immutable assets are never overwritten"
+            remote_digest=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .digest' release.json)
+            if [[ "$remote_digest" != "sha256:$sha256" ]]; then
+              echo "::error::release $BUILD_TAG already carries $asset with digest $remote_digest but this build produced sha256:$sha256; immutable assets are never overwritten"
               exit 1
             fi
             echo "$asset already present with identical bytes; skipping upload"
@@ -453,16 +450,12 @@ jobs:
             gh release upload "$BUILD_TAG" "${to_upload[@]}"
           fi
 
-          # Readback: every planned asset must now exist once with the exact bytes.
           gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release-final.json
           : > assets.jsonl
           while IFS=$'\t' read -r name asset sha256 size; do
             test "$(jq --arg name "$asset" '[.assets[] | select(.name == $name)] | length' release-final.json)" = 1
             test "$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .size' release-final.json)" = "$size"
-            id=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .id' release-final.json)
-            gh api -H 'Accept: application/octet-stream' \
-              "/repos/${GITHUB_REPOSITORY}/releases/assets/$id" > "remote-assets/$asset"
-            test "$(sha256sum "remote-assets/$asset" | cut -d' ' -f1)" = "$sha256"
+            test "$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .digest' release-final.json)" = "sha256:$sha256"
             jq -nc --arg name "$name" --arg asset "$asset" --arg sha256 "$sha256" \
               --argjson size "$size" --arg state "${state[$name]}" \
               '{name:$name, asset:$asset, sha256:$sha256, size:$size, state:$state}' >> assets.jsonl
