@@ -9,7 +9,11 @@ import {
   getSession,
   listSessions,
 } from '@/lib/sessions/api'
-import type { SessionMeta } from '@/lib/sessions/types'
+import {
+  type SessionTranscriptHandlers,
+  subscribeSessionTranscript,
+} from '@/lib/sessions/events'
+import type { MessageAddedEvent, SessionMeta } from '@/lib/sessions/types'
 import { type ConversationsApi, useConversations } from './use-conversations'
 
 vi.mock('@/lib/iii-client', () => ({ getIiiClient: vi.fn() }))
@@ -21,7 +25,7 @@ vi.mock('@/lib/sessions/api', async (original) => ({
 }))
 vi.mock('@/lib/sessions/events', () => ({
   subscribeSessionDirectory: () => () => {},
-  subscribeSessionTranscript: () => () => {},
+  subscribeSessionTranscript: vi.fn(),
 }))
 
 const meta: SessionMeta = {
@@ -65,6 +69,8 @@ beforeEach(() => {
       return () => {}
     },
   } as never)
+  vi.mocked(subscribeSessionTranscript).mockReset()
+  vi.mocked(subscribeSessionTranscript).mockReturnValue(() => {})
   vi.mocked(listSessions).mockResolvedValue([meta])
   vi.mocked(getSession).mockResolvedValue(meta)
   vi.mocked(fetchTranscriptTail).mockResolvedValue({
@@ -76,6 +82,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -161,5 +168,203 @@ describe('conversation loading feedback', () => {
     expect(
       api.conversations.find((item) => item.id === meta.session_id)?.hydrated,
     ).toBe(true)
+  })
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
+describe.each(['retry', 'disconnect'] as const)(
+  'metadata invalidation on %s',
+  (transition) => {
+    it.each(['metadata', 'missing', 'error'] as const)(
+      'ignores stale %s while the next directory read is pending',
+      async (result) => {
+        vi.mocked(listSessions).mockResolvedValueOnce([])
+        const oldRead = deferred<SessionMeta | null>()
+        vi.mocked(getSession).mockReturnValueOnce(oldRead.promise)
+        await mount()
+        await act(async () => {
+          api.watchConversation(meta.session_id)
+        })
+        const directory = deferred<SessionMeta[]>()
+        vi.mocked(listSessions).mockReturnValueOnce(directory.promise)
+        await act(async () => {
+          if (transition === 'retry') api.retryConversations()
+          else connectionChanged('reconnecting')
+        })
+        await act(async () => {
+          if (result === 'error') oldRead.reject(new Error('obsolete read'))
+          else {
+            oldRead.resolve(
+              result === 'missing'
+                ? null
+                : { ...meta, title: 'Obsolete title' },
+            )
+          }
+        })
+        expect(api.conversations.some((c) => c.id === meta.session_id)).toBe(
+          false,
+        )
+        expect(api.conversationLoadErrors[meta.session_id]).toBeUndefined()
+        expect(api.missingConversationIds.has(meta.session_id)).toBe(false)
+        if (transition === 'disconnect') {
+          await act(async () => connectionChanged('connected'))
+        }
+        await act(async () => directory.resolve([meta]))
+        expect(
+          api.conversations.find((c) => c.id === meta.session_id)?.title,
+        ).toBe(meta.title)
+      },
+    )
+  },
+)
+
+const liveMessage = (id: string, text: string): MessageAddedEvent => ({
+  session_id: meta.session_id,
+  entry_id: id,
+  parent_id: null,
+  timestamp: 10,
+  message: {
+    role: 'assistant',
+    stop_reason: 'end',
+    model: 'test',
+    provider: 'test',
+    content: [{ type: 'text', text }],
+    timestamp: 10,
+  },
+})
+
+describe('transcript subscription recovery', () => {
+  it.each(['timer', 'retry', 'reconnect'] as const)(
+    'recovers through %s without losing other panels or live updates',
+    async (recovery) => {
+      vi.useFakeTimers()
+      const sibling = { ...meta, session_id: 'sibling-chat' }
+      vi.mocked(listSessions).mockResolvedValue([meta, sibling])
+      vi.mocked(getSession).mockImplementation(async (id) =>
+        id === sibling.session_id ? sibling : meta,
+      )
+      const handlers = new Map<string, SessionTranscriptHandlers>()
+      const off = vi.fn()
+      let fail = true
+      vi.mocked(subscribeSessionTranscript).mockImplementation(
+        (_, id, handler) => {
+          if (id === meta.session_id && fail) throw new Error('register failed')
+          handlers.set(id, handler)
+          return off
+        },
+      )
+      await mount()
+      await act(async () => {
+        api.watchConversation(meta.session_id)
+        api.watchConversation(sibling.session_id)
+      })
+      expect(
+        api.conversations.find((c) => c.id === meta.session_id)?.hydrated,
+      ).toBe(true)
+      expect(api.conversationLoadErrors[meta.session_id]).toContain(
+        'Unable to receive live messages',
+      )
+      expect(handlers.has(sibling.session_id)).toBe(true)
+      fail = false
+      const missed = liveMessage('missed-entry', 'Recovered message')
+      vi.mocked(fetchTranscriptTail).mockResolvedValue({
+        items: [{ entry_id: missed.entry_id, message: missed.message }],
+        hasMore: false,
+      })
+      await act(async () => {
+        if (recovery === 'timer') vi.advanceTimersByTime(2_000)
+        else if (recovery === 'retry') api.retryConversations()
+        else connectionChanged('reconnecting')
+      })
+      if (recovery === 'reconnect') {
+        await act(async () => connectionChanged('connected'))
+      }
+      expect(api.conversationLoadErrors[meta.session_id]).toBeUndefined()
+      expect(
+        api.conversations.find((c) => c.id === meta.session_id)?.messages,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ content: 'Recovered message' }),
+        ]),
+      )
+      expect(off).not.toHaveBeenCalled()
+      // Successful handlers survive reconciliation and still deliver.
+      await act(async () => {
+        handlers
+          .get(meta.session_id)
+          ?.onMessageAdded(liveMessage('live-entry', 'Live message'))
+      })
+      expect(
+        api.conversations.find((c) => c.id === meta.session_id)?.messages,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ content: 'Live message' }),
+        ]),
+      )
+      expect(
+        vi
+          .mocked(subscribeSessionTranscript)
+          .mock.calls.filter(([, id]) => id === sibling.session_id),
+      ).toHaveLength(1)
+    },
+  )
+
+  it('cancels retries on unwatch and rejects callbacks from a previous watch lifecycle', async () => {
+    vi.useFakeTimers()
+    vi.mocked(subscribeSessionTranscript).mockImplementation(() => {
+      throw new Error('register failed')
+    })
+    await mount()
+    let release!: () => void
+    await act(async () => {
+      release = api.watchConversation(meta.session_id)
+    })
+    await act(async () => release())
+    await act(async () => vi.advanceTimersByTime(5_000))
+    expect(subscribeSessionTranscript).toHaveBeenCalledOnce()
+    expect(api.conversationLoadErrors[meta.session_id]).toBeUndefined()
+
+    const handlers: SessionTranscriptHandlers[] = []
+    const off = vi.fn()
+    vi.mocked(subscribeSessionTranscript).mockImplementation(
+      (_, __, handler) => {
+        handlers.push(handler)
+        return off
+      },
+    )
+    await act(async () => {
+      release = api.watchConversation(meta.session_id)
+    })
+    await act(async () => {
+      release()
+      release = api.watchConversation(meta.session_id)
+    })
+    expect(off).toHaveBeenCalledOnce()
+    await act(async () => {
+      handlers[0].onMessageAdded(liveMessage('stale-entry', 'Stale callback'))
+      handlers[1].onMessageAdded(liveMessage('fresh-entry', 'Current callback'))
+    })
+    const messages = api.conversations.find(
+      (c) => c.id === meta.session_id,
+    )?.messages
+    expect(messages).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: 'Stale callback' }),
+      ]),
+    )
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: 'Current callback' }),
+      ]),
+    )
   })
 })

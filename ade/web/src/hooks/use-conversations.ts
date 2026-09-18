@@ -76,6 +76,8 @@ import {
   subscribeSessionTranscript,
 } from '@/lib/sessions/events'
 import type {
+  MessageAddedEvent,
+  MessageUpdatedEvent,
   MetaUpdatedEvent,
   SessionMeta,
   StatusChangedEvent,
@@ -1475,10 +1477,9 @@ export function useConversations(
     Record<string, string>
   >({})
   const [refreshRevision, setRefreshRevision] = useState(0)
-  const retryConversations = useCallback(
-    () => setRefreshRevision((revision) => revision + 1),
-    [],
-  )
+  const [transcriptSubscriptionErrors, setTranscriptSubscriptionErrors] =
+    useState<Record<string, string>>({})
+  const transcriptSubscriptionFailuresRef = useRef(new Set<string>())
   const clearConversationLoadError = useCallback((id: string) => {
     setConversationLoadErrors((current) => {
       if (!(id in current)) return current
@@ -1578,6 +1579,18 @@ export function useConversations(
     if (timer) clearTimeout(timer)
     sessionMetaLookupTimersRef.current.delete(sessionId)
   }, [])
+
+  /** Retire exact reads before a new connection/directory snapshot can win. */
+  const invalidateSessionMetaLookups = useCallback(() => {
+    for (const id of sessionMetaLookupGenerationRef.current.keys()) {
+      invalidateSessionMetaLookup(id)
+    }
+  }, [invalidateSessionMetaLookup])
+
+  const retryConversations = useCallback(() => {
+    invalidateSessionMetaLookups()
+    setRefreshRevision((revision) => revision + 1)
+  }, [invalidateSessionMetaLookups])
 
   const lookupSessionMeta = useCallback(
     (
@@ -1704,6 +1717,7 @@ export function useConversations(
 
   /* ── Boot + reconnect: refresh durable session metadata ───────────────── */
   useEffect(() => {
+    invalidateSessionMetaLookups()
     if (!serverEnabled) {
       setConversationsLoading(false)
       setConversationsError(null)
@@ -1721,6 +1735,7 @@ export function useConversations(
       off = client.addConnectionStateListener((state) => {
         if (cancelled) return
         setConnectionState(state)
+        invalidateSessionMetaLookups()
         if (state !== 'connected') {
           // Invalidate reads from the old socket, even before reconnect.
           directoryRefreshGenerationRef.current += 1
@@ -1863,7 +1878,12 @@ export function useConversations(
       cancelled = true
       off?.()
     }
-  }, [serverEnabled, lookupSessionMeta, refreshRevision])
+  }, [
+    serverEnabled,
+    lookupSessionMeta,
+    refreshRevision,
+    invalidateSessionMetaLookups,
+  ])
 
   /* ── Sidebar-level live events (all sessions) ─────────────────────────── */
   useEffect(() => {
@@ -2055,10 +2075,12 @@ export function useConversations(
   visibleSessionIdsRef.current = [...watchedIds].sort()
 
   useEffect(() => {
-    // Per-session epochs live in a ref; the revision intentionally wakes this
-    // reconciliation after a same-signature unwatch -> watch transition.
+    // Retry and reconnect must reconcile missing bindings even when the
+    // watched IDs and their already-hydrated conversations did not change.
+    void refreshRevision
     void watchLifecycleRevision
     const subscriptions = transcriptSubscriptionsRef.current
+    const failures = transcriptSubscriptionFailuresRef.current
     const wanted = new Set(
       serverEnabled ? sessionIdsFromSignature(serverWatchedSignature) : [],
     )
@@ -2074,9 +2096,21 @@ export function useConversations(
       subscriptions.delete(sessionId)
       transcriptSubscriptionEpochsRef.current.delete(sessionId)
     }
-    if (!serverEnabled || wanted.size === 0) return
+    for (const sessionId of failures) {
+      if (!wanted.has(sessionId)) failures.delete(sessionId)
+    }
+    setTranscriptSubscriptionErrors((current) => {
+      const removed = Object.keys(current).filter((id) => !wanted.has(id))
+      if (removed.length === 0) return current
+      const next = { ...current }
+      for (const id of removed) delete next[id]
+      return next
+    })
+    if (!serverEnabled || wanted.size === 0 || connectionState !== 'connected')
+      return
 
     let cancelled = false
+    const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
     const revisionsFor = (sessionId: string) => {
       let revisions = revisionsRef.current.get(sessionId)
       if (!revisions) {
@@ -2091,8 +2125,14 @@ export function useConversations(
       for (const sessionId of wanted) {
         if (subscriptions.has(sessionId)) continue
         const watchEpoch = watchLifecycleEpochsRef.current.get(sessionId) ?? 0
-        const off = subscribeSessionTranscript(client, sessionId, {
-          onMessageAdded: (event) => {
+        // Live handlers survive this effect's reconciliation. Only the
+        // watch lifecycle (not the effect's cancelled flag) invalidates them.
+        const stillWatched = () =>
+          (watchCountsRef.current.get(sessionId) ?? 0) > 0 &&
+          (watchLifecycleEpochsRef.current.get(sessionId) ?? 0) === watchEpoch
+        const handlers = {
+          onMessageAdded: (event: MessageAddedEvent) => {
+            if (!stillWatched()) return
             const item = {
               entry_id: event.entry_id,
               message: event.message,
@@ -2116,7 +2156,8 @@ export function useConversations(
               ),
             )
           },
-          onMessageUpdated: (event) => {
+          onMessageUpdated: (event: MessageUpdatedEvent) => {
+            if (!stillWatched()) return
             const revisions = revisionsFor(sessionId)
             const previous = revisions.get(event.entry_id) ?? -1
             if (event.revision <= previous) return
@@ -2144,18 +2185,54 @@ export function useConversations(
               ),
             )
           },
-        })
-        if (
-          cancelled ||
-          !wanted.has(sessionId) ||
-          (watchCountsRef.current.get(sessionId) ?? 0) === 0 ||
-          (watchLifecycleEpochsRef.current.get(sessionId) ?? 0) !== watchEpoch
-        )
-          off()
-        else {
+        }
+        const setup = () => {
+          retryTimers.delete(sessionId)
+          if (cancelled || !stillWatched() || subscriptions.has(sessionId))
+            return
+          let off: () => void
+          try {
+            off = subscribeSessionTranscript(client, sessionId, handlers)
+          } catch {
+            if (cancelled || !stillWatched()) return
+            failures.add(sessionId)
+            setTranscriptSubscriptionErrors((current) => ({
+              ...current,
+              [sessionId]: 'Unable to receive live messages. Retrying…',
+            }))
+            retryTimers.set(sessionId, setTimeout(setup, 2_000))
+            return
+          }
+          if (cancelled || !stillWatched()) {
+            off()
+            return
+          }
           subscriptions.set(sessionId, off)
           transcriptSubscriptionEpochsRef.current.set(sessionId, watchEpoch)
+          if (failures.delete(sessionId)) {
+            setTranscriptSubscriptionErrors((current) => {
+              const next = { ...current }
+              delete next[sessionId]
+              return next
+            })
+            // Subscribe first, then read back events missed during the gap.
+            // Cancel only this session's read; sibling panels stay untouched.
+            cancelHydrationRunsForSessions(
+              [sessionId],
+              hydrationRunsRef.current,
+              hydrationBuffersRef.current,
+            )
+            const timer = hydrationRetryTimersRef.current.get(sessionId)
+            if (timer) clearTimeout(timer)
+            hydrationRetryTimersRef.current.delete(sessionId)
+            patchConversation(sessionId, (conversation) => ({
+              ...conversation,
+              hydrated: false,
+            }))
+            setWatchLifecycleRevision((revision) => revision + 1)
+          }
         }
+        setup()
       }
     })
     void subscription.catch(() => {
@@ -2163,11 +2240,14 @@ export function useConversations(
     })
     return () => {
       cancelled = true
+      for (const timer of retryTimers.values()) clearTimeout(timer)
     }
   }, [
     serverEnabled,
     serverWatchedSignature,
     watchLifecycleRevision,
+    refreshRevision,
+    connectionState,
     patchConversation,
   ])
 
@@ -3125,7 +3205,10 @@ export function useConversations(
     connectionState,
     conversationsLoading,
     conversationsError,
-    conversationLoadErrors,
+    conversationLoadErrors: {
+      ...conversationLoadErrors,
+      ...transcriptSubscriptionErrors,
+    },
     retryConversations,
     missingConversationIds,
     createNew,
