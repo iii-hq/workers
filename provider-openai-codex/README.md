@@ -103,13 +103,25 @@ provider id `openai`.
   `openai-beta: responses=experimental`,
   `originator: codex_cli_rs`.
 - **Cache routing:** the `session-id` / `thread-id` / `x-client-request-id`
-  headers always carry a UUID derived from the router's `session_id` (the
-  backend's cache affinity follows these). The body `prompt_cache_key` is
-  resolved separately: a caller's `provider_options.openai-codex.prompt_cache_key`
-  override, else the router's `cache_intent.surface_digest` (the frozen
-  agent-profile prefix), else the same session-derived UUID. Whether a shared
-  body key alone yields cross-session cache hits on the Codex backend is
-  unverified; read `usage.cache_read` rather than assuming it.
+  headers always carry a UUID derived from the router's `session_id`. The body
+  `prompt_cache_key` is resolved separately: a caller's
+  `provider_options.openai-codex.prompt_cache_key` override, else the router's
+  `cache_intent.surface_digest` (the frozen agent-profile prefix), else the
+  same session-derived UUID.
+
+  The subscription backend caches per session, not per content: a second turn
+  in the same session reads the prefix from cache (`cached_tokens` ~17.9k on an
+  18k-token prefix), but an independent session on a byte-identical prefix
+  reads 0 and the backend records `cache_write_tokens: 0` for it. The cache
+  entry is keyed to the session-affinity headers, which are per-session by
+  design, so a shared body `prompt_cache_key` does not move routing to a shared
+  shard, and cross-session reuse is not achievable here without reusing session
+  identity across independent agents. The backend also rejects
+  `prompt_cache_breakpoint` on every model (`gpt-6-astra` included:
+  `prompt_cache_breakpoint is not supported on this model`), so the explicit
+  breakpoint that `provider-openai` uses on GPT-5.6+ does not apply. Read
+  `usage.cache_read` for the real signal; the shared body key stays in case the
+  backend's routing changes.
 - **SSE:** `response.output_text.delta` → text, `response.reasoning_*` →
   thinking, `response.function_call_arguments.delta` → tool calls,
   `response.completed` → usage + terminal. Unknown event types are ignored
