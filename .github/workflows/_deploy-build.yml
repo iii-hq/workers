@@ -246,6 +246,7 @@ jobs:
         env:
           BUILD_UNIT: ${{ inputs.unit }}
           RUSTC_WRAPPER: ${{ steps.sccache.outputs.wrapper }}
+          RUSTFLAGS: ${{ endsWith(inputs.target, '-pc-windows-msvc') && '-C link-arg=/Brepro' || '' }}
           SOURCE_DATE_EPOCH: '0'
           SCCACHE_S3_KEY_PREFIX: sccache/${{ steps.metadata.outputs.toolchain_version }}/${{ inputs.target }}
         run: |
