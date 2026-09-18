@@ -28,6 +28,9 @@ pub struct BodyArgs {
     /// `output_config.effort` for the adaptive-thinking generation.
     pub effort: Option<&'static str>,
     pub cache_enabled: bool,
+    /// TTL for the shared-prefix markers on the sectioned path (`None` = the
+    /// 5-minute default); see `wire::cache::cache_ttl`.
+    pub cache_ttl: Option<&'static str>,
 }
 
 /// No `temperature`: the API default applies (required when thinking is on).
@@ -58,7 +61,13 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
     }
     apply_messages_cache_anchor(&mut wire_messages, args.cache_enabled);
     let mut wire_tools = functions_to_wire(&args.tools);
-    apply_tools_cache_control(&mut wire_tools, args.cache_enabled);
+    // The long TTL only makes sense when there is a shared prefix to keep warm.
+    let sectioned = args
+        .system_sections
+        .as_deref()
+        .is_some_and(|s| !s.is_empty());
+    let ttl = if sectioned { args.cache_ttl } else { None };
+    apply_tools_cache_control(&mut wire_tools, args.cache_enabled, ttl);
 
     let mut body = json!({
         "model": args.model,
@@ -68,7 +77,9 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
         "stream": true,
     });
     let system = match args.system_sections.as_deref() {
-        Some(sections) if !sections.is_empty() => build_system_blocks(sections, args.cache_enabled),
+        Some(sections) if !sections.is_empty() => {
+            build_system_blocks(sections, args.cache_enabled, ttl)
+        }
         _ => build_system_field(&args.system_prompt, args.cache_enabled),
     };
     if let Some(system) = system {
@@ -124,6 +135,7 @@ mod tests {
             thinking: None,
             effort: None,
             cache_enabled: false,
+            cache_ttl: None,
         }
     }
 
@@ -169,11 +181,28 @@ mod tests {
                 cache_boundary: false,
             },
         ]);
+        a.cache_enabled = true;
+        a.cache_ttl = Some("1h");
         let body = build_body(&a, &mut Vec::new());
         assert_eq!(body["system"][0]["text"], "stable");
         assert_eq!(body["system"][1]["text"], "dynamic");
+        // a short stable section gets no marker at all, ttl or not
+        assert!(body["system"][0].get("cache_control").is_none());
+        // a long one carries the 1h ttl on the sectioned path only
+        a.system_sections = Some(vec![PromptSection {
+            text: "s".repeat(crate::wire::cache::CACHE_MIN_CHARS),
+            cache_boundary: true,
+        }]);
+        let body = build_body(&a, &mut Vec::new());
+        assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+        a.system_sections = None;
+        a.system_prompt = "p".repeat(crate::wire::cache::CACHE_MIN_CHARS);
+        let flat = build_body(&a, &mut Vec::new());
+        assert!(flat["system"][0]["cache_control"].get("ttl").is_none());
         // an empty section list falls back to the flat string
         a.system_sections = Some(vec![]);
+        a.system_prompt = "be brief".into();
+        a.cache_enabled = false;
         assert_eq!(build_body(&a, &mut Vec::new())["system"], "be brief");
     }
 

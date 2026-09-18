@@ -96,7 +96,10 @@ The prompt-cache anchors can be disabled with `PROVIDER_CLAUDE_CODE_CACHE=0`.
 When the router forwards `system_sections`, the identity block is followed by
 one text block per section and the marker lands on the block flagged
 `cache_boundary` (the frozen agent-profile prefix) instead of the last block,
-so the per-session tail no longer invalidates the shared entry.
+so the per-session tail no longer invalidates the shared entry. That boundary
+block and the tools marker use the 1-hour cache (`ttl: "1h"`); the messages
+anchor stays at 5 minutes. `PROVIDER_CLAUDE_CODE_CACHE_TTL=5m` restores the
+5-minute cache everywhere.
 
 ## Tests
 

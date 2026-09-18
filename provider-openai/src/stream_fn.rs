@@ -4,7 +4,10 @@
 use crate::config::{config_from_resolve, ApiMode};
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
-use crate::request::{build_body, build_headers, supports_explicit_cache_breakpoints, BodyArgs};
+use crate::request::{
+    build_body, build_headers, cache_retention, supports_explicit_cache_breakpoints,
+    supports_extended_cache_retention, BodyArgs,
+};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::{router_client, state};
@@ -191,6 +194,8 @@ async fn run_stream_call(
             system_sections: input.system_sections,
             explicit_cache_breakpoints: cfg.api_mode == ApiMode::Responses
                 && supports_explicit_cache_breakpoints(&cfg.model, &cfg.api_url),
+            cache_retention: cache_retention()
+                .filter(|_| supports_extended_cache_retention(&cfg.model, &cfg.api_url)),
         },
         cfg.api_mode,
     );

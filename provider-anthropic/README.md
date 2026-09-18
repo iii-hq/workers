@@ -69,6 +69,7 @@ Worker-side environment variables:
 | Variable | Default | Meaning |
 |---|---|---|
 | `PROVIDER_ANTHROPIC_CACHE` | enabled | `0`/`false` disables automatic prompt-cache markers |
+| `PROVIDER_ANTHROPIC_CACHE_TTL` | `1h` | TTL of the shared-prefix markers on the sectioned path; `5m` restores the default cache |
 | `III_WS_URL` | `ws://127.0.0.1:49134` | engine WebSocket to attach to when `--url` is not set |
 
 The binary also takes the standard worker CLI flags: `--url` (engine
@@ -83,7 +84,12 @@ to be worth a cache write. When the router forwards `system_sections`, the
 block flagged `cache_boundary` (the frozen agent-profile prefix) once the text
 up to it clears the minimum, so the per-session tail after it no longer
 invalidates the shared entry. At most two system blocks are marked, keeping
-the total at Anthropic's four.
+the total at Anthropic's four. On that sectioned path the boundary block (and
+the tools marker ahead of it) use the 1-hour cache (`ttl: "1h"`, 2x base on
+the one write, reads unchanged) so a profile stays warm across sessions up to
+an hour apart; the per-turn messages anchor keeps the 5-minute default, which
+also satisfies the longer-before-shorter TTL rule. `PROVIDER_ANTHROPIC_CACHE_TTL=5m`
+goes back to 5 minutes everywhere.
 
 ## Models
 

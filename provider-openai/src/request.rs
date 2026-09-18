@@ -25,6 +25,65 @@ pub struct BodyArgs {
     /// The model takes `prompt_cache_breakpoint` marks (see
     /// [`supports_explicit_cache_breakpoints`]).
     pub explicit_cache_breakpoints: bool,
+    /// `prompt_cache_retention` to send (`24h` keeps an entry up to a day
+    /// instead of 5-10 minutes; no extra write charge on these models). `None`
+    /// omits the field. See [`supports_extended_cache_retention`].
+    pub cache_retention: Option<&'static str>,
+}
+
+const CACHE_RETENTION_ENV: &str = "PROVIDER_OPENAI_CACHE_RETENTION";
+
+/// Unset or `24h` = extended retention; `in_memory` = the short default;
+/// `off` = do not send the field at all.
+pub fn cache_retention() -> Option<&'static str> {
+    match std::env::var(CACHE_RETENTION_ENV).as_deref() {
+        Ok("off") => None,
+        Ok("in_memory") => Some("in_memory"),
+        _ => Some("24h"),
+    }
+}
+
+/// Models that document `prompt_cache_retention: "24h"` (the docs' list, plus
+/// their dated snapshots), official endpoint only. GPT-5.6 and later replace it
+/// with `prompt_cache_options.ttl`, whose single value (30m) is already the
+/// default, so nothing is sent there.
+pub fn supports_extended_cache_retention(model: &str, api_url: &str) -> bool {
+    const EXTENDED: &[&str] = &[
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.4",
+        "gpt-5.2",
+        "gpt-5.1-codex-max",
+        "gpt-5.1",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-chat-latest",
+        "gpt-5",
+        "gpt-5-codex",
+        "gpt-4.1",
+    ];
+    let official = reqwest::Url::parse(api_url)
+        .ok()
+        .and_then(|url| url.host_str().map(|h| h == "api.openai.com"))
+        .unwrap_or(false);
+    // strip a dated snapshot suffix like `-2026-03-05`
+    let base = match model.len().checked_sub(11) {
+        Some(cut)
+            if model.as_bytes()[cut] == b'-'
+                && model[cut + 1..].len() == 10
+                && model[cut + 1..].bytes().enumerate().all(|(i, b)| {
+                    if i == 4 || i == 7 {
+                        b == b'-'
+                    } else {
+                        b.is_ascii_digit()
+                    }
+                }) =>
+        {
+            &model[..cut]
+        }
+        _ => model,
+    };
+    official && EXTENDED.contains(&base)
 }
 
 /// Explicit cache breakpoints exist on GPT-5.6 and later, on the official
@@ -96,6 +155,9 @@ fn build_chat_body(args: &BodyArgs) -> Value {
     if let Some(key) = &args.prompt_cache_key {
         body["prompt_cache_key"] = json!(key);
     }
+    if let Some(retention) = args.cache_retention {
+        body["prompt_cache_retention"] = json!(retention);
+    }
     body
 }
 
@@ -141,6 +203,9 @@ fn build_responses_body(args: &BodyArgs) -> Value {
     if let Some(key) = &args.prompt_cache_key {
         body["prompt_cache_key"] = json!(key);
     }
+    if let Some(retention) = args.cache_retention {
+        body["prompt_cache_retention"] = json!(retention);
+    }
     body
 }
 
@@ -181,6 +246,7 @@ mod tests {
             prompt_cache_key: None,
             system_sections: None,
             explicit_cache_breakpoints: false,
+            cache_retention: None,
         }
     }
 
@@ -358,6 +424,54 @@ mod tests {
         assert!(chat.get("max_tokens").is_none());
         let responses = build_body(&a, ApiMode::Responses);
         assert!(responses.get("max_output_tokens").is_none());
+    }
+
+    #[test]
+    fn extended_retention_only_on_the_documented_models_and_endpoint() {
+        let official = crate::config::DEFAULT_API_URL;
+        for model in [
+            "gpt-5",
+            "gpt-5.5",
+            "gpt-5.4-2026-03-05",
+            "gpt-4.1",
+            "gpt-5.1-codex-mini",
+        ] {
+            assert!(
+                supports_extended_cache_retention(model, official),
+                "{model}"
+            );
+        }
+        for model in [
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-6-astra",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "o3",
+        ] {
+            assert!(
+                !supports_extended_cache_retention(model, official),
+                "{model}"
+            );
+        }
+        assert!(!supports_extended_cache_retention(
+            "gpt-5",
+            "https://gateway.example.com/v1/responses"
+        ));
+        let mut a = args();
+        a.cache_retention = Some("24h");
+        assert_eq!(
+            build_body(&a, ApiMode::Responses)["prompt_cache_retention"],
+            "24h"
+        );
+        assert_eq!(
+            build_body(&a, ApiMode::ChatCompletions)["prompt_cache_retention"],
+            "24h"
+        );
+        a.cache_retention = None;
+        assert!(build_body(&a, ApiMode::Responses)
+            .get("prompt_cache_retention")
+            .is_none());
     }
 
     #[test]

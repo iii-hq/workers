@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 /// Below this many chars a prefix isn't worth a cache write.
 pub const CACHE_MIN_CHARS: usize = 4096;
 const CACHE_FLAG_ENV: &str = "PROVIDER_ANTHROPIC_CACHE";
+const CACHE_TTL_ENV: &str = "PROVIDER_ANTHROPIC_CACHE_TTL";
 
 /// Kill switch: unset or anything but 0/false/FALSE/False = enabled.
 pub fn cache_enabled() -> bool {
@@ -17,8 +18,27 @@ pub fn cache_enabled() -> bool {
     }
 }
 
+/// TTL for the shared-prefix markers (tools + the boundary block): unset or
+/// `1h` = the 1-hour cache (2x base on the one write, reads unchanged, so a
+/// profile stays warm across sessions an hour apart); `5m` = the default
+/// 5-minute cache. The per-turn messages anchor always stays at 5 minutes:
+/// it changes every turn, and longer TTLs must precede shorter ones.
+pub fn cache_ttl() -> Option<&'static str> {
+    match std::env::var(CACHE_TTL_ENV).as_deref() {
+        Ok("5m") => None,
+        _ => Some("1h"),
+    }
+}
+
 fn ephemeral() -> Value {
     json!({ "type": "ephemeral" })
+}
+
+fn ephemeral_ttl(ttl: Option<&str>) -> Value {
+    match ttl {
+        Some(ttl) => json!({ "type": "ephemeral", "ttl": ttl }),
+        None => ephemeral(),
+    }
 }
 
 /// System prompt → wire `system` field. None when empty (omit the field);
@@ -40,7 +60,11 @@ pub fn build_system_field(prompt: &str, enabled: bool) -> Option<Value> {
 /// it clears the minimum — so the frozen profile prefix caches on its own and
 /// the per-session tail after it does not invalidate it. None when every
 /// section is empty (omit the field).
-pub fn build_system_blocks(sections: &[PromptSection], enabled: bool) -> Option<Value> {
+pub fn build_system_blocks(
+    sections: &[PromptSection],
+    enabled: bool,
+    ttl: Option<&str>,
+) -> Option<Value> {
     let mut blocks = Vec::new();
     let mut cumulative = 0usize;
     let mut marked = 0usize;
@@ -49,7 +73,7 @@ pub fn build_system_blocks(sections: &[PromptSection], enabled: bool) -> Option<
         let mut block = json!({ "type": "text", "text": section.text });
         // ponytail: cap 2 so the tools and messages anchors keep the total <= 4
         if enabled && section.cache_boundary && cumulative >= CACHE_MIN_CHARS && marked < 2 {
-            block["cache_control"] = ephemeral();
+            block["cache_control"] = ephemeral_ttl(ttl);
             marked += 1;
         }
         blocks.push(block);
@@ -58,7 +82,10 @@ pub fn build_system_blocks(sections: &[PromptSection], enabled: bool) -> Option<
 }
 
 /// Mark the last tool when the serialized tools array clears the minimum.
-pub fn apply_tools_cache_control(tools: &mut [Value], enabled: bool) {
+/// `ttl` rides along on the sectioned path only: tools precede the system
+/// prefix, and a 1-hour boundary block behind a 5-minute tools marker would
+/// break the longer-before-shorter rule.
+pub fn apply_tools_cache_control(tools: &mut [Value], enabled: bool, ttl: Option<&str>) {
     if !enabled || tools.is_empty() {
         return;
     }
@@ -67,7 +94,7 @@ pub fn apply_tools_cache_control(tools: &mut [Value], enabled: bool) {
         return;
     }
     if let Some(obj) = tools.last_mut().and_then(Value::as_object_mut) {
-        obj.insert("cache_control".into(), ephemeral());
+        obj.insert("cache_control".into(), ephemeral_ttl(ttl));
     }
 }
 
@@ -159,20 +186,25 @@ mod tests {
             text: text.into(),
             cache_boundary: boundary,
         };
-        assert!(build_system_blocks(&[section("", true)], true).is_none());
+        assert!(build_system_blocks(&[section("", true)], true, None).is_none());
         // below the minimum: one block per section, no marker
-        let v =
-            build_system_blocks(&[section("stable", true), section("dyn", false)], true).unwrap();
+        let v = build_system_blocks(
+            &[section("stable", true), section("dyn", false)],
+            true,
+            None,
+        )
+        .unwrap();
         assert_eq!(v.as_array().unwrap().len(), 2);
         assert!(v[0].get("cache_control").is_none());
         // boundary block past the minimum: marker on it, the tail stays bare
         let long = "x".repeat(CACHE_MIN_CHARS);
-        let v = build_system_blocks(&[section(&long, true), section("dyn", false)], true).unwrap();
+        let v = build_system_blocks(&[section(&long, true), section("dyn", false)], true, None)
+            .unwrap();
         assert_eq!(v[0]["cache_control"]["type"], "ephemeral");
         assert!(v[1].get("cache_control").is_none());
         assert_eq!(v[1]["text"], "dyn");
         // disabled: no marker no matter the size
-        let v = build_system_blocks(&[section(&long, true)], false).unwrap();
+        let v = build_system_blocks(&[section(&long, true)], false, None).unwrap();
         assert!(v[0].get("cache_control").is_none());
         // three boundaries: at most two markers
         let v = build_system_blocks(
@@ -182,6 +214,7 @@ mod tests {
                 section(&long, true),
             ],
             true,
+            None,
         )
         .unwrap();
         let marked = v
@@ -210,7 +243,7 @@ mod tests {
     #[test]
     fn tools_marker_only_past_threshold() {
         let mut small = vec![json!({ "name": "a", "input_schema": {} })];
-        apply_tools_cache_control(&mut small, true);
+        apply_tools_cache_control(&mut small, true, None);
         assert!(small[0].get("cache_control").is_none());
 
         let big_schema = json!({ "description": "y".repeat(CACHE_MIN_CHARS) });
@@ -218,7 +251,7 @@ mod tests {
             json!({ "name": "a" }),
             json!({ "name": "b", "input_schema": big_schema }),
         ];
-        apply_tools_cache_control(&mut big, true);
+        apply_tools_cache_control(&mut big, true, None);
         assert!(
             big[0].get("cache_control").is_none(),
             "only the last tool is marked"
@@ -365,5 +398,32 @@ mod tests {
         apply_messages_cache_anchor(&mut wire, true);
         assert!(wire[0]["content"][0].get("cache_control").is_none());
         assert!(wire[0]["content"][1].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn ttl_rides_on_the_boundary_and_tools_markers_only() {
+        let long = "x".repeat(CACHE_MIN_CHARS);
+        let sections = [PromptSection {
+            text: long.clone(),
+            cache_boundary: true,
+        }];
+        let v = build_system_blocks(&sections, true, Some("1h")).unwrap();
+        assert_eq!(
+            v[0]["cache_control"],
+            json!({ "type": "ephemeral", "ttl": "1h" })
+        );
+        let v = build_system_blocks(&sections, true, None).unwrap();
+        assert_eq!(v[0]["cache_control"], json!({ "type": "ephemeral" }));
+        let mut big = vec![
+            json!({ "name": "a", "input_schema": { "description": "y".repeat(CACHE_MIN_CHARS) } }),
+        ];
+        apply_tools_cache_control(&mut big, true, Some("1h"));
+        assert_eq!(big[0]["cache_control"]["ttl"], "1h");
+        // the flat legacy block and the messages anchor never carry a ttl
+        assert_eq!(
+            build_system_field(&long, true).unwrap()[0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+        assert_eq!(ephemeral_ttl(None), ephemeral());
     }
 }
