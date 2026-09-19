@@ -202,7 +202,7 @@ jobs:
             echo "| --- | --- | --- |"
             echo "| $RUNNER_LABEL | $RUNNER_NAME | $CACHE_COHORT |"
             echo
-            echo "The iii engine is downloaded fresh from the latest @rc channel."
+            echo "The iii engine is pinned to $III_RELEASE_TAG."
             echo
             echo "| Cache | Hit | Save enabled |"
             echo "| --- | --- | --- |"

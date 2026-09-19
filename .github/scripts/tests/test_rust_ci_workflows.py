@@ -183,6 +183,13 @@ def test_harness_integration_downloads_verified_rc_engine_without_building_it() 
     assert "cron -> target" in stack_cache["with"]["workspaces"]
     assert "database -> target" in stack_cache["with"]["workspaces"]
 
+    summary = next(
+        step["run"] for step in steps
+        if "$GITHUB_STEP_SUMMARY" in step.get("run", "")
+    )
+    assert 'echo "The iii engine is pinned to $III_RELEASE_TAG."' in summary
+    assert "latest @rc channel" not in summary
+
 
 def test_every_engine_installer_uses_the_atomic_configuration_release() -> None:
     """No boot path may override the verified engine with a legacy or mutable tag."""

@@ -142,12 +142,16 @@ function; browser consumers use `resolveConfigurationId` from
 
 All ids are kebab-case (`<worker>::<verb>`), per [`binary-worker.md`](binary-worker.md) §7:
 
-- `configuration::register` — declare an id with name, description, JSON
-  Schema, an optional `initial_value`, and metadata; idempotent re-registration
-  replaces the schema/metadata but preserves any stored value. Configurable
-  workers set `metadata.ui_form` to their stable default id so the Console can
-  reuse the correct deliberate form when `III_CONFIG_NAME` renames the runtime
-  entry.
+- `configuration::ensure` — atomically declare or refresh an id with name,
+  description, JSON Schema, metadata, and an optional `initial_value` candidate.
+  Seed only when the stored value is absent or `null`; preserve any existing
+  non-null value. Configurable workers use this operation for initialization
+  and set `metadata.ui_form` to their stable default id so the Console can reuse
+  the correct deliberate form when `III_CONFIG_NAME` renames the runtime entry.
+- `configuration::register` — declare or refresh the same schema and metadata.
+  Preserve the stored value only when `initial_value` is omitted; an explicit
+  `initial_value` replaces it. Use this legacy operation for intentional
+  replacement, not conditional worker initialization.
 - `configuration::set` — replace the value for a registered id; validates
   against the schema and emits `configuration:updated`.
 - `configuration::get` — read one entry by id; expands `${VAR:default}`
@@ -156,7 +160,7 @@ All ids are kebab-case (`<worker>::<verb>`), per [`binary-worker.md`](binary-wor
   (never the value).
 - `configuration::schema` — read schema/name/description for one id.
 
-`register` and `set` are the only mutators; reads are cache-backed and expand
+`ensure`, `register`, and `set` are the mutators in this surface; reads are cache-backed and expand
 `${VAR:default}` against the live process env on every call, so env changes
 propagate without a restart.
 
