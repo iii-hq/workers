@@ -13,12 +13,12 @@
  * defaults (saved views hidden).
  */
 
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { getIiiClient } from '@/lib/iii-client'
-
-export const CONSOLE_CONFIG_ID = 'console'
 
 export type ConsoleConfigValue = Record<string, unknown>
 
+/** Identify absent configuration services or entries so reads can fall back without noisy warnings. */
 function isUnavailable(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
   return /function[_ ]not[_ ]found|not[_ ]found/i.test(message)
@@ -34,7 +34,7 @@ export async function fetchConsoleConfigValue(): Promise<ConsoleConfigValue | nu
     const client = await getIiiClient()
     const resp = await client.trigger<{ value?: unknown }>(
       'configuration::get',
-      { id: CONSOLE_CONFIG_ID },
+      { id: await resolveConfigurationId(client, 'console'), raw: true },
     )
     const value = resp?.value
     return value && typeof value === 'object' && !Array.isArray(value)
@@ -52,7 +52,7 @@ export async function setConsoleConfigValue(
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('configuration::set', {
-    id: CONSOLE_CONFIG_ID,
+    id: await resolveConfigurationId(client, 'console'),
     value,
   })
 }

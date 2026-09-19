@@ -6,17 +6,18 @@
  */
 
 import type { ExtensionIii, JsonValue } from '@iii-dev/console-ui'
-
-export const CONFIG_ID = 'voice'
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 
 export const NONE = '__none__'
 
 export type JsonObject = { [key: string]: JsonValue }
 
+/** Copy an object-shaped config value; arrays, scalars and missing values become an empty object. */
 export function asObject(value: JsonValue | undefined | null): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
 }
 
+/** Follow object keys only; return undefined if any intermediate value is missing or not an object. */
 export function getPath(value: JsonValue | undefined, path: readonly string[]): JsonValue | undefined {
   let cursor: JsonValue | undefined = value
   for (const key of path) {
@@ -46,26 +47,32 @@ export function setPath(
   return root
 }
 
+/** Read a string setting without coercing numeric or boolean values from the configuration. */
 export function stringAt(value: JsonValue | undefined, path: readonly string[], fallback = ''): string {
   const found = getPath(value, path)
   return typeof found === 'string' ? found : fallback
 }
 
+/** Read a finite numeric setting; malformed and non-finite values use the caller's fallback. */
 export function numberAt(value: JsonValue | undefined, path: readonly string[], fallback: number): number {
   const found = getPath(value, path)
   return typeof found === 'number' && Number.isFinite(found) ? found : fallback
 }
 
+/** Resolve the addressed Voice worker before reading its live configuration. */
 export async function readConfig(iii: ExtensionIii): Promise<JsonObject> {
-  const res = await iii.trigger<{ value?: JsonValue }>('configuration::get', { id: CONFIG_ID })
+  const res = await iii.trigger<{ value?: JsonValue }>('configuration::get', {
+    id: await resolveConfigurationId(iii, 'voice'),
+  })
   return asObject(res?.value)
 }
 
 /** Read, apply `patch`, write. The worker hot-reloads on the change. */
 export async function patchConfig(iii: ExtensionIii, patch: (current: JsonObject) => JsonObject): Promise<JsonObject> {
-  const current = await readConfig(iii)
-  const next = patch(current)
-  await iii.trigger('configuration::set', { id: CONFIG_ID, value: next })
+  const id = await resolveConfigurationId(iii, 'voice')
+  const response = await iii.trigger<{ value?: JsonValue }>('configuration::get', { id, raw: true })
+  const next = patch(asObject(response?.value))
+  await iii.trigger('configuration::set', { id, value: next })
   return next
 }
 

@@ -60,7 +60,7 @@ runtime config. Nothing in the worker repo is loaded by default at runtime.
 |------|------|
 | `./config/<id>.yaml` | Persisted value (configuration worker fs adapter; committable) |
 | `WorkerConfig::default()` | Built-in defaults; registered as `initial_value` only when no stored value exists yet |
-| `--config <path>` (CLI) | **Optional one-time seed** for `initial_value` on first registration; never overwrites an existing stored value |
+| `--config <path>` (CLI) | **Optional one-time seed** for `initial_value` on first registration; never overwrites an existing stored value when no concurrent initialization or editing occurs (see § Concurrent initialization below) |
 | Console Configuration tab | Same store via `configuration::set` |
 | Committed `<worker>/config.yaml` | **Do not ship** once integrated — omit from the repo |
 
@@ -73,7 +73,48 @@ Optional `--config` behaviour (see [`session-manager/src/main.rs`](../../session
 
 - Parse failure **warns** and falls through to no seed (the stored value or
   built-in default applies).
-- Re-registration on every boot is safe: an existing stored value is preserved.
+- Re-registration on every boot is safe when no concurrent initialization or
+  editing occurs: an existing stored value is preserved. The pre-check that
+  guards the seed is not atomic, so this holds only absent the race described in
+  [Concurrent initialization: current limitation](#concurrent-initialization-current-limitation)
+  below.
+
+### Concurrent initialization: current limitation
+
+The current configuration API has no create-if-absent or expected-version
+operation. A successful pre-check is **not an atomic guarantee**: another
+registrar can write after the check, or an operator can fill a registered null
+placeholder before the seed registration arrives. `configuration::register`
+replaces the value whenever `initial_value` is supplied, so that later request
+can overwrite the intervening write. Metadata-only registration also needs
+server-side serialization against `configuration::set` to avoid stale writes.
+
+Do not claim a client-local lock, a second read, or an unsupported request field
+solves this race. The complete fix requires a conditional initialization contract
+in the engine, serialized with register/set, plus compatibility handling before
+workers rely on it. Until that contract exists, avoid concurrent initialization
+or editing during the first registration of an empty entry.
+
+### Finding another worker's entry
+
+Do not reconstruct Compose's hash, read another process's `III_CONFIG_NAME`,
+or choose the first `configuration::list` result with matching `metadata.ui_form`.
+Multiple projects can share a configuration service and the same form family.
+
+Workers consumed by the Console expose a namespace-scoped internal function,
+`<worker>::configuration-id`, taking `{}` and returning `{ "id": "<effective-id>" }`.
+`console`, `ide`, `http`, `voice`, `security-scan`, and `approval-gate` implement it.
+The callback exposes no configuration value. Call it in the target worker's
+namespace, then use the returned ID with `configuration::*` in `default`.
+Read-modify-write consumers resolve once and use the same ID for both operations;
+read with `raw: true` to preserve environment templates in unrelated fields.
+
+A failed identity lookup must not fall back to an unscoped legacy entry: that
+could read or modify another project's settings. Consumers gracefully disable
+the affected feature on older workers until the worker is upgraded. For Rust UI
+workers, `iii_console_ui::register_configuration_identity` registers the typed
+function; browser consumers use `resolveConfigurationId` from
+`@iii-dev/console-ui/configuration`.
 
 ## 3. Function surface
 
@@ -155,10 +196,24 @@ Pick a **reload tier** (§6) and mirror the matching reference:
 
 Common to both tiers:
 
-- `CONFIG_ID = "<worker>"`, `CONFIG_FN_ID = "<worker>::on-config-change"`, retry/backoff constants.
-- `register_config(iii, seed)` — register `json_schema()`; install `seed` as
-  `initial_value` when present, else seed `WorkerConfig::default()` only when no
-  value is stored yet (safe to call every boot). Always include
+- Resolve the entry ID from trimmed, nonempty `III_CONFIG_NAME`, falling back to
+  the legacy worker ID when absent or blank. Cache it for the process lifetime.
+  Use the same resolved ID for registration, reads, writes, migrations, and change
+  subscriptions; do not derive it from `III_WORKER_NAME` or `III_NAMESPACE`.
+  Compose owns the naming algorithm and may also supply an explicit name.
+- Keep `CONFIG_FN_ID = "<worker>::on-config-change"` and `metadata.ui_form` stable:
+  they identify the callback and form family, not the persisted entry.
+- Configuration RPCs still target the `default` namespace; a namespaced entry ID
+  does not change the configuration service's routing namespace.
+- `register_config(iii, seed)` — register `json_schema()`; install `seed` or
+  `WorkerConfig::default()` as `initial_value` **only when no value is stored**.
+  A Compose-delivered override or operator value must survive even when an
+  explicit seed was provided. A lookup failure is not an absent entry: only the
+  exact uppercase `NOT_FOUND` entry code permits seeding, not `function_not_found`,
+  `STATEMENT_NOT_FOUND`, or a message that merely mentions `NOT_FOUND`. Prefer the
+  structured SDK code; when an existing retry wrapper returns a string, inspect
+  the outermost SDK `remote error (<code>): <message>` envelope instead of a
+  substring or token anywhere in the message. Always include
   `"metadata": { "ui_form": DEFAULT_CONFIG_ID }`; `id` may be the dynamic
   `config_id()`, while `ui_form` remains the built-in family id.
 - `fetch_config(iii)` — read the authoritative, env-expanded value

@@ -17,14 +17,17 @@ import {
   toRuntime,
 } from './config.js';
 
-const CONFIG_ID = 'opencode';
+const DEFAULT_CONFIG_ID = 'opencode';
+const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
 const CONFIG_FN_ID = 'opencode::on-config-change';
 const TIMEOUT_MS = 5_000;
 
 /** Live snapshot shared with the handlers; `current` is whole-replaced on reload. */
 export type ConfigHolder = { current: Config };
 
+/** Refresh the OpenCode schema while preserving values found in the assigned entry. */
 export async function registerOpencodeConfig(iii: IIIClient, seed: Config): Promise<void> {
+  const initial = (await hasStoredValue(iii)) ? {} : { initial_value: toRuntime(seed) };
   await iii.trigger({
     function_id: 'configuration::register',
     namespace: 'default',
@@ -34,11 +37,29 @@ export async function registerOpencodeConfig(iii: IIIClient, seed: Config): Prom
       description:
         'OpenCode worker: per-turn defaults (model, working directory, agent), the agent::events / opencode::events stream names, the opencode CLI path, and whether to inject the iii runtime context.',
       schema: runtimeJsonSchema(),
-      metadata: { ui_form: CONFIG_ID },
-      initial_value: toRuntime(seed),
+      metadata: { ui_form: DEFAULT_CONFIG_ID },
+      ...initial,
     },
     timeoutMs: TIMEOUT_MS,
   });
+}
+
+/** Never turn a service failure into permission to overwrite the stored value. */
+async function hasStoredValue(iii: IIIClient): Promise<boolean> {
+  try {
+    const response = await iii.trigger<unknown, { value?: unknown }>({
+      function_id: 'configuration::get',
+      namespace: 'default',
+      payload: { id: CONFIG_ID, raw: true },
+      timeoutMs: TIMEOUT_MS,
+    });
+    return response?.value != null;
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'NOT_FOUND') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 /** Fetch the live runtime config; null when unset/unreachable. */

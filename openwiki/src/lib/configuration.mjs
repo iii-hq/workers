@@ -1,7 +1,8 @@
 // Configuration-worker integration. Registers openwiki's config schema so the
 // default model and page-writer concurrency are editable in the console and
 // hot-reload on change. Env vars seed the defaults on first registration.
-const CONFIG_ID = 'openwiki';
+const DEFAULT_CONFIG_ID = 'openwiki';
+const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
 const CONFIG_FN_ID = 'openwiki::on-config-change';
 
 // Sanitize env seeds against the declared schema: a NaN or out-of-range
@@ -17,6 +18,7 @@ const DEFAULTS = {
   refresh_default: REFRESH_VALUES.includes(envRefresh) ? envRefresh : 'off',
 };
 
+/** Declare the editable wiki settings with bounded concurrency and supported refresh cadences. */
 function schema() {
   return {
     type: 'object',
@@ -45,11 +47,29 @@ function schema() {
   };
 }
 
+/** Return a fresh copy of the sanitized environment seed without exposing the shared defaults object. */
 export function defaults() {
   return { ...DEFAULTS };
 }
 
+/** Seed only an absent value; transport failures must not erase an override. */
+async function hasStoredValue(iii) {
+  try {
+    const response = await iii.trigger({
+      function_id: 'configuration::get',
+      namespace: 'default',
+      payload: { id: CONFIG_ID, raw: true },
+    });
+    return response?.value != null;
+  } catch (error) {
+    if (error?.code === 'NOT_FOUND') return false;
+    throw error;
+  }
+}
+
+/** Publish the schema and initialize defaults only after a confirmed empty configuration. */
 export async function registerConfig(iii) {
+  const initial = (await hasStoredValue(iii)) ? {} : { initial_value: DEFAULTS };
   await iii.trigger({
     function_id: 'configuration::register',
     namespace: 'default',
@@ -58,12 +78,13 @@ export async function registerConfig(iii) {
       name: 'OpenWiki',
       description: 'OpenWiki worker: default model, page-writer concurrency, and auto-refresh cadence.',
       schema: schema(),
-      metadata: { ui_form: CONFIG_ID },
-      initial_value: DEFAULTS,
+      metadata: { ui_form: DEFAULT_CONFIG_ID },
+      ...initial,
     },
   });
 }
 
+/** Overlay applied stored settings on defaults; unavailable configuration keeps environment defaults. */
 export async function fetchConfig(iii) {
   try {
     const res = await iii.trigger({
@@ -78,6 +99,7 @@ export async function fetchConfig(iii) {
   }
 }
 
+/** Register the reload callback for this entry; an absent configuration service leaves defaults active. */
 export function bindConfigTrigger(iii, onChange) {
   iii.registerFunction(
     CONFIG_FN_ID,

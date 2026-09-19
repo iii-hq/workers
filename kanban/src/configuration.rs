@@ -13,11 +13,25 @@ use serde_json::Value;
 use crate::config::{self, CONFIG_DESCRIPTION, CONFIG_ID, CONFIG_NAME, KanbanConfig};
 use crate::store::ConfigCell;
 
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
+
 pub const RELOAD_FN_ID: &str = "kanban::on-config-change";
 
+/// Keep the Kanban form family stable while using the Compose-assigned entry ID.
 fn entry_spec() -> EntrySpec {
     EntrySpec {
-        id: CONFIG_ID,
+        id: config_id(),
         form_id: CONFIG_ID,
         name: CONFIG_NAME,
         description: CONFIG_DESCRIPTION,
@@ -36,7 +50,7 @@ pub async fn register(iii: &IIIClient, seed: Option<Value>) -> Result<(), String
 /// The live value, repaired by [`config::normalize`]; the built-in default
 /// when nothing is stored.
 pub async fn fetch(iii: &IIIClient) -> Result<KanbanConfig, String> {
-    Ok(iii_config_client::fetch(iii, CONFIG_ID)
+    Ok(iii_config_client::fetch(iii, config_id())
         .await?
         .map(|value| config::normalize(&value))
         .unwrap_or_default())
@@ -48,7 +62,7 @@ pub fn bind_reload(iii: &Arc<IIIClient>, cell: ConfigCell) -> Result<Reload, Err
     let engine = iii.clone();
     iii_config_client::on_change(
         iii,
-        CONFIG_ID,
+        config_id(),
         RELOAD_FN_ID,
         "Internal: re-read the kanban configuration after an operator change.",
         move || {

@@ -12,6 +12,7 @@ import {
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { ChevronRight } from 'lucide-react'
@@ -90,6 +91,7 @@ type StepState = 'complete' | 'active' | 'pending'
 
 const DOT_TONE: Record<StepState, 'ok' | 'accent' | 'ink'> = { complete: 'ok', active: 'accent', pending: 'ink' }
 
+/** Guide initial setup and reconcile layout changes from the addressed Console configuration. */
 export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
@@ -293,28 +295,29 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         // A console too old for `workspace::list` just never shows the note;
         // the step itself is unaffected, so this is not the operator's error.
         .catch(() => {})
-    check()
     const localId = `onboarding::layout::${watching}`
     let offHandler: () => void = () => {}
-    try {
-      offHandler = host.iii.on(localId, check)
-      const offTrigger = host.iii.registerTrigger({
-        type: 'configuration',
-        function_id: `${localId}::${host.iii.browserId}`,
-        config: { configuration_id: 'console', event_types: ['configuration:updated'] },
+    let offTrigger: () => void = () => {}
+    void resolveConfigurationId(host.iii, 'console')
+      .then((id) => {
+        if (!live) return
+        offHandler = host.iii.on(localId, check)
+        offTrigger = host.iii.registerTrigger({
+          type: 'configuration',
+          function_id: `${localId}::${host.iii.browserId}`,
+          config: { configuration_id: id, event_types: ['configuration:updated'] },
+        })
+        // Bind first, then recover changes that happened during identity lookup.
+        check()
       })
-      return () => {
-        live = false
-        offTrigger()
+      .catch(() => {
         offHandler()
-      }
-    } catch {
-      // The configuration worker may be down or restarting. The first check
-      // already ran, so the note is right until the layout next moves.
+        if (live) check()
+      })
+    return () => {
+      live = false
+      offTrigger()
       offHandler()
-      return () => {
-        live = false
-      }
     }
   }, [host, watching])
 

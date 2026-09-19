@@ -198,6 +198,7 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
 /// null case is a boot that previously could not seed (MOT-4252): re-seeding
 /// over it repairs the entry instead of leaving the worker in a crash loop.
 pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
+    iii_console_ui::register_configuration_identity(iii, "ide", config_id());
     let mut payload = json!({
         "id": config_id(),
         "name": "IDE",
@@ -320,6 +321,31 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     })
 }
 
+/// `true` for the one error that is a definitive answer rather than a
+/// failure: the configuration worker's uppercase `NOT_FOUND` entry code.
+/// Matched case-SENSITIVELY — the engine's missing-function code is the
+/// lowercase `function_not_found` and a backend lookup failure is
+/// `statement_not_found`; those must propagate as errors instead of being
+/// read as "nothing stored yet", which would seed a default over a stored
+/// operator/override value.
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
+}
+
 async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
     try_get_value(iii, config_id(), raw).await
 }
@@ -341,13 +367,14 @@ pub(crate) async fn try_get_value(
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
         // `trigger_configuration_with_retry` flattens the structured `Error` to its
-        // Display string, so we substring-match the recovered message rather
-        // than branch on `Error::Remote { code }`. The engine's missing-entry
-        // codes vary in case (`function_not_found`, `STATEMENT_NOT_FOUND`,
-        // `NOT_FOUND`), so uppercase before matching to catch them all. A
-        // false negative is non-fatal — it just propagates the raw retry error
-        // instead of the cleaner "not found", and boot fails closed either way.
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        // Display string, so we token-match the recovered message. Only the
+        // configuration worker's uppercase `NOT_FOUND` entry code counts as
+        // "nothing stored yet"; the engine's missing-FUNCTION code is lowercase
+        // `function_not_found` and a backend lookup failure is
+        // `statement_not_found`, so match case-SENSITIVELY — an absent or
+        // unroutable configuration worker must surface as an error, never seed a
+        // default over a stored operator/override value.
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -593,6 +620,43 @@ pub(crate) async fn trigger_configuration_with_retry(
 
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
+    /// Routing failures must not be mistaken for permission to seed the filesystem policy.
+    #[test]
+    fn missing_entry_detection_does_not_mask_service_failures() {
+        assert!(super::is_not_found("NOT_FOUND"));
+        assert!(super::is_not_found(
+            "remote error (NOT_FOUND): configuration not found"
+        ));
+        assert!(super::is_not_found(
+            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
+        ));
+        assert!(!super::is_not_found("function_not_found"));
+        assert!(!super::is_not_found("statement_not_found"));
+        assert!(!super::is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!super::is_not_found(
+            "remote error (ADAPTER_ERROR): NOT_FOUND"
+        ));
+        assert!(!super::is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
+        assert!(!super::is_not_found(
+            "configuration::get failed after 3 attempts: function_not_found"
+        ));
+    }
+
     use super::*;
 
     #[test]

@@ -21,28 +21,39 @@ use crate::config::WorkerConfig;
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
 pub const CONFIG_ID: &str = "voice";
+
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "voice::on-config-change";
 const CONFIG_RETRIES: u32 = 3;
 /// Base backoff between configuration RPC retries, multiplied by the attempt
 /// number for a linear backoff.
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 
-/// Register this worker's configuration schema. When `seed` is present its
-/// value becomes `initial_value`; otherwise the built-in default is seeded only
-/// when nothing is stored yet, so calling this every boot is safe.
+/// Register the schema without replacing an existing value. The optional seed
+/// or built-in default becomes `initial_value` only on the first registration.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
+    iii_console_ui::register_configuration_identity(iii, "voice", config_id());
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Voice",
         "description": "Speech-to-text engine and model, utterance endpointing, read-aloud \
                         engine, and the size and session limits of the voice worker.",
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default_value(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
+    if should_seed_default_value(iii).await? {
+        payload["initial_value"] = seed.cloned().unwrap_or_default().to_json();
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
@@ -67,16 +78,16 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     }
 }
 
+/// Require the assigned Voice entry and propagate missing or unreachable configuration.
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
-        .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
+        .ok_or_else(|| format!("configuration `{}` not found", config_id()))
 }
 
-/// `Ok(None)` when the entry does not exist. The engine's missing-entry codes
-/// vary in case, so match case-insensitively.
+/// `Ok(None)` only for a missing entry, never a missing service.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID }))
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -138,7 +149,7 @@ pub fn register_config_trigger(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
         json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
     ))?;
@@ -170,7 +181,21 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) -> Option<Arc<Work
 /// `true` for the one error that is an answer rather than a failure: the entry
 /// does not exist yet.
 fn is_not_found(error: &str) -> bool {
-    error.to_ascii_uppercase().contains("NOT_FOUND")
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
 async fn trigger_configuration_with_retry(
@@ -220,14 +245,33 @@ async fn trigger_configuration_with_retry(
 
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
     use super::*;
 
+    /// Only the entry's missing code short-circuits retries, never compound or message-only matches.
     #[test]
     fn a_missing_entry_is_not_retried() {
         assert!(is_not_found(
             "remote error (NOT_FOUND): configuration 'voice' not found"
         ));
         assert!(!is_not_found("connection reset by peer"));
+        assert!(!is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!is_not_found("remote error (ADAPTER_ERROR): NOT_FOUND"));
+        assert!(!is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
     }
 
     #[tokio::test]

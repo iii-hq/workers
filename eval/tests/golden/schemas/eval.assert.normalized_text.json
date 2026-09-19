@@ -33,6 +33,20 @@
           "model": {
             "type": "string"
           },
+          "prompt_sections_fallback": {
+            "description": "Why no shared prefix went out: `disabled` (config), `no_stable_prefix` (empty identity prompt) or `prefix_rewritten` (a pre_generate hook replaced the prompt head; its prompt still wins, it just shares nothing).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_surface_digest": {
+            "description": "Identity of the shared prompt prefix this generation went out with (`sha256:` of the stable section) — present only when the request carried `system_sections`. A local identity, never a provider hit; `usage.cache_read` is the reuse signal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "provider": {
             "type": [
               "string",

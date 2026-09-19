@@ -12,10 +12,24 @@ use super::schema::compose_entry_schema;
 
 pub const ENTRY_ID: &str = "llm-router";
 
+/// Process-stable entry identity; the form family remains ENTRY_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| ENTRY_ID.to_string())
+    })
+    .as_str()
+}
+
 /// Serializes entry mutations and authoritative reloads so an older reload
 /// cannot overwrite the snapshot produced by a newer credential write.
 pub type EntryWriteLock = std::sync::Arc<tokio::sync::Mutex<()>>;
 
+/// Refresh router metadata and apply an optional seed only to an empty entry.
 pub async fn register_entry(
     iii: &IIIClient,
     provider_schemas: &BTreeMap<String, Value>,
@@ -25,7 +39,7 @@ pub async fn register_entry(
         TriggerRequest {
             function_id: "configuration::register".into(),
             payload: json!({
-                "id": ENTRY_ID,
+                "id": config_id(),
                 "name": "LLM Router",
                 "description": "Provider credentials, routing heuristics, and stream budgets for llm-router.",
                 "schema": compose_entry_schema(provider_schemas),
@@ -49,12 +63,13 @@ pub async fn read_entry_value(iii: &IIIClient) -> Result<Value, Error> {
     read_entry_value_with_raw(iii, false).await
 }
 
+/// Read the resolved router entry, optionally preserving environment templates for migration.
 async fn read_entry_value_with_raw(iii: &IIIClient, raw: bool) -> Result<Value, Error> {
     let response: Value = iii
         .trigger(
             TriggerRequest {
                 function_id: "configuration::get".into(),
-                payload: json!({ "id": ENTRY_ID, "raw": raw }),
+                payload: json!({ "id": config_id(), "raw": raw }),
                 action: None,
                 timeout_ms: None,
             }
@@ -69,11 +84,12 @@ pub async fn write_entry_value(iii: &IIIClient, value: Value) -> Result<(), Erro
     Ok(())
 }
 
+/// Persist a migrated value to the same resolved entry used for registration and reads.
 async fn set_entry_value(iii: &IIIClient, value: Value) -> Result<Value, Error> {
     iii.trigger(
         TriggerRequest {
             function_id: "configuration::set".into(),
-            payload: json!({ "id": ENTRY_ID, "value": value }),
+            payload: json!({ "id": config_id(), "value": value }),
             action: None,
             timeout_ms: None,
         }
@@ -82,12 +98,22 @@ async fn set_entry_value(iii: &IIIClient, value: Value) -> Result<Value, Error> 
     .await
 }
 
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code (read from the structured `Error::Remote` code, not the message text), so a
+/// compound code or the lowercase `function_not_found` transport failure still
+/// propagates instead of being mistaken for an absent entry.
+fn is_not_found(error: &Error) -> bool {
+    error
+        .invocation_error()
+        .is_some_and(|inv| inv.code == "NOT_FOUND")
+}
+
 /// Remove retired provider-owned prompt overrides before the final strict
 /// schema is registered. The raw read/write preserves environment templates.
 async fn migrate_provider_system_prompts(iii: &IIIClient) -> Result<(), Error> {
     let value = match read_entry_value_with_raw(iii, true).await {
         Ok(value) => value,
-        Err(error) if error.to_string().contains("NOT_FOUND") => return Ok(()),
+        Err(error) if is_not_found(&error) => return Ok(()),
         Err(error) => return Err(error),
     };
     let mut migrated = value.clone();
@@ -98,7 +124,7 @@ async fn migrate_provider_system_prompts(iii: &IIIClient) -> Result<(), Error> {
         TriggerRequest {
             function_id: "configuration::register".into(),
             payload: json!({
-                "id": ENTRY_ID,
+                "id": config_id(),
                 "name": "LLM Router",
                 "description": "LLM Router configuration migration.",
                 "metadata": { "ui_form": ENTRY_ID },
@@ -164,6 +190,26 @@ fn reconcile_provider_prompt_write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The classifier reads the structured `Error::Remote` code: only a real
+    /// NOT_FOUND remote code is an absent entry. A different code (even when its
+    /// message mentions NOT_FOUND) and non-remote transport/handler errors must
+    /// propagate so migration never runs against a service failure.
+    #[test]
+    fn is_not_found_reads_the_structured_remote_code() {
+        assert!(is_not_found(&Error::Remote {
+            code: "NOT_FOUND".into(),
+            message: "configuration 'llm-router' not found".into(),
+            stacktrace: None,
+        }));
+        assert!(!is_not_found(&Error::Remote {
+            code: "ADAPTER_ERROR".into(),
+            message: "resource NOT_FOUND".into(),
+            stacktrace: None,
+        }));
+        assert!(!is_not_found(&Error::Handler("NOT_FOUND".into())));
+        assert!(!is_not_found(&Error::Timeout));
+    }
 
     #[test]
     fn provider_prompt_migration_preserves_an_intervening_update() {
