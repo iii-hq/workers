@@ -156,12 +156,21 @@ async fn should_seed_initial_value(iii: &IIIClient) -> Result<bool, String> {
 /// read as "nothing stored yet", which would seed a default over a stored
 /// operator/override value.
 fn is_not_found(error: &str) -> bool {
-    match error.split_once("remote error (") {
-        Some((_, rest)) => rest
-            .split_once(')')
-            .is_some_and(|(code, _)| code == "NOT_FOUND"),
-        None => error.trim() == "NOT_FOUND",
-    }
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
 /// Distinguish an absent entry from a failed lookup before deciding whether to seed.
@@ -469,6 +478,19 @@ pub struct ConfigChangeRequest {}
 
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
     /// Reject unrelated codes and messages that merely mention the missing-entry code.
     #[test]
     fn missing_entry_detection_does_not_mask_service_failures() {

@@ -101,12 +101,21 @@ pub async fn fetch(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
 /// engine's lowercase missing-FUNCTION code `function_not_found` still
 /// propagates as a failure instead of being read as "nothing stored yet".
 fn is_not_found(error: &str) -> bool {
-    match error.split_once("remote error (") {
-        Some((_, rest)) => rest
-            .split_once(')')
-            .is_some_and(|(code, _)| code == "NOT_FOUND"),
-        None => error.trim() == "NOT_FOUND",
-    }
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // client wraps a retried get as
+    // `configuration::get failed after RETRIES attempts: {err}`. Peel exactly
+    // that one wrapper (never a foreign one or a different attempt count) and
+    // then require the NOT_FOUND envelope at the very start, so a NOT_FOUND
+    // code buried in an unrelated message, a nested envelope, or a different
+    // wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
 /// Retry transient RPC failures, returning a definitive missing-entry response immediately.
@@ -301,6 +310,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/is_not_found_cases.rs"
+    ));
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -310,19 +324,7 @@ mod tests {
     /// clobbers a stored value.
     #[test]
     fn is_not_found_matches_only_the_envelope_code() {
-        assert!(is_not_found("NOT_FOUND"));
-        assert!(is_not_found(
-            "remote error (NOT_FOUND): configuration 'fp' not found"
-        ));
-        assert!(is_not_found(
-            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
-        ));
-        assert!(!is_not_found("remote error (ADAPTER_ERROR): NOT_FOUND"));
-        assert!(!is_not_found(
-            "remote error (OTHER): remote error (NOT_FOUND): nested"
-        ));
-        assert!(!is_not_found("RESOURCE_NOT_FOUND"));
-        assert!(!is_not_found("function_not_found"));
+        assert_missing_entry_contract(is_not_found);
     }
 
     /// `IIIClient::new` only builds local state — no network — and

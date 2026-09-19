@@ -60,7 +60,7 @@ runtime config. Nothing in the worker repo is loaded by default at runtime.
 |------|------|
 | `./config/<id>.yaml` | Persisted value (configuration worker fs adapter; committable) |
 | `WorkerConfig::default()` | Built-in defaults; registered as `initial_value` only when no stored value exists yet |
-| `--config <path>` (CLI) | **Optional one-time seed** for `initial_value` on first registration; never overwrites an existing stored value |
+| `--config <path>` (CLI) | **Optional one-time seed** for `initial_value` on first registration; never overwrites an existing stored value when no concurrent initialization or editing occurs (see § Concurrent initialization below) |
 | Console Configuration tab | Same store via `configuration::set` |
 | Committed `<worker>/config.yaml` | **Do not ship** once integrated — omit from the repo |
 
@@ -73,7 +73,11 @@ Optional `--config` behaviour (see [`session-manager/src/main.rs`](../../session
 
 - Parse failure **warns** and falls through to no seed (the stored value or
   built-in default applies).
-- Re-registration on every boot is safe: an existing stored value is preserved.
+- Re-registration on every boot is safe when no concurrent initialization or
+  editing occurs: an existing stored value is preserved. The pre-check that
+  guards the seed is not atomic, so this holds only absent the race described in
+  [Concurrent initialization: current limitation](#concurrent-initialization-current-limitation)
+  below.
 
 ### Concurrent initialization: current limitation
 

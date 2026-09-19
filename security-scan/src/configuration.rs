@@ -144,17 +144,40 @@ async fn trigger_with_retry(
 
 /// Inspect the remote envelope code rather than words inside an unrelated failure message.
 fn is_not_found(error: &SecurityScanError) -> bool {
-    let msg = error.to_string();
-    match msg.split_once("remote error (") {
-        Some((_, rest)) => rest
-            .split_once(')')
-            .is_some_and(|(code, _)| code == "NOT_FOUND"),
-        None => msg.trim() == "NOT_FOUND",
+    // Only a dependency (RPC) failure can carry the configuration worker's
+    // NOT_FOUND envelope. A local `InvalidRequest` is our own validation error
+    // and must never be read as "nothing stored yet", even if its message
+    // happens to contain the token. Match the variant first, then inspect its
+    // inner message rather than the `Display` string of the whole error.
+    match error {
+        SecurityScanError::Dependency(message) => is_missing_entry_message(message),
+        SecurityScanError::InvalidRequest(_) => false,
     }
+}
+
+/// Anchor on the SDK's own rendering of a dependency failure: it prints as
+/// `remote error ({code}): {message}`, and this worker wraps a retried get as
+/// `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel that
+/// one wrapper (never a foreign one or a different attempt count) and then
+/// require the NOT_FOUND envelope at the very start, so a NOT_FOUND token
+/// buried in an unrelated message or wrapper still propagates as a failure.
+fn is_missing_entry_message(message: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = message.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -165,17 +188,16 @@ mod tests {
     /// codes all propagate instead of being read as "nothing stored yet".
     #[test]
     fn is_not_found_matches_only_the_envelope_code() {
-        let dep = |m: &str| SecurityScanError::Dependency(m.into());
-        assert!(is_not_found(&dep(
-            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
+        // Only a dependency failure carries the envelope; the classifier reads
+        // its inner message, so the shared string contract applies to it.
+        assert_missing_entry_contract(|message| {
+            is_not_found(&SecurityScanError::Dependency(message.to_string()))
+        });
+        // A local validation error is never a missing entry, even when its
+        // message contains the envelope verbatim.
+        assert!(!is_not_found(&SecurityScanError::InvalidRequest(
+            "remote error (NOT_FOUND): not a config read".into()
         )));
-        assert!(!is_not_found(&dep(
-            "remote error (ADAPTER_ERROR): NOT_FOUND"
-        )));
-        assert!(!is_not_found(&dep(
-            "remote error (OTHER): remote error (NOT_FOUND): nested"
-        )));
-        assert!(!is_not_found(&dep("RESOURCE_NOT_FOUND")));
     }
 
     #[test]
