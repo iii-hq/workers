@@ -41,18 +41,18 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&CronConfig>) -> Resu
         "schema": CronConfig::json_schema(),
         "metadata": { "ui_form": CONFIG_ID },
     });
-    if should_seed_initial_value(iii).await? {
-        let seed = seed.cloned().unwrap_or_default().normalized();
-        payload["initial_value"] = seed.to_json();
+    // The candidate (seed, else the built-in default) is forwarded
+    // unconditionally: `configuration::ensure` installs it atomically ONLY
+    // against an absent/null entry, so a stored operator/Compose override
+    // (even `false`/`0`/`""`) is preserved without a client-side
+    // read-then-register race.
+    let seed = seed.cloned().unwrap_or_default().normalized();
+    payload["initial_value"] = seed.to_json();
+    match trigger_with_retry(iii, "configuration::ensure", payload, CONFIG_BUS_TIMEOUT_MS).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
+        Err(e) => Err(e),
     }
-    trigger_with_retry(
-        iii,
-        "configuration::register",
-        payload,
-        CONFIG_BUS_TIMEOUT_MS,
-    )
-    .await?;
-    Ok(())
 }
 
 /// Parse the authoritative scheduling settings, with a first-boot fallback if unset.
@@ -69,11 +69,21 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<CronConfig, String> {
     }
 }
 
-async fn should_seed_initial_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
-        Some(value) if !value.is_null() => Ok(false),
-        _ => Ok(true),
-    }
+/// Upgrade-required error surfaced when the engine lacks atomic
+/// `configuration::ensure` (fail CLOSED; never a legacy seed-over-stored write).
+const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
+
+/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
+/// `function_not_found` (an engine without `configuration::ensure`). Same
+/// envelope discipline as `is_not_found`: peel the one retry wrapper, then
+/// require the envelope at the very start so a stray token still propagates.
+fn is_function_not_found(error: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "function_not_found"
+        || raw == "remote error (function_not_found):"
+        || raw.starts_with("remote error (function_not_found): ")
 }
 
 /// Query the instance's assigned entry and preserve non-entry errors for the caller.

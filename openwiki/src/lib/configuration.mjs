@@ -52,36 +52,36 @@ export function defaults() {
   return { ...DEFAULTS };
 }
 
-/** Seed only an absent value; transport failures must not erase an override. */
-async function hasStoredValue(iii) {
-  try {
-    const response = await iii.trigger({
-      function_id: 'configuration::get',
-      namespace: 'default',
-      payload: { id: CONFIG_ID, raw: true },
-    });
-    return response?.value != null;
-  } catch (error) {
-    if (error?.code === 'NOT_FOUND') return false;
-    throw error;
-  }
+const ENSURE_UNAVAILABLE =
+  'configuration::ensure unavailable; upgrade engine with atomic configuration initialization support';
+
+/** The engine's lowercase missing-FUNCTION code: an engine without configuration::ensure. */
+function isFunctionNotFound(error) {
+  return !!error && typeof error === 'object' && error.code === 'function_not_found';
 }
 
-/** Publish the schema and initialize defaults only after a confirmed empty configuration. */
+/** Publish the schema and seed the candidate atomically via configuration::ensure. */
 export async function registerConfig(iii) {
-  const initial = (await hasStoredValue(iii)) ? {} : { initial_value: DEFAULTS };
-  await iii.trigger({
-    function_id: 'configuration::register',
-    namespace: 'default',
-    payload: {
-      id: CONFIG_ID,
-      name: 'OpenWiki',
-      description: 'OpenWiki worker: default model, page-writer concurrency, and auto-refresh cadence.',
-      schema: schema(),
-      metadata: { ui_form: DEFAULT_CONFIG_ID },
-      ...initial,
-    },
-  });
+  try {
+    await iii.trigger({
+      function_id: 'configuration::ensure',
+      namespace: 'default',
+      payload: {
+        id: CONFIG_ID,
+        name: 'OpenWiki',
+        description: 'OpenWiki worker: default model, page-writer concurrency, and auto-refresh cadence.',
+        schema: schema(),
+        metadata: { ui_form: DEFAULT_CONFIG_ID },
+        initial_value: DEFAULTS,
+      },
+    });
+  } catch (error) {
+    if (isFunctionNotFound(error)) {
+      // Fail CLOSED against an engine that predates configuration::ensure.
+      throw new Error(ENSURE_UNAVAILABLE);
+    }
+    throw error;
+  }
 }
 
 /** Overlay applied stored settings on defaults; unavailable configuration keeps environment defaults. */

@@ -25,41 +25,44 @@ const TIMEOUT_MS = 5_000;
 /** Live snapshot shared with the handlers; `current` is whole-replaced on reload. */
 export type ConfigHolder = { current: Config };
 
-/** Refresh Pi metadata and seed only when the assigned configuration has no value. */
+/**
+ * Refresh the Pi schema and seed the candidate atomically via
+ * `configuration::ensure`: the seed is forwarded unconditionally and the engine
+ * installs it ONLY against an absent/null entry, so a stored operator/Compose
+ * value is preserved without a client-side read-then-register race.
+ */
 export async function registerPiConfig(iii: IIIClient, seed: Config): Promise<void> {
-  const initial = (await hasStoredValue(iii)) ? {} : { initial_value: toRuntime(seed) };
-  await iii.trigger({
-    function_id: 'configuration::register',
-    namespace: 'default',
-    payload: {
-      id: CONFIG_ID,
-      name: 'Pi',
-      description:
-        'Pi coding agent worker: per-turn defaults (model, thinking level, working directory, tool allowlist, agent config dir), the agent::events / pi::events stream names, and whether to inject the iii runtime context.',
-      schema: runtimeJsonSchema(),
-      metadata: { ui_form: DEFAULT_CONFIG_ID },
-      ...initial,
-    },
-    timeoutMs: TIMEOUT_MS,
-  });
-}
-
-/** Never turn a service failure into permission to overwrite the stored value. */
-async function hasStoredValue(iii: IIIClient): Promise<boolean> {
   try {
-    const response = await iii.trigger<unknown, { value?: unknown }>({
-      function_id: 'configuration::get',
+    await iii.trigger({
+      function_id: 'configuration::ensure',
       namespace: 'default',
-      payload: { id: CONFIG_ID, raw: true },
+      payload: {
+        id: CONFIG_ID,
+        name: 'Pi',
+        description:
+          'Pi coding agent worker: per-turn defaults (model, thinking level, working directory, tool allowlist, agent config dir), the agent::events / pi::events stream names, and whether to inject the iii runtime context.',
+        schema: runtimeJsonSchema(),
+        metadata: { ui_form: DEFAULT_CONFIG_ID },
+        initial_value: toRuntime(seed),
+      },
       timeoutMs: TIMEOUT_MS,
     });
-    return response?.value != null;
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'NOT_FOUND') {
-      return false;
+    if (isFunctionNotFound(error)) {
+      throw new Error(ENSURE_UNAVAILABLE);
     }
     throw error;
   }
+}
+
+export const ENSURE_UNAVAILABLE =
+  'configuration::ensure unavailable; upgrade engine with atomic configuration initialization support';
+
+/** The engine's lowercase missing-FUNCTION code: an engine without configuration::ensure. */
+function isFunctionNotFound(error: unknown): boolean {
+  return (
+    !!error && typeof error === 'object' && 'code' in error && error.code === 'function_not_found'
+  );
 }
 
 /** Fetch the live runtime config; null when unset/unreachable. */

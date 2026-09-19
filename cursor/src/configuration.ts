@@ -18,30 +18,36 @@ const RETRY_DELAYS_MS = [250, 500, 1_000];
 export const ConfigChangeEventSchema = z.object({ id: z.string().optional() }).passthrough();
 export const ConfigChangeResponseSchema = z.object({ ok: z.boolean() });
 
-/** Refresh Cursor metadata after checking that initialization will not replace a stored value. */
+/** Atomically declare Cursor settings; the engine preserves any existing non-null value. */
 export async function registerCursorConfig(
   iii: IIIClient,
   initialValue: Config = defaultConfig(),
 ): Promise<void> {
-  let stored: unknown;
   try {
-    const response = await triggerWithRetry(iii, 'configuration::get', {
+    await triggerWithRetry(iii, 'configuration::ensure', {
       id: configId(),
-      raw: true,
+      name: 'Cursor',
+      description:
+        'Cursor provider and agent worker using normal Cursor CLI login for LLM Router and local ACP sessions, plus the optional sdk.v1 Bridge for explicit API-key or cloud sessions.',
+      schema: runtimeJsonSchema(),
+      metadata: { ui_form: DEFAULT_CONFIG_ID },
+      initial_value: initialValue,
     });
-    stored = z.object({ value: z.unknown() }).parse(response).value;
   } catch (error) {
-    if (!isMissingEntry(error)) throw error;
+    if (isFunctionNotFound(error)) throw new Error(ENSURE_UNAVAILABLE);
+    throw error;
   }
-  await triggerWithRetry(iii, 'configuration::register', {
-    id: configId(),
-    name: 'Cursor',
-    description:
-      'Cursor provider and agent worker using normal Cursor CLI login for LLM Router and local ACP sessions, plus the optional sdk.v1 Bridge for explicit API-key or cloud sessions.',
-    schema: runtimeJsonSchema(),
-    metadata: { ui_form: DEFAULT_CONFIG_ID },
-    ...(stored == null ? { initial_value: initialValue } : {}),
-  });
+}
+
+/** An old engine must be upgraded rather than silently using legacy registration. */
+export const ENSURE_UNAVAILABLE =
+  'configuration::ensure unavailable; upgrade engine with atomic configuration initialization support';
+
+/** Inspect the structured SDK code, never a word in the message. */
+function isFunctionNotFound(error: unknown): boolean {
+  return (
+    !!error && typeof error === 'object' && 'code' in error && error.code === 'function_not_found'
+  );
 }
 
 /** Fetch and validate the applied Cursor configuration; missing or malformed values are errors. */
@@ -119,7 +125,7 @@ async function triggerWithRetry(
         timeoutMs: TIMEOUT_MS,
       });
     } catch (error) {
-      if (isMissingEntry(error)) throw error;
+      if (isMissingEntry(error) || isFunctionNotFound(error)) throw error;
       lastError = error;
       const delay = RETRY_DELAYS_MS[attempt];
       if (delay === undefined) break;

@@ -60,7 +60,7 @@ fn spec() -> config_client::EntrySpec {
 /// seeded as `initial_value` only when nothing is stored yet (safe to call
 /// every boot).
 pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
-    config_client::register(iii, &spec(), None).await
+    config_client::ensure(iii, &spec(), None).await
 }
 
 /// Read the live `workflow` configuration (env-expanded by the configuration

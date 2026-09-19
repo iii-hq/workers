@@ -60,6 +60,8 @@ export function deriveFunctionPolicy(
   const deny = new Set<string>([
     'approval::*',
     'configuration::register',
+    // Atomic register/seed twin — same schema/seed power under a new name.
+    'configuration::ensure',
     'shell::workspace::*',
   ])
   for (const entry of rules) {

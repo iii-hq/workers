@@ -25,41 +25,46 @@ const TIMEOUT_MS = 5_000;
 /** Live snapshot shared with the handlers; `current` is whole-replaced on reload. */
 export type ConfigHolder = { current: Config };
 
-/** Refresh the Claude Code schema; send a seed only after a confirmed empty entry. */
+/**
+ * Refresh the Claude Code schema and seed the candidate atomically via
+ * `configuration::ensure`: the seed is forwarded unconditionally and the engine
+ * installs it ONLY against an absent/null entry, so a stored operator/Compose
+ * value is preserved without a client-side read-then-register race.
+ */
 export async function registerClaudeConfig(iii: IIIClient, seed: Config): Promise<void> {
-  const initial = (await hasStoredValue(iii)) ? {} : { initial_value: toRuntime(seed) };
-  await iii.trigger({
-    function_id: 'configuration::register',
-    namespace: 'default',
-    payload: {
-      id: CONFIG_ID,
-      name: 'Claude Code',
-      description:
-        'Claude Code worker: per-turn defaults (model, permission mode, max turns, working directory, system-prompt append, allowed/disallowed tools), the agent::events / claude::events stream names, the approval-gate toggle, the claude CLI path, whether to inject the iii runtime context, and the terminal block — the binary, argv, workspace, and install/setup toggles for the console terminal page, which runs on the shell worker’s host, not this one.',
-      schema: runtimeJsonSchema(),
-      metadata: { ui_form: DEFAULT_CONFIG_ID },
-      ...initial,
-    },
-    timeoutMs: TIMEOUT_MS,
-  });
-}
-
-/** Never turn a service failure into permission to overwrite the stored value. */
-async function hasStoredValue(iii: IIIClient): Promise<boolean> {
   try {
-    const response = await iii.trigger<unknown, { value?: unknown }>({
-      function_id: 'configuration::get',
+    await iii.trigger({
+      function_id: 'configuration::ensure',
       namespace: 'default',
-      payload: { id: CONFIG_ID, raw: true },
+      payload: {
+        id: CONFIG_ID,
+        name: 'Claude Code',
+        description:
+          'Claude Code worker: per-turn defaults (model, permission mode, max turns, working directory, system-prompt append, allowed/disallowed tools), the agent::events / claude::events stream names, the approval-gate toggle, the claude CLI path, whether to inject the iii runtime context, and the terminal block — the binary, argv, workspace, and install/setup toggles for the console terminal page, which runs on the shell worker’s host, not this one.',
+        schema: runtimeJsonSchema(),
+        metadata: { ui_form: DEFAULT_CONFIG_ID },
+        initial_value: toRuntime(seed),
+      },
       timeoutMs: TIMEOUT_MS,
     });
-    return response?.value != null;
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'NOT_FOUND') {
-      return false;
+    if (isFunctionNotFound(error)) {
+      // Fail CLOSED against an engine that predates configuration::ensure;
+      // never fall back to the unsafe read-then-register seed.
+      throw new Error(ENSURE_UNAVAILABLE);
     }
     throw error;
   }
+}
+
+export const ENSURE_UNAVAILABLE =
+  'configuration::ensure unavailable; upgrade engine with atomic configuration initialization support';
+
+/** The engine's lowercase missing-FUNCTION code: an engine without configuration::ensure. */
+function isFunctionNotFound(error: unknown): boolean {
+  return (
+    !!error && typeof error === 'object' && 'code' in error && error.code === 'function_not_found'
+  );
 }
 
 /** Fetch the live runtime config; null when unset/unreachable. */

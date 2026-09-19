@@ -60,7 +60,7 @@ runtime config. Nothing in the worker repo is loaded by default at runtime.
 |------|------|
 | `./config/<id>.yaml` | Persisted value (configuration worker fs adapter; committable) |
 | `WorkerConfig::default()` | Built-in defaults; registered as `initial_value` only when no stored value exists yet |
-| `--config <path>` (CLI) | **Optional one-time seed** for `initial_value` on first registration; never overwrites an existing stored value when no concurrent initialization or editing occurs (see § Concurrent initialization below) |
+| `--config <path>` (CLI) | **Optional one-time seed** for `initial_value`; installed atomically by `configuration::ensure` **only** when nothing is stored yet, never overwriting an existing stored value (see §2 Atomic initialization) |
 | Console Configuration tab | Same store via `configuration::set` |
 | Committed `<worker>/config.yaml` | **Do not ship** once integrated — omit from the repo |
 
@@ -73,27 +73,46 @@ Optional `--config` behaviour (see [`session-manager/src/main.rs`](../../session
 
 - Parse failure **warns** and falls through to no seed (the stored value or
   built-in default applies).
-- Re-registration on every boot is safe when no concurrent initialization or
-  editing occurs: an existing stored value is preserved. The pre-check that
-  guards the seed is not atomic, so this holds only absent the race described in
-  [Concurrent initialization: current limitation](#concurrent-initialization-current-limitation)
-  below.
+- Re-registration on every boot is safe: `register_config` calls
+  `configuration::ensure`, which preserves an existing stored value atomically
+  (see [Atomic initialization](#atomic-initialization-configurationensure)
+  below). An explicit `--config` seed is likewise installed only when nothing is
+  stored yet.
 
-### Concurrent initialization: current limitation
+### Atomic initialization (`configuration::ensure`)
 
-The current configuration API has no create-if-absent or expected-version
-operation. A successful pre-check is **not an atomic guarantee**: another
-registrar can write after the check, or an operator can fill a registered null
-placeholder before the seed registration arrives. `configuration::register`
-replaces the value whenever `initial_value` is supplied, so that later request
-can overwrite the intervening write. Metadata-only registration also needs
-server-side serialization against `configuration::set` to avoid stale writes.
+`configuration::ensure` is the create-if-absent contract that makes first-boot
+seeding atomic. A worker forwards its candidate default (or `--config` seed) as
+`initial_value` in ONE engine-serialized call; the engine installs it **only**
+when the stored value is absent or `null`, and preserves any existing operator
+or Compose value (even `false` / `0` / `""`). No client-side read-then-register
+pre-check decides whether to seed, so no window remains in which a second
+registrar or an operator edit is overwritten. The response reports `action`
+(`seeded` | `preserved` | `registered`) and the authoritative `entry`; schema
+and metadata are always refreshed. Register/ensure/set/delete are serialized by
+the engine's configuration mutex, and the legacy `configuration::register`
+remains an explicit overwrite used deliberately by Compose and by migrations.
 
-Do not claim a client-local lock, a second read, or an unsupported request field
-solves this race. The complete fix requires a conditional initialization contract
-in the engine, serialized with register/set, plus compatibility handling before
-workers rely on it. Until that contract exists, avoid concurrent initialization
-or editing during the first registration of an empty entry.
+**Engine version requirement — fail closed.** `configuration::ensure` ships in
+the engine PR [iii-hq/iii#2214](https://github.com/iii-hq/iii/pull/2214), which
+is **not yet merged or released**. Update the engine *before* the workers that
+call `ensure`. Against an engine that predates it, the first `ensure` call
+returns the engine's `function_not_found` and the worker **fails closed** with a
+clear error — `configuration::ensure unavailable; upgrade engine with atomic
+configuration initialization support` — instead of falling back to the unsafe
+read-then-`register` seed (which could clobber a stored override). A bridged
+`ensure` is forwarded to the remote engine; a remote that lacks it fails closed
+the same way (`ADAPTER_ERROR`), never a legacy fallback. Error codes are the
+usual `INVALID_ID` / `SCHEMA_INVALID` / `ADAPTER_ERROR`.
+
+`raw` reads, `${VAR:default}` env templates, and the `default` control-plane
+namespace are **unchanged** by `ensure`; the `metadata.ui_form` family id and
+the `<worker>::configuration-id` identity endpoint the Console uses are
+identical to the register path.
+
+Do not claim a client-local lock, a second read, or an unsupported request
+field solves the race — the fix is `configuration::ensure` in the engine,
+serialized with register/set, plus the fail-closed compatibility handling above.
 
 ### Finding another worker's entry
 

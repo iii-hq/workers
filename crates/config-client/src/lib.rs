@@ -8,10 +8,15 @@
 //! the configuration worker — and the two rules that are easy to get subtly
 //! wrong:
 //!
-//! - **Seeding**: `configuration::register` REPLACES the stored value
-//!   whenever `initial_value` is supplied (engine `store.rs` — "Existing
-//!   entries keep their value unless `initial_value` is supplied"), so a
-//!   seed or built-in default is installed only when nothing is stored yet.
+//! - **Seeding**: `ensure` forwards the candidate (`--config` seed or
+//!   built-in default) as `initial_value`; the engine's
+//!   `configuration::ensure` installs it ONLY against an absent/null entry
+//!   and preserves any stored operator/Compose value (even `false`/`0`/`""`)
+//!   atomically — no client-side read-then-`register` race. Against an engine
+//!   without `configuration::ensure` the call fails CLOSED
+//!   (`ENSURE_UNAVAILABLE`), never the legacy seed-over-stored path. The
+//!   legacy `configuration::register` still REPLACES the stored value when
+//!   `initial_value` is supplied and is used deliberately by Compose only.
 //! - **Reload serialization**: every reload runs under one lock with the
 //!   fetch INSIDE it, so overlapping `configuration:updated` deliveries
 //!   converge on the latest authoritative value instead of racing
@@ -51,21 +56,47 @@ pub struct EntrySpec {
     pub default_value: Value,
 }
 
-/// Register the entry's schema (idempotent, safe to call every boot). `seed`
-/// (a `--config` value) or the built-in default becomes `initial_value` ONLY
-/// when nothing is stored yet — see the module doc for why the pre-check is
-/// load-bearing, not an optimization.
-pub async fn register(
-    iii: &IIIClient,
-    spec: &EntrySpec,
-    seed: Option<Value>,
-) -> Result<(), String> {
+/// Error surfaced when the connected engine predates atomic configuration
+/// initialization (`configuration::ensure`). Fail CLOSED on it: never fall
+/// back to the legacy read-then-`register` seed, which can race a
+/// Compose/operator override and clobber it.
+pub const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
+
+/// Atomically declare the entry's schema/metadata and seed `initial_value` in
+/// a single engine-serialized step. Unlike the legacy read-then-register path, this performs NO
+/// client-side read to decide whether to seed: the candidate (`seed`, else the
+/// built-in `default_value`) is ALWAYS forwarded, and the engine's
+/// `configuration::ensure` installs it ONLY against an absent/null entry — any
+/// stored operator/Compose value (even `false`/`0`/`""`) is preserved
+/// atomically, closing the read-then-register race.
+///
+/// Fails CLOSED against an engine without `configuration::ensure`: the call
+/// surfaces [`ENSURE_UNAVAILABLE`] rather than silently seeding a default over
+/// a stored value through the legacy path.
+pub async fn ensure(iii: &IIIClient, spec: &EntrySpec, seed: Option<Value>) -> Result<(), String> {
     let mut payload = registration_payload(spec);
-    if fetch(iii, spec.id).await?.is_none() {
-        payload["initial_value"] = seed.unwrap_or_else(|| spec.default_value.clone());
+    payload["initial_value"] = seed.unwrap_or_else(|| spec.default_value.clone());
+    match trigger_configuration_with_retry(iii, "configuration::ensure", payload).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
+        Err(e) => Err(e),
     }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+}
+
+/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
+/// `function_not_found` — an engine that predates `configuration::ensure`.
+/// Distinct from [`is_not_found`], which matches the configuration worker's
+/// uppercase `NOT_FOUND` entry code. Same envelope discipline: peel the one
+/// retry wrapper, then require the envelope at the very start so a stray token
+/// in an unrelated message still propagates as a failure.
+fn is_function_not_found(error: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
+    const _: () = assert!(RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "function_not_found"
+        || raw == "remote error (function_not_found):"
+        || raw.starts_with("remote error (function_not_found): ")
 }
 
 fn registration_payload(spec: &EntrySpec) -> Value {
@@ -325,6 +356,27 @@ mod tests {
     #[test]
     fn is_not_found_matches_only_the_envelope_code() {
         assert_missing_entry_contract(is_not_found);
+    }
+
+    /// `is_function_not_found` fires only on the engine's lowercase
+    /// `function_not_found` envelope (an engine without `configuration::ensure`),
+    /// never on the configuration worker's uppercase `NOT_FOUND` entry code or an
+    /// unrelated failure — so `ensure` fails closed instead of masking one.
+    #[test]
+    fn is_function_not_found_matches_only_the_engine_envelope() {
+        assert!(is_function_not_found("function_not_found"));
+        assert!(is_function_not_found(
+            "remote error (function_not_found): configuration::ensure"
+        ));
+        assert!(is_function_not_found(
+            "configuration::ensure failed after 3 attempts: remote error (function_not_found): missing"
+        ));
+        assert!(!is_function_not_found("NOT_FOUND"));
+        assert!(!is_function_not_found("remote error (NOT_FOUND): missing"));
+        assert!(!is_function_not_found("statement_not_found"));
+        assert!(!is_function_not_found(
+            "remote error (ADAPTER_ERROR): function_not_found"
+        ));
     }
 
     /// `IIIClient::new` only builds local state — no network — and

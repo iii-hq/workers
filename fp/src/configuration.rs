@@ -43,7 +43,7 @@ fn spec() -> config_client::EntrySpec {
 }
 
 pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
-    config_client::register(iii, &spec(), None).await
+    config_client::ensure(iii, &spec(), None).await
 }
 
 /// Parse the assigned entry, retaining standalone defaults only when no value exists.

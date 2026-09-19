@@ -183,7 +183,6 @@ pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Re
     let existing = existing_value(iii)
         .await
         .map_err(|error| format!("console configuration lookup failed: {error}"))?;
-    let seed = existing.is_none();
     // Entries created by older Console versions already contain preferences
     // but no port. Backfill the active local seed after the schema refresh so
     // the configuration form displays the listener's real value and future
@@ -205,11 +204,12 @@ pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Re
         "schema": schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if seed {
-        payload["initial_value"] = default_value(seed_http_port);
-    }
+    // The port seed is forwarded unconditionally: `configuration::ensure`
+    // installs it atomically ONLY against an absent/null entry, so a stored
+    // console entry is preserved without a client-side read-then-register race.
+    payload["initial_value"] = default_value(seed_http_port);
 
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
+    ensure_configuration(iii, payload).await?;
     if let Some(value) = backfill {
         set_value(iii, value).await?;
         tracing::info!(
@@ -220,6 +220,35 @@ pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Re
     }
     tracing::info!(id = config_id(), "console configuration registered");
     Ok(())
+}
+
+/// Forward `payload` to the engine's atomic `configuration::ensure`. Fails
+/// CLOSED against an engine that predates it (`function_not_found`): surface
+/// the upgrade-required error instead of falling back to the legacy
+/// read-then-`register` seed, which could clobber a stored override.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    match trigger_configuration_with_retry(iii, "configuration::ensure", payload).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Upgrade-required error surfaced when the engine lacks atomic
+/// `configuration::ensure` (fail CLOSED; never a legacy seed-over-stored write).
+const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
+
+/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
+/// `function_not_found` (an engine without `configuration::ensure`). Same
+/// envelope discipline as `is_not_found`: peel the one retry wrapper, then
+/// require the envelope at the very start so a stray token still propagates.
+fn is_function_not_found(error: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "function_not_found"
+        || raw == "remote error (function_not_found):"
+        || raw.starts_with("remote error (function_not_found): ")
 }
 
 const CONFIG_CHANGE_FN_ID: &str = "console::on-config-change";

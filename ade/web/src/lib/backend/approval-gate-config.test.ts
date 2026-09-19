@@ -25,6 +25,7 @@ describe('approval-gate-config', () => {
       allow: ['*'],
       deny: [
         'approval::*',
+        'configuration::ensure',
         'configuration::register',
         'shell::run',
         'shell::workspace::*',
@@ -39,6 +40,7 @@ describe('approval-gate-config', () => {
 
     expect(deny).toEqual([
       'approval::*',
+      'configuration::ensure',
       'configuration::register',
       'shell::workspace::*',
     ])

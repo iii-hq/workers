@@ -53,19 +53,21 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     // A seed initializes an absent entry; it never replaces a Compose override.
-    if should_seed_default_value(iii).await? {
-        payload["initial_value"] = seed
-            .map(|value| value.to_json())
-            .unwrap_or_else(|| WorkerConfig::default().to_json());
-    }
-    trigger_configuration_with_retry(
+    payload["initial_value"] = seed
+        .map(|value| value.to_json())
+        .unwrap_or_else(|| WorkerConfig::default().to_json());
+    match trigger_configuration_with_retry(
         iii,
-        "configuration::register",
+        "configuration::ensure",
         payload,
         config_rpc_timeout_ms(seed),
     )
-    .await?;
-    Ok(())
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
@@ -116,12 +118,21 @@ fn is_not_found(error: &str) -> bool {
         || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
-async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii, WorkerConfig::default().timeout_ms).await? {
-        None => Ok(true),
-        Some(value) if value.is_null() => Ok(true),
-        Some(_) => Ok(false),
-    }
+/// Upgrade-required error surfaced when the engine lacks atomic
+/// `configuration::ensure` (fail CLOSED; never a legacy seed-over-stored write).
+const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
+
+/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
+/// `function_not_found` (an engine without `configuration::ensure`). Same
+/// envelope discipline as `is_not_found`: peel the one retry wrapper, then
+/// require the envelope at the very start so a stray token still propagates.
+fn is_function_not_found(error: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "function_not_found"
+        || raw == "remote error (function_not_found):"
+        || raw.starts_with("remote error (function_not_found): ")
 }
 
 /// Bound lookup time while distinguishing a missing entry from a failed dependency.

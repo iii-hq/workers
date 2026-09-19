@@ -23,6 +23,7 @@ export class MockIII {
   readonly triggerCalls: Array<Record<string, unknown>> = [];
   configValue: unknown = defaultConfig();
   configFailures = 0;
+  ensureError: unknown;
 
   registerFunction(
     id: string,
@@ -71,7 +72,16 @@ export class MockIII {
       else this.streamItems.push(clone(payload));
       return null;
     }
-    if (functionId === 'configuration::register') return { ok: true };
+    if (functionId === 'configuration::register') throw new Error('unexpected legacy registration');
+    if (functionId === 'configuration::ensure') {
+      if (this.ensureError) throw this.ensureError;
+      const empty = this.configValue == null;
+      if (empty) this.configValue = clone(payload.initial_value);
+      return {
+        action: empty ? 'seeded' : 'preserved',
+        entry: { ...payload, value: clone(this.configValue) },
+      };
+    }
     if (functionId === 'configuration::get') {
       if (this.configFailures > 0) {
         this.configFailures -= 1;

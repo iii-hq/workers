@@ -33,6 +33,7 @@ describe('fallback function policy', () => {
 
   it('allows configuration updates without exposing registration', () => {
     expect(FALLBACK_FUNCTION_POLICY.deny).toContain('configuration::register')
+    expect(FALLBACK_FUNCTION_POLICY.deny).toContain('configuration::ensure')
     expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::*')
     expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::get')
     expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::set')
