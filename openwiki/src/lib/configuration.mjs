@@ -18,6 +18,7 @@ const DEFAULTS = {
   refresh_default: REFRESH_VALUES.includes(envRefresh) ? envRefresh : 'off',
 };
 
+/** Declare the editable wiki settings with bounded concurrency and supported refresh cadences. */
 function schema() {
   return {
     type: 'object',
@@ -46,6 +47,7 @@ function schema() {
   };
 }
 
+/** Return a fresh copy of the sanitized environment seed without exposing the shared defaults object. */
 export function defaults() {
   return { ...DEFAULTS };
 }
@@ -82,6 +84,7 @@ export async function registerConfig(iii) {
   });
 }
 
+/** Overlay applied stored settings on defaults; unavailable configuration keeps environment defaults. */
 export async function fetchConfig(iii) {
   try {
     const res = await iii.trigger({
@@ -96,6 +99,7 @@ export async function fetchConfig(iii) {
   }
 }
 
+/** Register the reload callback for this entry; an absent configuration service leaves defaults active. */
 export function bindConfigTrigger(iii, onChange) {
   iii.registerFunction(
     CONFIG_FN_ID,

@@ -44,6 +44,7 @@ export async function registerCursorConfig(
   });
 }
 
+/** Fetch and validate the applied Cursor configuration; missing or malformed values are errors. */
 export async function fetchRuntime(iii: IIIClient): Promise<Config> {
   const response = await triggerWithRetry(iii, 'configuration::get', {
     id: configId(),
@@ -53,6 +54,7 @@ export async function fetchRuntime(iii: IIIClient): Promise<Config> {
   return ConfigSchema.parse(parsed.value);
 }
 
+/** Subscribe before the initial read, serialize reloads, and retain the last valid config on failure. */
 export async function bindConfigTrigger(iii: IIIClient, holder: ConfigHolder): Promise<void> {
   let reload = Promise.resolve();
   const refresh = async () => {
@@ -132,6 +134,7 @@ function isMissingEntry(error: unknown): boolean {
   return !!error && typeof error === 'object' && 'code' in error && error.code === 'NOT_FOUND';
 }
 
+/** Render rejected reloads consistently whether the SDK throws an Error or another value. */
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

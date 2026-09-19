@@ -51,6 +51,7 @@ async function hasStoredValue(iii: IIIClient): Promise<boolean> {
   }
 }
 
+/** Read and validate applied runtime settings, returning null when absent, invalid or unreachable. */
 export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null> {
   try {
     const res = await iii.trigger<unknown, { value?: unknown }>({
@@ -68,6 +69,7 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
   }
 }
 
+/** Apply an initial reload, then subscribe to updates for this VS Code instance's assigned entry. */
 export async function bindConfigTrigger(
   iii: IIIClient,
   onChange: () => Promise<void>,

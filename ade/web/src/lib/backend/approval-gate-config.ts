@@ -24,10 +24,12 @@ interface StructuredRule {
   modes?: string[]
 }
 
+/** Accept only the three supported policy modes before applying stored deployment defaults. */
 function isPermissionMode(v: unknown): v is PermissionMode {
   return v === 'manual' || v === 'auto' || v === 'full'
 }
 
+/** Normalize missing or malformed rule collections without treating an object as a rule list. */
 function asRulesArray(value: JsonValue | undefined): JsonValue[] {
   return Array.isArray(value) ? value : []
 }
@@ -95,6 +97,7 @@ export async function loadApprovalGateConfig(): Promise<ApprovalGateConfigView> 
   }
 }
 
+/** Replace only auto-exclusive allow rules, preserving manual, shared-mode and deny policies. */
 function withoutAutoSeedRules(rules: JsonValue[]): JsonValue[] {
   return rules.filter((entry) => {
     if (typeof entry === 'string') return true
@@ -134,6 +137,7 @@ export async function saveApprovalGateDefaults(
   }
 }
 
+/** Derive UI defaults and the function-policy floor from the addressed gate's stored rules. */
 export async function loadApprovalGateDefaults(): Promise<{
   defaultMode: PermissionMode
   allowlist: string[]

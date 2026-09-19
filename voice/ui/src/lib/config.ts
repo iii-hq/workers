@@ -12,10 +12,12 @@ export const NONE = '__none__'
 
 export type JsonObject = { [key: string]: JsonValue }
 
+/** Copy an object-shaped config value; arrays, scalars and missing values become an empty object. */
 export function asObject(value: JsonValue | undefined | null): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
 }
 
+/** Follow object keys only; return undefined if any intermediate value is missing or not an object. */
 export function getPath(value: JsonValue | undefined, path: readonly string[]): JsonValue | undefined {
   let cursor: JsonValue | undefined = value
   for (const key of path) {
@@ -45,11 +47,13 @@ export function setPath(
   return root
 }
 
+/** Read a string setting without coercing numeric or boolean values from the configuration. */
 export function stringAt(value: JsonValue | undefined, path: readonly string[], fallback = ''): string {
   const found = getPath(value, path)
   return typeof found === 'string' ? found : fallback
 }
 
+/** Read a finite numeric setting; malformed and non-finite values use the caller's fallback. */
 export function numberAt(value: JsonValue | undefined, path: readonly string[], fallback: number): number {
   const found = getPath(value, path)
   return typeof found === 'number' && Number.isFinite(found) ? found : fallback
