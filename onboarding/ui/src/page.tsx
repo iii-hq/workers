@@ -297,20 +297,22 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
     const localId = `onboarding::layout::${watching}`
     let offHandler: () => void = () => {}
     let offTrigger: () => void = () => {}
-    void resolveConfigurationId(host.iii, 'console').then((id) => {
-      if (!live) return
-      offHandler = host.iii.on(localId, check)
-      offTrigger = host.iii.registerTrigger({
-        type: 'configuration',
-        function_id: `${localId}::${host.iii.browserId}`,
-        config: { configuration_id: id, event_types: ['configuration:updated'] },
+    void resolveConfigurationId(host.iii, 'console')
+      .then((id) => {
+        if (!live) return
+        offHandler = host.iii.on(localId, check)
+        offTrigger = host.iii.registerTrigger({
+          type: 'configuration',
+          function_id: `${localId}::${host.iii.browserId}`,
+          config: { configuration_id: id, event_types: ['configuration:updated'] },
+        })
+        // Bind first, then recover changes that happened during identity lookup.
+        check()
       })
-      // Bind first, then recover changes that happened during identity lookup.
-      check()
-    }).catch(() => {
-      offHandler()
-      if (live) check()
-    })
+      .catch(() => {
+        offHandler()
+        if (live) check()
+      })
     return () => {
       live = false
       offTrigger()

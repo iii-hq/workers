@@ -1,5 +1,8 @@
 import { test } from 'node:test';
-import { checkConfigurationContract, configurationCases } from '../../crates/node-core/tests/configuration-contract.mjs';
+import {
+  checkConfigurationContract,
+  configurationCases,
+} from '../../crates/node-core/tests/configuration-contract.mjs';
 
 for (const [index, scenario] of configurationCases.entries()) {
   test(scenario.title, async () => {
