@@ -91,8 +91,9 @@ pub fn new_cell(config: RestApiConfig) -> ConfigCell {
     Arc::new(RwLock::new(Arc::new(config)))
 }
 
+// Routed calls include engine metadata such as `_caller_worker_id`.
+// The payload never controls which configuration entry is returned.
 #[derive(serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
 struct ConfigurationIdentityRequest {}
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
@@ -380,6 +381,19 @@ pub struct ConfigChangeRequest {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn configuration_identity_accepts_engine_caller_metadata() {
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({
+                "_caller_worker_id": "00000000-0000-4000-8000-000000000002"
+            }),
+        ] {
+            serde_json::from_value::<super::ConfigurationIdentityRequest>(payload)
+                .expect("routed identity requests accept engine metadata");
+        }
+    }
+
     use super::*;
     use crate::config::MiddlewareConfig;
 

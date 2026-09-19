@@ -46,9 +46,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-/// Empty request for a worker's namespace-scoped configuration identity.
+/// Empty user request. Ignore transport metadata such as `_caller_worker_id`,
+/// which the engine adds to routed calls; no payload field selects the entry.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 struct ConfigurationIdentityRequest {}
 
 /// Only the entry ID is exposed; configuration values and secrets stay in the service.
@@ -488,6 +488,19 @@ fn spawn_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configuration_identity_accepts_engine_caller_metadata() {
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({
+                "_caller_worker_id": "00000000-0000-4000-8000-000000000002"
+            }),
+        ] {
+            serde_json::from_value::<ConfigurationIdentityRequest>(payload)
+                .expect("routed identity requests accept engine metadata");
+        }
+    }
 
     fn two_assets() -> ConsoleUi {
         ConsoleUi::new("demo")

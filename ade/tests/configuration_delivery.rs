@@ -79,7 +79,9 @@ async fn exercise_delivery() {
                     ws.send(Message::Text(
                         json!({
                             "type":"invokefunction", "function_id":"console::configuration-id",
-                            "invocation_id":invocation, "data":{}, "namespace":"project"
+                            "invocation_id":invocation,
+                            "data":{"_caller_worker_id":"00000000-0000-4000-8000-000000000002"},
+                            "namespace":"project"
                         })
                         .to_string(),
                     ))
