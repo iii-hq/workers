@@ -91,10 +91,29 @@ pub fn new_cell(config: RestApiConfig) -> ConfigCell {
     Arc::new(RwLock::new(Arc::new(config)))
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ConfigurationIdentityRequest {}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ConfigurationIdentityResponse {
+    id: String,
+}
+
 /// Register the `http` configuration entry: schema + metadata refresh on every
 /// boot; `initial_value` (the `--config` seed, or built-in defaults) is included
 /// only when nothing is stored yet, so runtime edits survive restarts.
 pub async fn register_config(iii: &IIIClient, seed: Option<&RestApiConfig>) -> Result<(), String> {
+    iii.register_function(
+        "http::configuration-id",
+        RegisterFunction::new(|_request: ConfigurationIdentityRequest| {
+            Ok::<_, Error>(ConfigurationIdentityResponse {
+                id: config_id().to_string(),
+            })
+        })
+        .description("Returns this HTTP instance's configuration entry ID, without its value.")
+        .metadata(json!({ "internal": true })),
+    );
     let mut payload = json!({
         "id": config_id(),
         "name": "HTTP",
@@ -149,7 +168,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }

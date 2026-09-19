@@ -12,6 +12,19 @@ use super::schema::compose_entry_schema;
 
 pub const ENTRY_ID: &str = "llm-router";
 
+/// Process-stable entry identity; the form family remains ENTRY_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| ENTRY_ID.to_string())
+    })
+    .as_str()
+}
+
 /// Serializes entry mutations and authoritative reloads so an older reload
 /// cannot overwrite the snapshot produced by a newer credential write.
 pub type EntryWriteLock = std::sync::Arc<tokio::sync::Mutex<()>>;
@@ -25,7 +38,7 @@ pub async fn register_entry(
         TriggerRequest {
             function_id: "configuration::register".into(),
             payload: json!({
-                "id": ENTRY_ID,
+                "id": config_id(),
                 "name": "LLM Router",
                 "description": "Provider credentials, routing heuristics, and stream budgets for llm-router.",
                 "schema": compose_entry_schema(provider_schemas),
@@ -54,7 +67,7 @@ async fn read_entry_value_with_raw(iii: &IIIClient, raw: bool) -> Result<Value, 
         .trigger(
             TriggerRequest {
                 function_id: "configuration::get".into(),
-                payload: json!({ "id": ENTRY_ID, "raw": raw }),
+                payload: json!({ "id": config_id(), "raw": raw }),
                 action: None,
                 timeout_ms: None,
             }
@@ -73,7 +86,7 @@ async fn set_entry_value(iii: &IIIClient, value: Value) -> Result<Value, Error> 
     iii.trigger(
         TriggerRequest {
             function_id: "configuration::set".into(),
-            payload: json!({ "id": ENTRY_ID, "value": value }),
+            payload: json!({ "id": config_id(), "value": value }),
             action: None,
             timeout_ms: None,
         }
@@ -98,7 +111,7 @@ async fn migrate_provider_system_prompts(iii: &IIIClient) -> Result<(), Error> {
         TriggerRequest {
             function_id: "configuration::register".into(),
             payload: json!({
-                "id": ENTRY_ID,
+                "id": config_id(),
                 "name": "LLM Router",
                 "description": "LLM Router configuration migration.",
                 "metadata": { "ui_form": ENTRY_ID },

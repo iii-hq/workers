@@ -1,3 +1,4 @@
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import type { Host } from '@iii-dev/console-ui'
 import { withRpcTimeout } from './rpc-timeout.js'
 import { assertCompleteGithubSourceSet } from './security-dashboard.js'
@@ -558,7 +559,7 @@ export interface ScanFormDefaults {
 export async function loadScanFormDefaults(host: Host): Promise<ScanFormDefaults> {
   try {
     const response = record(
-      await withRpcTimeout(host.iii.trigger('configuration::get', { id: 'security-scan' }), 'configuration::get'),
+      await withRpcTimeout(host.iii.trigger('configuration::get', { id: await resolveConfigurationId(host.iii, 'security-scan') }), 'configuration::get'),
       'configuration::get response',
     )
     if (response.value == null) return { repositories: [], analysisModel: null }

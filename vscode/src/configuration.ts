@@ -7,13 +7,15 @@ import {
   toRuntime,
 } from './config.js';
 
-const CONFIG_ID = 'vscode';
+const DEFAULT_CONFIG_ID = 'vscode';
+const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
 const CONFIG_FN_ID = 'vscode::on-config-change';
 const TIMEOUT_MS = 5_000;
 
 export type ConfigHolder = { current: Config };
 
 export async function registerVscodeConfig(iii: IIIClient, seed: Config): Promise<void> {
+  const initial = (await hasStoredValue(iii)) ? {} : { initial_value: toRuntime(seed) };
   await iii.trigger({
     function_id: 'configuration::register',
     namespace: 'default',
@@ -23,11 +25,29 @@ export async function registerVscodeConfig(iii: IIIClient, seed: Config): Promis
       description:
         'VS Code worker: the code CLI path, the per-workspace data directory, the loopback bind host, the port range, and the start and stop timeouts.',
       schema: runtimeJsonSchema(),
-      metadata: { ui_form: CONFIG_ID },
-      initial_value: toRuntime(seed),
+      metadata: { ui_form: DEFAULT_CONFIG_ID },
+      ...initial,
     },
     timeoutMs: TIMEOUT_MS,
   });
+}
+
+/** Never turn a service failure into permission to overwrite the stored value. */
+async function hasStoredValue(iii: IIIClient): Promise<boolean> {
+  try {
+    const response = await iii.trigger<unknown, { value?: unknown }>({
+      function_id: 'configuration::get',
+      namespace: 'default',
+      payload: { id: CONFIG_ID, raw: true },
+      timeoutMs: TIMEOUT_MS,
+    });
+    return response?.value != null;
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'NOT_FOUND') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null> {

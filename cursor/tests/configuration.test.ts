@@ -70,9 +70,9 @@ describe('Cursor configuration', () => {
       id: 'cursor-team',
       name: 'Cursor',
       metadata: { ui_form: 'cursor' },
-      initial_value: expect.objectContaining({ api_key: API_KEY_ENV_REFERENCE }),
       schema: expect.objectContaining({ type: 'object' }),
     });
+    expect(registration?.payload).not.toHaveProperty('initial_value');
   });
 
   it('re-fetches persisted values on updates and retains the last good config on failure', async () => {
@@ -91,6 +91,33 @@ describe('Cursor configuration', () => {
     iii.configValue = { ...defaultConfig(), api_key: 123 };
     await expect(reload?.handler({ id: 'cursor' })).resolves.toEqual({ ok: false });
     expect(holder.current.api_key).toBe('key_second');
+  });
+
+  it('seeds a null entry but preserves a stored value even with an explicit seed', async () => {
+    const iii = new MockIII();
+    const seed = { ...defaultConfig(), workspace: '/seed' };
+    iii.configValue = null;
+    await registerCursorConfig(iii.asClient(), seed);
+    expect(
+      iii.triggerCalls.find((call) => call.function_id === 'configuration::register')?.payload,
+    ).toHaveProperty('initial_value', seed);
+    iii.triggerCalls.length = 0;
+    iii.configValue = { ...defaultConfig(), workspace: '/compose' };
+    await registerCursorConfig(iii.asClient(), seed);
+    expect(
+      iii.triggerCalls.find((call) => call.function_id === 'configuration::register')?.payload,
+    ).not.toHaveProperty('initial_value');
+  });
+
+  it('does not register defaults after a service failure', async () => {
+    const iii = new MockIII();
+    iii.configFailures = 4;
+    await expect(registerCursorConfig(iii.asClient())).rejects.toThrow(
+      'configuration temporarily unavailable',
+    );
+    expect(iii.triggerCalls.some((call) => call.function_id === 'configuration::register')).toBe(
+      false,
+    );
   });
 
   it('validates configuration change events', () => {

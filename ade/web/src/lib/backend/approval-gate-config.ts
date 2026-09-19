@@ -3,15 +3,15 @@
  * `approval-gate` configuration entry (single source — no localStorage).
  */
 
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import type { HarnessFunctionPolicy } from '@/lib/backend/harness-send'
+import { getIiiClient } from '@/lib/iii-client'
 import {
   getConfiguration,
   type JsonValue,
   setConfiguration,
 } from '@/pages/Configuration/tabs/WorkersTab/api'
-
-export const APPROVAL_GATE_CONFIG_ID = 'approval-gate'
 
 export interface ApprovalGateConfigView {
   default_mode: PermissionMode
@@ -79,7 +79,8 @@ export function deriveFunctionPolicy(
 }
 
 export async function loadApprovalGateConfig(): Promise<ApprovalGateConfigView> {
-  const raw = await getConfiguration(APPROVAL_GATE_CONFIG_ID)
+  const id = await resolveConfigurationId(await getIiiClient(), 'approval-gate')
+  const raw = await getConfiguration(id)
   const obj =
     raw && typeof raw === 'object' && !Array.isArray(raw)
       ? (raw as Record<string, JsonValue>)
@@ -108,8 +109,12 @@ export async function saveApprovalGateDefaults(
   defaultMode: PermissionMode,
   allowlist: string[],
 ): Promise<ApprovalGateConfigView> {
-  const current = await loadApprovalGateConfig()
-  const baseRules = withoutAutoSeedRules(current.rules)
+  const id = await resolveConfigurationId(await getIiiClient(), 'approval-gate')
+  const raw = await getConfiguration(id)
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Approval gate configuration is not an object')
+  }
+  const baseRules = withoutAutoSeedRules(asRulesArray(raw.rules))
   const seedRules: JsonValue[] = allowlist.map((function_id) => ({
     function: function_id,
     action: 'allow',
@@ -117,10 +122,11 @@ export async function saveApprovalGateDefaults(
   }))
   const nextRules = [...baseRules, ...seedRules]
   const payload = {
+    ...raw,
     default_mode: defaultMode,
     rules: nextRules,
   }
-  await setConfiguration({ id: APPROVAL_GATE_CONFIG_ID, value: payload })
+  await setConfiguration({ id, value: payload })
   return {
     default_mode: defaultMode,
     rules: nextRules,

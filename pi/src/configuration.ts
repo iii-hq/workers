@@ -17,7 +17,8 @@ import {
   toRuntime,
 } from './config.js';
 
-const CONFIG_ID = 'pi';
+const DEFAULT_CONFIG_ID = 'pi';
+const CONFIG_ID = process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
 const CONFIG_FN_ID = 'pi::on-config-change';
 const TIMEOUT_MS = 5_000;
 
@@ -25,6 +26,7 @@ const TIMEOUT_MS = 5_000;
 export type ConfigHolder = { current: Config };
 
 export async function registerPiConfig(iii: IIIClient, seed: Config): Promise<void> {
+  const initial = (await hasStoredValue(iii)) ? {} : { initial_value: toRuntime(seed) };
   await iii.trigger({
     function_id: 'configuration::register',
     namespace: 'default',
@@ -34,11 +36,29 @@ export async function registerPiConfig(iii: IIIClient, seed: Config): Promise<vo
       description:
         'Pi coding agent worker: per-turn defaults (model, thinking level, working directory, tool allowlist, agent config dir), the agent::events / pi::events stream names, and whether to inject the iii runtime context.',
       schema: runtimeJsonSchema(),
-      metadata: { ui_form: CONFIG_ID },
-      initial_value: toRuntime(seed),
+      metadata: { ui_form: DEFAULT_CONFIG_ID },
+      ...initial,
     },
     timeoutMs: TIMEOUT_MS,
   });
+}
+
+/** Never turn a service failure into permission to overwrite the stored value. */
+async function hasStoredValue(iii: IIIClient): Promise<boolean> {
+  try {
+    const response = await iii.trigger<unknown, { value?: unknown }>({
+      function_id: 'configuration::get',
+      namespace: 'default',
+      payload: { id: CONFIG_ID, raw: true },
+      timeoutMs: TIMEOUT_MS,
+    });
+    return response?.value != null;
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'NOT_FOUND') {
+      return false;
+    }
+    throw error;
+  }
 }
 
 /** Fetch the live runtime config; null when unset/unreachable. */

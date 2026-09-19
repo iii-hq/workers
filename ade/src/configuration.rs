@@ -179,6 +179,7 @@ fn default_value(http_port: u16) -> Value {
 /// `initial_value` only when no value is stored, so runtime edits survive
 /// restarts. Callers intentionally treat errors as best-effort fallbacks.
 pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Result<(), String> {
+    iii_console_ui::register_configuration_identity(iii, "console", config_id());
     let existing = existing_value(iii)
         .await
         .map_err(|error| format!("console configuration lookup failed: {error}"))?;
@@ -417,7 +418,7 @@ pub(crate) async fn existing_value(iii: &IIIClient) -> Result<Option<Value>, Str
         .await
     {
         Ok(resp) => Ok(resp.get("value").filter(|v| !v.is_null()).cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }

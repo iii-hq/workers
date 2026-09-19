@@ -148,6 +148,17 @@ async fn should_seed_initial_value(iii: &IIIClient) -> Result<bool, String> {
     }
 }
 
+/// `true` for the one error that is a definitive answer rather than a
+/// failure: the configuration worker's uppercase `NOT_FOUND` entry code.
+/// Matched case-SENSITIVELY — the engine's missing-function code is the
+/// lowercase `function_not_found` and a backend lookup failure is
+/// `statement_not_found`; those must propagate as errors instead of being
+/// read as "nothing stored yet", which would seed a default over a stored
+/// operator/override value.
+fn is_not_found(error: &str) -> bool {
+    error.contains("NOT_FOUND")
+}
+
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(
         iii,
@@ -158,7 +169,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -452,6 +463,19 @@ pub struct ConfigChangeRequest {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_entry_detection_does_not_mask_service_failures() {
+        assert!(super::is_not_found("NOT_FOUND"));
+        assert!(super::is_not_found(
+            "configuration::get failed after 3 attempts: NOT_FOUND"
+        ));
+        assert!(!super::is_not_found("function_not_found"));
+        assert!(!super::is_not_found("statement_not_found"));
+        assert!(!super::is_not_found(
+            "configuration::get failed after 3 attempts: function_not_found"
+        ));
+    }
+
     use super::*;
 
     fn cfg(yaml: &str) -> BridgeConfig {

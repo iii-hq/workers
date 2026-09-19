@@ -14,6 +14,19 @@ use crate::locks;
 use crate::scheduler::Scheduler;
 
 pub const CONFIG_ID: &str = "cron";
+
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "cron::on-config-change";
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
@@ -21,7 +34,7 @@ const CONFIG_BUS_TIMEOUT_MS: u64 = 10_000;
 
 pub async fn register_config(iii: &IIIClient, seed: Option<&CronConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Cron",
         "description": "Cron scheduler settings - lock backend for multi-instance mutual exclusion (local or redis).",
         "schema": CronConfig::json_schema(),
@@ -45,7 +58,10 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<CronConfig, String> {
     match try_get_config_value(iii).await? {
         Some(value) if !value.is_null() => CronConfig::from_json(&value),
         _ => {
-            tracing::info!("no `{CONFIG_ID}` configuration value stored; using built-in default");
+            tracing::info!(
+                id = config_id(),
+                "no configuration value stored; using built-in default"
+            );
             Ok(CronConfig::default())
         }
     }
@@ -62,13 +78,13 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     match trigger_with_retry(
         iii,
         "configuration::get",
-        json!({ "id": CONFIG_ID }),
+        json!({ "id": config_id() }),
         CONFIG_BUS_TIMEOUT_MS,
     )
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -94,7 +110,7 @@ pub fn register_config_trigger(iii: &Arc<IIIClient>, parts: BootParts) -> Result
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
         json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
     ))?;

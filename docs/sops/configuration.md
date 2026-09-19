@@ -75,6 +75,27 @@ Optional `--config` behaviour (see [`session-manager/src/main.rs`](../../session
   built-in default applies).
 - Re-registration on every boot is safe: an existing stored value is preserved.
 
+### Finding another worker's entry
+
+Do not reconstruct Compose's hash, read another process's `III_CONFIG_NAME`,
+or choose the first `configuration::list` result with matching `metadata.ui_form`.
+Multiple projects can share a configuration service and the same form family.
+
+Workers consumed by the Console expose a namespace-scoped internal function,
+`<worker>::configuration-id`, taking `{}` and returning `{ "id": "<effective-id>" }`.
+`console`, `ide`, `http`, `voice`, `security-scan`, and `approval-gate` implement it.
+The callback exposes no configuration value. Call it in the target worker's
+namespace, then use the returned ID with `configuration::*` in `default`.
+Read-modify-write consumers resolve once and use the same ID for both operations;
+read with `raw: true` to preserve environment templates in unrelated fields.
+
+A failed identity lookup must not fall back to an unscoped legacy entry: that
+could read or modify another project's settings. Consumers gracefully disable
+the affected feature on older workers until the worker is upgraded. For Rust UI
+workers, `iii_console_ui::register_configuration_identity` registers the typed
+function; browser consumers use `resolveConfigurationId` from
+`@iii-dev/console-ui/configuration`.
+
 ## 3. Function surface
 
 All ids are kebab-case (`<worker>::<verb>`), per [`binary-worker.md`](binary-worker.md) §7:
@@ -155,10 +176,20 @@ Pick a **reload tier** (§6) and mirror the matching reference:
 
 Common to both tiers:
 
-- `CONFIG_ID = "<worker>"`, `CONFIG_FN_ID = "<worker>::on-config-change"`, retry/backoff constants.
-- `register_config(iii, seed)` — register `json_schema()`; install `seed` as
-  `initial_value` when present, else seed `WorkerConfig::default()` only when no
-  value is stored yet (safe to call every boot). Always include
+- Resolve the entry ID from trimmed, nonempty `III_CONFIG_NAME`, falling back to
+  the legacy worker ID when absent or blank. Cache it for the process lifetime.
+  Use the same resolved ID for registration, reads, writes, migrations, and change
+  subscriptions; do not derive it from `III_WORKER_NAME` or `III_NAMESPACE`.
+  Compose owns the naming algorithm and may also supply an explicit name.
+- Keep `CONFIG_FN_ID = "<worker>::on-config-change"` and `metadata.ui_form` stable:
+  they identify the callback and form family, not the persisted entry.
+- Configuration RPCs still target the `default` namespace; a namespaced entry ID
+  does not change the configuration service's routing namespace.
+- `register_config(iii, seed)` — register `json_schema()`; install `seed` or
+  `WorkerConfig::default()` as `initial_value` **only when no value is stored**.
+  A Compose-delivered override or operator value must survive even when an
+  explicit seed was provided. A lookup failure is not an absent entry: only the
+  uppercase `NOT_FOUND` entry error permits seeding, not `function_not_found`. Always include
   `"metadata": { "ui_form": DEFAULT_CONFIG_ID }`; `id` may be the dynamic
   `config_id()`, while `ui_form` remains the built-in family id.
 - `fetch_config(iii)` — read the authoritative, env-expanded value

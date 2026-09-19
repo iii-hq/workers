@@ -51,10 +51,11 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default_value(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
+    // A seed initializes an absent entry; it never replaces a Compose override.
+    if should_seed_default_value(iii).await? {
+        payload["initial_value"] = seed
+            .map(|value| value.to_json())
+            .unwrap_or_else(|| WorkerConfig::default().to_json());
     }
     trigger_configuration_with_retry(
         iii,
@@ -89,6 +90,17 @@ async fn fetch_config_with_timeout(
     WorkerConfig::from_json(&value)
 }
 
+/// `true` for the one error that is a definitive answer rather than a
+/// failure: the configuration worker's uppercase `NOT_FOUND` entry code.
+/// Matched case-SENSITIVELY — the engine's missing-function code is the
+/// lowercase `function_not_found` and a backend lookup failure is
+/// `statement_not_found`; those must propagate as errors instead of being
+/// read as "nothing stored yet", which would seed a default over a stored
+/// operator/override value.
+fn is_not_found(error: &str) -> bool {
+    error.contains("NOT_FOUND")
+}
+
 async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     match try_get_config_value(iii, WorkerConfig::default().timeout_ms).await? {
         None => Ok(true),
@@ -107,7 +119,7 @@ async fn try_get_config_value(iii: &IIIClient, timeout_ms: u64) -> Result<Option
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -236,6 +248,19 @@ pub struct ConfigChangeRequest {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn missing_entry_detection_does_not_mask_service_failures() {
+        assert!(super::is_not_found("NOT_FOUND"));
+        assert!(super::is_not_found(
+            "configuration::get failed after 3 attempts: NOT_FOUND"
+        ));
+        assert!(!super::is_not_found("function_not_found"));
+        assert!(!super::is_not_found("statement_not_found"));
+        assert!(!super::is_not_found(
+            "configuration::get failed after 3 attempts: function_not_found"
+        ));
+    }
+
     use super::*;
 
     #[tokio::test]

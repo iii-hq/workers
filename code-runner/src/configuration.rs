@@ -20,6 +20,19 @@ use serde_json::{json, Value};
 use crate::config::{CodeRunnerConfig, SharedConfig};
 
 pub const CONFIG_ID: &str = "code-runner";
+
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 /// Internal hot-reload hook; denied to agents in iii-permissions.yaml and
 /// seeded into the runtime-id registry (functions::seeded_ids) so a guest
 /// `register_function` cannot claim it.
@@ -32,7 +45,7 @@ pub async fn register_config(
     seed: Option<&CodeRunnerConfig>,
 ) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "code-runner",
         "description": "Runtime limits for in-process Node.js/Python: output caps and timeouts \
                         (hot-reload), plus runtime-count, memory, and scratch limits (applied \
@@ -40,10 +53,8 @@ pub async fn register_config(
         "schema": CodeRunnerConfig::json_schema(),
         "metadata": { "ui_form": CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default(iii).await? {
-        payload["initial_value"] = CodeRunnerConfig::default().to_json();
+    if should_seed_default(iii).await? {
+        payload["initial_value"] = seed.cloned().unwrap_or_default().to_json();
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
@@ -70,11 +81,11 @@ async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
 /// `Ok(None)` when the entry does not exist yet. The engine's missing-entry
 /// codes vary in case, so match case-insensitively.
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID }))
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -113,7 +124,7 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
-        json!({ "configuration_id": CONFIG_ID, "event_types": ["configuration:updated"] }),
+        json!({ "configuration_id": config_id(), "event_types": ["configuration:updated"] }),
     ))?;
     Ok(())
 }

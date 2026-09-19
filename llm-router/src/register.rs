@@ -274,7 +274,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration",
         surface::ON_CONFIG_CHANGED_ID,
-        json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
+        json!({ "configuration_id": crate::config::entry::config_id(), "event_types": ["configuration:updated"] }),
     ))?;
 
     // Close the boot race between the initial fetch and trigger binding by

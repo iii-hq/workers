@@ -70,12 +70,31 @@ const FILESYSTEM_ACCESS_WATCH_FUNCTIONS: &[&str] = &["shell::*", "coder::*"];
 const FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS: u64 = 5_000;
 const FILESYSTEM_ACCESS_WATCH_ON_ERROR: &str = "fail_open";
 
-/// Register the `approval-gate` configuration schema with the
-/// configuration worker. When `seed` is present, its value is installed
-/// as `initial_value`. Otherwise, the built-in default is seeded only
-/// when no stored value exists yet (re-registration preserves the stored
-/// value, so this is safe to call every boot).
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ConfigurationIdentityRequest {}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ConfigurationIdentityResponse {
+    id: String,
+}
+
+/// Register the schema, seeding only when no stored value exists. Publish
+/// the instance's identity in its namespace so UI policy edits cannot target
+/// another project's configuration.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
+    iii.register_function(
+        "approval-gate::configuration-id",
+        RegisterFunction::new(|_request: ConfigurationIdentityRequest| {
+            Ok::<_, Error>(ConfigurationIdentityResponse {
+                id: config_id().to_string(),
+            })
+        })
+        .description(
+            "Returns this approval-gate instance's configuration entry ID, without its value.",
+        )
+        .metadata(json!({ "internal": true })),
+    );
     let mut payload = json!({
         "id": config_id(),
         "name": "Approval Gate",
@@ -86,10 +105,8 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default_value(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
+    if should_seed_default_value(iii).await? {
+        payload["initial_value"] = seed.cloned().unwrap_or_default().to_json();
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
@@ -123,15 +140,14 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     })
 }
 
-/// Returns `Ok(None)` when the entry does not exist. The engine's
-/// missing-entry codes vary in case (`function_not_found`,
-/// `STATEMENT_NOT_FOUND`, `NOT_FOUND`), so match case-insensitively.
+/// Returns `Ok(None)` only for a missing entry. A missing service
+/// (`function_not_found`) must propagate rather than authorize seeding.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
 }

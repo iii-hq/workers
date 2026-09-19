@@ -44,10 +44,11 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
+    // A seed initializes an absent entry; it never replaces a Compose override.
+    if should_seed_default(iii).await? {
+        payload["initial_value"] = seed
+            .map(|value| value.to_json())
+            .unwrap_or_else(|| WorkerConfig::default().to_json());
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())

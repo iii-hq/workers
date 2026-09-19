@@ -12,6 +12,7 @@ import {
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import { ChevronRight } from 'lucide-react'
@@ -293,28 +294,27 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
         // A console too old for `workspace::list` just never shows the note;
         // the step itself is unaffected, so this is not the operator's error.
         .catch(() => {})
-    check()
     const localId = `onboarding::layout::${watching}`
     let offHandler: () => void = () => {}
-    try {
+    let offTrigger: () => void = () => {}
+    void resolveConfigurationId(host.iii, 'console').then((id) => {
+      if (!live) return
       offHandler = host.iii.on(localId, check)
-      const offTrigger = host.iii.registerTrigger({
+      offTrigger = host.iii.registerTrigger({
         type: 'configuration',
         function_id: `${localId}::${host.iii.browserId}`,
-        config: { configuration_id: 'console', event_types: ['configuration:updated'] },
+        config: { configuration_id: id, event_types: ['configuration:updated'] },
       })
-      return () => {
-        live = false
-        offTrigger()
-        offHandler()
-      }
-    } catch {
-      // The configuration worker may be down or restarting. The first check
-      // already ran, so the note is right until the layout next moves.
+      // Bind first, then recover changes that happened during identity lookup.
+      check()
+    }).catch(() => {
       offHandler()
-      return () => {
-        live = false
-      }
+      if (live) check()
+    })
+    return () => {
+      live = false
+      offTrigger()
+      offHandler()
     }
   }, [host, watching])
 

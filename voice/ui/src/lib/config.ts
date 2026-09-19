@@ -5,9 +5,9 @@
  * Settings form edit the same fields.
  */
 
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import type { ExtensionIii, JsonValue } from '@iii-dev/console-ui'
 
-export const CONFIG_ID = 'voice'
 
 export const NONE = '__none__'
 
@@ -57,15 +57,16 @@ export function numberAt(value: JsonValue | undefined, path: readonly string[], 
 }
 
 export async function readConfig(iii: ExtensionIii): Promise<JsonObject> {
-  const res = await iii.trigger<{ value?: JsonValue }>('configuration::get', { id: CONFIG_ID })
+  const res = await iii.trigger<{ value?: JsonValue }>('configuration::get', { id: await resolveConfigurationId(iii, 'voice') })
   return asObject(res?.value)
 }
 
 /** Read, apply `patch`, write. The worker hot-reloads on the change. */
 export async function patchConfig(iii: ExtensionIii, patch: (current: JsonObject) => JsonObject): Promise<JsonObject> {
-  const current = await readConfig(iii)
-  const next = patch(current)
-  await iii.trigger('configuration::set', { id: CONFIG_ID, value: next })
+  const id = await resolveConfigurationId(iii, 'voice')
+  const response = await iii.trigger<{ value?: JsonValue }>('configuration::get', { id, raw: true })
+  const next = patch(asObject(response?.value))
+  await iii.trigger('configuration::set', { id, value: next })
   return next
 }
 

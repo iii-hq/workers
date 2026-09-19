@@ -8,23 +8,34 @@ use serde_json::{json, Value};
 use crate::config::{SharedConfig, WorkerConfig};
 
 pub const CONFIG_ID: &str = "tailscale";
+
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FUNCTION_ID: &str = "tailscale::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Tailscale",
         "description": "Local Console target, CLI path, default HTTPS port, public Funnel policy, and command timeout.",
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": CONFIG_ID },
     });
 
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
+    if should_seed_default(iii).await? {
+        payload["initial_value"] = seed.cloned().unwrap_or_default().to_json();
     }
 
     trigger_with_retry(iii, "configuration::register", payload).await?;
@@ -45,7 +56,7 @@ async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({"id": CONFIG_ID})).await {
+    match trigger_with_retry(iii, "configuration::get", json!({"id": config_id()})).await {
         Ok(response) => Ok(response.get("value").cloned()),
         Err(error) if error.contains("NOT_FOUND") => Ok(None),
         Err(error) => Err(error),
@@ -91,7 +102,7 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
         "configuration".to_string(),
         CONFIG_FUNCTION_ID.to_string(),
         json!({
-            "configuration_id": CONFIG_ID,
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"]
         }),
     ))?;

@@ -22,6 +22,16 @@ export async function registerCursorConfig(
   iii: IIIClient,
   initialValue: Config = defaultConfig(),
 ): Promise<void> {
+  let stored: unknown;
+  try {
+    const response = await triggerWithRetry(iii, 'configuration::get', {
+      id: configId(),
+      raw: true,
+    });
+    stored = z.object({ value: z.unknown() }).parse(response).value;
+  } catch (error) {
+    if (!isMissingEntry(error)) throw error;
+  }
   await triggerWithRetry(iii, 'configuration::register', {
     id: configId(),
     name: 'Cursor',
@@ -29,7 +39,7 @@ export async function registerCursorConfig(
       'Cursor provider and agent worker using normal Cursor CLI login for LLM Router and local ACP sessions, plus the optional sdk.v1 Bridge for explicit API-key or cloud sessions.',
     schema: runtimeJsonSchema(),
     metadata: { ui_form: DEFAULT_CONFIG_ID },
-    initial_value: initialValue,
+    ...(stored == null ? { initial_value: initialValue } : {}),
   });
 }
 
@@ -105,6 +115,7 @@ async function triggerWithRetry(
         timeoutMs: TIMEOUT_MS,
       });
     } catch (error) {
+      if (isMissingEntry(error)) throw error;
       lastError = error;
       const delay = RETRY_DELAYS_MS[attempt];
       if (delay === undefined) break;
@@ -112,6 +123,11 @@ async function triggerWithRetry(
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/** Missing entry is distinct from an unavailable configuration service. */
+function isMissingEntry(error: unknown): boolean {
+  return !!error && typeof error === 'object' && 'code' in error && error.code === 'NOT_FOUND';
 }
 
 function safeError(error: unknown): string {

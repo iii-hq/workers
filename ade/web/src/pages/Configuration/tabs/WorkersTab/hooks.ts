@@ -7,6 +7,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useWorkerLifecycle } from '@/hooks/use-worker-lifecycle'
 import { getDefaultBackend } from '@/lib/backend'
+import { configurationFormFamily } from '@/lib/configuration-family'
 import { notifyHarnessConfigSaved } from '@/lib/harness-config-events'
 import {
   type ConfigurationSchemaView,
@@ -101,7 +102,16 @@ export function useSetConfiguration(id: string | null | undefined) {
     onSuccess: (_data, variables) => {
       const targetId = variables.id ?? id ?? ''
       if (targetId) {
-        notifyHarnessConfigSaved(targetId)
+        const entry =
+          qc.getQueryData<ConfigurationSchemaView>(
+            configurationKeys.schema(targetId),
+          ) ??
+          qc
+            .getQueryData<ConfigurationSchemaView[]>(configurationKeys.list())
+            ?.find((item) => item.id === targetId)
+        notifyHarnessConfigSaved(
+          entry ? configurationFormFamily(entry) : targetId,
+        )
         qc.invalidateQueries({
           queryKey: configurationKeys.rawValue(targetId),
         })

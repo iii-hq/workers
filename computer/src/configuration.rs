@@ -14,22 +14,33 @@ use serde_json::{json, Value};
 use crate::config::{SharedConfig, WorkerConfig};
 
 pub const CONFIG_ID: &str = "computer";
+
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "computer::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "computer",
         "description": "Endpoint, OS label, session cap, timeouts, and screencast rate for the computer worker.",
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
+    if should_seed_default(iii).await? {
+        payload["initial_value"] = seed.cloned().unwrap_or_default().to_json();
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
@@ -54,7 +65,7 @@ async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID }))
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
@@ -93,7 +104,7 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration".to_string(),
         CONFIG_FN_ID.to_string(),
-        json!({ "configuration_id": CONFIG_ID, "event_types": ["configuration:updated"] }),
+        json!({ "configuration_id": config_id(), "event_types": ["configuration:updated"] }),
     ))?;
     Ok(())
 }

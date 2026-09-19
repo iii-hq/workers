@@ -8,6 +8,19 @@ use serde_json::{json, Value};
 use crate::{manifest, SecurityScanError, WorkerConfig};
 
 pub const CONFIG_ID: &str = "security-scan";
+
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
@@ -18,6 +31,7 @@ pub fn shipped_config() -> WorkerConfig {
 }
 
 pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, SecurityScanError> {
+    iii_console_ui::register_configuration_identity(iii, "security-scan", config_id());
     let initial_value = match try_get_value(iii).await? {
         Some(value) if !value.is_null() => None,
         _ => Some(serde_json::to_value(shipped_config()).map_err(|error| {
@@ -29,7 +43,7 @@ pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, Securit
         SecurityScanError::Dependency(format!("could not serialize config schema: {error}"))
     })?;
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Security Scan",
         "description": "Operator repository allowlist and bounded read-only Harness analysis settings.",
         "schema": schema,
@@ -80,7 +94,7 @@ where
 }
 
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, SecurityScanError> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
         Ok(response) => response.get("value").cloned().map(Some).ok_or_else(|| {
             SecurityScanError::Dependency("configuration::get returned no `value` field".into())
         }),
@@ -127,8 +141,7 @@ async fn trigger_with_retry(
 }
 
 fn is_not_found(error: &SecurityScanError) -> bool {
-    let message = error.to_string().to_ascii_uppercase();
-    message.contains("NOT_FOUND") || message.contains("NOT FOUND")
+    error.to_string().contains("NOT_FOUND")
 }
 
 #[cfg(test)]

@@ -13,9 +13,8 @@
  * defaults (saved views hidden).
  */
 
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { getIiiClient } from '@/lib/iii-client'
-
-export const CONSOLE_CONFIG_ID = 'console'
 
 export type ConsoleConfigValue = Record<string, unknown>
 
@@ -34,7 +33,7 @@ export async function fetchConsoleConfigValue(): Promise<ConsoleConfigValue | nu
     const client = await getIiiClient()
     const resp = await client.trigger<{ value?: unknown }>(
       'configuration::get',
-      { id: CONSOLE_CONFIG_ID },
+      { id: await resolveConfigurationId(client, 'console'), raw: true },
     )
     const value = resp?.value
     return value && typeof value === 'object' && !Array.isArray(value)
@@ -52,7 +51,7 @@ export async function setConsoleConfigValue(
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('configuration::set', {
-    id: CONSOLE_CONFIG_ID,
+    id: await resolveConfigurationId(client, 'console'),
     value,
   })
 }

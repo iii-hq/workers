@@ -34,9 +34,8 @@ const CONFIG_FN_ID: &str = "database::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
-/// Register the `database` configuration schema with the configuration worker.
-/// When `seed` is present, its value is installed as `initial_value`. Otherwise,
-/// built-in defaults are seeded only when no stored value exists yet.
+/// Register the schema. The optional seed or built-in default is installed
+/// only when no stored value exists; live configuration always takes precedence.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -45,10 +44,11 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default_value(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
+    // A seed initializes an absent entry; it never replaces a Compose override.
+    if should_seed_default_value(iii).await? {
+        payload["initial_value"] = seed
+            .map(|value| value.to_json())
+            .unwrap_or_else(|| WorkerConfig::default().to_json());
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())

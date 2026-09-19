@@ -628,21 +628,36 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn always_scope_grants_and_persists_configuration_best_effort() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
+            #[derive(serde::Deserialize, schemars::JsonSchema)]
+            struct IdentityRequest {}
+            #[derive(serde::Serialize, schemars::JsonSchema)]
+            struct IdentityResponse {
+                id: String,
+            }
+            stack.iii.register_function(
+                "ide::configuration-id",
+                iii_sdk::RegisterFunction::new(|_request: IdentityRequest| {
+                    Ok::<_, iii_sdk::errors::Error>(IdentityResponse {
+                        id: "project-ide-custom".into(),
+                    })
+                })
+                .description("Test IDE configuration identity"),
+            );
             seed_filesystem_access_record(&stack.iii, "/a/b").await;
             register_filesystem_grant_fake(&stack, false);
             crate::testkit::call(
                 &stack.iii,
                 "configuration::register",
                 json!({
-                    "id": "shell",
-                    "name": "shell",
+                    "id": "project-ide-custom",
+                    "name": "IDE",
                     "description": "test seed",
                     "schema": { "type": "object" },
-                    "initial_value": {},
+                    "initial_value": { "untouched": "${PRESERVED_TEMPLATE}" },
                 }),
             )
             .await
-            .expect("register shell configuration");
+            .expect("register IDE configuration");
 
             handle(&stack.deps, grant_req(Some(AccessDuration::Always)))
                 .await
@@ -658,14 +673,21 @@ mod tests {
                 .expect("execute call");
             assert!(execute_call.get("fs_scope").is_none());
 
-            let shell_cfg =
-                crate::testkit::call(&stack.iii, "configuration::get", json!({ "id": "shell" }))
-                    .await
-                    .unwrap();
+            let shell_cfg = crate::testkit::call(
+                &stack.iii,
+                "configuration::get",
+                json!({ "id": "project-ide-custom", "raw": true }),
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 shell_cfg["value"]["fs"]["host_roots"],
                 json!(["/a/b"]),
-                "always scope persists the root into shell's fs.host_roots"
+                "always scope persists the root into the addressed IDE's fs.host_roots"
+            );
+            assert_eq!(
+                shell_cfg["value"]["untouched"],
+                json!("${PRESERVED_TEMPLATE}")
             );
         })
         .await;
@@ -676,8 +698,8 @@ mod tests {
         with_stack(BootOpts::needs_approval(), |stack| async move {
             seed_filesystem_access_record(&stack.iii, "/a/b").await;
             register_filesystem_grant_fake(&stack, false);
-            // No `shell` configuration id registered -> configuration::get
-            // fails -> add_host_root fails -> logged, never blocks execute.
+            // No IDE identity function registered -> discovery fails ->
+            // add_host_root fails -> logged, never blocks execute.
 
             let res = handle(&stack.deps, grant_req(Some(AccessDuration::Always)))
                 .await
