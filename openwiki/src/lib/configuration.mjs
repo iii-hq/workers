@@ -65,6 +65,7 @@ async function hasStoredValue(iii) {
   }
 }
 
+/** Publish the schema and initialize defaults only after a confirmed empty configuration. */
 export async function registerConfig(iii) {
   const initial = (await hasStoredValue(iii)) ? {} : { initial_value: DEFAULTS };
   await iii.trigger({

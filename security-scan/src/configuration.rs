@@ -30,6 +30,7 @@ pub fn shipped_config() -> WorkerConfig {
         .expect("security-scan manifest config must match WorkerConfig")
 }
 
+/// Publish schema and identity, seed an empty entry, then load the authoritative scan settings.
 pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, SecurityScanError> {
     iii_console_ui::register_configuration_identity(iii, "security-scan", config_id());
     let initial_value = match try_get_value(iii).await? {
@@ -93,6 +94,7 @@ where
     }
 }
 
+/// Missing entries may be seeded; dependency failures must propagate without writes.
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, SecurityScanError> {
     match trigger_with_retry(iii, "configuration::get", json!({ "id": config_id() })).await {
         Ok(response) => response.get("value").cloned().map(Some).ok_or_else(|| {
@@ -140,14 +142,41 @@ async fn trigger_with_retry(
     )))
 }
 
+/// Inspect the remote envelope code rather than words inside an unrelated failure message.
 fn is_not_found(error: &SecurityScanError) -> bool {
-    error.to_string().contains("NOT_FOUND")
+    let msg = error.to_string();
+    match msg.split_once("remote error (") {
+        Some((_, rest)) => rest
+            .split_once(')')
+            .is_some_and(|(code, _)| code == "NOT_FOUND"),
+        None => msg.trim() == "NOT_FOUND",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Missing-entry classification runs on the stringified error: only the
+    /// configuration worker's standalone `NOT_FOUND` code inside the SDK's
+    /// `remote error (<code>)` envelope maps to an absent entry. A different
+    /// code whose message mentions NOT_FOUND, a nested envelope, and compound
+    /// codes all propagate instead of being read as "nothing stored yet".
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        let dep = |m: &str| SecurityScanError::Dependency(m.into());
+        assert!(is_not_found(&dep(
+            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
+        )));
+        assert!(!is_not_found(&dep(
+            "remote error (ADAPTER_ERROR): NOT_FOUND"
+        )));
+        assert!(!is_not_found(&dep(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        )));
+        assert!(!is_not_found(&dep("RESOURCE_NOT_FOUND")));
+    }
 
     #[test]
     fn shipped_config_is_idle_and_valid() {

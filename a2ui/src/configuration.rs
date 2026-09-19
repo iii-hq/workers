@@ -45,6 +45,7 @@ pub struct OnConfigChangeResponse {
     pub ok: bool,
 }
 
+/// Refresh the schema; supply the seed or defaults only after a confirmed empty entry.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -72,6 +73,7 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
+/// Subscribe to updates of the resolved entry and reload authoritative values.
 pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), Error> {
     let engine = iii.clone();
     iii.register_function(
@@ -112,12 +114,14 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
         .is_none_or(|value| value.is_null()))
 }
 
+/// Require a stored value for the entry assigned to this worker instance.
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
         .ok_or_else(|| format!("configuration `{}` not found", config_id()))
 }
 
+/// Map only the configuration service's missing-entry code to absence.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(iii, "configuration::get", json!({"id": config_id()})).await {
         Ok(response) => Ok(response.get("value").cloned()),
@@ -126,8 +130,14 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     }
 }
 
+/// Inspect the SDK error code without matching a compound code or its message.
 fn is_not_found(error: &str) -> bool {
-    error.contains("NOT_FOUND")
+    match error.split_once("remote error (") {
+        Some((_, rest)) => rest
+            .split_once(')')
+            .is_some_and(|(code, _)| code == "NOT_FOUND"),
+        None => error.trim() == "NOT_FOUND",
+    }
 }
 
 async fn trigger_with_retry(
@@ -173,12 +183,25 @@ async fn trigger_with_retry(
 mod tests {
     use super::*;
 
+    /// Entry absence permits seeding; routing failures and unrelated codes must propagate.
     #[test]
     fn missing_entry_detection_does_not_mask_service_failures() {
-        assert!(is_not_found("remote NOT_FOUND"));
+        assert!(is_not_found(
+            "remote error (NOT_FOUND): configuration 'a2ui' not found"
+        ));
+        assert!(is_not_found(
+            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
+        ));
+        assert!(!is_not_found("remote error (ADAPTER_ERROR): NOT_FOUND"));
+        assert!(!is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
         assert!(!is_not_found("function_not_found"));
         assert!(!is_not_found("statement_not_found"));
         assert!(!is_not_found("timed out"));
+        assert!(!is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!is_not_found("STATEMENT_NOT_FOUND"));
+        assert!(!is_not_found("NOT_FOUND_EXTRA"));
     }
 
     #[tokio::test]

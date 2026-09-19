@@ -78,6 +78,7 @@ impl RunnerSharedConfig {
     }
 }
 
+/// Use the resolved entry ID without changing the sandbox configuration form family.
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
         id: config_id(),
@@ -93,6 +94,7 @@ pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
     config_client::register(iii, &spec(), None).await
 }
 
+/// Load and validate the authoritative sandbox settings from the assigned entry.
 pub async fn fetch_config(iii: &IIIClient) -> Result<RunnerSharedConfig, String> {
     match config_client::fetch(iii, config_id()).await? {
         Some(v) => RunnerSharedConfig::from_json(&v),

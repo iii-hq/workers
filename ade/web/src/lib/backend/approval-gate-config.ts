@@ -78,6 +78,7 @@ export function deriveFunctionPolicy(
   }
 }
 
+/** Load policy defaults from the addressed approval-gate instance, never a global legacy ID. */
 export async function loadApprovalGateConfig(): Promise<ApprovalGateConfigView> {
   const id = await resolveConfigurationId(await getIiiClient(), 'approval-gate')
   const raw = await getConfiguration(id)

@@ -31,6 +31,7 @@ const CONFIG_FN_ID: &str = "computer::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
+/// Refresh the schema and initialize only an entry with no stored value.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -64,12 +65,13 @@ async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
     }
 }
 
+/// Distinguish a missing configuration entry from a service or transport failure.
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -82,6 +84,7 @@ struct OnConfigChangeResponse {
     ok: bool,
 }
 
+/// Reload this instance's configuration when its resolved entry is updated.
 pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<(), Error> {
     let cfg = config.clone();
     let engine = iii.clone();
@@ -116,6 +119,20 @@ async fn on_config_change(iii: &IIIClient, config: &SharedConfig) {
             tracing::info!("computer configuration reloaded");
         }
         Err(e) => tracing::error!(error = %e, "config-change: keeping previous config"),
+    }
+}
+
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    match error.split_once("remote error (") {
+        Some((_, rest)) => rest
+            .split_once(')')
+            .is_some_and(|(code, _)| code == "NOT_FOUND"),
+        None => error.trim() == "NOT_FOUND",
     }
 }
 

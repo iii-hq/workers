@@ -90,11 +90,26 @@ fn registration_payload(spec: &EntrySpec) -> Value {
 pub async fn fetch(iii: &IIIClient, id: &str) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": id })).await {
         Ok(resp) => Ok(resp.get("value").cloned().filter(|v| !v.is_null())),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
 
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    match error.split_once("remote error (") {
+        Some((_, rest)) => rest
+            .split_once(')')
+            .is_some_and(|(code, _)| code == "NOT_FOUND"),
+        None => error.trim() == "NOT_FOUND",
+    }
+}
+
+/// Retry transient RPC failures, returning a definitive missing-entry response immediately.
 async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
@@ -120,7 +135,7 @@ async fn trigger_configuration_with_retry(
                 // NOT_FOUND is a definitive answer (nothing stored yet, the
                 // normal first-ever boot), not a transient failure — hand it
                 // straight to the caller instead of retrying and warning.
-                if last_err.contains("NOT_FOUND") {
+                if is_not_found(&last_err) {
                     return Err(last_err);
                 }
                 if attempt < RETRIES {
@@ -288,6 +303,27 @@ where
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The shared client's missing-entry classifier: a real `Error::Remote`
+    /// NOT_FOUND envelope (and its retry-wrapped form) is the only signal that
+    /// seeds a default; anything else propagates so a service failure never
+    /// clobbers a stored value.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert!(is_not_found("NOT_FOUND"));
+        assert!(is_not_found(
+            "remote error (NOT_FOUND): configuration 'fp' not found"
+        ));
+        assert!(is_not_found(
+            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
+        ));
+        assert!(!is_not_found("remote error (ADAPTER_ERROR): NOT_FOUND"));
+        assert!(!is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
+        assert!(!is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!is_not_found("function_not_found"));
+    }
 
     /// `IIIClient::new` only builds local state — no network — and
     /// `register_trigger` queues locally, so a real `Trigger` handle is

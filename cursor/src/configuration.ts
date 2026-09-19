@@ -18,6 +18,7 @@ const RETRY_DELAYS_MS = [250, 500, 1_000];
 export const ConfigChangeEventSchema = z.object({ id: z.string().optional() }).passthrough();
 export const ConfigChangeResponseSchema = z.object({ ok: z.boolean() });
 
+/** Refresh Cursor metadata after checking that initialization will not replace a stored value. */
 export async function registerCursorConfig(
   iii: IIIClient,
   initialValue: Config = defaultConfig(),
@@ -100,6 +101,7 @@ export async function bindConfigTrigger(iii: IIIClient, holder: ConfigHolder): P
   await refresh();
 }
 
+/** Retry transient configuration RPC failures; a definite missing entry returns immediately. */
 async function triggerWithRetry(
   iii: IIIClient,
   functionId: string,

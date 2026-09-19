@@ -81,6 +81,7 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     }
 }
 
+/// Require a value at the resolved entry ID so reload cannot silently switch to defaults.
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
@@ -94,7 +95,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -179,7 +180,12 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) {
 /// does not exist yet. Retrying it wastes the backoff on every first boot and
 /// logs two warnings for a completely normal state.
 fn is_not_found(error: &str) -> bool {
-    error.contains("NOT_FOUND")
+    match error.split_once("remote error (") {
+        Some((_, rest)) => rest
+            .split_once(')')
+            .is_some_and(|(code, _)| code == "NOT_FOUND"),
+        None => error.trim() == "NOT_FOUND",
+    }
 }
 
 async fn trigger_configuration_with_retry(
@@ -239,7 +245,13 @@ mod tests {
         assert!(is_not_found(
             "remote error (NOT_FOUND): configuration 'canvas' not found"
         ));
-        assert!(is_not_found("STATEMENT_NOT_FOUND"));
+        assert!(!is_not_found("STATEMENT_NOT_FOUND"));
+        assert!(!is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!is_not_found("NOT_FOUND_EXTRA"));
+        assert!(!is_not_found("remote error (ADAPTER_ERROR): NOT_FOUND"));
+        assert!(!is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
         assert!(!is_not_found("connection reset by peer"));
         assert!(!is_not_found("timed out"));
     }

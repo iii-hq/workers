@@ -32,6 +32,7 @@ const CONFIG_RETRIES: u32 = 3;
 const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 const CONFIG_BUS_TIMEOUT_MS: u64 = 10_000;
 
+/// Refresh scheduling metadata, supplying defaults only for an empty configuration entry.
 pub async fn register_config(iii: &IIIClient, seed: Option<&CronConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -54,6 +55,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&CronConfig>) -> Resu
     Ok(())
 }
 
+/// Parse the authoritative scheduling settings, with a first-boot fallback if unset.
 pub async fn fetch_config(iii: &IIIClient) -> Result<CronConfig, String> {
     match try_get_config_value(iii).await? {
         Some(value) if !value.is_null() => CronConfig::from_json(&value),
@@ -74,6 +76,7 @@ async fn should_seed_initial_value(iii: &IIIClient) -> Result<bool, String> {
     }
 }
 
+/// Query the instance's assigned entry and preserve non-entry errors for the caller.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_with_retry(
         iii,
@@ -84,11 +87,12 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
 
+/// Reconcile the cron runtime when the resolved configuration entry changes.
 pub fn register_config_trigger(iii: &Arc<IIIClient>, parts: BootParts) -> Result<(), Error> {
     let engine = iii.clone();
     let parts_for_fn = parts.clone();
@@ -218,6 +222,20 @@ pub struct ConfigChangeAck {
 
 #[derive(Debug, Default, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigChangeRequest {}
+
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    match error.split_once("remote error (") {
+        Some((_, rest)) => rest
+            .split_once(')')
+            .is_some_and(|(code, _)| code == "NOT_FOUND"),
+        None => error.trim() == "NOT_FOUND",
+    }
+}
 
 #[cfg(test)]
 mod tests {

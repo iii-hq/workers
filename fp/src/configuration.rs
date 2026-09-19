@@ -30,6 +30,7 @@ pub fn config_id() -> &'static str {
 }
 pub const CONFIG_FN_ID: &str = "fp::on-config-change";
 
+/// Pair this process's dynamic entry ID with the stable function-provider form family.
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
         id: config_id(),
@@ -45,6 +46,7 @@ pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
     config_client::register(iii, &spec(), None).await
 }
 
+/// Parse the assigned entry, retaining standalone defaults only when no value exists.
 pub async fn fetch_config(iii: &IIIClient) -> Result<FpConfig, String> {
     match config_client::fetch(iii, config_id()).await? {
         Some(v) => FpConfig::from_json(&v),

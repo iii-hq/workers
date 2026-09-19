@@ -14,6 +14,7 @@ const TIMEOUT_MS = 5_000;
 
 export type ConfigHolder = { current: Config };
 
+/** Register VS Code settings without reseeding a value already stored by the operator. */
 export async function registerVscodeConfig(iii: IIIClient, seed: Config): Promise<void> {
   const initial = (await hasStoredValue(iii)) ? {} : { initial_value: toRuntime(seed) };
   await iii.trigger({

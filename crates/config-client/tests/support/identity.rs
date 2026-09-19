@@ -1,5 +1,6 @@
 // Shared by worker integration tests. Each case gets a fresh process because
 // the configuration identity is deliberately cached for the process lifetime.
+/// Check named and standalone identities in separate processes to avoid cached-env interference.
 #[test]
 fn configuration_identity_follows_compose_and_keeps_standalone_fallback() {
     for (input, expected) in [
@@ -29,6 +30,7 @@ fn configuration_identity_follows_compose_and_keeps_standalone_fallback() {
     }
 }
 
+/// Subprocess fixture reads the parent's expected ID after configuration environment setup.
 #[test]
 #[ignore = "subprocess fixture, invoked by the parent test"]
 fn configuration_identity_child() {

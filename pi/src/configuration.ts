@@ -25,6 +25,7 @@ const TIMEOUT_MS = 5_000;
 /** Live snapshot shared with the handlers; `current` is whole-replaced on reload. */
 export type ConfigHolder = { current: Config };
 
+/** Refresh Pi metadata and seed only when the assigned configuration has no value. */
 export async function registerPiConfig(iii: IIIClient, seed: Config): Promise<void> {
   const initial = (await hasStoredValue(iii)) ? {} : { initial_value: toRuntime(seed) };
   await iii.trigger({

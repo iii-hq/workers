@@ -138,6 +138,7 @@ impl ReloadStatus {
     }
 }
 
+/// Refresh email configuration metadata without replacing an existing value with a seed.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -174,7 +175,12 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
 /// read as "nothing stored yet", which would seed a default over a stored
 /// operator/override value.
 fn is_not_found(error: &str) -> bool {
-    error.contains("NOT_FOUND")
+    match error.split_once("remote error (") {
+        Some((_, rest)) => rest
+            .split_once(')')
+            .is_some_and(|(code, _)| code == "NOT_FOUND"),
+        None => error.trim() == "NOT_FOUND",
+    }
 }
 
 async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
@@ -194,6 +200,7 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     })
 }
 
+/// Return absence only for the entry's NOT_FOUND code, not a service failure.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
@@ -370,14 +377,25 @@ async fn trigger_configuration_with_retry(
 
 #[cfg(test)]
 mod tests {
+    /// Seeding is allowed for entry absence, not errors mentioning NOT_FOUND.
     #[test]
     fn missing_entry_detection_does_not_mask_service_failures() {
         assert!(super::is_not_found("NOT_FOUND"));
         assert!(super::is_not_found(
-            "configuration::get failed after 3 attempts: NOT_FOUND"
+            "remote error (NOT_FOUND): configuration not found"
+        ));
+        assert!(super::is_not_found(
+            "configuration::get failed after 3 attempts: remote error (NOT_FOUND): missing"
         ));
         assert!(!super::is_not_found("function_not_found"));
         assert!(!super::is_not_found("statement_not_found"));
+        assert!(!super::is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!super::is_not_found(
+            "remote error (ADAPTER_ERROR): NOT_FOUND"
+        ));
+        assert!(!super::is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
         assert!(!super::is_not_found(
             "configuration::get failed after 3 attempts: function_not_found"
         ));

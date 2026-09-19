@@ -5,9 +5,8 @@
  * Settings form edit the same fields.
  */
 
-import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import type { ExtensionIii, JsonValue } from '@iii-dev/console-ui'
-
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 
 export const NONE = '__none__'
 
@@ -56,8 +55,11 @@ export function numberAt(value: JsonValue | undefined, path: readonly string[], 
   return typeof found === 'number' && Number.isFinite(found) ? found : fallback
 }
 
+/** Resolve the addressed Voice worker before reading its live configuration. */
 export async function readConfig(iii: ExtensionIii): Promise<JsonObject> {
-  const res = await iii.trigger<{ value?: JsonValue }>('configuration::get', { id: await resolveConfigurationId(iii, 'voice') })
+  const res = await iii.trigger<{ value?: JsonValue }>('configuration::get', {
+    id: await resolveConfigurationId(iii, 'voice'),
+  })
   return asObject(res?.value)
 }
 

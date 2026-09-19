@@ -28,6 +28,7 @@ pub fn config_id() -> &'static str {
 
 pub const RELOAD_FN_ID: &str = "kanban::on-config-change";
 
+/// Keep the Kanban form family stable while using the Compose-assigned entry ID.
 fn entry_spec() -> EntrySpec {
     EntrySpec {
         id: config_id(),

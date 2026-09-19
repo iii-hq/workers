@@ -489,6 +489,7 @@ fn spawn_watcher(
 mod tests {
     use super::*;
 
+    /// The identity RPC accepts engine metadata without making its entry ID caller-controlled.
     #[test]
     fn configuration_identity_accepts_engine_caller_metadata() {
         for payload in [

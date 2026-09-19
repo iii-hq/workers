@@ -25,6 +25,7 @@ const TIMEOUT_MS = 5_000;
 /** Live snapshot shared with the handlers; `current` is whole-replaced on reload. */
 export type ConfigHolder = { current: Config };
 
+/** Refresh the Claude Code schema; send a seed only after a confirmed empty entry. */
 export async function registerClaudeConfig(iii: IIIClient, seed: Config): Promise<void> {
   const initial = (await hasStoredValue(iii)) ? {} : { initial_value: toRuntime(seed) };
   await iii.trigger({

@@ -9,9 +9,10 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
+/// Exercise stored, absent and failed lookups with a fresh process-local configuration ID.
 #[test]
 fn configuration_delivery_preserves_compose_and_publishes_identity() {
-    for scenario in ["stored", "missing", "unavailable"] {
+    for scenario in ["stored", "missing", "unavailable", "service_error"] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -32,6 +33,7 @@ fn configuration_delivery_preserves_compose_and_publishes_identity() {
     }
 }
 
+/// Child-process fixture keeps the environment and cached identity isolated per scenario.
 #[tokio::test]
 #[ignore = "isolated subprocess invoked by the parent"]
 async fn configuration_delivery_child() {
@@ -40,6 +42,7 @@ async fn configuration_delivery_child() {
         .unwrap();
 }
 
+/// Drive real SDK frames to verify identity metadata and whether registration includes a seed.
 async fn exercise_delivery() {
     let scenario = std::env::var("CONFIG_DELIVERY_CASE").unwrap();
     let id = std::env::var("III_CONFIG_NAME").unwrap();
@@ -49,6 +52,9 @@ async fn exercise_delivery() {
     let captured = frames.clone();
     let fixture_id = id.clone();
     let unavailable = scenario == "unavailable";
+    // A service failure whose message merely mentions NOT_FOUND: the worker
+    // must treat it as an error, never as an absent entry to seed over.
+    let service_error = scenario == "service_error";
     let stored = (scenario == "stored").then(|| json!({"http_port":3213,"other":"${UNCHANGED}"}));
     let (identity_tx, identity_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -118,6 +124,8 @@ async fn exercise_delivery() {
                     } else if function == "configuration::get" {
                         if let Some(value) = &stored {
                             reply["result"] = json!({"id":fixture_id,"value":value});
+                        } else if service_error {
+                            reply["error"] = json!({"code":"OTHER","message":"NOT_FOUND"});
                         } else {
                             reply["error"] = json!({"code":"NOT_FOUND","message":"entry absent"});
                         }
@@ -152,7 +160,7 @@ async fn exercise_delivery() {
         .unwrap();
     let result = ade::configuration::register_console_config(&iii, 3113).await;
     assert_eq!(identity_rx.await.unwrap(), json!({"id":id}));
-    if unavailable {
+    if unavailable || service_error {
         assert!(result.is_err());
         assert!(!frames
             .lock()

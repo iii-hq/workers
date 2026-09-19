@@ -625,6 +625,7 @@ mod tests {
         .await;
     }
 
+    /// Persistent approvals update the addressed IDE entry while preserving sibling settings.
     #[tokio::test(flavor = "multi_thread")]
     async fn always_scope_grants_and_persists_configuration_best_effort() {
         with_stack(BootOpts::needs_approval(), |stack| async move {
@@ -693,6 +694,7 @@ mod tests {
         .await;
     }
 
+    /// Failed persistence does not revoke the approval already granted to this call.
     #[tokio::test(flavor = "multi_thread")]
     async fn always_scope_still_executes_when_configuration_persist_is_unavailable() {
         with_stack(BootOpts::needs_approval(), |stack| async move {

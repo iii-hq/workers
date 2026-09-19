@@ -78,6 +78,7 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
     }
 }
 
+/// Require the assigned Voice entry and propagate missing or unreachable configuration.
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii)
         .await?
@@ -180,7 +181,12 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell) -> Option<Arc<Work
 /// `true` for the one error that is an answer rather than a failure: the entry
 /// does not exist yet.
 fn is_not_found(error: &str) -> bool {
-    error.contains("NOT_FOUND")
+    match error.split_once("remote error (") {
+        Some((_, rest)) => rest
+            .split_once(')')
+            .is_some_and(|(code, _)| code == "NOT_FOUND"),
+        None => error.trim() == "NOT_FOUND",
+    }
 }
 
 async fn trigger_configuration_with_retry(
@@ -232,12 +238,18 @@ async fn trigger_configuration_with_retry(
 mod tests {
     use super::*;
 
+    /// Only the entry's missing code short-circuits retries, never compound or message-only matches.
     #[test]
     fn a_missing_entry_is_not_retried() {
         assert!(is_not_found(
             "remote error (NOT_FOUND): configuration 'voice' not found"
         ));
         assert!(!is_not_found("connection reset by peer"));
+        assert!(!is_not_found("RESOURCE_NOT_FOUND"));
+        assert!(!is_not_found("remote error (ADAPTER_ERROR): NOT_FOUND"));
+        assert!(!is_not_found(
+            "remote error (OTHER): remote error (NOT_FOUND): nested"
+        ));
     }
 
     #[tokio::test]

@@ -91,6 +91,7 @@ type StepState = 'complete' | 'active' | 'pending'
 
 const DOT_TONE: Record<StepState, 'ok' | 'accent' | 'ink'> = { complete: 'ok', active: 'accent', pending: 'ink' }
 
+/** Guide initial setup and reconcile layout changes from the addressed Console configuration. */
 export function OnboardingPage({ host, onRequestClose, conversationId }: { host: Host } & PageRenderProps) {
   const [tour, setTour] = useState<Tour | null>(null)
   const [records, setRecords] = useState<StepRecords>({})
