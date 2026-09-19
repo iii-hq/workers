@@ -24,6 +24,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Keep integration on the engine release that provides configuration::ensure.
+  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
 
 jobs:
   e2e:

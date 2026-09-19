@@ -34,6 +34,10 @@ on:
         required: false
         default: ''
 
+env:
+  # Pin the published release containing configuration::ensure, not a mutable channel.
+  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
+
 jobs:
   validate:
     name: validate harness scenarios
@@ -101,7 +105,7 @@ jobs:
           # This step never cached; the repository is already over its cache budget.
           node-version: 22
 
-      - name: Install latest iii @rc
+      - name: Install verified iii RC
         id: engine
         env:
           GITHUB_TOKEN: ${{ github.token }}

@@ -93,9 +93,12 @@ and metadata are always refreshed. Register/ensure/set/delete are serialized by
 the engine's configuration mutex, and the legacy `configuration::register`
 remains an explicit overwrite used deliberately by Compose and by migrations.
 
-**Engine version requirement — fail closed.** `configuration::ensure` ships in
-the engine PR [iii-hq/iii#2214](https://github.com/iii-hq/iii/pull/2214), which
-is **not yet merged or released**. Update the engine *before* the workers that
+**Engine version requirement — fail closed.** `configuration::ensure` was merged in
+[iii-hq/iii#2214](https://github.com/iii-hq/iii/pull/2214) and is available in
+[`iii/v0.24.0-rc.2`](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.24.0-rc.2).
+CI boot/interface collection and source-stack integration explicitly use this
+verified release rather than the older stable engine. Registry validation keeps
+its explicitly selected CLI channel. Update the engine *before* the workers that
 call `ensure`. Against an engine that predates it, the first `ensure` call
 returns the engine's `function_not_found` and the worker **fails closed** with a
 clear error — `configuration::ensure unavailable; upgrade engine with atomic

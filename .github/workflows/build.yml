@@ -35,6 +35,8 @@ on:
       correlation_id: {required: false, default: '', type: string}
 
 env:
+  # Interface collection boots the built worker and needs atomic configuration initialization.
+  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
   WORKER: ${{ inputs.worker }}
   SOURCE_SHA: ${{ inputs.source_sha }}
   DESCRIPTOR_RUN_ID: ${{ inputs.descriptor_run_id }}
