@@ -111,3 +111,55 @@ export function ignoreSummary(rule) {
   }
   return 'ignored'
 }
+
+/**
+ * One move, in words. The reason the worker recorded is more specific than
+ * the pair of states, so it leads when there is one.
+ * @param {{ from_status?: string, to_status: string, reason?: string, actor: string }} row
+ */
+export function transitionSentence(row) {
+  if (!row.from_status) return 'first seen'
+  const reason = {
+    regression: 'came back after a fix',
+    ignore_expired: 'the ignore ran out',
+    resolved: 'marked resolved',
+    ignored: 'ignored',
+    diagnosed: 'a diagnosis was recorded',
+    reopened: 'reopened',
+    investigating: 'an investigation started',
+  }[row.reason ?? '']
+  if (reason) return reason
+  // No reason recorded: the pair of states is still the truth.
+  return `${row.from_status} → ${row.to_status}`
+}
+
+/**
+ * What a mixed selection can be asked to do: only what every group in it
+ * can. Offering Resolve over a selection that includes an ignored group
+ * would promise something that refuses halfway through, and the person would
+ * have to work out which half.
+ * @param {GroupStatus[]} statuses
+ */
+export function bulkActions(statuses) {
+  if (statuses.length === 0) return []
+  const sets = statuses.map((status) => availableActions(status))
+  return sets[0].filter(
+    (action) =>
+      // Investigating and stopping are one group at a time: each opens or
+      // ends a conversation somebody is meant to watch.
+      action !== 'investigate' && action !== 'stop' && sets.every((set) => set.includes(action)),
+  )
+}
+
+/**
+ * The outcome of applying one action across a selection, as a sentence.
+ * @param {string} action
+ * @param {number} done
+ * @param {string[]} failures
+ */
+export function bulkOutcome(action, done, failures) {
+  const verb = { resolve: 'resolved', ignore: 'ignored', reopen: 'reopened', unignore: 'unignored' }[action] ?? action
+  if (failures.length === 0) return `${done} ${verb}.`
+  const refused = failures.length === 1 ? '1 refused' : `${failures.length} refused`
+  return `${done} ${verb}, ${refused}: ${failures[0]}`
+}

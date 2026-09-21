@@ -20,11 +20,24 @@
   flex: 0 0 auto;
 }
 
-/* The title is the one column that would grow without limit, so it is the
-   one that is capped: everything else sizes to its content and the table
-   fits the pane instead of scrolling sideways. */
+/* Every column shrinks to its content except the title, which takes the
+   slack. `width: 1%` is the shrink-to-fit idiom for an auto-layout table;
+   `table-layout: fixed` is not — it ignores content entirely and collapses
+   the trailing columns into each other. */
 [data-iii-ui="sentinel"] .sentinel-ui-list table {
   width: 100%;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-list th,
+[data-iii-ui="sentinel"] .sentinel-ui-list td {
+  width: 1%;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-list th.sentinel-ui-grow,
+[data-iii-ui="sentinel"] .sentinel-ui-list td.sentinel-ui-grow {
+  width: 100%;
+  min-width: 0;
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-search {
@@ -60,7 +73,7 @@
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-title {
-  max-width: 56ch;
+  max-width: 100%;
   overflow: hidden;
   font-weight: 500;
   text-overflow: ellipsis;
@@ -68,7 +81,7 @@
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-row-detail {
-  max-width: 64ch;
+  max-width: 100%;
   margin-top: 2px;
   overflow: hidden;
   color: var(--color-ink-ghost);
@@ -121,6 +134,29 @@
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-more {
+  color: var(--color-ink-ghost);
+}
+
+/* The selection column stays exactly as wide as the box in it. */
+[data-iii-ui="sentinel"] .sentinel-ui-pick {
+  width: 1%;
+  padding-inline-end: 0;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel-raised);
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-bulk-none {
   color: var(--color-ink-ghost);
 }
 
@@ -298,6 +334,57 @@
 [data-iii-ui="sentinel"] .sentinel-ui-evidence-why {
   margin-bottom: 4px;
   font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-timeline ol {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-timeline li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  border-inline-start: 1px solid var(--color-edge);
+  font-size: 11px;
+}
+
+/* The pipeline's own moves read quieter than the decisions people made. */
+[data-iii-ui="sentinel"] .sentinel-ui-timeline li[data-actor="ingest"] {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-timeline-when {
+  min-width: 7ch;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-timeline-move {
+  flex: 0 1 auto;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-session {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-session-none {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-history {

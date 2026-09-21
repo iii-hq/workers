@@ -13,6 +13,7 @@ export const FN = {
   occurrences: 'sentinel::occurrences::list',
   evidence: 'sentinel::evidence::get',
   diagnoses: 'sentinel::diagnoses::list',
+  history: 'sentinel::groups::history',
   investigate: 'sentinel::investigate',
   investigationsGet: 'sentinel::investigations::get',
   investigationsList: 'sentinel::investigations::list',

@@ -18,7 +18,7 @@
 //!   change later rather than a migration.
 
 /// The schema version this build expects.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 pub const META_TABLE: &str =
     "CREATE TABLE IF NOT EXISTS sentinel_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)";
@@ -27,7 +27,34 @@ pub const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Statements for one version, applied in order inside a single transaction.
 pub fn migrations() -> Vec<(u32, Vec<&'static str>)> {
-    vec![(1, v1())]
+    vec![(1, v1()), (2, v2())]
+}
+
+/// v2 records **why a group is where it is**, instead of leaving a reader to
+/// infer it from the columns that survived.
+///
+/// The group row carries only the present: a status, the moment it was
+/// resolved, the moment it regressed. A group that was ignored, unignored,
+/// diagnosed and then resolved shows none of that history, and "who decided
+/// this, and when" is exactly the question somebody asks months later. One
+/// row per move, written in the same transaction as the move itself, is the
+/// cheapest way to keep the answer.
+fn v2() -> Vec<&'static str> {
+    vec![
+        r#"CREATE TABLE IF NOT EXISTS sentinel_transitions (
+  id          TEXT PRIMARY KEY,
+  group_id    TEXT NOT NULL REFERENCES sentinel_groups(id),
+  -- NULL on the row that records the group's own beginning.
+  from_status TEXT,
+  to_status   TEXT NOT NULL,
+  reason      TEXT,
+  -- A role, not a person: the console does not carry an identity, and a
+  -- worker uuid in this column would read as one without being one.
+  actor       TEXT NOT NULL,
+  at_ms       INTEGER NOT NULL
+)"#,
+        "CREATE INDEX IF NOT EXISTS sentinel_transitions_group ON sentinel_transitions (group_id, at_ms DESC)",
+    ]
 }
 
 fn v1() -> Vec<&'static str> {

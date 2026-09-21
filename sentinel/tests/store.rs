@@ -518,3 +518,40 @@ async fn status_counts_group_by_state_and_treat_regressed_as_open() {
     assert_eq!(counts.ignored, 1);
     assert_eq!(counts.resolved, 1);
 }
+
+#[tokio::test]
+async fn a_store_already_at_v1_takes_the_upgrade() {
+    // The real path on every existing install: the tables are there, the
+    // meta row says 1, and boot has to add v2 without touching the rest.
+    let store = Store::new(SqliteDb::in_memory());
+    let db = store.db();
+    db.execute(sentinel::store::schema::META_TABLE, vec![])
+        .await
+        .expect("meta table");
+    for statement in sentinel::store::schema::migrations()
+        .into_iter()
+        .find(|(version, _)| *version == 1)
+        .expect("v1 exists")
+        .1
+    {
+        db.execute(statement, vec![]).await.expect("apply v1");
+    }
+    db.execute(
+        "INSERT INTO sentinel_meta (key, value) VALUES (?, '1')",
+        vec![json!(sentinel::store::schema::SCHEMA_VERSION_KEY)],
+    )
+    .await
+    .expect("stamp v1");
+
+    let version = store.migrate().await.expect("upgrade");
+    assert_eq!(version, sentinel::store::schema::SCHEMA_VERSION);
+    db.query("SELECT id FROM sentinel_transitions LIMIT 1", vec![])
+        .await
+        .expect("v2 added the transitions table");
+
+    // And running it again is a no-op rather than a second attempt.
+    assert_eq!(
+        store.migrate().await.expect("re-run"),
+        sentinel::store::schema::SCHEMA_VERSION
+    );
+}

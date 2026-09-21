@@ -14,10 +14,11 @@ use crate::store::{Db, Statement, Store};
 use crate::{
     evidence::EvidenceBundleV1, ids, lifecycle, DiagnosesListRequestV1, DiagnosesListResponseV1,
     ErrorSourceV1, EvidenceGetRequestV1, EvidenceGetResponseV1, GroupActionRequestV1,
-    GroupChangeReasonV1, GroupGetRequestV1, GroupGetResponseV1, GroupStateResponseV1,
-    GroupStatusV1, GroupSummaryV1, GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1,
-    IgnoreRequestV1, IgnoreRuleV1, NamedRow, OccurrenceSummaryV1, OccurrencesListRequestV1,
-    OccurrencesListResponseV1, ResolveRequestV1, SentinelError, Transition,
+    GroupChangeReasonV1, GroupGetRequestV1, GroupGetResponseV1, GroupHistoryRequestV1,
+    GroupHistoryResponseV1, GroupStateResponseV1, GroupStatusV1, GroupSummaryV1,
+    GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1, IgnoreRequestV1, IgnoreRuleV1,
+    NamedRow, OccurrenceSummaryV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
+    ResolveRequestV1, SentinelError, Transition,
 };
 
 const DEFAULT_LIMIT: u32 = 50;
@@ -187,6 +188,50 @@ impl<D: Db> Service<D> {
         })
     }
 
+    /// Every move this group has made, newest first.
+    ///
+    /// The group row carries only the present. This is the record of how it
+    /// got there, written in the same transactions that moved it, so the two
+    /// cannot disagree.
+    pub async fn history(
+        &self,
+        request: GroupHistoryRequestV1,
+    ) -> Result<GroupHistoryResponseV1, SentinelError> {
+        let limit = request.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+        let total = self
+            .store
+            .db()
+            .query(
+                "SELECT COUNT(*) AS total FROM sentinel_transitions WHERE group_id = ?",
+                vec![json!(request.group_id)],
+            )
+            .await?
+            .first()
+            .and_then(|row| row.get("total"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(0) as u64;
+        let rows = self
+            .store
+            .db()
+            .query(
+                // Id breaks the tie: a resolve and the diagnosis that raced
+                // it can land in the same millisecond.
+                "SELECT * FROM sentinel_transitions WHERE group_id = ? \
+                 ORDER BY at_ms DESC, id DESC LIMIT ? OFFSET ?",
+                vec![
+                    json!(request.group_id),
+                    json!(limit as i64),
+                    json!(request.offset.unwrap_or(0) as i64),
+                ],
+            )
+            .await?;
+        Ok(GroupHistoryResponseV1 {
+            transitions: rows.iter().map(transition).collect(),
+            total,
+        })
+    }
+
     /// Every diagnosis recorded against a group, newest first.
     ///
     /// `groups::get` carries the one in force; this is the history behind it,
@@ -344,13 +389,23 @@ impl<D: Db> Service<D> {
             let results = self
                 .store
                 .db()
-                .transaction(&[Statement::new(
-                    format!(
-                        "UPDATE sentinel_groups SET {set_sql} WHERE id = ? AND updated_ms = ? \
-                         RETURNING id"
+                .transaction(&[
+                    Statement::new(
+                        format!(
+                            "UPDATE sentinel_groups SET {set_sql} WHERE id = ? AND \
+                             updated_ms = ? RETURNING id"
+                        ),
+                        params,
                     ),
-                    params,
-                )])
+                    crate::store::transition_statement(
+                        group_id,
+                        Some(current.state.status),
+                        transition.status,
+                        transition.reason,
+                        crate::store::Actor::Console,
+                        ids::now_ms(),
+                    ),
+                ])
                 .await?;
             let applied = results
                 .first()
@@ -513,6 +568,19 @@ fn source_of(value: Option<&str>) -> ErrorSourceV1 {
         Some("harness-turn") => ErrorSourceV1::HarnessTurn,
         Some("report") => ErrorSourceV1::Report,
         _ => ErrorSourceV1::Trace,
+    }
+}
+
+fn transition(row: &NamedRow) -> crate::GroupTransitionV1 {
+    crate::GroupTransitionV1 {
+        id: text(row, "id").unwrap_or_default(),
+        from_status: text(row, "from_status")
+            .as_deref()
+            .map(|value| status_of(Some(value))),
+        to_status: status_of(text(row, "to_status").as_deref()),
+        reason: text(row, "reason").and_then(|value| serde_json::from_value(json!(value)).ok()),
+        actor: text(row, "actor").unwrap_or_else(|| "unknown".into()),
+        at_ms: number(row, "at_ms").unwrap_or_default(),
     }
 }
 

@@ -697,7 +697,13 @@ impl<D: Db> Investigations<D> {
                 return Ok(None);
             }
             if self
-                .apply_status(group_id, group.updated_ms, transition.status, true)
+                .apply_status(
+                    group_id,
+                    group.updated_ms,
+                    group.state.status,
+                    &transition,
+                    true,
+                )
                 .await?
             {
                 return Ok(Some(GroupStateResponseV1 {
@@ -726,7 +732,13 @@ impl<D: Db> Investigations<D> {
                 return Ok(None);
             }
             if self
-                .apply_status(group_id, group.updated_ms, transition.status, false)
+                .apply_status(
+                    group_id,
+                    group.updated_ms,
+                    group.state.status,
+                    &transition,
+                    false,
+                )
                 .await?
             {
                 return Ok(Some(GroupStateResponseV1 {
@@ -739,11 +751,13 @@ impl<D: Db> Investigations<D> {
         Ok(None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn apply_status(
         &self,
         group_id: &str,
         seen_updated_ms: i64,
-        status: GroupStatusV1,
+        from: GroupStatusV1,
+        transition: &crate::Transition,
         remember_previous: bool,
     ) -> Result<bool, SentinelError> {
         let set_sql = if remember_previous {
@@ -751,21 +765,32 @@ impl<D: Db> Investigations<D> {
         } else {
             "status = ?, updated_ms = ?"
         };
+        let now = ids::now_ms();
         let results = self
             .store
             .db()
-            .transaction(&[Statement::new(
-                format!(
-                    "UPDATE sentinel_groups SET {set_sql} WHERE id = ? AND updated_ms = ? \
-                     RETURNING id"
+            .transaction(&[
+                Statement::new(
+                    format!(
+                        "UPDATE sentinel_groups SET {set_sql} WHERE id = ? AND updated_ms = ? \
+                         RETURNING id"
+                    ),
+                    vec![
+                        json!(transition.status.as_str()),
+                        json!(now),
+                        json!(group_id),
+                        json!(seen_updated_ms),
+                    ],
                 ),
-                vec![
-                    json!(status.as_str()),
-                    json!(ids::now_ms()),
-                    json!(group_id),
-                    json!(seen_updated_ms),
-                ],
-            )])
+                crate::store::transition_statement(
+                    group_id,
+                    Some(from),
+                    transition.status,
+                    transition.reason,
+                    crate::store::Actor::Investigation,
+                    now,
+                ),
+            ])
             .await?;
         Ok(results
             .first()

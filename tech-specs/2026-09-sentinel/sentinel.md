@@ -1281,6 +1281,30 @@ sessão distinta, escrita no ingest e nunca podada junto com as ocorrências.
 `COUNT(DISTINCT session_id)` sobre `sentinel_occurrences` mentiria assim que
 a retenção de 1 000 linhas começasse a cortar.
 
+### ⚠ `sentinel_transitions` (schema v2)
+
+O grupo carrega só o presente. Um grupo que foi ignorado, designorado,
+diagnosticado e então resolvido não mostra nada disso, e "quem decidiu isto, e
+quando" é exatamente a pergunta de meses depois. Uma linha por movimento, na
+mesma transação que o movimento — uma história que pode discordar do estado
+que descreve é pior que nenhuma.
+
+```sql
+CREATE TABLE sentinel_transitions (
+  id          TEXT PRIMARY KEY,
+  group_id    TEXT NOT NULL REFERENCES sentinel_groups(id),
+  from_status TEXT,                      -- NULL na linha que registra o nascimento do grupo
+  to_status   TEXT NOT NULL,
+  reason      TEXT,                      -- GroupChangeReason, quando houve uma
+  actor       TEXT NOT NULL,             -- papel: ingest | agent | investigation | console
+  at_ms       INTEGER NOT NULL
+);
+CREATE INDEX sentinel_transitions_group ON sentinel_transitions (group_id, at_ms DESC);
+```
+
+A poda diária mantém as 200 mais recentes por grupo, mais o nascimento: as
+linhas são minúsculas, mas "minúsculo vezes para sempre" ainda é para sempre.
+
 ## Funções registradas
 
 | Função | Papel | Trace |
@@ -1628,18 +1652,14 @@ nunca apagado em silêncio — um provider cujo credencial caiu volta.
 Página injetada (`iii-console-ui`, ativos `sentinel/page.js` e
 `sentinel/styles.css`), registrada com `host.pages.register`. Três vistas:
 
-> ⚠ **O que o v1 entregou desta seção.** A lista, o detalhe, as abas *Latest
-> occurrence*, *Occurrences* e *Diagnosis* (com a **lista de diagnósticos
-> anteriores**, por `sentinel::diagnoses::list`), as ações humanas,
-> *Investigate* e *Open in chat*, *Open session*, *Stop*, *Ask for a
-> diagnosis*, o form de configuração com o **seletor alimentado por
-> `router::models::list`**, e a atualização ao vivo. Ficaram de fora,
-> deliberadamente, e cada um é uma adição isolada: **ações em lote** na
-> lista, **Investigate with…** (trocar o modelo no ato; o v1 usa o
-> configurado), a aba **History** (o v1 deriva o estado dos campos do grupo,
-> sem tabela de transições) e os **links de sessão e turno** na aba
-> Occurrences. O renderer da evidência em modo chat está bloqueado por falta
-> de consumidor no console (ver "A evidência no transcript").
+> ⚠ **O que o v1 entregou desta seção.** Tudo, com uma exceção: o renderer da
+> evidência em modo chat, bloqueado por falta de consumidor no console (ver
+> "A evidência no transcript"). A aba *History* é lida de uma tabela real —
+> ⚠ `sentinel_transitions`, schema v2, uma linha por movimento escrita na
+> mesma transação que o faz — e não derivada dos campos do grupo. O ator
+> gravado é um **papel** (`ingest`, `agent`, `investigation`, `console`) e
+> não uma pessoa: o console não entrega identidade de usuário, e o
+> `_caller_worker_id` é um uuid que pareceria uma.
 
 **Lista de grupos.** Filtros: estado (padrão: abertos — `new`,
 `investigating`, `diagnosed`, `regressed`; chips para `regressed`, `ignored`,

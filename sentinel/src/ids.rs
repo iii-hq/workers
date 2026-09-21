@@ -32,6 +32,10 @@ pub fn investigation_id() -> String {
     format!("inv_{}", ordered())
 }
 
+pub fn transition_id() -> String {
+    format!("trn_{}", ordered())
+}
+
 pub fn diagnosis_id() -> String {
     format!("dgn_{}", ordered())
 }

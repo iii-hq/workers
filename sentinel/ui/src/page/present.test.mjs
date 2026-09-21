@@ -2,6 +2,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   availableActions,
+  bulkActions,
+  bulkOutcome,
+  transitionSentence,
   codeLocation,
   ignoreSummary,
   sessionAffordance,
@@ -72,4 +75,48 @@ test('an ignore rule reads as a sentence', () => {
   assert.equal(ignoreSummary({ kind: 'occurrences', count: 50 }), 'ignored for 50 more occurrences')
   assert.equal(ignoreSummary({ kind: 'version_change' }), 'ignored until the version changes')
   assert.equal(ignoreSummary(null), '')
+})
+
+test('the first row of a history is the group being born', () => {
+  assert.equal(transitionSentence({ to_status: 'new', actor: 'ingest' }), 'first seen')
+})
+
+test('a move reads as the reason the worker recorded, not as a pair of states', () => {
+  assert.equal(
+    transitionSentence({
+      from_status: 'resolved',
+      to_status: 'regressed',
+      reason: 'regression',
+      actor: 'ingest',
+    }),
+    'came back after a fix',
+  )
+})
+
+test('a move with no reason still says what happened', () => {
+  assert.equal(
+    transitionSentence({ from_status: 'investigating', to_status: 'new', actor: 'investigation' }),
+    'investigating → new',
+  )
+})
+
+test('a selection can only be asked to do what every group in it can', () => {
+  assert.deepEqual(bulkActions(['new', 'diagnosed']), ['resolve', 'ignore'])
+  assert.deepEqual(bulkActions(['new', 'ignored']), [], 'an ignored group cannot be resolved')
+  assert.deepEqual(bulkActions(['ignored', 'ignored']), ['unignore'])
+  assert.deepEqual(bulkActions([]), [])
+})
+
+test('investigating is never a batch action', () => {
+  assert.ok(!bulkActions(['new', 'new']).includes('investigate'))
+  assert.deepEqual(bulkActions(['investigating', 'investigating']), [])
+})
+
+test('the outcome names what was refused rather than just counting', () => {
+  assert.equal(bulkOutcome('resolve', 3, []), '3 resolved.')
+  assert.equal(
+    bulkOutcome('resolve', 2, ['a group cannot move from ignored to resolved']),
+    '2 resolved, 1 refused: a group cannot move from ignored to resolved',
+  )
+  assert.equal(bulkOutcome('ignore', 0, ['x', 'y']), '0 ignored, 2 refused: x')
 })

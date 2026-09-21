@@ -27,12 +27,13 @@ use crate::{
     ids, Counters, DiagnosesListRequestV1, DiagnosesListResponseV1, DiagnosisRecordRequestV1,
     DiagnosisRecordResponseV1, DoorbellResponseV1, EvidenceGetRequestV1, EvidenceGetResponseV1,
     GroupActionRequestV1, GroupChangedOpV1, GroupGetRequestV1, GroupGetResponseV1,
-    GroupStateResponseV1, GroupsListRequestV1, GroupsListResponseV1, IgnoreRequestV1,
-    InvestigateRequestV1, InvestigateResponseV1, InvestigationCancelRequestV1,
-    InvestigationGetRequestV1, InvestigationGetResponseV1, InvestigationSummaryV1,
-    InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
-    LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1, ResolveRequestV1,
-    StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TurnCompletedEventV1,
+    GroupHistoryRequestV1, GroupHistoryResponseV1, GroupStateResponseV1, GroupsListRequestV1,
+    GroupsListResponseV1, IgnoreRequestV1, InvestigateRequestV1, InvestigateResponseV1,
+    InvestigationCancelRequestV1, InvestigationGetRequestV1, InvestigationGetResponseV1,
+    InvestigationSummaryV1, InvestigationsListRequestV1, InvestigationsListResponseV1,
+    LogsListRequestV1, LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
+    ResolveRequestV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
+    TurnCompletedEventV1,
 };
 
 pub const STATUS_ID: &str = "sentinel::status";
@@ -70,6 +71,9 @@ pub const ON_TURN_COMPLETED_DESC: &str =
     "Internal doorbell for a finished investigation turn; the status is re-read rather than trusted.";
 pub const ON_SCHEDULE_ID: &str = "sentinel::on-schedule";
 pub const ON_SCHEDULE_DESC: &str = "Internal daily prune of buckets and archived groups.";
+
+pub const GROUPS_HISTORY_ID: &str = "sentinel::groups::history";
+pub const GROUPS_HISTORY_DESC: &str = "Every move a group has made, newest first: what changed it, why, and whether it came from the pipeline, from an agent or from a person.";
 
 pub const DIAGNOSES_LIST_ID: &str = "sentinel::diagnoses::list";
 pub const DIAGNOSES_LIST_DESC: &str = "List every diagnosis recorded against a group, newest first. Each recording is a version and none are overwritten, so the same failure diagnosed twice can be compared.";
@@ -283,6 +287,16 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
             async move { deps.service.evidence(request).await.map_err(Into::into) }
         })
         .description(EVIDENCE_GET_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        GROUPS_HISTORY_ID,
+        RegisterFunction::new_async(move |request: GroupHistoryRequestV1| {
+            let deps = current.clone();
+            async move { deps.service.history(request).await.map_err(Into::into) }
+        })
+        .description(GROUPS_HISTORY_DESC),
     );
 
     let current = deps.clone();
@@ -685,6 +699,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             OCCURRENCES_LIST_DESC,
         ),
         spec::<EvidenceGetRequestV1, EvidenceGetResponseV1>(EVIDENCE_GET_ID, EVIDENCE_GET_DESC),
+        spec::<GroupHistoryRequestV1, GroupHistoryResponseV1>(
+            GROUPS_HISTORY_ID,
+            GROUPS_HISTORY_DESC,
+        ),
         spec::<DiagnosesListRequestV1, DiagnosesListResponseV1>(
             DIAGNOSES_LIST_ID,
             DIAGNOSES_LIST_DESC,

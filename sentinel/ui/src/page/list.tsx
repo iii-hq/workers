@@ -1,10 +1,16 @@
 import {
   Badge,
+  Button,
+  Checkbox,
   Chip,
   Eyebrow,
   SearchField,
   SegmentedControl,
   Select,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
   Skeleton,
   StatusDot,
   Table,
@@ -21,9 +27,16 @@ import {
   TooltipTrigger,
 } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
+import { useState } from 'react'
 import type { GroupStatus, GroupSummary, StatusResponse } from '../api'
 import type { Filters } from './index'
-import { OPEN_STATES, STATUS_PRESENTATION, ignoreSummary, sparklineBars } from './present.js'
+import {
+  OPEN_STATES,
+  STATUS_PRESENTATION,
+  bulkActions,
+  ignoreSummary,
+  sparklineBars,
+} from './present.js'
 
 // `icon: false` throughout: these are words, and the control's inferred
 // glyphs would be decoration that means nothing here.
@@ -50,6 +63,8 @@ const SCOPE_STATES: Record<string, GroupStatus[]> = {
 }
 
 interface Props {
+  busy: boolean
+  onBulk: (action: string, groupIds: string[]) => void
   counts?: StatusResponse['groups']
   filters: Filters
   groups: GroupSummary[]
@@ -63,6 +78,8 @@ interface Props {
 }
 
 export function GroupsListView({
+  busy,
+  onBulk,
   counts,
   filters,
   groups,
@@ -75,6 +92,19 @@ export function GroupsListView({
 }: Props) {
   const scope = scopeOf(filters.statuses)
   const services = [...new Set(groups.map((group) => group.service_name))].sort()
+  const [picked, setPicked] = useState<string[]>([])
+
+  // A row that scrolled out of the filter is no longer selectable: keeping it
+  // would apply an action to something the person cannot see.
+  const visible = new Set(groups.map((group) => group.id))
+  const selection = picked.filter((id) => visible.has(id))
+  const actions = bulkActions(
+    selection.map((id) => groups.find((group) => group.id === id)?.status ?? 'new'),
+  )
+  const toggle = (id: string) =>
+    setPicked((previous) =>
+      previous.includes(id) ? previous.filter((other) => other !== id) : [...previous, id],
+    )
 
   return (
     <div className="sentinel-ui-list">
@@ -129,12 +159,102 @@ export function GroupsListView({
         </span>
       </div>
 
+      {selection.length > 0 ? (
+        <div className="sentinel-ui-bulk" role="region" aria-label="selected groups">
+          <span>{selection.length} selected</span>
+          {actions.length === 0 ? (
+            <span className="sentinel-ui-bulk-none">
+              nothing applies to all of them — narrow the selection
+            </span>
+          ) : null}
+          {actions.includes('resolve') ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                onBulk('resolve', selection)
+                setPicked([])
+              }}
+            >
+              Resolve
+            </Button>
+          ) : null}
+          {actions.includes('ignore') ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="ghost" disabled={busy}>
+                  Ignore
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    onBulk('ignore', selection)
+                    setPicked([])
+                  }}
+                >
+                  Forever
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    onBulk('ignore-version', selection)
+                    setPicked([])
+                  }}
+                >
+                  Until the worker version changes
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+          {actions.includes('unignore') ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                onBulk('unignore', selection)
+                setPicked([])
+              }}
+            >
+              Stop ignoring
+            </Button>
+          ) : null}
+          {actions.includes('reopen') ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                onBulk('reopen', selection)
+                setPicked([])
+              }}
+            >
+              Reopen
+            </Button>
+          ) : null}
+          <Button size="sm" variant="ghost" onClick={() => setPicked([])}>
+            Clear
+          </Button>
+        </div>
+      ) : null}
+
       <TableViewport>
         <TableFrame>
           <Table density="compact">
             <TableHeader>
               <TableRow>
-                <TableHead>error</TableHead>
+                <TableHead className="sentinel-ui-pick">
+                  <Checkbox
+                    aria-label="Select every group shown"
+                    checked={selection.length > 0 && selection.length === groups.length}
+                    indeterminate={selection.length > 0 && selection.length < groups.length}
+                    onChange={(event) =>
+                      setPicked(event.target.checked ? groups.map((group) => group.id) : [])
+                    }
+                  />
+                </TableHead>
+                <TableHead className="sentinel-ui-grow">error</TableHead>
                 {narrow ? null : <TableHead>worker</TableHead>}
                 <TableHead>last 24h</TableHead>
                 <TableHead align="right">count</TableHead>
@@ -145,13 +265,20 @@ export function GroupsListView({
               {loading && groups.length === 0
                 ? Array.from({ length: 5 }, (_, index) => (
                     <TableRow key={index}>
-                      <TableCell colSpan={narrow ? 4 : 5}>
+                      <TableCell colSpan={narrow ? 5 : 6}>
                         <Skeleton />
                       </TableCell>
                     </TableRow>
                   ))
                 : groups.map((group) => (
-                    <GroupRow key={group.id} group={group} narrow={narrow} onOpen={onOpen} />
+                    <GroupRow
+                      key={group.id}
+                      group={group}
+                      narrow={narrow}
+                      onOpen={onOpen}
+                      picked={selection.includes(group.id)}
+                      onPick={() => toggle(group.id)}
+                    />
                   ))}
             </TableBody>
           </Table>
@@ -170,14 +297,19 @@ function GroupRow({
   group,
   narrow,
   onOpen,
+  onPick,
+  picked,
 }: {
   group: GroupSummary
   narrow: boolean
   onOpen: (groupId: string) => void
+  onPick: () => void
+  picked: boolean
 }) {
   const presentation = STATUS_PRESENTATION[group.status]
   return (
     <TableRow
+      selected={picked}
       // A regression carries a wash of its own: it is the one row in the
       // list that says somebody's fix did not hold.
       data-regressed={group.status === 'regressed' ? 'true' : undefined}
@@ -190,7 +322,19 @@ function GroupRow({
         }
       }}
     >
-      <TableCell>
+      <TableCell
+        className="sentinel-ui-pick"
+        // The checkbox is not the row: clicking it selects, clicking the row
+        // opens.
+        onClick={(event) => event.stopPropagation()}
+      >
+        <Checkbox
+          aria-label={`Select ${group.title}`}
+          checked={picked}
+          onChange={onPick}
+        />
+      </TableCell>
+      <TableCell className="sentinel-ui-grow">
         <div className="sentinel-ui-row-title">
           <Badge variant={presentation.tone === 'danger' ? 'alert' : 'default'}>
             {presentation.label}

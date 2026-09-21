@@ -387,6 +387,17 @@ impl<D: Db> Store<D> {
                     ],
                 ),
             ];
+            let mut steps = steps;
+            if transition.moved(group.state.status) {
+                steps.push(super::transition_statement(
+                    group_id,
+                    Some(group.state.status),
+                    transition.status,
+                    transition.reason,
+                    super::Actor::Agent,
+                    now,
+                ));
+            }
             let results = self.db().transaction(&steps).await?;
             let applied = results
                 .get(1)

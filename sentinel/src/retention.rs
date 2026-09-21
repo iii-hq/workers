@@ -13,6 +13,9 @@ use crate::store::{Db, Store};
 use crate::{ids, SentinelError, WorkerConfig};
 
 const DAY_MS: i64 = 86_400_000;
+/// Moves kept per group. Not a setting: nobody tunes this, and a group with
+/// more than this many state changes has a different problem.
+const TRANSITIONS_PER_GROUP: i64 = 200;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PruneOutcome {
@@ -69,6 +72,21 @@ pub async fn prune<D: Db>(
     for group_id in groups_over_budget(store, config).await? {
         outcome.evidence_pruned += prune_group(store, config, &group_id).await?;
     }
+
+    // A group that flaps between resolved and regressed writes a row per
+    // flap. They are tiny, but "tiny times forever" is still forever: keep
+    // the recent ones and the group's own beginning.
+    store
+        .db()
+        .execute(
+            "DELETE FROM sentinel_transitions WHERE id NOT IN ( \
+               SELECT id FROM sentinel_transitions t2 \
+               WHERE t2.group_id = sentinel_transitions.group_id \
+               ORDER BY t2.at_ms DESC LIMIT ? \
+             ) AND from_status IS NOT NULL",
+            vec![json!(TRANSITIONS_PER_GROUP)],
+        )
+        .await?;
     Ok(outcome)
 }
 

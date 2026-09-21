@@ -21,6 +21,7 @@ fn catalog_matches_the_registered_surface() {
             "sentinel::groups::reopen",
             "sentinel::occurrences::list",
             "sentinel::evidence::get",
+            "sentinel::groups::history",
             "sentinel::diagnoses::list",
             "sentinel::investigate",
             "sentinel::investigations::get",

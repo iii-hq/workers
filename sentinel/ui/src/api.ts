@@ -151,6 +151,16 @@ export interface EvidenceBundle {
   truncated: { spans: number; logs: number; attributes: number }
 }
 
+export interface GroupTransition {
+  id: string
+  from_status?: GroupStatus
+  to_status: GroupStatus
+  reason?: string
+  /** A role: `ingest`, `agent`, `investigation` or `console`. */
+  actor: string
+  at_ms: number
+}
+
 export interface GroupDetail {
   group: GroupSummary
   message_sample: string
@@ -196,6 +206,8 @@ export function client(iii: ExtensionIii) {
         group_id,
         limit,
       }),
+    history: (group_id: string, limit = 50) =>
+      call<{ transitions: GroupTransition[]; total: number }>(FN.history, { group_id, limit }),
     diagnoses: (group_id: string, limit = 20) =>
       call<{ diagnoses: DiagnosisRecord[]; total: number }>(FN.diagnoses, { group_id, limit }),
     evidence: (occurrence_id: string) =>

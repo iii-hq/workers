@@ -67,6 +67,67 @@ pub trait Db: Send + Sync {
         -> Result<Vec<StepResult>, SentinelError>;
 }
 
+/// Who moved a group.
+///
+/// A **role**, not a person. The console hands a worker no user identity, and
+/// the engine's `_caller_worker_id` is a uuid — putting that in this column
+/// would read as an identity without being one. What a reader actually wants
+/// to know is whether a state came from the pipeline, from the agent, or from
+/// somebody clicking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Actor {
+    /// A new occurrence moved it: a regression, or an ignore running out.
+    Ingest,
+    /// An investigation recorded a diagnosis.
+    Agent,
+    /// A first pass started, or ended and gave the group back.
+    Investigation,
+    /// A person decided.
+    Console,
+}
+
+impl Actor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ingest => "ingest",
+            Self::Agent => "agent",
+            Self::Investigation => "investigation",
+            Self::Console => "console",
+        }
+    }
+}
+
+/// One row recording a move, for the same transaction that makes it.
+///
+/// It belongs *in* that transaction rather than after it: a history that can
+/// disagree with the state it describes is worse than no history, and the
+/// compare-and-set already tells us whether the move happened.
+pub fn transition_statement(
+    group_id: &str,
+    from: Option<GroupStatusV1>,
+    to: GroupStatusV1,
+    reason: Option<crate::GroupChangeReasonV1>,
+    actor: Actor,
+    at_ms: i64,
+) -> Statement {
+    Statement::new(
+        "INSERT INTO sentinel_transitions \
+         (id, group_id, from_status, to_status, reason, actor, at_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        vec![
+            json!(ids::transition_id()),
+            json!(group_id),
+            json!(from.map(|status| status.as_str())),
+            json!(to.as_str()),
+            json!(reason
+                .and_then(|reason| serde_json::to_value(reason).ok())
+                .and_then(|value| value.as_str().map(str::to_string))),
+            json!(actor.as_str()),
+            json!(at_ms),
+        ],
+    )
+}
+
 /// What a group looks like to a writer: the identity it is keyed by plus the
 /// columns a transition reads.
 #[derive(Debug, Clone, PartialEq)]
@@ -318,6 +379,16 @@ impl<D: Db> Store<D> {
         ];
         statements.extend(self.session_statement(&group_id, write));
         statements.extend(self.fold_pending_statement(write));
+        // The beginning is a transition too: without it the history starts
+        // mid-sentence.
+        statements.push(transition_statement(
+            &group_id,
+            None,
+            GroupStatusV1::New,
+            None,
+            Actor::Ingest,
+            write.at_ms,
+        ));
         self.db.transaction(&statements).await?;
         Ok(group_id)
     }
@@ -361,6 +432,16 @@ impl<D: Db> Store<D> {
         ));
         statements.extend(self.session_statement(&existing.id, write));
         statements.extend(self.fold_pending_statement(write));
+        if moved {
+            statements.push(transition_statement(
+                &existing.id,
+                Some(existing.state.status),
+                transition.status,
+                transition.reason,
+                Actor::Ingest,
+                write.at_ms,
+            ));
+        }
         statements
     }
 

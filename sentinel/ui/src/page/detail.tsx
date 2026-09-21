@@ -29,6 +29,8 @@ import type { Client, GroupDetail, Investigation, StatusResponse } from '../api'
 import { DiagnosisCard } from './diagnosis'
 import { EvidenceView } from './evidence'
 import { OccurrencesTable } from './occurrences'
+import { InvestigateWith } from './InvestigateWith'
+import { GroupTimeline } from './timeline'
 import {
   STATUS_PRESENTATION,
   availableActions,
@@ -61,6 +63,7 @@ export function GroupDetailView({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [picking, setPicking] = useState(false)
 
   const load = useCallback(() => {
     api
@@ -117,9 +120,10 @@ export function GroupDetailView({
     if (session) host.chat?.selectConversation?.(session)
   }
 
-  const investigate = (mode: 'assisted' | 'chat') =>
+  const investigate = (mode: 'assisted' | 'chat', model?: string, provider?: string) =>
     act(async () => {
-      const outcome = await api.investigate(group.id, mode)
+      setPicking(false)
+      const outcome = await api.investigate(group.id, mode, model, provider)
       if (outcome.existing) setNotice('An investigation was already running; opening that one.')
       host.chat?.selectConversation?.(outcome.session_id)
     })
@@ -158,6 +162,10 @@ export function GroupDetailView({
                 <DropdownMenuItem onSelect={() => investigate('assisted')}>
                   Investigate now
                 </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setPicking(true)}>
+                  Investigate with…
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => investigate('chat')}>
                   Open in chat with the evidence
                 </DropdownMenuItem>
@@ -279,6 +287,13 @@ export function GroupDetailView({
         <InvestigationLine investigation={detail.active_investigation} onOpen={openSession} />
       ) : null}
 
+      <InvestigateWith
+        host={host}
+        open={picking}
+        onCancel={() => setPicking(false)}
+        onInvestigate={(model, provider) => investigate('assisted', model, provider)}
+      />
+
       <Tabs defaultValue="evidence">
         <TabsList variant="line">
           <TabsTrigger value="evidence" icon={false}>
@@ -289,6 +304,9 @@ export function GroupDetailView({
           </TabsTrigger>
           <TabsTrigger value="diagnosis" icon={false}>
             Diagnosis
+          </TabsTrigger>
+          <TabsTrigger value="history" icon={false}>
+            History
           </TabsTrigger>
         </TabsList>
         <TabsContent value="evidence">
@@ -308,7 +326,7 @@ export function GroupDetailView({
           )}
         </TabsContent>
         <TabsContent value="occurrences">
-          <OccurrencesTable api={api} groupId={group.id} />
+          <OccurrencesTable api={api} groupId={group.id} host={host} />
         </TabsContent>
         <TabsContent value="diagnosis">
           <DiagnosisCard
@@ -327,6 +345,9 @@ export function GroupDetailView({
             }}
             repositoryPath={repository?.exists ? repository.path : null}
           />
+        </TabsContent>
+        <TabsContent value="history">
+          <GroupTimeline api={api} groupId={group.id} />
         </TabsContent>
       </Tabs>
     </div>

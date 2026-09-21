@@ -1261,3 +1261,114 @@ async fn the_status_surface_counts_what_is_running() {
         "a finished pass leaves a session somebody can still talk to"
     );
 }
+
+// ── history ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn the_history_records_who_moved_the_group_and_why() {
+    let fixture = fixture(MODEL).await;
+    let (_, session_id) = open(&fixture).await;
+    fixture
+        .investigations
+        .record(
+            Caller {
+                session_id: Some(session_id),
+                turn_id: Some("turn-1".into()),
+            },
+            DiagnosisRecordRequestV1 {
+                group_id: fixture.group_id.clone(),
+                diagnosis: a_diagnosis("found it"),
+                _caller_worker_id: None,
+            },
+        )
+        .await
+        .expect("recorded");
+    fixture
+        .service
+        .resolve(ResolveRequestV1 {
+            group_id: fixture.group_id.clone(),
+            until_version_change: false,
+            _caller_worker_id: None,
+        })
+        .await
+        .expect("a person resolves it");
+
+    let history = fixture
+        .service
+        .history(sentinel::GroupHistoryRequestV1 {
+            group_id: fixture.group_id.clone(),
+            ..sentinel::GroupHistoryRequestV1::default()
+        })
+        .await
+        .expect("the history reads");
+
+    let moves: Vec<(Option<GroupStatusV1>, GroupStatusV1, &str)> = history
+        .transitions
+        .iter()
+        .map(|row| (row.from_status, row.to_status, row.actor.as_str()))
+        .collect();
+    assert_eq!(
+        moves,
+        vec![
+            (
+                Some(GroupStatusV1::Diagnosed),
+                GroupStatusV1::Resolved,
+                "console"
+            ),
+            (
+                Some(GroupStatusV1::Investigating),
+                GroupStatusV1::Diagnosed,
+                "agent"
+            ),
+            (
+                Some(GroupStatusV1::New),
+                GroupStatusV1::Investigating,
+                "investigation"
+            ),
+            (None, GroupStatusV1::New, "ingest"),
+        ],
+        "newest first, and the group's own beginning is the last row"
+    );
+    assert_eq!(history.total, 4);
+    assert_eq!(
+        history.transitions[0].reason,
+        Some(sentinel::GroupChangeReasonV1::Resolved)
+    );
+}
+
+#[tokio::test]
+async fn a_decision_and_its_history_row_land_together_or_not_at_all() {
+    // The row is written in the transaction that moves the group, so a
+    // refused move leaves no trace claiming it happened.
+    let fixture = fixture(MODEL).await;
+    open(&fixture).await;
+    let refused = fixture
+        .service
+        .resolve(ResolveRequestV1 {
+            group_id: fixture.group_id.clone(),
+            until_version_change: false,
+            _caller_worker_id: None,
+        })
+        .await;
+    assert!(
+        refused.is_err(),
+        "a running first pass cannot be resolved out from under"
+    );
+
+    let history = fixture
+        .service
+        .history(sentinel::GroupHistoryRequestV1 {
+            group_id: fixture.group_id.clone(),
+            ..sentinel::GroupHistoryRequestV1::default()
+        })
+        .await
+        .expect("the history reads");
+    assert!(
+        !history
+            .transitions
+            .iter()
+            .any(|row| row.to_status == GroupStatusV1::Resolved),
+        "{:?}",
+        history.transitions
+    );
+}

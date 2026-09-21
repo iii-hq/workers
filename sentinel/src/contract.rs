@@ -812,6 +812,47 @@ pub struct DiagnosisRecordResponseV1 {
     pub group_status: GroupStatusV1,
 }
 
+/// One recorded move of a group, for the History tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupTransitionV1 {
+    pub id: String,
+    /// Absent on the row that records the group's own beginning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_status: Option<GroupStatusV1>,
+    pub to_status: GroupStatusV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<GroupChangeReasonV1>,
+    /// A role rather than a person: `ingest`, `agent`, `investigation` or
+    /// `console`. The console hands this worker no user identity, and a
+    /// worker uuid here would read as one.
+    pub actor: String,
+    pub at_ms: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupHistoryRequestV1 {
+    pub group_id: String,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupHistoryResponseV1 {
+    /// Newest first.
+    pub transitions: Vec<GroupTransitionV1>,
+    pub total: u64,
+}
+
 /// Every diagnosis recorded against one group, across investigations.
 ///
 /// Separate from `groups::get`, which carries only the one in force: the

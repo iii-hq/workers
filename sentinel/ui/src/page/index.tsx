@@ -6,6 +6,7 @@ import {
   PageShell,
   StatusPanel,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useContainerNarrow, useDebounce, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { ShieldAlert } from 'lucide-react'
@@ -15,7 +16,7 @@ import type { GroupStatus, StatusResponse } from '../api'
 import { EVENT, PAGE_ID } from '../shared'
 import { GroupDetailView } from './detail'
 import { GroupsListView } from './list'
-import { OPEN_STATES, sinceMs } from './present.js'
+import { OPEN_STATES, bulkOutcome, sinceMs } from './present.js'
 
 type Props = { host: Host } & PageRenderProps
 
@@ -40,6 +41,7 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
   const { ref, narrow } = useContainerNarrow({ below: 760 })
   const [filters, setFilters] = useState<Filters>(INITIAL_FILTERS)
   const [selected, setSelected] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   // A sibling page can open this one on a group (`panels.open`).
   const contextGroup =
@@ -80,6 +82,7 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
     refresh.current()
   }, [statuses, filters.service, filters.window, search])
 
+  const bulk = useBulkActions(api, () => groups.refresh(), setNotice)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   useEffect(() => {
     let live = true
@@ -138,6 +141,17 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
             detail="The worker is up but its store or queue has not answered. Nothing is being recorded."
           />
         ) : null}
+        {notice ? (
+          <StatusPanel
+            variant="info"
+            headline={notice}
+            action={
+              <Button size="sm" variant="ghost" onClick={() => setNotice(null)}>
+                Dismiss
+              </Button>
+            }
+          />
+        ) : null}
         {groups.error ? (
           <StatusPanel
             variant="alert"
@@ -174,6 +188,8 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
           />
         ) : (
           <GroupsListView
+            busy={bulk.busy}
+            onBulk={bulk.run}
             counts={status?.groups}
             filters={filters}
             groups={groups.data?.groups ?? []}
@@ -202,4 +218,44 @@ function describe(status: StatusResponse | null): string {
   const where = sources.length ? sources.join(' and ') : 'nothing'
   const blind = status.engine.trace_store === 'disabled' ? ' · span store off' : ''
   return `watching ${where}${blind}`
+}
+
+/**
+ * Applying one decision across a selection.
+ *
+ * Each group is its own compare-and-set, so a batch is a loop rather than a
+ * transaction — and that is the honest shape: a group somebody resolved a
+ * second ago should refuse, and the rest should still go through. What the
+ * person gets back is a count and the first reason, not a silent partial
+ * success.
+ */
+function useBulkActions(
+  api: ReturnType<typeof client>,
+  refresh: () => void,
+  notify: (message: string) => void,
+) {
+  const [busy, setBusy] = useState(false)
+
+  const run = async (action: string, groupIds: string[]) => {
+    setBusy(true)
+    const failures: string[] = []
+    let done = 0
+    for (const groupId of groupIds) {
+      try {
+        if (action === 'resolve') await api.resolve(groupId, false)
+        else if (action === 'ignore') await api.ignore(groupId, { kind: 'forever' })
+        else if (action === 'ignore-version') await api.ignore(groupId, { kind: 'version_change' })
+        else if (action === 'unignore') await api.unignore(groupId)
+        else if (action === 'reopen') await api.reopen(groupId)
+        done += 1
+      } catch (cause) {
+        failures.push(errorMessage(cause))
+      }
+    }
+    setBusy(false)
+    notify(bulkOutcome(action.replace('-version', ''), done, failures))
+    refresh()
+  }
+
+  return { busy, run }
 }
