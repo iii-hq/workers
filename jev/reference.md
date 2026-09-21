@@ -1,0 +1,469 @@
+# JEV API reference
+
+JEV evaluates arbitrary JSON descriptions with Noul, Choice and Score questions.
+For installation and a first call, start with the [README](README.md); source
+builds and local tests are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Contents
+
+- [Configuration](#configuration)
+- [Evaluate](#evaluate)
+- [Request options and retries](#request-options-and-retries)
+- [Handle results and failures](#handle-results-and-failures)
+- [List models](#list-models)
+- [Cancellation](#cancellation)
+- [Limits and compatibility](#limits-and-compatibility)
+- [Provider compatibility notes](#provider-compatibility-notes)
+
+The public functions are `jev::evaluate`, `jev::models::list` and `jev::cancel`.
+The [shared Rust contract](https://github.com/iii-hq/workers/blob/main/crates/jev-contract/src/lib.rs)
+defines their request and response types. The [worker skill](skills/SKILL.md)
+describes when an agent should invoke evaluation.
+
+## Configuration
+
+The worker requires `configuration` at startup, including its atomic
+`configuration::ensure` operation. Use engine **`iii/v0.24.0-rc.2`**, the verified
+release pinned by this repository. An older engine without `ensure` causes
+startup to fail; there is no non-atomic seeding fallback. That service owns the
+persistent value, normally `./config/<configuration-id>.yaml` in the Compose
+project when using its filesystem adapter. A YAML/JSON file passed with
+`--config <path>` is a one-time seed: it never overwrites an existing value.
+Invalid seed files warn and fall back to the authoritative value or defaults.
+Registration or initial configuration-fetch failures abort startup.
+
+All fields use a per-call configuration snapshot (Tier 1 reload). Valid changes
+apply to subsequent calls; in-flight calls retain their original snapshot.
+Rejected reloads keep the last valid configuration. The internal
+`jev::on-config-change` handler re-fetches authoritative storage and does not
+accept configuration values from callers. JEV persists no evaluation results.
+Literal API keys saved through the form reside in the configuration store;
+keep credentials out of committed project configuration.
+
+Open **Settings → Workers** in the Console and select the active JEV entry. Its
+configuration ID defaults to `jev`; `III_CONFIG_NAME=jev-prod` uses `jev-prod`
+instead. The form has a masked **API key**, **Default model** (`jev-1.13.0`) and
+three numeric execution limits. For a YAML seed (`--config <path>`) or the central
+configuration value:
+
+```yaml
+api_key: null
+model: jev-1.13.0
+max_request_bytes: 8388608
+max_response_bytes: 8388608
+max_timeout_ms: 300000
+```
+
+Set `TYPESAFE_API_KEY` in the **JEV worker's** service/container environment before
+starting it. A nonblank configured `api_key` takes precedence; clearing it or
+setting null/blank restores the environment fallback. Configuration changes apply
+to new calls; changing the process environment requires a JEV restart.
+An explicit per-call `model` overrides the worker's default.
+
+| Operator setting | Default | Meaning |
+| --- | --- | --- |
+| `max_request_bytes` | 8388608 (8 MiB) | Maximum encoded JSON body per upstream evaluation. |
+| `max_response_bytes` | 8388608 (8 MiB) | Maximum response body per evaluation or model listing. |
+| `max_timeout_ms` | 300000 (5 minutes) | Maximum whole-call timeout, including queue waits, retries, backoff and response reading. |
+
+Limits must be positive integers. Clearing a numeric field removes the override
+and restores its worker default. The form retains unknown configuration values
+when editing other fields and displays errors returned by the configuration
+service. Callers may impose smaller payload limits or shorter deadlines.
+
+The configuration service also supports `api_key: "${TYPESAFE_API_KEY}"`; that
+placeholder expands in the configuration service's environment. This is separate
+from JEV's own process-environment fallback. Use the environment belonging to the
+chosen mechanism. Credentials belong to configuration; neither evaluation nor
+model-listing payloads accept an API key or provider URL.
+
+## Evaluate
+
+This example uses the worker's default model. One evaluation can mix all three primitives:
+
+```bash
+iii trigger jev::evaluate --timeout-ms 65000 --json '{
+  "timeout_ms": 60000,
+  "evaluations": [{
+    "id": "ticket-42",
+    "state": {"ticket": "Production checkout is down for all customers."},
+    "questions": {
+      "urgent": {
+        "type": "noul",
+        "instructions": {"question": "Does this describe an urgent production outage?"},
+        "criteria": {"true": ["A critical production workflow is blocked."]}
+      },
+      "department": {
+        "type": "choice",
+        "criteria": {
+          "billing": null,
+          "technical": {"scope": "Bugs, outages and production failures"}
+        }
+      },
+      "severity": {
+        "type": "score",
+        "instructions": ["Assess customer impact", "Higher levels mean greater impact"],
+        "criteria": ["Routine", {"impact": "Degraded service"}, "Critical workflow blocked"]
+      }
+    }
+  }]
+}'
+```
+
+The question shapes are:
+
+| `type` | `criteria` | Answer |
+| --- | --- | --- |
+| `noul` | Optional object containing only `true` and/or `false`. Omitted, `null` and `{}` are accepted. Either endpoint may be described independently. | `noul` between 0 and 1. |
+| `choice` | Required map of 1–255 named options to descriptions. | Selected `choice`, probabilities for every option and `confidence`. |
+| `score` | Required array of 2–10 non-null descriptions in order from lowest to highest. | Continuous `score` between 0 and the last level index, probabilities, `confidence` and a `legend`. |
+
+For every primitive, `instructions` may be omitted or set to text, an object,
+an array or `null`. Noul and Choice criteria descriptions accept those same four
+forms. **Score levels accept text, objects or arrays; a null level is invalid.**
+Descriptions need not be nonblank strings. Nested objects and arrays may contain
+ordinary JSON scalar values, including null. A bare number or boolean is not a
+valid top-level instruction or description. For example, these question objects
+are also valid:
+
+```json
+{
+  "urgent": {"type": "noul"},
+  "routine": {"type": "noul", "instructions": null, "criteria": {"false": null}},
+  "department": {"type": "choice", "criteria": {"billing": null, "technical": null}},
+  "severity": {"type": "score", "criteria": ["Routine", ["Critical workflow blocked"]]}
+}
+```
+
+Use unique, nonblank evaluation IDs and distinct question IDs. `evaluations` is
+an array of 1–512 evaluations; each has a string, object or array as JSON `state`
+and a nonempty question map. The outer batch is a worker facility, not an upstream
+API field. Unknown request fields are rejected.
+
+`timeout_ms` is required and must be a positive integer no greater than the
+configured `max_timeout_ms` (300000 by default). An optional
+`expires_at_unix_ms` is an absolute Unix deadline in milliseconds; use it when
+queueing or composing calls so stale work cannot start upstream requests. The
+earlier of that expiry and the relative budget wins. IDs and deadlines are
+bus-only; each upstream `POST /v1/systemone` body contains only `model`, `state`
+and `questions`.
+
+The CLI's `--timeout-ms` controls how long the caller waits for the RPC result;
+it is separate from the payload's worker budget. The 60000 ms example uses
+`--timeout-ms 65000` to allow the worker's full budget plus transport overhead.
+Set the corresponding RPC timeout when invoking from another worker too.
+
+## Request options and retries
+
+Evaluation and model listing accept an optional `options` object. Omitted fields,
+including fields inside a partial `retry` object, inherit these defaults:
+
+| Field in `options` | Default | Meaning |
+| --- | --- | --- |
+| `headers` | `{}` | Additional HTTP headers, subject to validation below. |
+| `attempt_timeout_ms` | Omitted | Optional network deadline for each attempt; the whole-call deadline still applies. |
+| `retry.max_retries` | `2` | Retries after the initial attempt, per upstream request; `0` disables, maximum `10`. |
+| `retry.backoff_initial_ms` | `500` | Initial exponential backoff delay. |
+| `retry.backoff_max_ms` | `5000` | Cap on exponentially doubled backoff. |
+| `retry.backoff_jitter` | `0.25` | Fraction randomly subtracted from backoff, within `[0, 1]`. |
+| `retry.http_statuses` | `[408, 429, 500, …, 599]` | Array of HTTP statuses eligible for retry. |
+| `retry.api_connection_error` | `true` | Retry transport failures, including interrupted bodies. |
+| `retry.api_timeout_error` | `true` | Retry attempt timeouts while the whole-call budget remains. |
+| `retry.respect_retry_after` | `true` | Honor eligible server retry delays. |
+| `retry.max_retry_after_ms` | `60000` | Largest honored server delay; longer delays use backoff. |
+
+These defaults follow the TypeSafe [RequestOptions](https://docs.typesafe.ai/sdk/javascript/api/interfaces/RequestOptions)
+and [RetryPolicy](https://docs.typesafe.ai/sdk/javascript/api/interfaces/RetryPolicy)
+references, using JEV's snake_case fields. JEV retains a **whole-call**
+`timeout_ms`/`expires_at_unix_ms` budget across all evaluations, semaphore waits,
+attempts and backoff. `options.attempt_timeout_ms` separately bounds one network
+attempt, including reading its body; it never extends the whole-call budget.
+
+For example, this model listing disables retries, adds a tracing header and
+bounds each attempt to 1000 ms within a 5000 ms total budget:
+
+```bash
+iii trigger jev::models::list --timeout-ms 6000 --json '{
+  "timeout_ms": 5000,
+  "options": {
+    "headers": {"x-request-tag": "catalog-refresh"},
+    "retry": {"max_retries": 0},
+    "attempt_timeout_ms": 1000
+  }
+}'
+```
+
+Delay and timeout settings must be positive, platform-safe millisecond integers;
+malformed options fail before HTTP. Header names and values must be valid, with
+at most 64 entries and 16 KiB combined. Case-insensitive duplicate names are
+invalid. Caller headers cannot override credentials (`Authorization`, proxy
+authorization), `Host`, content type, framing (`Content-Length`,
+`Transfer-Encoding`), connection or other hop-by-hop headers. Header values are
+never logged, and requests still cannot select a provider URL or API key.
+
+The worker prefers `retry-after-ms` over `Retry-After`; the latter accepts
+delta-seconds or an HTTP date. A zero delay is valid. Invalid values are ignored;
+oversized numeric values are handled without overflow. Server delays above
+`max_retry_after_ms` use normal backoff; the whole-call deadline bounds every wait. Retry backoff releases the
+shared HTTP permit. Exhaustion retains the final provider error. Callers can set
+`max_retries: 0` when they need a single-attempt policy.
+
+## Handle results and failures
+
+Successful bus delivery can carry either typed status. An illustrative response
+to the mixed request above is below; these scores and usage are example data:
+
+```json
+{
+  "status": "ok",
+  "model": "jev-1.13.0",
+  "results": {
+    "ticket-42": {
+      "answers": {
+        "urgent": {"type": "noul", "noul": 0.98},
+        "department": {
+          "type": "choice",
+          "choice": "technical",
+          "probabilities": {"billing": 0.03, "technical": 0.97},
+          "confidence": 0.94
+        },
+        "severity": {
+          "type": "score",
+          "score": 1.9,
+          "probabilities": {"0": 0.02, "1": 0.06, "2": 0.92},
+          "confidence": 0.86,
+          "legend": {"0": "Routine", "1": {"impact": "Degraded service"}, "2": "Critical workflow blocked"}
+        }
+      },
+      "usage": {"input_tokens": 312, "output_tokens": 48}
+    }
+  },
+  "stats": {
+    "attempts": 1,
+    "requests": 1,
+    "questions": 3,
+    "input_tokens": 312,
+    "output_tokens": 48,
+    "elapsed_ms": 250,
+    "usage_complete": true
+  }
+}
+```
+
+Inspect `status` before reading results:
+
+- `status: "ok"`: `model` is the effective model and `results` contains all
+  requested answers. Each answer type must match its question. Choice IDs must
+  belong to the supplied options; probability maps must cover exactly those
+  options, or Score's zero-based level indices (`"0"`, `"1"`, …). Score legends
+  use the same indices and must match the supplied descriptions, including structure.
+- `status: "error"`: `code`, optional `http_status`, `provider_error`,
+  `retry_after_ms` and `stats` describe failure.
+  Codes are `invalid_request`, `missing_key`, `payload_too_large`, `deadline`,
+  `attempt_timeout`, `cancelled`, `http`, `transport` and `invalid_response`.
+  `deadline` means the whole-call budget expired; `attempt_timeout` means a
+  network attempt timed out. There are no partial `results`.
+- A bus invocation failure (for example, an unavailable worker) is separate
+  from this typed envelope. Handle it at the RPC boundary as a failed evaluation.
+
+For example, a provider rate-limit failure with retries disabled has this shape
+(illustrative diagnostics and stats):
+
+```json
+{
+  "status": "error",
+  "code": "http",
+  "http_status": 429,
+  "provider_error": {
+    "detail": {"message": "Rate limited for [REDACTED]"},
+    "truncated": false
+  },
+  "retry_after_ms": 1000,
+  "stats": {
+    "attempts": 1,
+    "requests": 0,
+    "questions": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "elapsed_ms": 100,
+    "usage_complete": false
+  }
+}
+```
+
+`provider_error` preserves optional JSON `detail` or a text `message`, plus
+`truncated`. Error bodies are bounded to the smaller of `max_response_bytes` and
+64 KiB. The worker recursively redacts its configured API key and caller header
+values from returned diagnostics while retaining useful validation paths. Plain
+text, malformed JSON and oversized provider error bodies still report `code:
+"http"` and the HTTP status. Malformed escaped diagnostics that cannot be safely
+sanitized are omitted; `truncated` identifies clipped or omitted diagnostics.
+`retry_after_ms` is the parsed provider hint, when available, rather than a promise
+that another attempt will occur.
+If reading an error body reaches the attempt deadline after headers arrive,
+the known HTTP status and retry hint still govern retries; incomplete diagnostics
+are marked truncated. Expiring the whole-call deadline still stops the call.
+
+Noul values, probabilities and confidence must be finite and within `[0, 1]`;
+Score values must be finite and within their level range. Probability sums may
+differ from 1 by up to 0.02 to accommodate provider rounding. Duplicate answer,
+probability or legend keys, missing answers and mismatched types/IDs fail the
+whole batch. The worker returns provider scores and confidence without
+recalculating them. Choose a caller-specific decision threshold; JEV imposes
+no eligibility threshold.
+
+A complete, low-scoring evaluation can mean **no match**. A missing answer,
+deadline or service error cannot. Discard all partial answers when any evaluation
+fails. JEV performs no local fallback; each caller decides how to handle failed
+evaluations and complete results that do not meet its threshold.
+
+Each `results[id]` includes optional `usage` with independently nullable
+`input_tokens` and `output_tokens`. For example,
+`"usage": {"input_tokens": 12, "output_tokens": null}` records known input and
+unknown output. Absent usage is also unknown. Older results without `usage`
+remain readable with the shared contract.
+
+`stats` contains `attempts`, `requests`, `questions`, `input_tokens`,
+`output_tokens`, `elapsed_ms` and `usage_complete`. Missing or null provider usage
+counters are **unknown**: valid answers remain usable, known counters are still
+aggregated, and `usage_complete` becomes false. Negative or fractional token
+counts are invalid responses. `attempts` counts actual HTTP attempts, including
+retries; `requests` counts accepted, validated responses. A transport retry with
+an unknown outcome leaves aggregate usage incomplete even if a later attempt
+succeeds. Failure retains known usage from completed,
+validated responses while discarding all answers. These observed counters are
+not total billing; zero observed tokens with incomplete usage do not mean zero
+cost. Record the effective model and failures alongside scores when comparing runs.
+
+## List models
+
+```bash
+iii trigger jev::models::list --json '{}'
+```
+
+This calls `GET /v1/models` with the worker's credential snapshot. Its request
+accepts optional `timeout_ms` (default **30000**), `expires_at_unix_ms`,
+`options` and `request_id`. The timeout must fit the operator's `max_timeout_ms`; if
+that ceiling is below 30000, supply an explicit smaller timeout. Example:
+
+```bash
+iii trigger jev::models::list --json '{"timeout_ms":5000}'
+```
+
+Success has `status: "ok"`, a `models` array and `stats`. Each model card has
+string fields `name`, `description` and `release_date`; cards and aliases are
+returned without filtering to locally known versions. An example reply
+(illustrative values):
+
+```json
+{
+  "status": "ok",
+  "models": [
+    {"name": "jev-example", "description": "Example model", "release_date": "2026-09-19"}
+  ],
+  "stats": {
+    "attempts": 1,
+    "requests": 1,
+    "questions": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "elapsed_ms": 100,
+    "usage_complete": true
+  }
+}
+```
+
+Failure uses the same `status: "error"`, `code`, optional `http_status`,
+`provider_error`, `retry_after_ms` and `stats` envelope as evaluation. Model listing
+reports no inference token usage.
+It shares evaluation's four HTTP slots, queue/deadline handling, bounded response
+reading and sanitized errors. The returned catalog may list aliases without every
+accepted versioned ID; a missing versioned model card does not establish that the
+provider rejects that model.
+
+## Cancellation
+
+To make an evaluation or model listing cancellable, supply a top-level
+`request_id`: a nonblank string of at most 128 printable ASCII characters.
+This identifies the whole call, separately from individual evaluation IDs.
+`jev::cancel` accepts `{"request_id":"ticket-run-42"}` and returns
+`{"status":"ok","cancelled":true}` when the cancellation signal is accepted.
+It returns `cancelled: false` for an absent or completed ID. Malformed IDs or
+missing required caller metadata return `{"status":"error","code":"invalid_request"}`.
+
+Ownership comes from trusted engine `_caller_worker_id` metadata. Identified
+evaluation/listing calls and cancellation require this metadata; the engine
+supplies it. Ordinary calls without a request ID remain valid. An active ID is
+unique across evaluation and model listing for that caller; duplicates are
+rejected. Another caller cannot cancel it and receives `cancelled: false`.
+Completion or dropping the call removes its registration, allowing reuse.
+
+Use the **same persistent caller connection** for starting and cancelling work.
+Separate `iii trigger` CLI processes can receive different ephemeral caller IDs,
+so a second process is not a reliable way to cancel the first. Conceptually, one
+long-lived worker sends these bus messages while the first call is active:
+
+```text
+caller -> jev::evaluate
+  {"request_id":"ticket-run-42","timeout_ms":60000,
+   "evaluations":[{"id":"ticket","state":{"message":"Sign-in is blocked"},
+                   "questions":{"urgent":{"type":"noul"}}}]}
+
+same caller -> jev::cancel
+  {"request_id":"ticket-run-42"}
+jev::cancel -> caller
+  {"status":"ok","cancelled":true}
+jev::evaluate -> caller
+  {"status":"error","code":"cancelled","stats":...}
+```
+
+Cancellation can race with completion; await the original call's result too.
+An accepted signal interrupts permit waits, HTTP body reads and retry backoff.
+The worker aborts and drains pending tasks before returning stats, retaining known
+accepted usage and discarding partial answers. `cancelled: true` means **signal
+accepted**, not provider rollback, remote provider cancellation or zero cost.
+
+Direct Rust `JevClient` calls use a local caller namespace by default. Cloned
+clients share the registry; independently constructed clients do not. With
+multiple JEV worker replicas, evaluation/listing and cancellation need routing
+affinity to the same replica: the registry is local to that worker process.
+
+## Limits and compatibility
+
+One JEV worker shares at most **four concurrent HTTP requests** across all
+callers, including evaluation and model listing. Waiting for a
+slot, retrying and reading the response consume the same deadline. HTTP redirects
+are disabled. Generic defaults are 8 MiB per encoded request, 8 MiB per
+response and a 300000 ms timeout ceiling, configurable by the operator. There is
+no generic state-plus-largest-question byte cap. These are local transport
+safeguards, not token estimates; the provider's model token limits remain
+authoritative even when a body fits locally. The worker validates all answers
+before returning a successful batch. Preflight validates and encodes the whole
+batch without retaining its bodies. Each dispatch body is then encoded again
+after acquiring a shared HTTP slot; later evaluations can use slots released
+by requests waiting in retry backoff.
+
+Existing JSON request payloads remain valid because new fields default. Existing
+binaries using strict old response readers must be rebuilt against the updated
+shared `jev-contract` crate before adopting this worker; additive `usage`,
+`provider_error` and `retry_after_ms` fields and new error codes are otherwise
+rejected by those readers. Older workers also reject the new request fields;
+coordinate the worker and consumer rollout.
+
+## Provider compatibility notes
+
+The compatibility audit recorded on 2026-09-19 checked the API surface against the
+[HTTP reference](https://docs.typesafe.ai/api),
+[structured content guide](https://docs.typesafe.ai/primitives/advanced),
+[question schemas](https://docs.typesafe.ai/sdk/python/api/types/questions),
+[response schemas](https://docs.typesafe.ai/sdk/python/api/types/responses) and
+[model catalog](https://docs.typesafe.ai/models). That audit recorded a discrepancy
+confirmed by a live provider probe: the structured content guide advertises null
+Score levels, but `POST /v1/systemone` rejected `score.criteria[0] = null` with HTTP 422;
+the SDK schema also excludes null levels. The worker therefore rejects null Score
+levels while retaining nullable instructions and Noul/Choice descriptions.
+Optional descriptions and usage otherwise follow the documented forms. JEV's
+[request options and retries](#request-options-and-retries),
+[deadlines](#evaluate), [usage accounting](#handle-results-and-failures) and
+[caller-scoped cancellation](#cancellation) are specified in this public
+reference; the upstream SDK references for retry defaults are linked above.
