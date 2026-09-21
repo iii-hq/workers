@@ -1,0 +1,36 @@
+{
+  "description": "Internal daily prune of buckets and archived groups.",
+  "function_id": "sentinel::on-schedule",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ScheduleEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "buckets_removed": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "evidence_pruned": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "groups_archived": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "buckets_removed",
+      "evidence_pruned",
+      "groups_archived"
+    ],
+    "title": "PruneResponseV1",
+    "type": "object"
+  }
+}

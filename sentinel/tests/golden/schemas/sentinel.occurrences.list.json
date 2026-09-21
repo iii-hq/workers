@@ -1,0 +1,164 @@
+{
+  "description": "List the recorded occurrences of one group, newest first, each saying whether its frozen evidence is still kept.",
+  "function_id": "sentinel::occurrences::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "limit": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "offset": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "group_id"
+    ],
+    "title": "OccurrencesListRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ErrorSourceV1": {
+        "description": "Where an error event came from. Part of the fingerprint: the same text seen as a span and as a log is two groups, because one has a trace to investigate and the other does not.",
+        "oneOf": [
+          {
+            "enum": [
+              "report"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A span with status `error`.",
+            "enum": [
+              "trace"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An OTel log record at ERROR.",
+            "enum": [
+              "log"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Reserved for the adapters the spec designs but v1 does not implement.",
+            "enum": [
+              "harness-turn"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "OccurrenceSummaryV1": {
+        "additionalProperties": false,
+        "description": "One recorded instance of a group.",
+        "properties": {
+          "at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "has_evidence": {
+            "description": "Whether the frozen bundle is still kept for this one.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "namespace_ambiguous": {
+            "description": "The owner could not be pinned to one namespace.",
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settled": {
+            "description": "Whether the trace was re-read after the ancestors closed.",
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/definitions/ErrorSourceV1"
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "at_ms",
+          "has_evidence",
+          "id",
+          "message",
+          "namespace_ambiguous",
+          "settled",
+          "source"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "occurrences": {
+        "items": {
+          "$ref": "#/definitions/OccurrenceSummaryV1"
+        },
+        "type": "array"
+      },
+      "total": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "occurrences",
+      "total"
+    ],
+    "title": "OccurrencesListResponseV1",
+    "type": "object"
+  }
+}

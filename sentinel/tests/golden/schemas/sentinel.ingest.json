@@ -1,0 +1,115 @@
+{
+  "description": "Internal durable queue step: reads one trace or log and records what failed.",
+  "function_id": "sentinel::ingest",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "One unit of ingest work. `trace_id` is a field of every variant because the queue groups by it: the span job and the log job of one trace are serialized behind each other rather than racing.",
+    "oneOf": [
+      {
+        "description": "A trace ticked: read it and record what failed.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "trace"
+            ],
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "trace_id"
+        ],
+        "type": "object"
+      },
+      {
+        "description": "An ERROR log arrived.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "log"
+            ],
+            "type": "string"
+          },
+          "log": {
+            "default": null
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "trace_id"
+        ],
+        "type": "object"
+      },
+      {
+        "description": "Re-read a trace once, to catch ancestors that were open at capture.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "settle"
+            ],
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "trace_id"
+        ],
+        "type": "object"
+      },
+      {
+        "description": "A parked log's wait ran out.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "promote"
+            ],
+            "type": "string"
+          },
+          "occurrence_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "occurrence_id",
+          "trace_id"
+        ],
+        "type": "object"
+      }
+    ],
+    "title": "IngestJob"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "deduped": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "recorded": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "deduped",
+      "recorded"
+    ],
+    "title": "IngestResponseV1",
+    "type": "object"
+  }
+}

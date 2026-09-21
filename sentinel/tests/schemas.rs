@@ -9,7 +9,25 @@ fn golden_file_name(function_id: &str) -> String {
 #[test]
 fn catalog_matches_the_registered_surface() {
     let ids: Vec<_> = catalog().iter().map(|spec| spec.function_id).collect();
-    assert_eq!(ids, ["sentinel::status", "sentinel::on-config-change"]);
+    assert_eq!(
+        ids,
+        [
+            "sentinel::status",
+            "sentinel::groups::list",
+            "sentinel::groups::get",
+            "sentinel::groups::resolve",
+            "sentinel::groups::ignore",
+            "sentinel::groups::unignore",
+            "sentinel::groups::reopen",
+            "sentinel::occurrences::list",
+            "sentinel::evidence::get",
+            "sentinel::on-trace-activity",
+            "sentinel::on-log",
+            "sentinel::ingest",
+            "sentinel::on-schedule",
+            "sentinel::on-config-change",
+        ]
+    );
 }
 
 #[test]

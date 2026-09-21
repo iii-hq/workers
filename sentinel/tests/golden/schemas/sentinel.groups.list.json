@@ -1,0 +1,351 @@
+{
+  "description": "List error groups, regressions first. Filters by state, worker, time window and a search over title, message and function id; defaults to the open states.",
+  "function_id": "sentinel::groups::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "limit": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "offset": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "search": {
+        "default": null,
+        "description": "Matches the title, the message sample and the function id.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "service_name": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "since_ms": {
+        "default": null,
+        "description": "Only groups seen since this moment.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "status": {
+        "default": null,
+        "description": "Defaults to the open states.",
+        "items": {
+          "$ref": "#/definitions/GroupStatusV1"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "title": "GroupsListRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ErrorSourceV1": {
+        "description": "Where an error event came from. Part of the fingerprint: the same text seen as a span and as a log is two groups, because one has a trace to investigate and the other does not.",
+        "oneOf": [
+          {
+            "enum": [
+              "report"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A span with status `error`.",
+            "enum": [
+              "trace"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An OTel log record at ERROR.",
+            "enum": [
+              "log"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Reserved for the adapters the spec designs but v1 does not implement.",
+            "enum": [
+              "harness-turn"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupSummaryV1": {
+        "additionalProperties": false,
+        "description": "A group as the list shows it.",
+        "properties": {
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "first_seen_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "first_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_diagnosis": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "ignore_rule": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/IgnoreRuleV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_seen_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "occurrence_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "regressed_at_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "service_name": {
+            "description": "The worker that owns the failing function.",
+            "type": "string"
+          },
+          "sessions_affected": {
+            "description": "Distinct sessions this failure touched. Counted from its own table, so it stays true after occurrence rows are pruned.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/definitions/ErrorSourceV1"
+          },
+          "sparkline": {
+            "description": "Occurrences per hour for the last day, oldest first.",
+            "items": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/definitions/GroupStatusV1"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "first_seen_ms",
+          "has_diagnosis",
+          "id",
+          "last_seen_ms",
+          "namespace",
+          "occurrence_count",
+          "service_name",
+          "sessions_affected",
+          "source",
+          "sparkline",
+          "status",
+          "title"
+        ],
+        "type": "object"
+      },
+      "IgnoreRuleV1": {
+        "description": "How long an ignore lasts. Every rule keeps counting occurrences; what changes is when the group comes back to the open list.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "forever"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reopens after this many further occurrences.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "kind": {
+                "enum": [
+                  "occurrences"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "count",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reopens when the worker version changes.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "version_change"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "groups": {
+        "items": {
+          "$ref": "#/definitions/GroupSummaryV1"
+        },
+        "type": "array"
+      },
+      "total": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "groups",
+      "total"
+    ],
+    "title": "GroupsListResponseV1",
+    "type": "object"
+  }
+}

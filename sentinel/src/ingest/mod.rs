@@ -392,7 +392,8 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
         config: &WorkerConfig,
     ) -> Result<IngestReport, SentinelError> {
         let report = IngestReport::default();
-        let Some((occurrence_id, _, _)) = self.store.trace_occurrence(trace_id).await? else {
+        let Some((occurrence_id, _, previous)) = self.store.trace_occurrence(trace_id).await?
+        else {
             return Ok(report);
         };
         let Some(summary) = self.summary(trace_id).await? else {
@@ -422,6 +423,17 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             &mut redactions,
         );
         bundle.settled = true;
+        // The rebuild reads the span again, and a span names the process that
+        // emitted it rather than the worker that owns the failing function.
+        // Carrying the attribution over keeps the settle pass from quietly
+        // re-filing the evidence under the wrong worker.
+        if let Some(worker) = previous
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<EvidenceBundleV1>(json).ok())
+            .map(|previous| previous.worker)
+        {
+            bundle.worker = worker;
+        }
         bundle.fit_within(config.evidence.max_bytes as usize);
         self.counters.add_redactions(redactions);
         if let Ok(json) = serde_json::to_string(&bundle) {

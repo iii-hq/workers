@@ -289,6 +289,51 @@ async fn a_tick_becomes_a_group_attributed_to_the_worker_that_owns_the_function(
 }
 
 #[tokio::test]
+async fn the_settle_pass_refreshes_the_trace_without_re_filing_it() {
+    let (summary, tree) = cas_trace();
+    let mut telemetry = FakeEngineTelemetry::default();
+    telemetry.summaries.insert("t1".into(), summary);
+    telemetry.trees.insert("t1".into(), tree);
+    let harness = harness(telemetry).await;
+
+    harness
+        .ingest
+        .handle(
+            IngestJob::Trace {
+                trace_id: "t1".into(),
+            },
+            &harness.config,
+        )
+        .await
+        .expect("ingest");
+    harness
+        .ingest
+        .handle(
+            IngestJob::Settle {
+                trace_id: "t1".into(),
+            },
+            &harness.config,
+        )
+        .await
+        .expect("settle");
+
+    let evidence = one(&harness.store, "SELECT evidence FROM sentinel_occurrences").await;
+    let bundle: Value =
+        serde_json::from_str(evidence.as_str().expect("stored")).expect("evidence parses");
+    assert_eq!(bundle["settled"], json!(true), "the re-read is recorded");
+    assert_eq!(
+        bundle["worker"]["service_name"],
+        json!("state"),
+        "a span names the process that emitted it; the bundle keeps the owner \
+         the registry resolved"
+    );
+    assert_eq!(
+        one(&harness.store, "SELECT settled FROM sentinel_occurrences").await,
+        json!(1)
+    );
+}
+
+#[tokio::test]
 async fn the_same_span_ticking_twice_is_one_occurrence() {
     let (summary, tree) = cas_trace();
     let mut telemetry = FakeEngineTelemetry::default();

@@ -45,4 +45,6 @@ uuid = { version = "1", features = ["v7"] }
 # statements are tested against the engine they will actually meet.
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde_yaml = "0.9"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `test-util` lets a boot test run its retry backoff instantly instead of
+# sleeping through it.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }

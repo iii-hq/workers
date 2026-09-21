@@ -368,7 +368,7 @@ pub enum GroupChangedOpV1 {
 }
 
 /// What a subscriber may narrow `sentinel::group-changed` to.
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct GroupChangedConfigV1 {
     #[serde(default)]
     pub group_id: Option<String>,

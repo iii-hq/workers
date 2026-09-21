@@ -1,0 +1,90 @@
+{
+  "description": "Reopen a resolved or ignored group, clearing the rule that closed it.",
+  "function_id": "sentinel::groups::reopen",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "group_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "group_id"
+    ],
+    "title": "GroupActionRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "GroupChangeReasonV1": {
+        "description": "Why a group changed, for the event siblings subscribe to.",
+        "enum": [
+          "regression",
+          "ignore_expired",
+          "resolved",
+          "ignored",
+          "diagnosed",
+          "reopened",
+          "investigating"
+        ],
+        "type": "string"
+      },
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "The state a group was left in, and why.",
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "reason": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/GroupChangeReasonV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/GroupStatusV1"
+      }
+    },
+    "required": [
+      "group_id",
+      "status"
+    ],
+    "title": "GroupStateResponseV1",
+    "type": "object"
+  }
+}

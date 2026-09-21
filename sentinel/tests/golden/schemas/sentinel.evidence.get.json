@@ -1,0 +1,294 @@
+{
+  "description": "Read the frozen evidence of one occurrence: the span tree, the logs of that trace and the session tags, captured before the engine's ring discarded them. Reports pruned when retention has removed it.",
+  "function_id": "sentinel::evidence::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "occurrence_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "occurrence_id"
+    ],
+    "title": "EvidenceGetRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "EvidenceBundleV1": {
+        "additionalProperties": false,
+        "properties": {
+          "captured_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "logs": {
+            "items": {
+              "$ref": "#/definitions/EvidenceLogV1"
+            },
+            "type": "array"
+          },
+          "origin_span_id": {
+            "description": "The leaf error span this bundle is about.",
+            "type": "string"
+          },
+          "propagated_through": {
+            "description": "Ancestors that carry the same failure upward. They are context, not groups of their own.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "settled": {
+            "description": "True once the settle pass re-read the trace: ancestors that were still open at capture are closed here.",
+            "type": "boolean"
+          },
+          "spans": {
+            "items": {
+              "$ref": "#/definitions/EvidenceSpanV1"
+            },
+            "type": "array"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "trace_tags": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "truncated": {
+            "$ref": "#/definitions/EvidenceTruncatedV1"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "worker": {
+            "$ref": "#/definitions/EvidenceWorkerV1"
+          }
+        },
+        "required": [
+          "captured_at_ms",
+          "logs",
+          "origin_span_id",
+          "propagated_through",
+          "settled",
+          "spans",
+          "trace_id",
+          "trace_tags",
+          "truncated",
+          "version",
+          "worker"
+        ],
+        "type": "object"
+      },
+      "EvidenceEventV1": {
+        "additionalProperties": false,
+        "properties": {
+          "attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "timestamp_unix_nano": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attributes",
+          "name",
+          "timestamp_unix_nano"
+        ],
+        "type": "object"
+      },
+      "EvidenceLogV1": {
+        "additionalProperties": false,
+        "properties": {
+          "attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "body": {
+            "type": "string"
+          },
+          "severity_text": {
+            "type": "string"
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timestamp_unix_nano": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attributes",
+          "body",
+          "severity_text",
+          "timestamp_unix_nano"
+        ],
+        "type": "object"
+      },
+      "EvidenceSpanV1": {
+        "additionalProperties": false,
+        "properties": {
+          "attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "depth": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "end_time_unix_nano": {
+            "description": "Zero while the span is still open — the engine's own convention for a pending span, kept rather than normalized so a half-finished trace reads as one.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/definitions/EvidenceEventV1"
+            },
+            "type": "array"
+          },
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent_span_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service_name": {
+            "type": "string"
+          },
+          "span_id": {
+            "type": "string"
+          },
+          "start_time_unix_nano": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "status_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "attributes",
+          "depth",
+          "end_time_unix_nano",
+          "events",
+          "name",
+          "service_name",
+          "span_id",
+          "start_time_unix_nano",
+          "status"
+        ],
+        "type": "object"
+      },
+      "EvidenceTruncatedV1": {
+        "additionalProperties": false,
+        "properties": {
+          "attributes": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "logs": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "spans": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attributes",
+          "logs",
+          "spans"
+        ],
+        "type": "object"
+      },
+      "EvidenceWorkerV1": {
+        "additionalProperties": false,
+        "properties": {
+          "service_name": {
+            "type": "string"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "service_name"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "evidence": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/EvidenceBundleV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Absent when retention has pruned it: the row stays, the bundle goes."
+      },
+      "pruned": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "pruned"
+    ],
+    "title": "EvidenceGetResponseV1",
+    "type": "object"
+  }
+}

@@ -96,10 +96,11 @@ fn manifest_subcommand_emits_valid_json_without_connecting_to_iii() {
 fn the_interface_registers_before_the_durable_dependencies_are_claimed() {
     let source = include_str!("../src/main.rs");
     let claim = source
-        .find("dependencies::wait_until_ready(")
-        .expect("the readiness task is spawned");
+        .find("dependencies::claim(")
+        .expect("the durable dependencies are claimed");
 
     for registration in [
+        "events::register_trigger_types(&iii, &subscribers)",
         "functions::register_all(&iii, &deps)",
         "configuration::bind_reload(&iii, cell.clone(), error_cell.clone())",
     ] {

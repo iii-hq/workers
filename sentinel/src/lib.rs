@@ -19,19 +19,23 @@ pub mod configuration;
 mod contract;
 pub mod dependencies;
 mod error;
+pub mod events;
 pub mod evidence;
 pub mod fingerprint;
 pub mod functions;
 pub mod ids;
+pub mod iii_runtime;
 pub mod ingest;
 pub mod lifecycle;
 pub mod manifest;
 pub mod normalize;
 pub mod redact;
 pub mod registry;
+pub mod retention;
 pub mod service;
 mod status;
 pub mod store;
+pub mod triggers;
 
 pub use adapters::ErrorEvent;
 pub use config::{
@@ -50,6 +54,7 @@ pub use contract::{
     SourcesStatusV1, StatusRequestV1, StatusResponseV1, TraceStoreStateV1,
 };
 pub use error::SentinelError;
+pub use events::Emitter;
 pub use evidence::EvidenceBundleV1;
 pub use ingest::{Ingest, IngestJob, IngestReport, Telemetry, TraceSummary};
 pub use lifecycle::{GroupState, Transition};
