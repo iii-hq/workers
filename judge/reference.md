@@ -195,11 +195,13 @@ Inspect `status` before reading results:
 - `status: "error"`: `code`, optional `http_status`, `provider_error`,
   `retry_after_ms` and `stats` describe failure.
   Codes are `invalid_request`, `missing_key`, `payload_too_large`, `deadline`,
-  `attempt_timeout`, `cancelled`, `http`, `transport` and `invalid_response`.
-  `deadline` means the whole-call budget expired; `attempt_timeout` means a
-  network attempt timed out. There are no partial `results`.
-- A bus invocation failure (for example, an unavailable worker) is separate
-  from this typed envelope. Handle it at the RPC boundary as a failed evaluation.
+  `attempt_timeout`, `cancelled`, `http`, `transport`, `invalid_response` and
+  `provider_unavailable` (the selected `judge-<provider>` worker is not
+  registered). `deadline` means the whole-call budget expired; `attempt_timeout`
+  means a network attempt timed out. There are no partial `results`.
+- Any other bus invocation failure (a timed-out or disconnected hub or provider)
+  is separate from this typed envelope. Handle it at the RPC boundary as a
+  failed evaluation.
 
 For example, a provider rate-limit failure with retries disabled has this shape
 (illustrative diagnostics and stats):

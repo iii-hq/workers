@@ -306,6 +306,9 @@ impl JevClient {
         for evaluation in &request.evaluations {
             check_deadline(deadline)?;
             encode_evaluation_with_limits(model, evaluation, self.limits.max_request_bytes)?;
+            // Up to 512 bodies of up to 8 MiB: give cancellation and other
+            // tasks a turn between encodings.
+            tokio::task::yield_now().await;
         }
         self.api_key.as_ref().ok_or(ErrorCode::MissingKey)?;
         let model: Arc<str> = Arc::from(model);
@@ -635,13 +638,17 @@ mod tests {
                 });
             let evaluation = client.evaluate(request, crate::DEFAULT_MODEL);
             tokio::pin!(evaluation);
-            assert!(poll!(evaluation.as_mut()).is_pending());
-            // No further evaluation poll occurs until all four child tasks
-            // have completed and queued their outcomes in the JoinSet.
+            // Preflight yields between encodings, so poll until all four
+            // children are spawned and have opened their connections. After
+            // that no evaluation poll occurs until every child has completed
+            // and queued its outcome in the JoinSet.
             let mut responses = BTreeMap::new();
-            for _ in 0..4 {
-                let (index, release) = ready_rx.recv().await.unwrap();
-                responses.insert(index, release);
+            while responses.len() < 4 {
+                assert!(poll!(evaluation.as_mut()).is_pending());
+                tokio::task::yield_now().await;
+                while let Ok((index, release)) = ready_rx.try_recv() {
+                    responses.insert(index, release);
+                }
             }
             for index in 0..4 {
                 let (status, model, input_tokens) = match index {

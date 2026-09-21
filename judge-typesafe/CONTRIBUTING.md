@@ -101,7 +101,7 @@ cargo test --manifest-path judge-typesafe/Cargo.toml --locked --test boot
 
 ## Real-engine integration with local mocked HTTP
 
-The dedicated [JEV E2E workflow](https://github.com/iii-hq/workers/blob/main/.github/workflows/jev-e2e.yml)
+The dedicated [Judge E2E workflow](https://github.com/iii-hq/workers/blob/main/.github/workflows/judge-e2e.yml)
 runs on pull requests only. It pins **`iii/v0.24.0-rc.2`**, runs UI Vitest and both
 Rust feature variants, and selects two standalone bus cases from
 [tests/engine.rs](tests/engine.rs):
@@ -122,11 +122,11 @@ engine and run the same entry point as CI:
 
 ```bash
 export III_ENGINE_BIN=/absolute/path/to/iii
-bash .github/scripts/jev-e2e.sh
+bash .github/scripts/judge-e2e.sh
 ```
 
-The runner clears `TYPESAFE_API_KEY`, selects the two ignored tests by exact name
-and runs them serially. Empty selections, renamed tests and failures fail the
+The runner clears `TYPESAFE_API_KEY`, selects the two `judge-typesafe` cases and
+the one `judge` hub case by exact name and runs them serially. Empty selections, renamed tests and failures fail the
 run. It prints the report directory and retains Cargo output and each engine's
 stdout/stderr, including on failures. Set `JUDGE_E2E_REPORT_DIR` to choose that
 directory; otherwise a new temporary report directory is created. Each fixture

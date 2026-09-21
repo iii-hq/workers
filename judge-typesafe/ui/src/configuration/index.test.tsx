@@ -133,16 +133,22 @@ describe('listModels', () => {
 })
 
 describe('JevConfigForm', () => {
-  it('masks the key and explains worker environment fallback and the default model', () => {
+  it('never renders the stored key, offers a blank replacement and a clear action', () => {
     const { html } = render({ api_key: 'fixture-only' })
     const key = html.match(/<input[^>]*name="api_key"[^>]*>/)?.[0]
     expect(key).toContain('type="password"')
     expect(key).toContain('autoComplete="new-password"')
     expect(key).toContain('spellCheck="false"')
-    expect(html).toContain('TYPESAFE_API_KEY')
+    expect(key).toContain('value=""')
+    expect(html).not.toContain('fixture-only')
+    expect(key).toContain('type a new key to replace it')
+    expect(html).toContain('Clear key')
     expect(html).toContain('restart judge-typesafe')
     expect(html).toContain('Built-in default (jev-latest)')
     expect(html).toContain('Checking the worker…')
+    const { html: empty } = render({})
+    expect(empty).toContain('placeholder="Use TYPESAFE_API_KEY"')
+    expect(empty).not.toContain('Clear key')
   })
 
   it.each([
@@ -158,11 +164,23 @@ describe('JevConfigForm', () => {
     expect(errors.get('/future')).toBe('Check future setting')
   })
 
-  it.each(['api_key', 'model'])('clears %s to restore its default', (field) => {
-    const { onChange } = render({ [field]: 'fixture-only', future: true })
-    expect(changes.has(field)).toBe(true)
-    changes.get(field)?.('')
+  it('clears model to restore its default', () => {
+    const { onChange } = render({ model: 'fixture-only', future: true })
+    changes.get('model')?.('')
     expect(onChange).toHaveBeenCalledExactlyOnceWith({ future: true })
+  })
+
+  it('emptying the replacement field keeps the stored key; the clear action removes it', async () => {
+    const value = Object.freeze({ api_key: 'fixture-only', future: true })
+    const { container, onChange } = await mount(value)
+    expect(container.querySelector<HTMLInputElement>('input[name="api_key"]')!.value).toBe('')
+    await act(async () => changes.get('api_key')?.('replacement'))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, api_key: 'replacement' })
+    await act(async () => changes.get('api_key')?.(''))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value })
+    const clear = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Clear key')!
+    await act(async () => clear.click())
+    expect(onChange).toHaveBeenLastCalledWith({ future: true })
   })
 
   it.each(limits)('shows the default for %s without writing configuration', (field, fallback) => {

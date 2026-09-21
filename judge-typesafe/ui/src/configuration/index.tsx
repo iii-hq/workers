@@ -97,11 +97,26 @@ export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine
     )
   }
   const value = props.value ?? {}
+  // The stored key never reaches the DOM: the field is a blank replacement, and
+  // `original` is the last key the host supplied that this form did not type.
+  const storedKey = typeof value.api_key === 'string' && value.api_key !== '' ? value.api_key : undefined
+  const [keyDraft, setKeyDraft] = useState('')
+  const original = useRef(storedKey)
+  if (storedKey !== (keyDraft === '' ? original.current : keyDraft)) original.current = storedKey
   const setString = (field: string, raw: string | undefined) => {
     const next = { ...value }
     if (raw === undefined || raw === '') delete next[field]
     else next[field] = raw
     props.onChange(next)
+  }
+  const replaceKey = (draft: string) => {
+    setKeyDraft(draft)
+    setString('api_key', draft === '' ? original.current : draft)
+  }
+  const clearKey = () => {
+    original.current = undefined
+    setKeyDraft('')
+    setString('api_key', undefined)
   }
   const setNumber = (field: string, raw: string) => {
     const next = { ...value }
@@ -148,9 +163,18 @@ export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine
             id="jev-cfg-api_key"
             field="api_key"
             label="API key"
-            description="Overrides TYPESAFE_API_KEY in the worker's environment. Clear it to fall back to that variable; restart judge-typesafe after changing the environment."
+            description="Overrides TYPESAFE_API_KEY in the worker's environment. The stored key is never shown; type a new one to replace it, or clear it to fall back to the variable (restart judge-typesafe after changing the environment)."
             error={props.errors?.get('/api_key')}
-            meta={keyStatus}
+            meta={
+              <>
+                {keyStatus}
+                {storedKey ? (
+                  <Button type="button" variant="ghost" size="sm" onClick={clearKey}>
+                    Clear key
+                  </Button>
+                ) : null}
+              </>
+            }
             renderControl={(controlProps) => (
               <Input
                 {...controlProps}
@@ -158,9 +182,9 @@ export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine
                 autoComplete="new-password"
                 spellCheck={false}
                 aria-label="API key"
-                placeholder="Use TYPESAFE_API_KEY"
-                value={typeof value.api_key === 'string' ? value.api_key : ''}
-                onChange={(next) => setString('api_key', next)}
+                placeholder={original.current ? 'Configured · type a new key to replace it' : 'Use TYPESAFE_API_KEY'}
+                value={keyDraft}
+                onChange={replaceKey}
               />
             )}
           />
