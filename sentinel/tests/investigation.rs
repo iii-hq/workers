@@ -67,6 +67,7 @@ struct FakeHarnessState {
     /// Next turn id handed out by `send`.
     next_turn: u64,
     send_fails: bool,
+    append_fails: bool,
     /// Rows observed inside the `send` call, to prove the store was written
     /// before the harness heard anything.
     seen_running: Option<usize>,
@@ -105,6 +106,10 @@ impl FakeHarness {
 
     fn fail_sends(&self) {
         self.state.lock().unwrap().send_fails = true;
+    }
+
+    fn fail_appends(&self) {
+        self.state.lock().unwrap().append_fails = true;
     }
 
     fn running_rows_seen_during_send(&self) -> Option<usize> {
@@ -193,11 +198,17 @@ impl Harness for FakeHarness {
         text: &str,
         origin: Value,
     ) -> Result<(), SentinelErrorAlias> {
-        self.state.lock().unwrap().calls.push(Call::Append {
+        let mut state = self.state.lock().unwrap();
+        state.calls.push(Call::Append {
             entry_id: entry_id.into(),
             text: text.into(),
             origin,
         });
+        if state.append_fails {
+            return Err(sentinel::SentinelError::dependency(
+                "session-manager is down",
+            ));
+        }
         Ok(())
     }
 }
@@ -599,6 +610,68 @@ async fn chat_mode_seats_the_evidence_and_leaves_the_group_where_it_is() {
         .expect("read")
         .expect("exists");
     assert_eq!(investigation.status, InvestigationStatusV1::Open);
+}
+
+#[tokio::test]
+async fn opening_the_chat_twice_reopens_the_session_that_already_has_the_evidence() {
+    let fixture = fixture(MODEL).await;
+    let request = || InvestigateRequestV1 {
+        group_id: fixture.group_id.clone(),
+        mode: Some(InvestigationModeV1::Chat),
+        ..InvestigateRequestV1::default()
+    };
+    let first = fixture
+        .investigations
+        .investigate(request())
+        .await
+        .expect("the session opens")
+        .value;
+    let second = fixture
+        .investigations
+        .investigate(request())
+        .await
+        .expect("the second click is answered")
+        .value;
+
+    assert!(second.existing);
+    assert_eq!(second.session_id, first.session_id);
+    assert_eq!(
+        fixture
+            .harness
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, Call::Append { .. }))
+            .count(),
+        1,
+        "the evidence is seated once, not once per click"
+    );
+}
+
+#[tokio::test]
+async fn a_chat_session_that_could_not_be_seated_is_not_left_waiting() {
+    let fixture = fixture(MODEL).await;
+    fixture.harness.fail_appends();
+    let error = fixture
+        .investigations
+        .investigate(InvestigateRequestV1 {
+            group_id: fixture.group_id.clone(),
+            mode: Some(InvestigationModeV1::Chat),
+            ..InvestigateRequestV1::default()
+        })
+        .await
+        .expect_err("a session without its evidence is not a session");
+    assert_eq!(error.code(), "harness_unavailable");
+
+    let (rows, _) = fixture
+        .store
+        .list_investigations(Some(&fixture.group_id), &[], 0, 10)
+        .await
+        .expect("list");
+    assert_eq!(rows[0].status, InvestigationStatusV1::Failed);
+    assert!(
+        rows[0].error.is_some(),
+        "and it says why, rather than sitting open forever"
+    );
 }
 
 // ── recording ────────────────────────────────────────────────────────────

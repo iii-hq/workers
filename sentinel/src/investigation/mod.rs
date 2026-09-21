@@ -165,7 +165,11 @@ impl<D: Db> Investigations<D> {
         let config = self.config.read().await.clone();
         let group = self.group_row(&request.group_id).await?;
 
-        if let Some(existing) = self.store.running_investigation(&request.group_id).await? {
+        let mode = request.mode.unwrap_or_default();
+        // One running first pass per group, and one seated chat session:
+        // clicking twice reopens what is there rather than starting a second
+        // conversation about the same failure.
+        if let Some(existing) = self.open_investigation(&request.group_id, mode).await? {
             return Ok(Outcome::quiet(InvestigateResponseV1 {
                 investigation_id: existing.id,
                 session_id: existing.session_id,
@@ -195,7 +199,6 @@ impl<D: Db> Investigations<D> {
             .filter(|value| !value.trim().is_empty())
             .or_else(|| config.investigation.provider.clone());
 
-        let mode = request.mode.unwrap_or_default();
         let investigation_id = ids::investigation_id();
         let session_id = ids::investigation_session_id(&investigation_id);
         let service_name = text(&group, "service_name").unwrap_or_default();
@@ -228,8 +231,7 @@ impl<D: Db> Investigations<D> {
         // `record` can beat the send's own answer back to us.
         if !self.store.insert_investigation(&write).await? {
             let existing = self
-                .store
-                .running_investigation(&request.group_id)
+                .open_investigation(&request.group_id, mode)
                 .await?
                 .ok_or_else(|| {
                     SentinelError::dependency("an investigation was refused with none running")
@@ -268,23 +270,33 @@ impl<D: Db> Investigations<D> {
 
         let first_pass_turn_id = match mode {
             InvestigationModeV1::Chat => {
-                self.harness
-                    .ensure_session(&session_id, &title, metadata)
-                    .await?;
                 let text =
                     message::chat_evidence(&context, config.evidence.message_max_bytes as usize);
-                self.harness
-                    .append_message(
-                        &session_id,
-                        &format!("{investigation_id}:evidence"),
-                        &text,
-                        json!({
-                            "sentinel_evidence": true,
-                            "sentinel_group_id": request.group_id,
-                            "sentinel_investigation_id": investigation_id,
-                        }),
-                    )
-                    .await?;
+                let seated = async {
+                    self.harness
+                        .ensure_session(&session_id, &title, metadata)
+                        .await?;
+                    self.harness
+                        .append_message(
+                            &session_id,
+                            &format!("{investigation_id}:evidence"),
+                            &text,
+                            json!({
+                                "sentinel_evidence": true,
+                                "sentinel_group_id": request.group_id,
+                                "sentinel_investigation_id": investigation_id,
+                            }),
+                        )
+                        .await
+                }
+                .await;
+                if let Err(error) = seated {
+                    // An empty session is worse than none: it would sit in the
+                    // sidebar offering a conversation about evidence it never
+                    // received.
+                    self.fail(&investigation_id, &error.to_string()).await?;
+                    return Err(SentinelError::HarnessUnavailable(error.to_string()));
+                }
                 None
             }
             InvestigationModeV1::Assisted => {
@@ -321,17 +333,7 @@ impl<D: Db> Investigations<D> {
                     }
                     Err(error) => {
                         let detail = error.to_string();
-                        self.store
-                            .update_investigation(
-                                &investigation_id,
-                                "status = ?, error = ?, finished_ms = ?",
-                                vec![
-                                    json!(InvestigationStatusV1::Failed.as_str()),
-                                    json!(detail),
-                                    json!(ids::now_ms()),
-                                ],
-                            )
-                            .await?;
+                        self.fail(&investigation_id, &detail).await?;
                         return Err(SentinelError::HarnessUnavailable(detail));
                     }
                 }
@@ -347,6 +349,44 @@ impl<D: Db> Investigations<D> {
             },
             events,
         })
+    }
+
+    /// The investigation this mode would reopen: the running first pass, or
+    /// the chat session already seated with this group's evidence.
+    async fn open_investigation(
+        &self,
+        group_id: &str,
+        mode: InvestigationModeV1,
+    ) -> Result<Option<InvestigationSummaryV1>, SentinelError> {
+        if let Some(running) = self.store.running_investigation(group_id).await? {
+            return Ok(Some(running));
+        }
+        if mode != InvestigationModeV1::Chat {
+            return Ok(None);
+        }
+        Ok(self
+            .store
+            .latest_investigation(group_id)
+            .await?
+            .filter(|investigation| {
+                investigation.mode == InvestigationModeV1::Chat
+                    && investigation.status == InvestigationStatusV1::Open
+            }))
+    }
+
+    /// Close a record that never started, naming why.
+    async fn fail(&self, investigation_id: &str, detail: &str) -> Result<(), SentinelError> {
+        self.store
+            .update_investigation(
+                investigation_id,
+                "status = ?, error = ?, finished_ms = ?",
+                vec![
+                    json!(InvestigationStatusV1::Failed.as_str()),
+                    json!(detail),
+                    json!(ids::now_ms()),
+                ],
+            )
+            .await
     }
 
     pub async fn get(
