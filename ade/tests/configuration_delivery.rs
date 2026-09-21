@@ -12,7 +12,22 @@ use tokio_tungstenite::tungstenite::Message;
 /// Exercise stored, absent and failed lookups with a fresh process-local configuration ID.
 #[test]
 fn configuration_delivery_preserves_compose_and_publishes_identity() {
-    for scenario in ["stored", "missing", "unavailable", "service_error"] {
+    for scenario in [
+        "stored",
+        "missing",
+        "legacy_stored",
+        "legacy_missing",
+        "legacy_null",
+        "legacy_false",
+        "legacy_zero",
+        "legacy_empty",
+        "legacy_malformed",
+        "legacy_get_error",
+        "legacy_register_error",
+        "service_error",
+        "adapter_error",
+        "schema_error",
+    ] {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -51,10 +66,18 @@ async fn exercise_delivery() {
     let frames = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured = frames.clone();
     let fixture_id = id.clone();
-    let unavailable = scenario == "unavailable";
+    let unavailable = scenario.starts_with("legacy_");
+    let fixture_scenario = scenario.clone();
     // A service failure mentioning NOT_FOUND is not permission to use legacy registration.
     let service_error = scenario == "service_error";
-    let stored = (scenario == "stored").then(|| json!({"http_port":3213,"other":"${UNCHANGED}"}));
+    let stored = match scenario.as_str() {
+        "stored" | "legacy_stored" => Some(json!({"http_port":3213,"other":"${UNCHANGED}"})),
+        "legacy_null" => Some(Value::Null),
+        "legacy_false" => Some(json!(false)),
+        "legacy_zero" => Some(json!(0)),
+        "legacy_empty" => Some(json!("")),
+        _ => None,
+    };
     let (identity_tx, identity_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
@@ -66,6 +89,7 @@ async fn exercise_delivery() {
         .unwrap();
         let mut stored = stored;
         let mut identity_tx = Some(identity_tx);
+        let mut ensure_seen = false;
         let invocation = "00000000-0000-4000-8000-000000000001";
         while let Some(Ok(message)) = ws.next().await {
             let Message::Text(text) = message else {
@@ -119,9 +143,14 @@ async fn exercise_delivery() {
                     let mut reply = json!({"type":"invocationresult", "function_id":function,
                         "invocation_id":frame["invocation_id"]});
                     if function == "configuration::ensure" {
+                        ensure_seen = true;
                         if unavailable {
                             reply["error"] =
                                 json!({"code":"function_not_found","message":"ensure absent"});
+                        } else if fixture_scenario == "adapter_error"
+                            || fixture_scenario == "schema_error"
+                        {
+                            reply["error"] = json!({"code": if fixture_scenario == "adapter_error" { "ADAPTER_ERROR" } else { "SCHEMA_INVALID" }, "message":"function_not_found"});
                         } else if service_error {
                             reply["error"] = json!({"code":"OTHER","message":"remote error (NOT_FOUND): mentioned only"});
                         } else {
@@ -135,13 +164,35 @@ async fn exercise_delivery() {
                             });
                         }
                     } else if function == "configuration::get" {
-                        if let Some(value) = &stored {
+                        if ensure_seen
+                            && frame["data"]["raw"] == true
+                            && fixture_scenario == "legacy_malformed"
+                        {
+                            reply["result"] = json!({"id":fixture_id});
+                        } else if ensure_seen
+                            && frame["data"]["raw"] == true
+                            && fixture_scenario == "legacy_get_error"
+                        {
+                            reply["error"] =
+                                json!({"code":"function_not_found", "message":"get absent"});
+                        } else if let Some(value) = &stored {
                             reply["result"] = json!({"id":fixture_id,"value":value});
                         } else {
                             reply["error"] = json!({"code":"NOT_FOUND","message":"entry absent"});
                         }
+                    } else if function == "configuration::register" {
+                        assert!(unavailable, "modern path must not register");
+                        if fixture_scenario == "legacy_register_error" {
+                            reply["error"] =
+                                json!({"code":"SCHEMA_INVALID", "message":"register rejected"});
+                        } else {
+                            if let Some(seed) = frame["data"].get("initial_value") {
+                                stored = Some(seed.clone());
+                            }
+                            reply["result"] = json!({"id":fixture_id,"value":stored});
+                        }
                     } else {
-                        panic!("unexpected RPC {function}; no legacy registration is allowed");
+                        panic!("unexpected RPC {function}");
                     }
                     ws.send(Message::Text(reply.to_string())).await.unwrap();
                 }
@@ -166,35 +217,76 @@ async fn exercise_delivery() {
         .unwrap();
     let result = ade::configuration::register_console_config(&iii, 3113).await;
     assert_eq!(identity_rx.await.unwrap(), json!({"id":id}));
-    if unavailable || service_error {
-        let error = result.expect_err("failed ensure must not become successful initialization");
-        if unavailable {
-            assert!(error.contains("upgrade engine"), "{error}");
-        } else {
-            assert!(error.contains("OTHER"), "{error}");
+    let failed = service_error || scenario.ends_with("error") || scenario == "legacy_malformed";
+    if failed {
+        result.expect_err("failed initialization must propagate");
+        if scenario != "legacy_register_error" {
+            assert!(!frames
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|f| f["function_id"] == "configuration::register"));
         }
-        assert!(!frames
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|f| f["function_id"] == "configuration::register"));
     } else {
         result.unwrap();
-        let runtime = ade::configuration::fetch_runtime_config(&iii, 3113)
-            .await
-            .unwrap();
-        let expected = if scenario == "stored" { 3213 } else { 3113 };
-        assert_eq!(runtime.http_port, expected);
-        let snapshot = frames.lock().unwrap();
-        let registration = snapshot
+        let snapshot = frames.lock().unwrap().clone();
+        let operations: Vec<_> = snapshot
             .iter()
-            .find(|f| f["type"] == "invokefunction" && f["function_id"] == "configuration::ensure")
-            .unwrap();
-        assert_eq!(registration["data"]["metadata"]["ui_form"], "console");
-        assert_eq!(registration["data"]["initial_value"]["http_port"], 3113);
-        assert!(!snapshot
+            .filter(|f| {
+                f["type"] == "invokefunction"
+                    && f["function_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("configuration::"))
+            })
+            .collect();
+        let ensure_index = operations
             .iter()
-            .any(|f| f["function_id"] == "configuration::register"));
+            .position(|f| f["function_id"] == "configuration::ensure")
+            .unwrap();
+        let initialization = &operations[ensure_index..];
+        // ADE's intentional pre-existing port migration read precedes this helper.
+        assert_eq!(
+            initialization
+                .iter()
+                .map(|f| f["function_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            if unavailable {
+                vec![
+                    "configuration::ensure",
+                    "configuration::get",
+                    "configuration::register",
+                ]
+            } else {
+                vec!["configuration::ensure"]
+            }
+        );
+        let candidate = &initialization[0]["data"];
+        assert_eq!(candidate["metadata"]["ui_form"], "console");
+        assert_eq!(candidate["initial_value"]["http_port"], 3113);
+        if unavailable {
+            assert_eq!(initialization[1]["data"]["raw"], true);
+            let mut expected = candidate.clone();
+            if !matches!(scenario.as_str(), "legacy_missing" | "legacy_null") {
+                expected.as_object_mut().unwrap().remove("initial_value");
+            }
+            assert_eq!(initialization[2]["data"], expected);
+        }
+        if matches!(
+            scenario.as_str(),
+            "stored" | "missing" | "legacy_stored" | "legacy_missing" | "legacy_null"
+        ) {
+            let runtime = ade::configuration::fetch_runtime_config(&iii, 3113)
+                .await
+                .unwrap();
+            assert_eq!(
+                runtime.http_port,
+                if scenario.ends_with("stored") {
+                    3213
+                } else {
+                    3113
+                }
+            );
+        }
     }
     iii.shutdown_async().await;
     server.abort();

@@ -12,7 +12,6 @@ import { type Config, loadConfig } from './config.js';
 import {
   bindConfigTrigger,
   type ConfigHolder,
-  ENSURE_UNAVAILABLE,
   fetchRuntime,
   registerOpencodeConfig,
 } from './configuration.js';
@@ -43,8 +42,7 @@ const iii = registerWorker(url, { workerName: 'opencode' });
 try {
   await registerOpencodeConfig(iii, bootConfig);
 } catch (err) {
-  if (err instanceof Error && err.message === ENSURE_UNAVAILABLE) throw err;
-  console.warn(`configuration::ensure failed; continuing with the seed: ${String(err)}`);
+  console.warn(`configuration initialization failed; continuing with the seed: ${String(err)}`);
 }
 
 const holder: ConfigHolder = { current: bootConfig };

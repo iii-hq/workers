@@ -29,39 +29,77 @@ export type ConfigHolder = { current: Config };
  * Refresh the OpenCode schema and seed the candidate atomically via
  * `configuration::ensure`: the seed is forwarded unconditionally and the engine
  * installs it ONLY against an absent/null entry, so a stored operator/Compose
- * value is preserved without a client-side read-then-register race.
+ * value is preserved without a client-side read-then-register race on modern engines.
+ * Engines lacking ensure use the warned, non-atomic legacy compatibility path.
  */
 export async function registerOpencodeConfig(iii: IIIClient, seed: Config): Promise<void> {
-  try {
-    await iii.trigger({
-      function_id: 'configuration::ensure',
-      namespace: 'default',
-      payload: {
-        id: CONFIG_ID,
-        name: 'OpenCode',
-        description:
-          'OpenCode worker: per-turn defaults (model, working directory, agent), the agent::events / opencode::events stream names, the opencode CLI path, and whether to inject the iii runtime context.',
-        schema: runtimeJsonSchema(),
-        metadata: { ui_form: DEFAULT_CONFIG_ID },
-        initial_value: toRuntime(seed),
-      },
-      timeoutMs: TIMEOUT_MS,
-    });
-  } catch (error) {
-    if (isFunctionNotFound(error)) {
-      throw new Error(ENSURE_UNAVAILABLE);
-    }
-    throw error;
-  }
+  const payload: Record<string, unknown> = {
+    id: CONFIG_ID,
+    name: 'OpenCode',
+    description:
+      'OpenCode worker: per-turn defaults (model, working directory, agent), the agent::events / opencode::events stream names, the opencode CLI path, and whether to inject the iii runtime context.',
+    schema: runtimeJsonSchema(),
+    metadata: { ui_form: DEFAULT_CONFIG_ID },
+    initial_value: toRuntime(seed),
+  };
+  await ensureConfiguration(iii, payload);
 }
 
-export const ENSURE_UNAVAILABLE =
-  'configuration::ensure unavailable; upgrade engine with atomic configuration initialization support';
+let warnedLegacy = false;
 
-/** The engine's lowercase missing-FUNCTION code: an engine without configuration::ensure. */
-function isFunctionNotFound(error: unknown): boolean {
+/** Missing ensure alone authorizes this non-atomic compatibility path. */
+async function ensureConfiguration(
+  iii: IIIClient,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const call = (function_id: string, payload: Record<string, unknown>) =>
+    iii.trigger({ function_id, namespace: 'default', payload, timeoutMs: TIMEOUT_MS });
+  try {
+    await call('configuration::ensure', payload);
+    return;
+  } catch (error) {
+    if (!hasCode(error, 'function_not_found')) throw error;
+  }
+  if (!warnedLegacy) {
+    warnedLegacy = true;
+    console.warn(
+      `${CONFIG_ID}: engine lacks configuration::ensure; using non-atomic legacy initialization; upgrade to >=0.24.1 for concurrent-write safety`,
+    );
+  }
+  let existing: unknown;
+  try {
+    const response = await call('configuration::get', { id: payload.id, raw: true });
+    if (
+      !response ||
+      typeof response !== 'object' ||
+      Array.isArray(response) ||
+      !Object.hasOwn(response, 'value') ||
+      !('value' in response) ||
+      response.value === undefined
+    ) {
+      throw new Error('configuration::get returned no `value` field');
+    }
+    existing = response.value;
+  } catch (error) {
+    if (!hasCode(error, 'NOT_FOUND')) throw error;
+    existing = null;
+  }
+  const registration = { ...payload };
+  if (existing !== null) delete registration.initial_value;
+  await call('configuration::register', registration);
+}
+
+/** Inspect the SDK code, never message text. */
+function hasCode(error: unknown, code: string): boolean {
+  const functionId = code === 'function_not_found' ? 'configuration::ensure' : 'configuration::get';
   return (
-    !!error && typeof error === 'object' && 'code' in error && error.code === 'function_not_found'
+    !!error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    error.code === code &&
+    (!('function_id' in error) ||
+      error.function_id === undefined ||
+      error.function_id === functionId)
   );
 }
 

@@ -9,7 +9,6 @@ import { uiPage, uiStyles } from 'virtual:vscode-ui';
 import { type Config, expandHome, loadConfig } from './config.js';
 import {
   bindConfigTrigger,
-  ENSURE_UNAVAILABLE,
   fetchRuntime,
   registerVscodeConfig,
 } from './configuration.js';
@@ -302,8 +301,7 @@ if (uiWatchEnabled) {
 try {
   await registerVscodeConfig(iii, holder.current);
 } catch (err) {
-  if (err instanceof Error && err.message === ENSURE_UNAVAILABLE) throw err;
-  console.warn(`configuration::ensure failed; continuing with the seed: ${String(err)}`);
+  console.warn(`configuration initialization failed; continuing with the seed: ${String(err)}`);
 }
 
 await bindConfigTrigger(iii, async () => {

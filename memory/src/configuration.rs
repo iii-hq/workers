@@ -69,33 +69,15 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     ensure_configuration(iii, payload).await
 }
 
-/// Forward `payload` to the engine's atomic `configuration::ensure`. Fails
-/// CLOSED against an engine that predates it (`function_not_found`): surface
-/// the upgrade-required error instead of falling back to the legacy
-/// read-then-`register` seed, which could clobber a stored override.
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
+
+/// Initialize atomically when supported, otherwise use the warned legacy path.
 async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
-    match trigger_configuration_with_retry(iii, "configuration::ensure", payload).await {
-        Ok(_) => Ok(()),
-        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
-        Err(e) => Err(e),
-    }
-}
-
-/// Upgrade-required error surfaced when the engine lacks atomic
-/// `configuration::ensure` (fail CLOSED; never a legacy seed-over-stored write).
-const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
-
-/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
-/// `function_not_found` (an engine without `configuration::ensure`). Same
-/// envelope discipline as `is_not_found`: peel the one retry wrapper, then
-/// require the envelope at the very start so a stray token still propagates.
-fn is_function_not_found(error: &str) -> bool {
-    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
-    let raw = error.trim();
-    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
-    raw == "function_not_found"
-        || raw == "remote error (function_not_found):"
-        || raw.starts_with("remote error (function_not_found): ")
+    initialization::ensure_with(payload, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await
 }
 
 /// Read the live `memory` configuration (env-expanded by the configuration
@@ -282,6 +264,10 @@ async fn trigger_configuration_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tracing::warn!(function_id, attempt, error = %last_err, "configuration RPC failed; retrying");
                     tokio::time::sleep(Duration::from_millis(

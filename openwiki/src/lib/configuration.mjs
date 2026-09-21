@@ -52,36 +52,62 @@ export function defaults() {
   return { ...DEFAULTS };
 }
 
-const ENSURE_UNAVAILABLE =
-  'configuration::ensure unavailable; upgrade engine with atomic configuration initialization support';
+let warnedLegacy = false;
 
-/** The engine's lowercase missing-FUNCTION code: an engine without configuration::ensure. */
-function isFunctionNotFound(error) {
-  return !!error && typeof error === 'object' && error.code === 'function_not_found';
+/** Inspect the SDK code, never message text. */
+function hasCode(error, code) {
+  const functionId = code === 'function_not_found' ? 'configuration::ensure' : 'configuration::get';
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    error.code === code &&
+    (error.function_id === undefined || error.function_id === functionId)
+  );
 }
 
-/** Publish the schema and seed the candidate atomically via configuration::ensure. */
+/** Prefer atomic ensure; engines lacking it use warned, non-atomic legacy initialization. */
 export async function registerConfig(iii) {
+  const payload = {
+    id: CONFIG_ID,
+    name: 'OpenWiki',
+    description: 'OpenWiki worker: default model, page-writer concurrency, and auto-refresh cadence.',
+    schema: schema(),
+    metadata: { ui_form: DEFAULT_CONFIG_ID },
+    initial_value: DEFAULTS,
+  };
+  const call = (function_id, payload) => iii.trigger({ function_id, namespace: 'default', payload });
   try {
-    await iii.trigger({
-      function_id: 'configuration::ensure',
-      namespace: 'default',
-      payload: {
-        id: CONFIG_ID,
-        name: 'OpenWiki',
-        description: 'OpenWiki worker: default model, page-writer concurrency, and auto-refresh cadence.',
-        schema: schema(),
-        metadata: { ui_form: DEFAULT_CONFIG_ID },
-        initial_value: DEFAULTS,
-      },
-    });
+    await call('configuration::ensure', payload);
+    return;
   } catch (error) {
-    if (isFunctionNotFound(error)) {
-      // Fail CLOSED against an engine that predates configuration::ensure.
-      throw new Error(ENSURE_UNAVAILABLE);
-    }
-    throw error;
+    if (!hasCode(error, 'function_not_found')) throw error;
   }
+  if (!warnedLegacy) {
+    warnedLegacy = true;
+    console.warn(
+      `${CONFIG_ID}: engine lacks configuration::ensure; using non-atomic legacy initialization; upgrade to >=0.24.1 for concurrent-write safety`,
+    );
+  }
+  let existing;
+  try {
+    const response = await call('configuration::get', { id: payload.id, raw: true });
+    if (
+      !response ||
+      typeof response !== 'object' ||
+      Array.isArray(response) ||
+      !Object.hasOwn(response, 'value') ||
+      response.value === undefined
+    ) {
+      throw new Error('configuration::get returned no `value` field');
+    }
+    existing = response.value;
+  } catch (error) {
+    if (!hasCode(error, 'NOT_FOUND')) throw error;
+    existing = null;
+  }
+  const registration = { ...payload };
+  if (existing !== null) delete registration.initial_value;
+  await call('configuration::register', registration);
 }
 
 /** Overlay applied stored settings on defaults; unavailable configuration keeps environment defaults. */

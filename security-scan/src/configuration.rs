@@ -47,19 +47,16 @@ pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, Securit
     payload["initial_value"] = serde_json::to_value(shipped_config()).map_err(|error| {
         SecurityScanError::Dependency(format!("could not serialize shipped config: {error}"))
     })?;
-    match trigger_with_retry(iii, "configuration::ensure", payload).await {
-        Ok(_) => {}
-        Err(error) if is_function_not_found(&error) => {
-            // Fail CLOSED: an engine without atomic configuration::ensure must not
-            // launch security-scan on shipped defaults over a stored allowlist.
-            tracing::error!(
-                %error,
-                "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support"
-            );
-            std::process::exit(1);
-        }
-        Err(error) => return Err(error),
-    }
+    initialization::ensure_with(payload, |function, payload| async move {
+        trigger_with_retry(iii, function, payload)
+            .await
+            .map_err(|error| match error {
+                SecurityScanError::Dependency(message) => message,
+                other => other.to_string(),
+            })
+    })
+    .await
+    .map_err(SecurityScanError::Dependency)?;
 
     let value = try_get_value(iii)
         .await?
@@ -76,27 +73,8 @@ pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, Securit
     Ok(config)
 }
 
-/// `true` when the dependency error is the engine's lowercase missing-FUNCTION
-/// envelope `function_not_found` — an engine that predates atomic
-/// `configuration::ensure`. Distinct from [`is_not_found`] (the configuration
-/// worker's `NOT_FOUND` entry code); a local `InvalidRequest` is never one.
-fn is_function_not_found(error: &SecurityScanError) -> bool {
-    match error {
-        SecurityScanError::Dependency(message) => is_missing_function_message(message),
-        SecurityScanError::InvalidRequest(_) => false,
-    }
-}
-
-/// Peel the one retry wrapper, then require the `function_not_found` envelope at
-/// the very start so a stray token in an unrelated message still propagates.
-fn is_missing_function_message(message: &str) -> bool {
-    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
-    let raw = message.trim();
-    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
-    raw == "function_not_found"
-        || raw == "remote error (function_not_found):"
-        || raw.starts_with("remote error (function_not_found): ")
-}
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
 
 pub async fn register_and_fetch_until_ready(iii: &IIIClient) -> WorkerConfig {
     retry_until_ready(
@@ -154,6 +132,10 @@ async fn trigger_with_retry(
         {
             Ok(response) => return Ok(response),
             Err(error) => {
+                if matches!(&error, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(SecurityScanError::Dependency(error.to_string()));
+                }
                 last_error = Some(error.to_string());
                 if attempt < CONFIG_RETRIES {
                     tokio::time::sleep(Duration::from_millis(

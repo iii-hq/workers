@@ -1,3 +1,4 @@
+import { InvocationError } from 'iii-sdk';
 import { afterEach, it, vi } from 'vitest';
 import {
   checkConfigurationContract,
@@ -13,6 +14,7 @@ it.each(configurationCases)('$title', async (scenario) => {
   const seed = await loadConfig('/nonexistent/config.yaml');
   await checkConfigurationContract({
     ...scenario,
+    makeError: (body) => new InvocationError(body),
     register: (iii) => config.registerPiConfig(iii, seed),
     fetch: config.fetchRuntime,
     bind: config.bindConfigTrigger,

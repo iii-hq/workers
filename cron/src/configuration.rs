@@ -48,11 +48,10 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&CronConfig>) -> Resu
     // read-then-register race.
     let seed = seed.cloned().unwrap_or_default().normalized();
     payload["initial_value"] = seed.to_json();
-    match trigger_with_retry(iii, "configuration::ensure", payload, CONFIG_BUS_TIMEOUT_MS).await {
-        Ok(_) => Ok(()),
-        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
-        Err(e) => Err(e),
-    }
+    initialization::ensure_with(payload, |function, payload| {
+        trigger_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+    })
+    .await
 }
 
 /// Parse the authoritative scheduling settings, with a first-boot fallback if unset.
@@ -69,22 +68,8 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<CronConfig, String> {
     }
 }
 
-/// Upgrade-required error surfaced when the engine lacks atomic
-/// `configuration::ensure` (fail CLOSED; never a legacy seed-over-stored write).
-const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
-
-/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
-/// `function_not_found` (an engine without `configuration::ensure`). Same
-/// envelope discipline as `is_not_found`: peel the one retry wrapper, then
-/// require the envelope at the very start so a stray token still propagates.
-fn is_function_not_found(error: &str) -> bool {
-    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
-    let raw = error.trim();
-    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
-    raw == "function_not_found"
-        || raw == "remote error (function_not_found):"
-        || raw.starts_with("remote error (function_not_found): ")
-}
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
 
 /// Query the instance's assigned entry and preserve non-entry errors for the caller.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
@@ -211,6 +196,10 @@ async fn trigger_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tokio::time::sleep(Duration::from_millis(
                         CONFIG_RETRY_BACKOFF_MS * u64::from(attempt),
