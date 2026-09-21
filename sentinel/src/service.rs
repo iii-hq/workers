@@ -12,12 +12,12 @@ use serde_json::{json, Value};
 
 use crate::store::{Db, Statement, Store};
 use crate::{
-    evidence::EvidenceBundleV1, ids, lifecycle, ErrorSourceV1, EvidenceGetRequestV1,
-    EvidenceGetResponseV1, GroupActionRequestV1, GroupChangeReasonV1, GroupGetRequestV1,
-    GroupGetResponseV1, GroupStateResponseV1, GroupStatusV1, GroupSummaryV1, GroupsListRequestV1,
-    GroupsListResponseV1, IgnoreBaselineV1, IgnoreRequestV1, IgnoreRuleV1, NamedRow,
-    OccurrenceSummaryV1, OccurrencesListRequestV1, OccurrencesListResponseV1, ResolveRequestV1,
-    SentinelError, Transition,
+    evidence::EvidenceBundleV1, ids, lifecycle, DiagnosesListRequestV1, DiagnosesListResponseV1,
+    ErrorSourceV1, EvidenceGetRequestV1, EvidenceGetResponseV1, GroupActionRequestV1,
+    GroupChangeReasonV1, GroupGetRequestV1, GroupGetResponseV1, GroupStateResponseV1,
+    GroupStatusV1, GroupSummaryV1, GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1,
+    IgnoreRequestV1, IgnoreRuleV1, NamedRow, OccurrenceSummaryV1, OccurrencesListRequestV1,
+    OccurrencesListResponseV1, ResolveRequestV1, SentinelError, Transition,
 };
 
 const DEFAULT_LIMIT: u32 = 50;
@@ -185,6 +185,26 @@ impl<D: Db> Service<D> {
             occurrences: rows.iter().map(occurrence).collect(),
             total,
         })
+    }
+
+    /// Every diagnosis recorded against a group, newest first.
+    ///
+    /// `groups::get` carries the one in force; this is the history behind it,
+    /// which is what makes two readings of the same failure comparable.
+    pub async fn diagnoses(
+        &self,
+        request: DiagnosesListRequestV1,
+    ) -> Result<DiagnosesListResponseV1, SentinelError> {
+        let limit = request.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+        let (diagnoses, total) = self
+            .store
+            .diagnoses_page(
+                &request.group_id,
+                request.offset.unwrap_or(0),
+                limit as usize,
+            )
+            .await?;
+        Ok(DiagnosesListResponseV1 { diagnoses, total })
     }
 
     pub async fn evidence(

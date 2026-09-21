@@ -196,8 +196,10 @@ impl<D: Db> Investigations<D> {
         let provider = request
             .provider
             .clone()
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| config.investigation.provider.clone());
+            .or_else(|| config.investigation.provider.clone())
+            // A blank provider is not a provider. It reaches the turn as an
+            // empty string otherwise, and the router has to guess.
+            .filter(|value| !value.trim().is_empty());
 
         let investigation_id = ids::investigation_id();
         let session_id = ids::investigation_session_id(&investigation_id);

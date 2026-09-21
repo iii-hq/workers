@@ -11,7 +11,9 @@ export default function setup(host: Host) {
     configurationId: CONFIGURATION_ID,
     render: (props) => <SentinelPage host={host} {...props} />,
   })
-  host.configForms.register(CONFIGURATION_ID, SentinelConfigForm)
+  host.configForms.register(CONFIGURATION_ID, (props) => (
+    <SentinelConfigForm host={host} {...props} />
+  ))
   // A diagnosis arrives in the transcript as a function call like any other.
   // Rendered, it reads as the finding it is instead of a JSON blob.
   host.functionTriggers.register(diagnosisRecordRenderer(host))

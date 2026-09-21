@@ -300,6 +300,32 @@
   font-size: 11px;
 }
 
+[data-iii-ui="sentinel"] .sentinel-ui-history {
+  margin-top: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-history-list > li {
+  padding-inline-start: 10px;
+  border-inline-start: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
 [data-iii-ui="sentinel"] .sentinel-ui-record {
   display: flex;
   flex-direction: column;

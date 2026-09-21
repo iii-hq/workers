@@ -11,14 +11,18 @@ import {
   Markdown,
   MetaRow,
 } from '@iii-dev/console-ui'
-import { formatRelative } from '@iii-dev/console-ui/format'
+import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
 import { FileCode } from 'lucide-react'
-import type { DiagnosisRecord, Investigation } from '../api'
+import { useEffect, useState } from 'react'
+import type { Client, DiagnosisRecord, Investigation } from '../api'
+import { PreviousDiagnoses } from './history'
 import { codeLocation } from './present.js'
 
 interface Props {
+  api: Client
   diagnosis?: DiagnosisRecord
+  groupId: string
   host: Host
   investigation?: Investigation
   onAsk: () => void
@@ -30,7 +34,17 @@ interface Props {
  * it is shown as written — this page adds provenance and a way to open the
  * code it points at, and nothing else.
  */
-export function DiagnosisCard({ diagnosis, host, investigation, onAsk, repositoryPath }: Props) {
+export function DiagnosisCard({
+  api,
+  diagnosis,
+  groupId,
+  host,
+  investigation,
+  onAsk,
+  repositoryPath,
+}: Props) {
+  const history = useHistory(api, groupId, diagnosis?.id)
+
   if (!diagnosis) {
     return (
       <EmptyState
@@ -157,7 +171,51 @@ export function DiagnosisCard({ diagnosis, host, investigation, onAsk, repositor
             Ask for a new diagnosis
           </Button>
         </MetaRow>
+
+        <PreviousDiagnoses records={history.records} total={history.total} />
       </CardBody>
     </Card>
   )
+}
+
+/**
+ * Every reading of this group except the one on screen. Re-read whenever the
+ * current one changes, which is how a new recording appears here without a
+ * reload.
+ */
+function useHistory(api: Client, groupId: string, currentId: string | undefined) {
+  const [state, setState] = useState<{ records: DiagnosisRecord[]; total: number }>({
+    records: [],
+    total: 0,
+  })
+
+  useEffect(() => {
+    let live = true
+    if (!currentId) {
+      setState({ records: [], total: 0 })
+      return
+    }
+    api
+      .diagnoses(groupId)
+      .then((response) => {
+        if (!live) return
+        setState({
+          records: response.diagnoses.filter((record) => record.id !== currentId),
+          total: response.total,
+        })
+      })
+      .catch((cause) => {
+        // The history is context, not the answer: losing it must not take the
+        // diagnosis down with it.
+        if (live) {
+          setState({ records: [], total: 0 })
+          console.warn('sentinel: could not read the diagnosis history', errorMessage(cause))
+        }
+      })
+    return () => {
+      live = false
+    }
+  }, [api, groupId, currentId])
+
+  return state
 }

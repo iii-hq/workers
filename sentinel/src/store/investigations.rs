@@ -254,19 +254,45 @@ impl<D: Db> Store<D> {
         group_id: &str,
         limit: usize,
     ) -> Result<Vec<DiagnosisRecordV1>, SentinelError> {
-        Ok(self
+        Ok(self.diagnoses_page(group_id, 0, limit).await?.0)
+    }
+
+    /// One page of a group's diagnoses, with how many there are in all. The
+    /// count is what tells a reader that the one they are looking at
+    /// superseded something.
+    ///
+    /// Ordered by time **and then by id**: a millisecond holds more than one
+    /// recording when somebody asks twice in a row, and the id is a v7 uuid,
+    /// so it breaks the tie in creation order instead of arbitrarily.
+    pub async fn diagnoses_page(
+        &self,
+        group_id: &str,
+        offset: u32,
+        limit: usize,
+    ) -> Result<(Vec<DiagnosisRecordV1>, u64), SentinelError> {
+        let total = self
+            .db()
+            .query(
+                "SELECT COUNT(*) AS total FROM sentinel_diagnoses WHERE group_id = ?",
+                vec![json!(group_id)],
+            )
+            .await?
+            .first()
+            .and_then(|row| row.get("total"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(0) as u64;
+        let rows = self
             .db()
             .query(
                 "SELECT d.*, i.session_id AS session_id, i.model AS model \
                  FROM sentinel_diagnoses d \
                  JOIN sentinel_investigations i ON i.id = d.investigation_id \
-                 WHERE d.group_id = ? ORDER BY d.created_ms DESC LIMIT ?",
-                vec![json!(group_id), json!(limit as i64)],
+                 WHERE d.group_id = ? ORDER BY d.created_ms DESC, d.id DESC LIMIT ? OFFSET ?",
+                vec![json!(group_id), json!(limit as i64), json!(offset as i64)],
             )
-            .await?
-            .iter()
-            .map(diagnosis_record)
-            .collect())
+            .await?;
+        Ok((rows.iter().map(diagnosis_record).collect(), total))
     }
 
     pub async fn diagnoses_for_investigation(
@@ -279,7 +305,7 @@ impl<D: Db> Store<D> {
                 "SELECT d.*, i.session_id AS session_id, i.model AS model \
                  FROM sentinel_diagnoses d \
                  JOIN sentinel_investigations i ON i.id = d.investigation_id \
-                 WHERE d.investigation_id = ? ORDER BY d.created_ms DESC",
+                 WHERE d.investigation_id = ? ORDER BY d.created_ms DESC, d.id DESC",
                 vec![json!(investigation_id)],
             )
             .await?

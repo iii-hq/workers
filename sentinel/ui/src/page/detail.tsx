@@ -312,7 +312,9 @@ export function GroupDetailView({
         </TabsContent>
         <TabsContent value="diagnosis">
           <DiagnosisCard
+            api={api}
             diagnosis={detail.diagnosis}
+            groupId={group.id}
             host={host}
             investigation={detail.active_investigation ?? detail.latest_investigation}
             onAsk={() => {

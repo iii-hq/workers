@@ -196,6 +196,8 @@ export function client(iii: ExtensionIii) {
         group_id,
         limit,
       }),
+    diagnoses: (group_id: string, limit = 20) =>
+      call<{ diagnoses: DiagnosisRecord[]; total: number }>(FN.diagnoses, { group_id, limit }),
     evidence: (occurrence_id: string) =>
       call<{ evidence?: EvidenceBundle; pruned: boolean }>(FN.evidence, { occurrence_id }),
     resolve: (group_id: string, until_version_change: boolean) =>

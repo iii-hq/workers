@@ -24,15 +24,15 @@ use crate::registry::EngineRegistry;
 use crate::service::Service;
 use crate::store::Store;
 use crate::{
-    ids, Counters, DiagnosisRecordRequestV1, DiagnosisRecordResponseV1, DoorbellResponseV1,
-    EvidenceGetRequestV1, EvidenceGetResponseV1, GroupActionRequestV1, GroupChangedOpV1,
-    GroupGetRequestV1, GroupGetResponseV1, GroupStateResponseV1, GroupsListRequestV1,
-    GroupsListResponseV1, IgnoreRequestV1, InvestigateRequestV1, InvestigateResponseV1,
-    InvestigationCancelRequestV1, InvestigationGetRequestV1, InvestigationGetResponseV1,
-    InvestigationSummaryV1, InvestigationsListRequestV1, InvestigationsListResponseV1,
-    LogsListRequestV1, LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
-    ResolveRequestV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
-    TurnCompletedEventV1,
+    ids, Counters, DiagnosesListRequestV1, DiagnosesListResponseV1, DiagnosisRecordRequestV1,
+    DiagnosisRecordResponseV1, DoorbellResponseV1, EvidenceGetRequestV1, EvidenceGetResponseV1,
+    GroupActionRequestV1, GroupChangedOpV1, GroupGetRequestV1, GroupGetResponseV1,
+    GroupStateResponseV1, GroupsListRequestV1, GroupsListResponseV1, IgnoreRequestV1,
+    InvestigateRequestV1, InvestigateResponseV1, InvestigationCancelRequestV1,
+    InvestigationGetRequestV1, InvestigationGetResponseV1, InvestigationSummaryV1,
+    InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
+    LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1, ResolveRequestV1,
+    StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TurnCompletedEventV1,
 };
 
 pub const STATUS_ID: &str = "sentinel::status";
@@ -70,6 +70,9 @@ pub const ON_TURN_COMPLETED_DESC: &str =
     "Internal doorbell for a finished investigation turn; the status is re-read rather than trusted.";
 pub const ON_SCHEDULE_ID: &str = "sentinel::on-schedule";
 pub const ON_SCHEDULE_DESC: &str = "Internal daily prune of buckets and archived groups.";
+
+pub const DIAGNOSES_LIST_ID: &str = "sentinel::diagnoses::list";
+pub const DIAGNOSES_LIST_DESC: &str = "List every diagnosis recorded against a group, newest first. Each recording is a version and none are overwritten, so the same failure diagnosed twice can be compared.";
 
 pub const INVESTIGATE_ID: &str = "sentinel::investigate";
 pub const INVESTIGATE_DESC: &str = "Open an investigation on a group: a harness session beside the page that starts from the frozen evidence. Mode assisted runs a first pass immediately; mode chat only seats the evidence and waits for a person. A first pass already running is returned rather than duplicated.";
@@ -280,6 +283,16 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
             async move { deps.service.evidence(request).await.map_err(Into::into) }
         })
         .description(EVIDENCE_GET_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        DIAGNOSES_LIST_ID,
+        RegisterFunction::new_async(move |request: DiagnosesListRequestV1| {
+            let deps = current.clone();
+            async move { deps.service.diagnoses(request).await.map_err(Into::into) }
+        })
+        .description(DIAGNOSES_LIST_DESC),
     );
 
     // ── investigation ───────────────────────────────────────────────────
@@ -672,6 +685,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             OCCURRENCES_LIST_DESC,
         ),
         spec::<EvidenceGetRequestV1, EvidenceGetResponseV1>(EVIDENCE_GET_ID, EVIDENCE_GET_DESC),
+        spec::<DiagnosesListRequestV1, DiagnosesListResponseV1>(
+            DIAGNOSES_LIST_ID,
+            DIAGNOSES_LIST_DESC,
+        ),
         spec::<InvestigateRequestV1, InvestigateResponseV1>(INVESTIGATE_ID, INVESTIGATE_DESC),
         spec::<InvestigationGetRequestV1, InvestigationGetResponseV1>(
             INVESTIGATIONS_GET_ID,
@@ -729,7 +746,7 @@ pub const INVESTIGATION_ALLOW: [&str; 11] = [
 
 /// Denied outright. Deny wins over allow in the harness policy, so a function
 /// added to this worker later is refused until somebody decides otherwise.
-pub const INVESTIGATION_DENY: [&str; 20] = [
+pub const INVESTIGATION_DENY: [&str; 21] = [
     "shell::*",
     "state::*",
     "queue::*",
@@ -753,6 +770,10 @@ pub const INVESTIGATION_DENY: [&str; 20] = [
     // occurrence are the console's, not the investigation's.
     "sentinel::status",
     "sentinel::occurrences::list",
+    // An investigation reasons from the evidence it was handed. Reading what
+    // an earlier one concluded would anchor it to that answer, which is the
+    // opposite of what a second opinion is for.
+    DIAGNOSES_LIST_ID,
 ];
 
 #[cfg(test)]

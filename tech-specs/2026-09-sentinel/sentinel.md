@@ -1617,7 +1617,11 @@ máximo um repositório.
 O passo 1 do produto — "o usuário escolhe um modelo" — é o formulário de
 configuração registrado no console (`host.configForms.register("sentinel",
 …)`), com o seletor alimentado por `router::models::list` e atualizado em
-`router::models::changed`, no mesmo padrão do `security-scan`.
+`router::models::changed`, no mesmo padrão do `security-scan`. ⚠ A escolha é
+gravada como o **par** que o schema já tem (`investigation.model` +
+`investigation.provider`), não como um `provider::id` que o worker teria de
+partir; e um modelo gravado que sumiu do catálogo é **mantido e rotulado**,
+nunca apagado em silêncio — um provider cujo credencial caiu volta.
 
 ## Console UI
 
@@ -1625,18 +1629,17 @@ Página injetada (`iii-console-ui`, ativos `sentinel/page.js` e
 `sentinel/styles.css`), registrada com `host.pages.register`. Três vistas:
 
 > ⚠ **O que o v1 entregou desta seção.** A lista, o detalhe, as abas *Latest
-> occurrence*, *Occurrences* e *Diagnosis*, as ações humanas, *Investigate* e
-> *Open in chat*, *Open session*, *Stop*, *Ask for a diagnosis*, o form de
-> configuração e a atualização ao vivo. Ficaram de fora, deliberadamente, e
-> cada um é uma adição isolada: **ações em lote** na lista, **Investigate
-> with…** (trocar o modelo no ato; o v1 usa o configurado), a aba **History**
-> (o v1 deriva o estado dos campos do grupo, sem tabela de transições), a
-> **lista de diagnósticos anteriores** na aba Diagnosis (o vigente é
-> mostrado; os anteriores ficam em `investigations::get`), os **links de
-> sessão e turno** na aba Occurrences, e o **seletor de modelo alimentado
-> pelo catálogo** no form — que hoje é um campo de texto. O renderer da
-> evidência em modo chat está bloqueado por falta de consumidor no console
-> (ver "A evidência no transcript").
+> occurrence*, *Occurrences* e *Diagnosis* (com a **lista de diagnósticos
+> anteriores**, por `sentinel::diagnoses::list`), as ações humanas,
+> *Investigate* e *Open in chat*, *Open session*, *Stop*, *Ask for a
+> diagnosis*, o form de configuração com o **seletor alimentado por
+> `router::models::list`**, e a atualização ao vivo. Ficaram de fora,
+> deliberadamente, e cada um é uma adição isolada: **ações em lote** na
+> lista, **Investigate with…** (trocar o modelo no ato; o v1 usa o
+> configurado), a aba **History** (o v1 deriva o estado dos campos do grupo,
+> sem tabela de transições) e os **links de sessão e turno** na aba
+> Occurrences. O renderer da evidência em modo chat está bloqueado por falta
+> de consumidor no console (ver "A evidência no transcript").
 
 **Lista de grupos.** Filtros: estado (padrão: abertos — `new`,
 `investigating`, `diagnosed`, `regressed`; chips para `regressed`, `ignored`,

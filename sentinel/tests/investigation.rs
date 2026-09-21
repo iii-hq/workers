@@ -882,6 +882,80 @@ async fn a_resolve_that_lands_first_keeps_the_group_and_takes_the_diagnosis_anyw
     );
 }
 
+#[tokio::test]
+async fn the_history_keeps_every_version_and_says_how_many_there_are() {
+    let fixture = fixture(MODEL).await;
+    let (_, session_id) = open(&fixture).await;
+    for summary in [
+        "the operation table has no `up`",
+        "it is the parser",
+        "no, it is the cache",
+    ] {
+        fixture
+            .investigations
+            .record(
+                Caller {
+                    session_id: Some(session_id.clone()),
+                    turn_id: Some("turn-1".into()),
+                },
+                DiagnosisRecordRequestV1 {
+                    group_id: fixture.group_id.clone(),
+                    diagnosis: a_diagnosis(summary),
+                    _caller_worker_id: None,
+                },
+            )
+            .await
+            .expect("recorded");
+    }
+
+    let page = fixture
+        .service
+        .diagnoses(sentinel::DiagnosesListRequestV1 {
+            group_id: fixture.group_id.clone(),
+            limit: Some(2),
+            ..sentinel::DiagnosesListRequestV1::default()
+        })
+        .await
+        .expect("the history reads");
+    assert_eq!(page.total, 3, "nothing is overwritten");
+    assert_eq!(
+        page.diagnoses.len(),
+        2,
+        "and the page is the page asked for"
+    );
+    assert_eq!(
+        page.diagnoses[0]
+            .diagnosis
+            .as_ref()
+            .map(|d| d.summary.as_str()),
+        Some("no, it is the cache"),
+        "newest first: the head is the one in force"
+    );
+
+    let rest = fixture
+        .service
+        .diagnoses(sentinel::DiagnosesListRequestV1 {
+            group_id: fixture.group_id.clone(),
+            offset: Some(2),
+            limit: Some(2),
+            ..sentinel::DiagnosesListRequestV1::default()
+        })
+        .await
+        .expect("the second page reads");
+    assert_eq!(rest.diagnoses.len(), 1);
+    assert_eq!(
+        rest.diagnoses[0]
+            .diagnosis
+            .as_ref()
+            .map(|d| d.summary.as_str()),
+        Some("the operation table has no `up`"),
+    );
+    assert_eq!(
+        rest.diagnoses[0].session_id, session_id,
+        "each version carries the session it was recorded from"
+    );
+}
+
 // ── finishing ────────────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -812,6 +812,34 @@ pub struct DiagnosisRecordResponseV1 {
     pub group_status: GroupStatusV1,
 }
 
+/// Every diagnosis recorded against one group, across investigations.
+///
+/// Separate from `groups::get`, which carries only the one in force: the
+/// history is what the Diagnosis tab opens, and most readers never ask for
+/// it.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosesListRequestV1 {
+    pub group_id: String,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosesListResponseV1 {
+    /// Newest first: the head is the one in force.
+    pub diagnoses: Vec<DiagnosisRecordV1>,
+    pub total: u64,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InvestigationGetRequestV1 {

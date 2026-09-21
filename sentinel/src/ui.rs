@@ -46,6 +46,7 @@ mod tests {
             "sentinel::groups::resolve",
             "sentinel::groups::ignore",
             "sentinel::evidence::get",
+            "sentinel::diagnoses::list",
             "sentinel::investigate",
             "sentinel::investigations::cancel",
             "sentinel::diagnosis::record",
@@ -67,6 +68,15 @@ mod tests {
             !PAGE_JS.contains("database::"),
             "the page never touches the store"
         );
+        // One deliberate exception to "this worker's functions": the model
+        // picker is fed by the router's catalog and re-read when the router
+        // says it changed, the same way `security-scan` feeds its own.
+        for function_id in ["router::models::list", "router::models::changed"] {
+            assert!(
+                PAGE_JS.contains(function_id),
+                "the model picker needs {function_id}"
+            );
+        }
     }
 
     #[test]

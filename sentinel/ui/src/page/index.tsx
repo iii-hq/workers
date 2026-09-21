@@ -6,10 +6,10 @@ import {
   PageShell,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { useContainerNarrow, useWorkerLive } from '@iii-dev/console-ui/hooks'
+import { useContainerNarrow, useDebounce, useWorkerLive } from '@iii-dev/console-ui/hooks'
 import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { ShieldAlert } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { client } from '../api'
 import type { GroupStatus, StatusResponse } from '../api'
 import { EVENT, PAGE_ID } from '../shared'
@@ -50,6 +50,10 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
     if (contextGroup) setSelected(contextGroup)
   }, [contextGroup])
 
+  // Settled, so a filter is a query rather than one query per keystroke.
+  const search = useDebounce(filters.search, 250)
+  const statuses = filters.statuses.join(',')
+
   const groups = useWorkerLive({
     iii: host.iii,
     handlerId: `iii::${PAGE_ID}-ui::events`,
@@ -60,12 +64,21 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
           status: filters.statuses,
           service_name: filters.service || undefined,
           since_ms: sinceMs(filters.window, Date.now()) ?? undefined,
-          search: filters.search || undefined,
+          search: search || undefined,
           limit: 50,
         }),
-      [api, filters.statuses, filters.service, filters.window, filters.search],
+      [api, filters.statuses, filters.service, filters.window, search],
     ),
   })
+
+  // `useWorkerLive` re-reads on its triggers and its poll, not when the query
+  // itself changes. Without this the list answers the previous question until
+  // the next error arrives, and the search box looks broken.
+  const refresh = useRef(groups.refresh)
+  refresh.current = groups.refresh
+  useEffect(() => {
+    refresh.current()
+  }, [statuses, filters.service, filters.window, search])
 
   const [status, setStatus] = useState<StatusResponse | null>(null)
   useEffect(() => {

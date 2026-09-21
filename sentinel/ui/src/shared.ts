@@ -12,6 +12,7 @@ export const FN = {
   reopen: 'sentinel::groups::reopen',
   occurrences: 'sentinel::occurrences::list',
   evidence: 'sentinel::evidence::get',
+  diagnoses: 'sentinel::diagnoses::list',
   investigate: 'sentinel::investigate',
   investigationsGet: 'sentinel::investigations::get',
   investigationsList: 'sentinel::investigations::list',
