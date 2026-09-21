@@ -37,6 +37,7 @@ pub mod service;
 mod status;
 pub mod store;
 pub mod triggers;
+pub mod ui;
 
 pub use adapters::ErrorEvent;
 pub use config::{

@@ -20,6 +20,7 @@ async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 cron = "0.12"
 iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui" }
 iii-helpers = "=0.23.0"
 iii-sdk = "=0.23.0"
 regex = "1"

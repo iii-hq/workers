@@ -1,0 +1,332 @@
+/* sentinel console page. Every selector is scoped to the host wrapper, and
+   every colour, radius and duration comes from a token — the page has to sit
+   inside the console without announcing that it came from somewhere else. */
+
+[data-iii-ui="sentinel"] .sentinel-ui-list,
+[data-iii-ui="sentinel"] .sentinel-ui-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* Each section is worth its own height. Without this the column shrinks the
+   short ones — the facts card collapsed to two pixels behind a long span
+   tree — because a flex child shrinks before its sibling overflows. */
+[data-iii-ui="sentinel"] .sentinel-ui-list > *,
+[data-iii-ui="sentinel"] .sentinel-ui-detail > * {
+  flex: 0 0 auto;
+}
+
+/* The title is the one column that would grow without limit, so it is the
+   one that is capped: everything else sizes to its content and the table
+   fits the pane instead of scrolling sideways. */
+[data-iii-ui="sentinel"] .sentinel-ui-list table {
+  width: 100%;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-search {
+  flex: 1 1 200px;
+  min-width: 140px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-liveness {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ── the list ─────────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-title {
+  max-width: 56ch;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-row-detail {
+  max-width: 64ch;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A regression is the one row that says somebody's fix did not hold. */
+[data-iii-ui="sentinel"] tr[data-regressed="true"] {
+  box-shadow: inset 2px 0 0 0 var(--color-alert);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-worker,
+[data-iii-ui="sentinel"] .sentinel-ui-count,
+[data-iii-ui="sentinel"] .sentinel-ui-when {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-version {
+  display: block;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Twenty-four bars of CSS rather than an inline chart: the design system
+   asks for no inline SVG, and this needs none. */
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  width: 72px;
+  height: 18px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline > span {
+  flex: 1 1 0;
+  min-height: 1px;
+  border-radius: 0;
+  background: var(--color-accent);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline > span[data-empty="true"] {
+  height: 1px !important;
+  background: var(--color-edge);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-more {
+  color: var(--color-ink-ghost);
+}
+
+/* ── the detail ───────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail-title h2 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-message {
+  margin: 8px 0 0;
+  padding: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-code);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-investigation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel-raised);
+  font-size: 11px;
+}
+
+/* ── evidence ─────────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-evidence-head,
+[data-iii-ui="sentinel"] .sentinel-ui-diagnosis-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-event {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-attribute-key {
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-spans {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The tree is drawn with indentation and a rule, not with box glyphs: a
+   span name is already dense enough to read. */
+[data-iii-ui="sentinel"] .sentinel-ui-span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-inline-start: 1px solid var(--color-edge);
+  border-radius: 0 6px 6px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-span[data-origin="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-span-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-span-service,
+[data-iii-ui="sentinel"] .sentinel-ui-repo,
+[data-iii-ui="sentinel"] .sentinel-ui-note {
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-attributes {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) 1fr;
+  gap: 2px 10px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-attributes dt {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-attributes dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-occurrence-message {
+  display: block;
+  max-width: 48ch;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── diagnosis ────────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-evidence-list,
+[data-iii-ui="sentinel"] .sentinel-ui-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  padding-inline-start: 16px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-evidence-list {
+  padding-inline-start: 0;
+  list-style: none;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-evidence-why {
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-record {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-record-summary {
+  margin: 0;
+  font-size: 11px;
+}
+
+/* ── configuration ────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-config {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Narrow panes drop the columns that only repeat what the title already
+   says, rather than shrinking everything until nothing is legible. */
+@container (max-width: 760px) {
+  [data-iii-ui="sentinel"] .sentinel-ui-sparkline {
+    width: 56px;
+  }
+
+  [data-iii-ui="sentinel"] .sentinel-ui-detail-actions {
+    margin-inline-start: 0;
+  }
+}

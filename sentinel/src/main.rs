@@ -151,6 +151,9 @@ async fn main() -> Result<()> {
 
     events::register_trigger_types(&iii, &subscribers);
     functions::register_all(&iii, &deps);
+    // The page registers with the interface, before the durable claim: a
+    // console that can see the worker must be able to see its page.
+    sentinel::ui::register(&iii);
 
     let bindings = Bindings::default();
     match configuration::bind_reload(&iii, cell.clone(), error_cell.clone()) {

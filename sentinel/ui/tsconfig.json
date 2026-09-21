@@ -1,0 +1,9 @@
+{
+  "extends": "@iii-dev/console-ui/tsconfig.worker-ui.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": ["page.tsx", "src"],
+  "exclude": ["src/**/*.test.mjs"]
+}
