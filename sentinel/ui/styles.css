@@ -45,18 +45,16 @@
   min-width: 140px;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-counts {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+/* A filter whose label is squeezed to one letter is not a filter. */
+[data-iii-ui="sentinel"] .sentinel-ui-filter {
+  flex: 0 1 auto;
+  min-width: 96px;
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-liveness {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-inline-start: auto;
   color: var(--color-ink-ghost);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -73,6 +71,7 @@
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-title {
+  display: block;
   max-width: 100%;
   overflow: hidden;
   font-weight: 500;
@@ -91,9 +90,18 @@
   white-space: nowrap;
 }
 
-/* A regression is the one row that says somebody's fix did not hold. */
-[data-iii-ui="sentinel"] tr[data-regressed="true"] {
+/* A regression is the one row that says somebody's fix did not hold. The
+   mark rides the row in both shapes: the wide table and the narrow list. */
+[data-iii-ui="sentinel"] tr[data-regressed="true"],
+[data-iii-ui="sentinel"] [data-regressed="true"].iii-ui-list-item {
   box-shadow: inset 2px 0 0 0 var(--color-alert);
+}
+
+/* The narrow row's trailing pair: how many, and how long ago. */
+[data-iii-ui="sentinel"] .sentinel-ui-row-trailing {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-worker,

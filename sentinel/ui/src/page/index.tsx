@@ -7,7 +7,12 @@ import {
   StatusPanel,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
-import { useContainerNarrow, useDebounce, useWorkerLive } from '@iii-dev/console-ui/hooks'
+import {
+  useContainerNarrow,
+  useDebounce,
+  usePaneState,
+  useWorkerLive,
+} from '@iii-dev/console-ui/hooks'
 import type { Host, PageRenderProps } from '@iii-dev/console-ui'
 import { ShieldAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -36,11 +41,23 @@ const INITIAL_FILTERS: Filters = {
   search: '',
 }
 
-export function SentinelPage({ host, panelSide, conversationId, panelContext, commands }: Props) {
+export function SentinelPage({
+  commands,
+  conversationId,
+  host,
+  onRequestClose,
+  paneId,
+  panelContext,
+  panelSide,
+  tabId,
+}: Props) {
   const api = useMemo(() => client(host.iii), [host.iii])
   const { ref, narrow } = useContainerNarrow({ below: 760 })
-  const [filters, setFilters] = useState<Filters>(INITIAL_FILTERS)
-  const [selected, setSelected] = useState<string | null>(null)
+  // The same page can be open in two columns of one tab, so everything that
+  // survives a reload is keyed per pane rather than per page.
+  const pane = paneId || tabId || 'alone'
+  const [filters, setFilters] = usePaneState<Filters>(`sentinel:${pane}:filters`, INITIAL_FILTERS)
+  const [selected, setSelected] = usePaneState<string | null>(`sentinel:${pane}:group`, null)
   const [notice, setNotice] = useState<string | null>(null)
 
   // A sibling page can open this one on a group (`panels.open`).
@@ -58,7 +75,7 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
 
   const groups = useWorkerLive({
     iii: host.iii,
-    handlerId: `iii::${PAGE_ID}-ui::events`,
+    handlerId: `iii::${PAGE_ID}-ui::events::${pane}`,
     triggers: [EVENT.groupChanged, EVENT.investigationChanged],
     fetch: useCallback(
       () =>
@@ -101,13 +118,11 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
       {
         id: 'refresh',
         title: 'Refresh errors',
-        shortcut: 'R',
         run: () => groups.refresh(),
       },
       {
         id: 'back',
         title: 'Back to the error list',
-        shortcut: 'Escape',
         enabled: () => selected !== null,
         run: () => setSelected(null),
       },
@@ -120,6 +135,7 @@ export function SentinelPage({ host, panelSide, conversationId, panelContext, co
         icon={<ShieldAlert size={16} />}
         title="errors"
         description={describe(status)}
+        onClose={onRequestClose}
         actions={
           <Button variant="ghost" size="sm" onClick={() => groups.refresh()}>
             Refresh

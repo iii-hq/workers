@@ -4,6 +4,8 @@ import {
   Checkbox,
   Chip,
   Eyebrow,
+  List,
+  ListItem,
   SearchField,
   SegmentedControl,
   Select,
@@ -12,6 +14,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   Skeleton,
+  StatusBar,
   StatusDot,
   Table,
   TableBody,
@@ -22,12 +25,9 @@ import {
   TableRow,
   TableViewport,
   Toolbar,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
 } from '@iii-dev/console-ui'
 import { formatRelative } from '@iii-dev/console-ui/format'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { GroupStatus, GroupSummary, StatusResponse } from '../api'
 import type { Filters } from './index'
 import {
@@ -101,6 +101,10 @@ export function GroupsListView({
   const actions = bulkActions(
     selection.map((id) => groups.find((group) => group.id === id)?.status ?? 'new'),
   )
+  useEffect(() => {
+    if (narrow) setPicked([])
+  }, [narrow])
+
   const toggle = (id: string) =>
     setPicked((previous) =>
       previous.includes(id) ? previous.filter((other) => other !== id) : [...previous, id],
@@ -108,41 +112,84 @@ export function GroupsListView({
 
   return (
     <div className="sentinel-ui-list">
+      {/* Narrow panes get two strips: filters on one, search on the next.
+          One strip cannot hold both without squeezing the filter labels
+          down to a letter and an ellipsis. */}
       <Toolbar aria-label="error filters">
-        <SegmentedControl
-          aria-label="which groups"
-          value={scope}
-          onChange={(next) => onFilters({ ...filters, statuses: SCOPE_STATES[next] ?? [] })}
-          options={SCOPES}
-        />
-        <SegmentedControl
-          aria-label="time window"
-          value={filters.window}
-          onChange={(next) => onFilters({ ...filters, window: next })}
-          options={WINDOWS}
-        />
-        {narrow ? null : (
-          <Select
-            aria-label="worker"
-            value={filters.service || undefined}
-            placeholder="every worker"
-            allowEmpty
-            emptyLabel="every worker"
-            onClear={() => onFilters({ ...filters, service: '' })}
-            options={services.map((service) => ({ value: service, label: service }))}
-            onChange={(next) => onFilters({ ...filters, service: next })}
-          />
+        {narrow ? (
+          <>
+            <Select
+              aria-label="which groups"
+              sheetTitle="Which groups"
+              className="sentinel-ui-filter"
+              value={scope}
+              onChange={(next) => onFilters({ ...filters, statuses: SCOPE_STATES[next] ?? [] })}
+              options={SCOPES.map(({ value, label }) => ({ value, label }))}
+            />
+            <Select
+              aria-label="time window"
+              sheetTitle="Time window"
+              className="sentinel-ui-filter"
+              value={filters.window}
+              onChange={(next) => onFilters({ ...filters, window: next })}
+              options={WINDOWS.map(({ value, label }) => ({ value, label }))}
+            />
+          </>
+        ) : (
+          <>
+            <SegmentedControl
+              aria-label="which groups"
+              value={scope}
+              onChange={(next) => onFilters({ ...filters, statuses: SCOPE_STATES[next] ?? [] })}
+              options={SCOPES}
+            />
+            <SegmentedControl
+              aria-label="time window"
+              value={filters.window}
+              onChange={(next) => onFilters({ ...filters, window: next })}
+              options={WINDOWS}
+            />
+            <Select
+              aria-label="worker"
+              value={filters.service || undefined}
+              placeholder="every worker"
+              allowEmpty
+              emptyLabel="every worker"
+              onClear={() => onFilters({ ...filters, service: '' })}
+              options={services.map((service) => ({ value: service, label: service }))}
+              onChange={(next) => onFilters({ ...filters, service: next })}
+            />
+            <SearchField
+              aria-label="search errors"
+              className="sentinel-ui-search"
+              placeholder="title, message or function"
+              value={filters.search}
+              onChange={(next) => onFilters({ ...filters, search: next })}
+            />
+          </>
         )}
-        <SearchField
-          aria-label="search errors"
-          className="sentinel-ui-search"
-          placeholder="title, message or function"
-          value={filters.search}
-          onChange={(next) => onFilters({ ...filters, search: next })}
-        />
       </Toolbar>
+      {narrow ? (
+        <Toolbar aria-label="search errors">
+          <SearchField
+            aria-label="search errors"
+            className="sentinel-ui-search"
+            placeholder="title, message or function"
+            value={filters.search}
+            onChange={(next) => onFilters({ ...filters, search: next })}
+          />
+        </Toolbar>
+      ) : null}
 
-      <div className="sentinel-ui-counts">
+      <StatusBar
+        aria-label="error counts"
+        end={
+          <span className="sentinel-ui-liveness">
+            <StatusDot tone={live ? 'ok' : 'ink'} />
+            <span>{live ? 'live' : 'polling'}</span>
+          </span>
+        }
+      >
         {counts ? (
           <>
             <Chip tone={counts.regressed > 0 ? 'danger' : 'neutral'}>
@@ -153,11 +200,7 @@ export function GroupsListView({
             <Chip tone="neutral">{counts.ignored} ignored</Chip>
           </>
         ) : null}
-        <span className="sentinel-ui-liveness">
-          <StatusDot tone={live ? 'ok' : 'ink'} />
-          <span>{live ? 'live' : 'polling'}</span>
-        </span>
-      </div>
+      </StatusBar>
 
       {selection.length > 0 ? (
         <div className="sentinel-ui-bulk" role="region" aria-label="selected groups">
@@ -239,6 +282,17 @@ export function GroupsListView({
         </div>
       ) : null}
 
+      {narrow ? (
+        <List aria-label="error groups">
+          {loading && groups.length === 0
+            ? Array.from({ length: 5 }, (_, index) => (
+                <ListItem key={index} as="div" label={<Skeleton />} description={<Skeleton />} />
+              ))
+            : groups.map((group) => (
+                <GroupRowNarrow key={group.id} group={group} onOpen={onOpen} />
+              ))}
+        </List>
+      ) : (
       <TableViewport>
         <TableFrame>
           <Table density="compact">
@@ -265,7 +319,24 @@ export function GroupsListView({
               {loading && groups.length === 0
                 ? Array.from({ length: 5 }, (_, index) => (
                     <TableRow key={index}>
-                      <TableCell colSpan={narrow ? 5 : 6}>
+                      <TableCell className="sentinel-ui-pick">
+                        <Skeleton />
+                      </TableCell>
+                      <TableCell className="sentinel-ui-grow">
+                        <Skeleton />
+                      </TableCell>
+                      {narrow ? null : (
+                        <TableCell>
+                          <Skeleton />
+                        </TableCell>
+                      )}
+                      <TableCell>
+                        <Skeleton />
+                      </TableCell>
+                      <TableCell>
+                        <Skeleton />
+                      </TableCell>
+                      <TableCell>
                         <Skeleton />
                       </TableCell>
                     </TableRow>
@@ -284,6 +355,7 @@ export function GroupsListView({
           </Table>
         </TableFrame>
       </TableViewport>
+      )}
       {total > groups.length ? (
         <Eyebrow className="sentinel-ui-more">
           showing {groups.length} of {total}
@@ -309,18 +381,12 @@ function GroupRow({
   const presentation = STATUS_PRESENTATION[group.status]
   return (
     <TableRow
+      interactive
       selected={picked}
       // A regression carries a wash of its own: it is the one row in the
       // list that says somebody's fix did not hold.
       data-regressed={group.status === 'regressed' ? 'true' : undefined}
       onClick={() => onOpen(group.id)}
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          onOpen(group.id)
-        }
-      }}
     >
       <TableCell
         className="sentinel-ui-pick"
@@ -365,14 +431,44 @@ function GroupRow({
         <span className="sentinel-ui-count">{group.occurrence_count}</span>
       </TableCell>
       <TableCell align="right">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="sentinel-ui-when">{formatRelative(group.last_seen_ms)}</span>
-          </TooltipTrigger>
-          <TooltipContent>{new Date(group.last_seen_ms).toISOString()}</TooltipContent>
-        </Tooltip>
+        <span className="sentinel-ui-when">{formatRelative(group.last_seen_ms)}</span>
       </TableCell>
     </TableRow>
+  )
+}
+
+function GroupRowNarrow({
+  group,
+  onOpen,
+}: {
+  group: GroupSummary
+  onOpen: (groupId: string) => void
+}) {
+  const presentation = STATUS_PRESENTATION[group.status]
+  return (
+    <ListItem
+      onClick={() => onOpen(group.id)}
+      data-regressed={group.status === 'regressed' ? 'true' : undefined}
+      leading={
+        <Badge variant={presentation.tone === 'danger' ? 'alert' : 'default'}>
+          {presentation.label}
+        </Badge>
+      }
+      label={<span className="sentinel-ui-title">{group.title}</span>}
+      description={
+        <span className="sentinel-ui-row-detail">
+          {group.function_id ?? group.service_name}
+          {group.last_version ? ` · ${group.last_version}` : ''}
+          {group.status === 'ignored' ? ` · ${ignoreSummary(group.ignore_rule)}` : ''}
+        </span>
+      }
+      trailing={
+        <span className="sentinel-ui-row-trailing">
+          <span className="sentinel-ui-count">{group.occurrence_count}</span>
+          <span className="sentinel-ui-when">{formatRelative(group.last_seen_ms)}</span>
+        </span>
+      }
+    />
   )
 }
 

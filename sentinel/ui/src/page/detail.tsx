@@ -1,5 +1,6 @@
 import {
   Badge,
+  Breadcrumb,
   Button,
   Card,
   CardBody,
@@ -12,6 +13,7 @@ import {
   DropdownMenuTrigger,
   EmptyState,
   Eyebrow,
+  IconButton,
   MetaRow,
   Skeleton,
   StatusDot,
@@ -20,6 +22,7 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  Toolbar,
 } from '@iii-dev/console-ui'
 import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
 import type { Host } from '@iii-dev/console-ui'
@@ -130,12 +133,10 @@ export function GroupDetailView({
 
   return (
     <div className="sentinel-ui-detail" data-narrow={narrow}>
-      <div className="sentinel-ui-detail-head">
-        <Button variant="ghost" size="sm" onClick={onBack}>
-          <ArrowLeft size={16} />
-          <span>All errors</span>
-        </Button>
-        <div className="sentinel-ui-detail-actions">
+      <Toolbar
+        aria-label="group"
+        end={
+          <div className="sentinel-ui-detail-actions">
           {affordance ? (
             affordance.variant === 'live' ? (
               <span className="sentinel-ui-liveness">
@@ -248,8 +249,19 @@ export function GroupDetailView({
               Stop ignoring
             </Button>
           ) : null}
-        </div>
-      </div>
+          </div>
+        }
+      >
+        <IconButton label="Back to the error list" onClick={onBack}>
+          <ArrowLeft size={16} />
+        </IconButton>
+        <Breadcrumb
+          items={[
+            { key: 'all', label: 'errors', onClick: onBack },
+            { key: 'group', label: group.service_name },
+          ]}
+        />
+      </Toolbar>
 
       <Card>
         <CardHeader>
@@ -268,8 +280,8 @@ export function GroupDetailView({
               { label: 'namespace', value: group.namespace },
               { label: 'occurrences', value: String(group.occurrence_count) },
               { label: 'sessions', value: String(group.sessions_affected) },
-              { label: 'first seen', value: formatRelative(group.first_seen_ms) },
-              { label: 'last seen', value: formatRelative(group.last_seen_ms) },
+              { label: 'first seen', value: instant(group.first_seen_ms) },
+              { label: 'last seen', value: instant(group.last_seen_ms) },
               { label: 'versions', value: versionRange(group.first_version, group.last_version) },
               { label: 'fingerprint', value: group.fingerprint.slice(0, 12) },
             ]}
@@ -373,6 +385,12 @@ function InvestigationLine({
       </Button>
     </div>
   )
+}
+
+/** Relative for the glance, absolute for the record. The list shows only
+    the relative half, so this is where the exact moment lives. */
+function instant(at_ms: number): string {
+  return `${formatRelative(at_ms)} · ${new Date(at_ms).toISOString().replace('T', ' ').slice(0, 19)}Z`
 }
 
 function versionRange(first?: string, last?: string): string {
