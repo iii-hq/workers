@@ -1,3 +1,12 @@
+# Opt in only after reading WEBHOOKS.md. Parameters below require restart.
+webhooks:
+  enabled: false
+  storage_path: ./data/github-webhooks/store.sqlite3
+  tunnel_id: webhooks
+  queue: github-webhooks
+  max_body_bytes: 1048576
+  max_pending: 10000
+
 # Seed installed as `initial_value` with the configuration worker on first
 # registration; the live value is authoritative thereafter. The engine URL is
 # bootstrap and lives on the --url flag, not here.

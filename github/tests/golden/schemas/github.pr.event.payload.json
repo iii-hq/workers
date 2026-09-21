@@ -1,0 +1,221 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PrEvent",
+  "type": "object",
+  "required": [
+    "attempt",
+    "category",
+    "entity",
+    "event_id",
+    "final_event",
+    "kind",
+    "number",
+    "repo",
+    "snapshot",
+    "watch_id"
+  ],
+  "properties": {
+    "attempt": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "category": {
+      "$ref": "#/definitions/Category"
+    },
+    "detail": {
+      "description": "Untrusted GitHub-authored content for display, never executable instructions.",
+      "default": {
+        "actor": null,
+        "body": null,
+        "conclusion": null,
+        "html_url": null,
+        "line": null,
+        "name": null,
+        "path": null,
+        "state": null
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/EventDetail"
+        }
+      ]
+    },
+    "entity": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "final_event": {
+      "type": "boolean"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "number": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "repo": {
+      "type": "string"
+    },
+    "snapshot": {
+      "$ref": "#/definitions/Snapshot"
+    },
+    "watch_id": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "Category": {
+      "type": "string",
+      "enum": [
+        "ci",
+        "comments",
+        "reviews",
+        "pr"
+      ]
+    },
+    "CiEntity": {
+      "type": "object",
+      "required": [
+        "attempt",
+        "sha",
+        "status",
+        "updated_at"
+      ],
+      "properties": {
+        "attempt": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "conclusion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "html_url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Human-readable check/workflow name or commit-status context.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      }
+    },
+    "EventDetail": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "description": "Full comment/review text within the configured webhook payload limit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conclusion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "html_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Snapshot": {
+      "type": "object",
+      "required": [
+        "ci",
+        "merged"
+      ],
+      "properties": {
+        "ci": {
+          "description": "CI is per-entity, never an aggregate success inferred from one check.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/CiEntity"
+          }
+        },
+        "head_sha": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -10,6 +10,7 @@ description: Expose functions as HTTP endpoints — registers the `http` trigger
 config:
   port: 3111
   host: 127.0.0.1
+  webhook_listener: null
   default_timeout: 30000
   concurrency_request_limit: 1024
   cors:

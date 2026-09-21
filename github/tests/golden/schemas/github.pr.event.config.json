@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EventFilter",
+  "type": "object",
+  "properties": {
+    "categories": {
+      "default": null,
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/Category"
+      },
+      "uniqueItems": true
+    },
+    "number": {
+      "default": null,
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "repo": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "watch_id": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "Category": {
+      "type": "string",
+      "enum": [
+        "ci",
+        "comments",
+        "reviews",
+        "pr"
+      ]
+    }
+  }
+}

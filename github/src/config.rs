@@ -16,6 +16,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
+    /// Persistent PR webhook monitoring. Disabled by default; activation requires restart.
+    pub webhooks: crate::webhooks::WebhookConfig,
     /// Path to the `gh` binary. Empty = resolve `gh` on PATH.
     pub gh_executable: String,
     /// GitHub token set as GH_TOKEN on every child gh process. Seed as
@@ -35,6 +37,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            webhooks: Default::default(),
             gh_executable: String::new(),
             token: String::new(),
             default_timeout_ms: 30_000,

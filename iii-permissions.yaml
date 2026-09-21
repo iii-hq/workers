@@ -237,6 +237,11 @@ rules:
   # github: internal hot-reload hook — invoked only by the engine's
   # configuration:updated trigger dispatch, never agent-callable.
   - '!github::on-config-change'
+  # Webhook ingress, queue consumers, and tunnel lifecycle callbacks are
+  # trusted engine plumbing, never direct agent calls. Starting/stopping a
+  # watch or acquiring/releasing a public tunnel stays approval-gated.
+  - '!github::webhooks::*'
+  - '!quick-tunnel::on-config-change'
   # openwiki: internal trigger targets. cron::refresh-due is the per-wiki cron
   # target; on-turn-started/completed are harness trigger-bridge targets whose
   # direct call could forge generation progress. The hot-reload hook follows
@@ -440,6 +445,8 @@ rules:
   - github::pr::view
   - github::pr::diff
   - github::pr::checks
+  - github::pr::watch-status
+  - quick-tunnel::status
   - github::issue::list
   - github::issue::view
   - github::repo::view

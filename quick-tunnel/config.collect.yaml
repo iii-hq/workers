@@ -1,0 +1,10 @@
+# Interface capture invokes no handler; the fresh state contains no leases.
+# Missing cloudflared is safe until acquire. Never install/download it here.
+targets:
+  webhooks: http://127.0.0.1:3112
+cloudflared: /nonexistent/quick-tunnel-interface-capture-cloudflared
+state_path: data/quick-tunnel-interface/leases.json
+startup_timeout_ms: 100
+max_retries: 0
+retry_initial_ms: 100
+retry_max_ms: 100

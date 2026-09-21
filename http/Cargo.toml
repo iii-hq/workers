@@ -48,6 +48,8 @@ uuid = { version = "1", features = ["v4"] }
 dashmap = "6"
 
 [dev-dependencies]
+# Local fake engine/channel transport; same version already resolved by iii-sdk.
+tokio-tungstenite = "0.28"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serial_test = "3"
 # trace-context propagation e2e: an in-memory OTel exporter + tracing bridge so

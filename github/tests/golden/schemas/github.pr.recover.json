@@ -1,0 +1,38 @@
+{
+  "description": "Manually reconcile watches and request bounded redelivery of failed owned-hook deliveries.",
+  "function_id": "github::pr::recover",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "repo": {
+        "description": "Optional repository; omitted recovers all managed repositories.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "RecoverRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "pending_jobs": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "status": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "pending_jobs",
+      "status"
+    ],
+    "title": "OperationResponse",
+    "type": "object"
+  }
+}

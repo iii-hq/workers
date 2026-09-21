@@ -6,6 +6,31 @@ description: >-
   plus github::exec / github::api escape hatches for everything else.
 ---
 
+# PR webhook monitoring (opt-in)
+
+For durable PR monitoring, use `github::pr::event`, NOT `github::called`.
+First arm the trigger with a caller-chosen `watch_id`, then call
+`github::pr::watch` with that same ID, `pr_url` OR `repo` + `number`, optional
+`events: [ci,comments,reviews,pr]`, `stop_on: merged|closed` (default merged),
+and mandatory future RFC3339 `expires_at`. Read `github::pr::watch-status`
+once after watch to close the initial race. Never interval-poll PRs.
+
+Inspect `status` and `health.last_error`: `preparing` is not active ingress;
+`cleanup_pending` is not successful cleanup. `unwatch` and manual `recover`
+are mutations requiring approval. Internal `github::webhooks::*` functions
+must not be called by an agent. Event callbacks must dedupe `event_id`;
+namespace and metadata are preserved, errors propagate to the durable queue.
+A single passing check is NOT aggregate CI success. Closed without merge
+remains watched until expiry when stop_on is merged.
+
+Operator setup requires persistent SQLite, queue builtin file_based (current
+Redis adapter is NOT durable), HTTP dedicated public listener, Quick Tunnel,
+cron, and gh auth with Webhooks write plus repository reads. Default enabled
+is false. See ../WEBHOOKS.md. Quick Tunnels are not zero-loss; recovery lists
+failed deliveries and requests bounded redelivery, reconciling current state.
+Do not enable merely because a public repository can be read.
+
+
 # github
 
 The github worker wraps the GitHub CLI (`gh`). Thirty typed functions cover

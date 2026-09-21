@@ -1,0 +1,22 @@
+iii: v1
+name: quick-tunnel
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: quick-tunnel
+license: Apache-2.0
+description: Manage expiring durable leases on authorized cloudflared Quick Tunnel child processes.
+tags: [cloudflare, quick-tunnel, webhooks, tunnel, leases]
+dependencies:
+  configuration: ">=0.0.0"
+config:
+  targets:
+    webhooks: http://127.0.0.1:3112
+  cloudflared: cloudflared
+  state_path: data/quick-tunnel/leases.json
+  startup_timeout_ms: 30000
+  max_retries: 3
+  retry_initial_ms: 1000
+  retry_max_ms: 30000
+  max_leases: 1024
+  max_lease_seconds: 2592000

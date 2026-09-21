@@ -24,6 +24,7 @@ pub struct Route {
     pub function_id: String,
     pub http_path: String,
     pub http_method: String,
+    pub public_webhook: bool,
     pub condition_function_id: Option<String>,
     pub middleware_function_ids: Vec<String>,
 }
@@ -85,6 +86,33 @@ pub fn extract_path_params(
     Some(params)
 }
 
+fn listener_path_params(
+    registered: &str,
+    actual: &str,
+    public_only: bool,
+) -> Option<HashMap<String, String>> {
+    if !public_only {
+        return extract_path_params(registered, actual);
+    }
+    let registered: Vec<_> = registered.split('/').collect();
+    let actual: Vec<_> = actual.split('/').collect();
+    if registered.len() != actual.len() {
+        return None;
+    }
+    let mut params = HashMap::new();
+    for (expected, received) in registered.iter().zip(actual) {
+        if let Some(name) = expected.strip_prefix(':') {
+            if received.is_empty() {
+                return None;
+            }
+            params.insert(name.to_string(), received.to_string());
+        } else if *expected != received {
+            return None;
+        }
+    }
+    Some(params)
+}
+
 /// Registry of routes for the `http` trigger type, keyed by trigger id so a
 /// trigger can be unregistered by id alone. Rejects inserting a route whose
 /// method+path shape conflicts with another, differently-id'd route already
@@ -140,12 +168,29 @@ impl RouteTable {
         method: &str,
         actual_path: &str,
     ) -> Option<(Route, HashMap<String, String>)> {
-        let method = method.to_uppercase();
+        self.match_route_for_listener(method, actual_path, false)
+    }
+
+    /// Same registry and precedence, filtered before matching on the restricted
+    /// listener. No decoding, slash normalization, or method aliasing there.
+    pub fn match_route_for_listener(
+        &self,
+        method: &str,
+        actual_path: &str,
+        public_only: bool,
+    ) -> Option<(Route, HashMap<String, String>)> {
+        let method = if public_only {
+            method.to_string()
+        } else {
+            method.to_uppercase()
+        };
         self.by_id
             .values()
-            .filter(|route| route.http_method.to_uppercase() == method)
+            .filter(|route| {
+                (!public_only || route.public_webhook) && route.http_method.to_uppercase() == method
+            })
             .filter_map(|route| {
-                extract_path_params(&route.http_path, actual_path)
+                listener_path_params(&route.http_path, actual_path, public_only)
                     .map(|params| (param_segment_count(&route.http_path), route.clone(), params))
             })
             .min_by_key(|(score, _, _)| *score)
@@ -157,10 +202,22 @@ impl RouteTable {
     /// path) from 405 (path exists, method not allowed). Returns uppercased
     /// methods, deduped, in sorted order.
     pub fn allowed_methods(&self, actual_path: &str) -> Vec<String> {
+        self.allowed_methods_for_listener(actual_path, false)
+    }
+
+    /// Private routes must not leak through a restricted listener's Allow header.
+    pub fn allowed_methods_for_listener(
+        &self,
+        actual_path: &str,
+        public_only: bool,
+    ) -> Vec<String> {
         let mut methods: Vec<String> = self
             .by_id
             .values()
-            .filter(|route| extract_path_params(&route.http_path, actual_path).is_some())
+            .filter(|route| !public_only || route.public_webhook)
+            .filter(|route| {
+                listener_path_params(&route.http_path, actual_path, public_only).is_some()
+            })
             .map(|route| route.http_method.to_uppercase())
             .collect();
         methods.sort();
@@ -203,6 +260,7 @@ impl TriggerHandler for HttpTriggerHandler {
             function_id: config.function_id.clone(),
             http_path: tc.api_path,
             http_method: tc.http_method.to_uppercase(),
+            public_webhook: tc.public_webhook,
             condition_function_id: tc.condition_function_id,
             middleware_function_ids: tc.middleware_function_ids,
         };
@@ -250,6 +308,7 @@ mod tests {
             function_id: format!("fn-{trigger_id}"),
             http_path: path.to_string(),
             http_method: method.to_string(),
+            public_webhook: false,
             condition_function_id: None,
             middleware_function_ids: Vec::new(),
         }
@@ -309,6 +368,76 @@ mod tests {
     // =========================================================================
     // RouteTable
     // =========================================================================
+
+    #[test]
+    fn restricted_matching_filters_routes_methods_and_path_variants() {
+        let mut table = RouteTable::default();
+        table.insert(route("private", "GET", "/private")).unwrap();
+        table.insert(route("delete", "DELETE", "/hook")).unwrap();
+        let mut public = route("public", "POST", "/hook");
+        public.public_webhook = true;
+        table.insert(public).unwrap();
+        for path in [
+            "/private",
+            "/private/",
+            "//private",
+            "/%70rivate",
+            "/private%2f",
+        ] {
+            assert!(table.match_route_for_listener("GET", path, true).is_none());
+            assert!(table.allowed_methods_for_listener(path, true).is_empty());
+        }
+        assert!(table
+            .match_route_for_listener("POST", "/hook", true)
+            .is_some());
+        assert_eq!(
+            table.allowed_methods_for_listener("/hook", true),
+            vec!["POST"]
+        );
+        for method in ["GET", "HEAD", "DELETE", "OPTIONS", "post"] {
+            assert!(table
+                .match_route_for_listener(method, "/hook", true)
+                .is_none());
+        }
+        for path in ["/hook/", "//hook", "/%68ook", "/hook%2f"] {
+            assert!(table.match_route_for_listener("POST", path, true).is_none());
+        }
+        // Existing normal-listener normalization stays backwards compatible.
+        assert!(table.match_route("get", "/private/").is_some());
+        let mut revoked = route("public", "POST", "/hook");
+        revoked.public_webhook = false;
+        table.insert(revoked).unwrap();
+        assert!(table
+            .match_route_for_listener("POST", "/hook", true)
+            .is_none());
+    }
+
+    #[test]
+    fn restricted_parameter_route_never_selects_private_handler() {
+        let mut table = RouteTable::default();
+        let mut public = route("public", "POST", "/hooks/:id");
+        public.public_webhook = true;
+        table.insert(public).unwrap();
+        table
+            .insert(route("private", "POST", "/hooks/admin"))
+            .unwrap();
+        let (matched, params) = table
+            .match_route_for_listener("POST", "/hooks/admin", true)
+            .unwrap();
+        assert_eq!(matched.trigger_id, "public");
+        assert_eq!(params["id"], "admin");
+        assert_eq!(
+            table
+                .match_route("POST", "/hooks/admin")
+                .unwrap()
+                .0
+                .trigger_id,
+            "private"
+        );
+        assert!(table
+            .match_route_for_listener("POST", "/hooks/", true)
+            .is_none());
+    }
 
     #[test]
     fn match_route_extracts_path_params() {

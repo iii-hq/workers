@@ -837,6 +837,7 @@ dependencies = [
  "serde_yaml",
  "serial_test",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-http",
  "tracing",

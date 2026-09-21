@@ -10,6 +10,7 @@ use tokio::sync::RwLock;
 
 pub mod backend;
 pub mod engine;
+pub mod fake_engine;
 pub mod worker;
 
 /// Give the engine a moment to deliver trigger-type / trigger registrations
