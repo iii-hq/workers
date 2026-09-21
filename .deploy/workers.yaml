@@ -1789,6 +1789,18 @@ workers:
         outputs:
         - dist
     publish: true
+  sentinel:
+    source:
+      path: sentinel
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: sentinel
+      targets: *id001
+    publish: true
   session-manager:
     source:
       path: session-manager

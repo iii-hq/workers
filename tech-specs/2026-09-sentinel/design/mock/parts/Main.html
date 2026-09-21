@@ -1,0 +1,732 @@
+<div class="split">
+
+  <div class="col">
+
+    <!-- ===================== header ===================== -->
+    <sc-if value="{{ isList }}" hint-placeholder-val="{{ true }}">
+      <div class="pg-header">
+        <span class="faint" style="display: flex; align-items: center;">@@icon:activity@@</span>
+        <span class="pg-title">Sentinel</span>
+        <span class="pg-sub">errors across every worker on this engine</span>
+        <div class="pg-actions">
+          <span class="ghost mono" style="font-size: 11px; margin-right: 6px;">ingested 4 s ago</span>
+          <button class="btn icon" onClick="{{ act.refresh }}" title="Refresh">@@icon:refresh@@</button>
+          <button class="btn icon" onClick="{{ act.toSettings }}" title="Configure">@@icon:settings@@</button>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ true }}">
+      <div class="pg-header">
+        <span class="faint" style="display: flex; align-items: center;">@@icon:activity@@</span>
+        <span class="pg-title">Sentinel</span>
+        <button class="btn ghost" style="height: 28px; padding: 0 8px; gap: 6px;" onClick="{{ act.toList }}">@@icon:arrow-left@@ Groups</button>
+        <span class="pg-sub">{{ d.kicker }}</span>
+        <div class="pg-actions">
+          <button class="btn icon" onClick="{{ act.refresh }}" title="Refresh">@@icon:refresh@@</button>
+          <button class="btn icon" onClick="{{ act.toSettings }}" title="Configure">@@icon:settings@@</button>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ true }}">
+      <div class="pg-header">
+        <span class="faint" style="display: flex; align-items: center;">@@icon:settings@@</span>
+        <span class="pg-title">Sentinel</span>
+        <span class="pg-sub">configuration · hot-reloads through the configuration worker</span>
+        <div class="pg-actions">
+          <span class="ghost mono" style="font-size: 11px; margin-right: 6px;">saved 2 min ago</span>
+          <button class="btn icon" onClick="{{ act.toList }}" title="Close">@@icon:x@@</button>
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ===================== list ===================== -->
+    <sc-if value="{{ isList }}" hint-placeholder-val="{{ true }}">
+      <div class="pg-main">
+        <div style="display: flex; flex-direction: column; gap: 14px; padding: 16px 24px 40px;">
+
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; position: relative;">
+            <div class="seg">
+              <sc-for list="{{ filters }}" as="f" hint-placeholder-count="4">
+                <span class="{{ f.cls }}" onClick="{{ f.pick }}">{{ f.label }}</span>
+              </sc-for>
+            </div>
+            <div style="position: relative;">
+              <div class="select" style="width: 180px;" onClick="{{ openWorker }}"><span>{{ workerLabel }}</span><span class="chev">@@icon:chevron-down@@</span></div>
+              <sc-if value="{{ menus.worker }}" hint-placeholder-val="{{ true }}">
+                <div class="menu" style="top: 42px; left: 0; width: 200px;">
+                  <div class="mh">Worker</div>
+                  <sc-for list="{{ workerOptions }}" as="o" hint-placeholder-count="5">
+                    <div class="{{ o.cls }}" onClick="{{ o.pick }}">{{ o.label }}</div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+            <div class="seg">
+              <sc-for list="{{ windows }}" as="w" hint-placeholder-count="4">
+                <span class="{{ w.cls }}" onClick="{{ w.pick }}">{{ w.label }}</span>
+              </sc-for>
+            </div>
+            <label class="input" style="width: 300px;">
+              <span class="faint" style="display: flex;">@@icon:search@@</span>
+              <input data-focus-key="q" value="{{ q }}" onChange="{{ onQuery }}" placeholder="Search title, message or function" style="flex: 1; min-width: 0; border: 0; background: transparent; outline: none; font: inherit; color: inherit;" />
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
+              <sc-if value="{{ hasRegression }}" hint-placeholder-val="{{ true }}">
+                <span class="chip danger">{{ regressionChip }}</span>
+              </sc-if>
+              <span class="chip">{{ openChip }}</span>
+              <span class="chip">trace store: memory · 10 000 spans</span>
+            </div>
+          </div>
+
+          <sc-if value="{{ noRows }}" hint-placeholder-val="{{ true }}">
+            <div class="panel" style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 56px 24px; text-align: center;">
+              <span class="ghost" style="display: flex;">@@icon:inbox@@</span>
+              <div style="font-size: 14px; font-weight: 500;">Nothing here</div>
+              <div class="faint" style="font-size: 13px; max-width: 46ch;">No group matches this filter. Sentinel keeps counting every occurrence either way — resolved and ignored groups are one click away.</div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ rows.length }}" hint-placeholder-val="{{ true }}">
+            <div class="tg tg-groups">
+              <div class="tg-row tg-head">
+                <span>Issue</span><span class="r">Count</span><span class="r">Sessions</span><span>First seen</span><span>Last seen</span><span>24 h</span><span>Status</span><span></span>
+              </div>
+              <sc-for list="{{ rows }}" as="r" hint-placeholder-count="5">
+                <div class="{{ r.cls }}" onClick="{{ r.open }}">
+                  <span style="display: flex; align-items: flex-start; gap: 10px; min-width: 0;">
+                    <span class="{{ r.dotCls }}" style="margin-top: 7px;"></span>
+                    <span style="min-width: 0;">
+                      <span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><b style="font-weight: 600;">{{ r.type }}</b> {{ r.msg }} <sc-if value="{{ r.isLog }}" hint-placeholder-val="{{ true }}"><span class="chip" style="min-height: 18px; padding: 0 6px; font-size: 10px; margin-left: 4px; vertical-align: 1px;">log</span></sc-if></span>
+                      <span class="mono faint" style="display: block; font-size: 11px; margin-top: 2px;">{{ r.meta }}</span>
+                    </span>
+                  </span>
+                  <span class="mono tnum r">{{ r.count }}</span>
+                  <span class="mono tnum r">{{ r.sessions }}</span>
+                  <span class="mono faint" style="font-size: 12px;">{{ r.first }}</span>
+                  <span class="mono" style="font-size: 12px;">{{ r.last }}</span>
+                  <span class="spark">
+                    <sc-for list="{{ r.bars }}" as="b" hint-placeholder-count="24"><i class="{{ b.cls }}" style="height: {{ b.h }}"></i></sc-for>
+                  </span>
+                  <span>
+                    <span class="{{ r.badgeCls }}">
+                      <sc-if value="{{ r.bAlert }}" hint-placeholder-val="{{ true }}">@@icon:alert:i s@@</sc-if>
+                      <sc-if value="{{ r.bLive }}" hint-placeholder-val="{{ true }}"><span class="dot pulse" style="background: currentColor;"></span></sc-if>
+                      <sc-if value="{{ r.bFile }}" hint-placeholder-val="{{ true }}">@@icon:file-code:i s@@</sc-if>
+                      <sc-if value="{{ r.bCheck }}" hint-placeholder-val="{{ true }}">@@icon:check:i s@@</sc-if>
+                      <sc-if value="{{ r.bBan }}" hint-placeholder-val="{{ true }}">@@icon:ban:i s@@</sc-if>
+                      {{ r.badgeText }}
+                    </span>
+                  </span>
+                  <span class="ghost" style="display: flex; justify-content: flex-end;">@@icon:chevron-right@@</span>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <span class="faint" style="font-size: 12px;">{{ rowCount }} · sorted by priority (regressions first, then last seen)</span>
+              <span class="ghost" style="font-size: 12px; margin-left: auto;">{{ hiddenNote }}</span>
+            </div>
+          </sc-if>
+
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ===================== detail ===================== -->
+    <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ true }}">
+      <div class="pg-main">
+        <div class="{{ detailCls }}">
+
+          <div class="dhead">
+            <div class="dhead-title">
+              <span class="{{ d.dotCls }}" style="margin-top: 11px;"></span>
+              <div style="min-width: 0;">
+                <h2>{{ d.title }}</h2>
+                <div class="kicker"><span>{{ d.kicker }}</span><code>·</code><code>{{ d.fp }}</code><code>·</code><code>{{ d.source }}</code></div>
+              </div>
+            </div>
+            <div class="dhead-tools">
+              <div class="dhead-badges">
+                <span class="{{ d.badgeCls }}">
+                  <sc-if value="{{ d.bAlert }}" hint-placeholder-val="{{ true }}">@@icon:alert:i s@@</sc-if>
+                  <sc-if value="{{ d.bLive }}" hint-placeholder-val="{{ true }}"><span class="dot pulse" style="background: currentColor;"></span></sc-if>
+                  <sc-if value="{{ d.bFile }}" hint-placeholder-val="{{ true }}">@@icon:file-code:i s@@</sc-if>
+                  <sc-if value="{{ d.bCheck }}" hint-placeholder-val="{{ true }}">@@icon:check:i s@@</sc-if>
+                  <sc-if value="{{ d.bBan }}" hint-placeholder-val="{{ true }}">@@icon:ban:i s@@</sc-if>
+                  {{ d.badgeText }}
+                </span>
+                <span class="chip mono">{{ d.count }}</span>
+                <span class="chip mono">{{ d.sessions }}</span>
+                <span class="ghost mono" style="font-size: 10.5px;">{{ d.vers }}</span>
+                <sc-if value="{{ d.hasRepo }}" hint-placeholder-val="{{ true }}"><span class="chip mono">@@icon:folder:i s@@ {{ d.repoLabel }}</span></sc-if>
+                <sc-if value="{{ d.noRepo }}" hint-placeholder-val="{{ true }}"><span class="chip warning">@@icon:folder:i s@@ {{ d.repoLabel }}</span></sc-if>
+              </div>
+              <div class="dhead-actions">
+                <sc-for list="{{ d.actions }}" as="a" hint-placeholder-count="3">
+                  <button class="{{ a.cls }}" onClick="{{ a.click }}">
+                    <sc-if value="{{ a.iconScan }}" hint-placeholder-val="{{ true }}">@@icon:scan@@</sc-if>
+                    <sc-if value="{{ a.iconCheck }}" hint-placeholder-val="{{ true }}">@@icon:circle-check@@</sc-if>
+                    <sc-if value="{{ a.iconChat }}" hint-placeholder-val="{{ true }}">@@icon:chat:i s@@</sc-if>
+                    <sc-if value="{{ a.iconStop }}" hint-placeholder-val="{{ true }}">@@icon:square:i s@@</sc-if>
+                    <sc-if value="{{ a.iconRotate }}" hint-placeholder-val="{{ true }}">@@icon:rotate-ccw:i s@@</sc-if>
+                    <sc-if value="{{ a.live }}" hint-placeholder-val="{{ true }}"><span class="dot pulse" style="background: currentColor;"></span></sc-if>
+                    {{ a.label }}
+                    <sc-if value="{{ a.caret }}" hint-placeholder-val="{{ true }}">@@icon:chevron-down:i s@@</sc-if>
+                  </button>
+                </sc-for>
+              </div>
+
+              <sc-if value="{{ menus.investigate }}" hint-placeholder-val="{{ true }}">
+                <div class="menu" style="top: 76px; right: 0; width: 280px;">
+                  <div class="mh">Investigate</div>
+                  <sc-for list="{{ investigateItems }}" as="m" hint-placeholder-count="3">
+                    <div class="{{ m.cls }}" onClick="{{ m.pick }}">@@icon:scan@@ {{ m.label }} <span class="k">{{ m.hint }}</span></div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <sc-if value="{{ menus.resolve }}" hint-placeholder-val="{{ true }}">
+                <div class="menu" style="top: 76px; right: 0; width: 300px;">
+                  <div class="mh">Resolve</div>
+                  <sc-for list="{{ resolveItems }}" as="m" hint-placeholder-count="2">
+                    <div class="{{ m.cls }}" onClick="{{ m.pick }}">@@icon:circle-check@@ {{ m.label }} <span class="k">{{ m.hint }}</span></div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <sc-if value="{{ menus.ignore }}" hint-placeholder-val="{{ true }}">
+                <div class="menu" style="top: 76px; right: 0; width: 280px;">
+                  <div class="mh">Ignore until…</div>
+                  <sc-for list="{{ ignoreItems }}" as="m" hint-placeholder-count="3">
+                    <div class="{{ m.cls }}" onClick="{{ m.pick }}">@@icon:ban@@ {{ m.label }} <span class="k">{{ m.hint }}</span></div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <sc-if value="{{ menus.model }}" hint-placeholder-val="{{ true }}">
+                <div class="menu" style="top: 76px; right: 0; width: 280px;">
+                  <div class="mh">Investigate with…</div>
+                  <sc-for list="{{ modelItems }}" as="m" hint-placeholder-count="3">
+                    <div class="{{ m.cls }}" onClick="{{ m.pick }}">{{ m.label }}</div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+
+          <sc-if value="{{ d.isRegressed }}" hint-placeholder-val="{{ true }}">
+            <div class="panel" style="display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; background: var(--color-alert-muted); border-color: transparent;">
+              <span style="color: var(--color-alert); display: flex; margin-top: 2px;">@@icon:alert@@</span>
+              <div style="font-size: 13px; line-height: 20px;"><b style="font-weight: 600;">Regressed.</b> {{ d.regressedNote }}</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ d.isIgnored }}" hint-placeholder-val="{{ true }}">
+            <div class="panel" style="display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px;">
+              <span class="faint" style="display: flex; margin-top: 2px;">@@icon:ban@@</span>
+              <div style="font-size: 13px; line-height: 20px;">{{ d.ignoreNote }}</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ d.isResolved }}" hint-placeholder-val="{{ true }}">
+            <div class="panel" style="display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px;">
+              <span style="color: var(--color-ok); display: flex; margin-top: 2px;">@@icon:circle-check@@</span>
+              <div style="font-size: 13px; line-height: 20px;">{{ d.resolvedNote }}</div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ d.noRepo }}" hint-placeholder-val="{{ true }}">
+            <div class="panel" style="display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px;">
+              <span class="faint" style="display: flex; margin-top: 2px;">@@icon:folder@@</span>
+              <div style="font-size: 13px; line-height: 20px;">{{ d.noRepoNote }}</div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ d.hasTriage }}" hint-placeholder-val="{{ true }}">
+            <div class="triage-line">
+              <span class="chip warning" style="min-height: 20px; padding: 0 6px; font-size: 11px;">untested hypothesis</span>
+              <span>{{ d.triageHyp }}</span>
+              <span class="ghost">·</span>
+              <sc-for list="{{ d.triageLook }}" as="p" hint-placeholder-count="2"><span class="mono" style="font-size: 12px;">{{ p }}</span></sc-for>
+              <span class="ghost" style="font-size: 12px;">· triage, no code access</span>
+            </div>
+          </sc-if>
+
+          <dl class="facts" style="margin: 0;">
+            <sc-for list="{{ d.facts }}" as="f" hint-placeholder-count="4">
+              <div><dt>{{ f.dt }}</dt><dd><b>{{ f.b }}</b>{{ f.rest }}</dd></div>
+            </sc-for>
+          </dl>
+
+          <div class="tabs">
+            <sc-for list="{{ d.tabs }}" as="t" hint-placeholder-count="4">
+              <span class="{{ t.cls }}" onClick="{{ t.pick }}">{{ t.label }} <span class="count">{{ t.count }}</span></span>
+            </sc-for>
+          </div>
+
+          <!-- tab: latest occurrence -->
+          <sc-if value="{{ tabLatest }}" hint-placeholder-val="{{ true }}">
+            <sc-if value="{{ d.isTraceSource }}" hint-placeholder-val="{{ true }}">
+              <div class="card">
+                <div class="card-h">
+                  <span>Origin span</span>
+                  <span class="ghost mono" style="font-weight: 400; font-size: 11px; margin-left: 8px;">captured at ingest · settled</span>
+                  <button class="btn ghost" style="height: 28px; padding: 0 8px; gap: 6px; margin-left: auto; font-size: 12px;">@@icon:external-link:i s@@ Open trace in console</button>
+                </div>
+                <div class="card-b" style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 24px;">
+                  <dl class="kv" style="margin: 0;">
+                    <dt>span</dt><dd>{{ d.span.name }}</dd>
+                    <dt>function_id</dt><dd>{{ d.span.fn }}</dd>
+                    <dt>service</dt><dd>{{ d.span.svc }}</dd>
+                    <dt>status</dt><dd><span style="color: var(--color-alert);">error</span> · {{ d.span.status }}</dd>
+                    <dt>duration</dt><dd>{{ d.span.dur }}</dd>
+                  </dl>
+                  <dl class="kv" style="margin: 0;">
+                    <dt>trace_id</dt><dd>{{ d.span.trace }}</dd>
+                    <dt>session</dt><dd>{{ d.span.session }}</dd>
+                    <dt>turn</dt><dd>{{ d.span.turn }}</dd>
+                    <dt>iii.tag.kind</dt><dd>{{ d.span.tag }}</dd>
+                    <dt>propagated through</dt><dd>{{ d.span.prop }}</dd>
+                  </dl>
+                  <pre class="code" style="grid-column: 1 / -1;"><span class="c">exception.type</span>       <span class="a">{{ d.span.exType }}</span>
+<span class="c">exception.message</span>    {{ d.span.exMsg }}
+<span class="c">exception.stacktrace</span> {{ d.span.stack }}</pre>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-h"><span>Trace path</span><span class="ghost" style="font-weight: 400; margin-left: 8px;">error spans above the origin are propagation, not separate issues</span></div>
+                <div class="card-b" style="display: flex; flex-direction: column; gap: 2px;">
+                  <sc-for list="{{ d.path }}" as="p" hint-placeholder-count="5">
+                    <div class="{{ p.cls }}" style="{{ p.style }}">
+                      <span class="{{ p.dotCls }}"></span><span>{{ p.name }}</span><span class="svc">{{ p.svc }}</span>
+                      <sc-if value="{{ p.isProp }}" hint-placeholder-val="{{ true }}"><span class="chip warning" style="min-height: 18px; padding: 0 6px; font-size: 10px;">propagated</span></sc-if>
+                      <sc-if value="{{ p.isOrigin }}" hint-placeholder-val="{{ true }}"><span class="chip danger" style="min-height: 18px; padding: 0 6px; font-size: 10px;">origin</span></sc-if>
+                      <span class="dur">{{ p.dur }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ d.isLogSource }}" hint-placeholder-val="{{ true }}">
+              <div class="card">
+                <div class="card-h">
+                  <span>Log record</span>
+                  <span class="ghost mono" style="font-weight: 400; font-size: 11px; margin-left: 8px;">captured at ingest · settled</span>
+                  <span class="chip warning" style="margin-left: auto;">no error span in this trace</span>
+                </div>
+                <div class="card-b" style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px 24px;">
+                  <dl class="kv" style="margin: 0;">
+                    <dt>timestamp</dt><dd>{{ d.logRec.t }}</dd>
+                    <dt>severity</dt><dd><span style="color: var(--color-alert);">{{ d.logRec.lvl }}</span></dd>
+                    <dt>service</dt><dd>{{ d.logRec.svc }}</dd>
+                    <dt>target</dt><dd>{{ d.logRec.target }}</dd>
+                  </dl>
+                  <dl class="kv" style="margin: 0;">
+                    <dt>trace_id</dt><dd>{{ d.logRec.trace }}</dd>
+                    <dt>span_id</dt><dd>{{ d.logRec.span }}</dd>
+                  </dl>
+                  <pre class="code" style="grid-column: 1 / -1; white-space: pre-wrap;">{{ d.logRec.body }}</pre>
+                  <div style="grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap;">
+                    <sc-for list="{{ d.logRec.attrs }}" as="a" hint-placeholder-count="4">
+                      <span class="chip mono">{{ a.k }} = {{ a.v }}</span>
+                    </sc-for>
+                  </div>
+                  <div class="faint" style="grid-column: 1 / -1; font-size: 12px;">This group comes from the engine's <span class="mono">log</span> trigger. With no span to anchor it, the fingerprint is the worker, the target and the normalized message — and the agent gets the surrounding log window instead of a trace.</div>
+                </div>
+              </div>
+            </sc-if>
+
+            <div class="card">
+              <div class="card-h"><span>{{ logsHead }}</span><span class="count mono ghost" style="font-weight: 500; font-size: 11px;">{{ d.logCount }}</span></div>
+              <div class="card-b" style="display: flex; flex-direction: column; gap: 4px; font-family: var(--font-mono); font-size: 12px;">
+                <sc-for list="{{ d.logs }}" as="l" hint-placeholder-count="3">
+                  <div style="display: flex; gap: 12px; white-space: nowrap;"><span class="ghost tnum">{{ l.t }}</span><span style="width: 44px;">{{ l.lvl }}</span><span class="ghost" style="width: 120px;">{{ l.svc }}</span><span style="overflow: hidden; text-overflow: ellipsis;">{{ l.body }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- tab: occurrences -->
+          <sc-if value="{{ tabOcc }}" hint-placeholder-val="{{ true }}">
+            <div class="card">
+              <div class="card-h"><span>Occurrences</span><span class="ghost" style="font-weight: 400; margin-left: 8px;">{{ d.occNote }}</span></div>
+              <div class="card-b">
+                <div class="tg tg-occ">
+                  <div class="tg-row tg-head">
+                    <span>When</span><span>Worker version</span><span>Session</span><span>Turn</span><span>Evidence</span><span></span>
+                  </div>
+                  <sc-for list="{{ d.occ }}" as="o" hint-placeholder-count="5">
+                    <div class="tg-row is-row">
+                      <span class="mono">{{ o.at }}</span>
+                      <span class="mono">{{ o.ver }}</span>
+                      <span class="mono">{{ o.session }}</span>
+                      <span class="mono ghost">{{ o.turn }}</span>
+                      <span><span class="{{ o.evCls }}">{{ o.ev }}</span></span>
+                      <span class="ghost" style="display: flex; justify-content: flex-end;">@@icon:chevron-right@@</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+            <div class="faint" style="font-size: 12px;">Older rows keep their counters after the evidence is pruned — the hourly buckets behind the sparkline are never dropped.</div>
+          </sc-if>
+
+          <!-- tab: diagnosis -->
+          <sc-if value="{{ tabDiag }}" hint-placeholder-val="{{ true }}">
+            <sc-if value="{{ dg.running }}" hint-placeholder-val="{{ true }}">
+              <div class="panel" style="padding: 12px 14px; display: flex; flex-direction: column; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 10px; font-size: 13px;">
+                  <span class="dot pulse"></span>
+                  <span><b style="font-weight: 600;">First pass running</b> {{ dg.where }}</span>
+                  <span class="mono faint" style="font-size: 12px; margin-left: auto;">{{ dg.model }} · {{ dg.turnLabel }}</span>
+                  <sc-if value="{{ dg.closed }}" hint-placeholder-val="{{ true }}"><button class="btn pill sm" onClick="{{ dg.openSession }}">@@icon:chat:i s@@ Open session</button></sc-if>
+                </div>
+                <div class="faint" style="font-size: 13px; line-height: 1.6;">{{ dg.liveNote }}</div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ dg.empty }}" hint-placeholder-val="{{ true }}">
+              <div class="panel" style="display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 24px; text-align: center;">
+                <span class="ghost" style="display: flex;">@@icon:scan@@</span>
+                <div style="font-size: 14px; font-weight: 500;">No diagnosis yet</div>
+                <div class="faint" style="font-size: 13px; max-width: 52ch;">Investigate opens a harness session beside this page with the frozen evidence and read-only access to the mapped repository. You watch it work and can steer it; when it has a probable cause it records it with <span class="mono">sentinel::diagnosis::record</span>, and the cards land here.</div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ dg.hasDiag }}" hint-placeholder-val="{{ true }}">
+              <div class="panel diag-panel">
+                <div class="diag-panel__copy">
+                  <div class="diag-panel__line">
+                    <span class="dot ok"></span>
+                    <span><b style="font-weight: 600;">{{ dg.d.head }}</b></span>
+                    <span class="mono faint" style="font-size: 12px;">{{ dg.d.meta }}</span>
+                  </div>
+                  <div class="diag-panel__line is-meta">
+                    <a href="#" style="display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;">@@icon:chat:i s@@ Sentinel: {{ d.type }}</a>
+                    <span class="ghost">·</span>
+                    <span class="mono" style="white-space: nowrap;">investigated {{ d.vers }}</span>
+                    <span class="ghost">·</span>
+                    <span class="mono" style="white-space: nowrap;">{{ d.checkout }}</span>
+                    <span class="ghost">·</span>
+                    <span class="mono" style="white-space: nowrap; color: var(--color-accent);">{{ dg.d.via }}</span>
+                  </div>
+                </div>
+                <button class="btn pill sm" onClick="{{ act.askDiagnosis }}">@@icon:chat:i s@@ Ask for a diagnosis</button>
+              </div>
+
+              <div class="card">
+                <div class="card-h"><span>Summary</span>
+                  <span class="{{ dg.d.catCls }}" style="margin-left: auto;">{{ dg.d.cat }}</span>
+                  <span class="{{ dg.d.confCls }}">{{ dg.d.conf }}</span>
+                </div>
+                <div class="card-b" style="font-size: 14px; line-height: 1.6; max-width: 76ch;">{{ dg.d.summary }}</div>
+              </div>
+
+              <div class="card">
+                <div class="card-h"><span>Root cause</span><span class="ghost" style="font-weight: 400; margin-left: 8px;">evidence the agent cited</span></div>
+                <div class="card-b" style="display: flex; flex-direction: column; gap: 12px;">
+                  <p style="margin: 0; font-size: 13px; line-height: 1.6; max-width: 76ch;">{{ dg.d.cause }}</p>
+                  <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <sc-for list="{{ dg.d.ev }}" as="e" hint-placeholder-count="2">
+                      <div class="panel" style="padding: 10px 12px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; align-items: start;">
+                        <span class="chip">{{ e.kind }}</span>
+                        <div style="min-width: 0;">
+                          <a href="#" class="mono" style="font-size: 12px;">{{ e.path }}</a>
+                          <sc-if value="{{ e.hasCode }}" hint-placeholder-val="{{ true }}">
+                            <pre class="code" style="margin-top: 6px; background: var(--color-surface); white-space: pre-wrap;">{{ e.code }}</pre>
+                          </sc-if>
+                          <div class="faint" style="font-size: 12px; margin-top: 6px;">{{ e.why }}</div>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+                  <sc-if value="{{ dg.d.hasMissing }}" hint-placeholder-val="{{ true }}">
+                    <div class="panel" style="padding: 10px 12px; background: var(--color-warn-muted); border-color: transparent;">
+                      <span class="label">What is missing</span>
+                      <ul style="margin: 6px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6;">
+                        <sc-for list="{{ dg.d.missing }}" as="m" hint-placeholder-count="2"><li>{{ m }}</li></sc-for>
+                      </ul>
+                      <div class="faint" style="font-size: 12px; margin-top: 6px;">Tell the agent in the session what it could not see, then ask for the diagnosis again.</div>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+
+              <sc-if value="{{ dg.d.hasFix }}" hint-placeholder-val="{{ true }}">
+                <div class="card">
+                  <div class="card-h"><span>Proposed fix</span><span class="chip success" style="margin-left: auto;">{{ dg.d.risk }}</span></div>
+                  <div class="card-b" style="display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px 24px;">
+                    <div style="font-size: 13px; line-height: 1.6;">
+                      <p style="margin: 0 0 8px;">{{ dg.d.fix }}</p>
+                      <ol style="margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px;">
+                        <sc-for list="{{ dg.d.steps }}" as="s" hint-placeholder-count="3"><li>{{ s }}</li></sc-for>
+                      </ol>
+                      <div class="faint" style="font-size: 12px; margin-top: 10px;">Want the patch? Continue in the session — it keeps the transcript, and the read-only policy until you widen it.</div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                      <span class="label">Files</span>
+                      <sc-for list="{{ dg.d.files }}" as="f" hint-placeholder-count="3"><span class="chip mono">{{ f }}</span></sc-for>
+                    </div>
+                  </div>
+                </div>
+              </sc-if>
+
+              <div class="card">
+                <div class="card-h"><span>Diagnoses</span><span class="ghost" style="font-weight: 400; margin-left: 8px;">same session; the latest is the one above</span></div>
+                <div class="card-b" style="display: flex; flex-direction: column; gap: 6px; font-size: 13px;">
+                  <sc-for list="{{ dg.list }}" as="v" hint-placeholder-count="2">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                      <span class="{{ v.dotCls }}"></span>
+                      <span class="mono ghost tnum" style="font-size: 12px; width: 96px;">{{ v.at }}</span>
+                      <span>{{ v.label }}</span>
+                      <span class="{{ v.confCls }}" style="min-height: 20px; padding: 0 6px; font-size: 11px;">{{ v.conf }}</span>
+                      <span class="faint" style="font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ v.note }}</span>
+                      <span style="margin-left: auto; font-size: 12px; color: var(--color-accent);">{{ v.tag }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ d.hasTriage }}" hint-placeholder-val="{{ true }}">
+              <div class="card">
+                <div class="card-h"><span>Triage</span><span class="chip warning" style="margin-left: 8px;">untested hypothesis</span><span class="ghost" style="font-weight: 400; margin-left: auto;">no code access</span></div>
+                <div class="card-b" style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; line-height: 1.6;">
+                  <div>{{ d.triageHyp }}</div>
+                  <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                    <span class="label" style="margin-right: 4px;">Where to look</span>
+                    <sc-for list="{{ d.triageLook }}" as="p" hint-placeholder-count="2"><span class="chip mono">{{ p }}</span></sc-for>
+                    <span class="chip">{{ d.triageCat }}</span>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+          </sc-if>
+
+          <!-- tab: history -->
+          <sc-if value="{{ tabHist }}" hint-placeholder-val="{{ true }}">
+            <div class="card">
+              <div class="card-h"><span>History</span><span class="ghost" style="font-weight: 400; margin-left: 8px;">state transitions, newest first</span></div>
+              <div class="card-b" style="display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
+                <sc-for list="{{ d.hist }}" as="h" hint-placeholder-count="4">
+                  <div style="display: flex; align-items: center; gap: 12px;">
+                    <span class="{{ h.dotCls }}"></span>
+                    <span class="mono ghost tnum" style="font-size: 12px; width: 110px;">{{ h.at }}</span>
+                    <span style="font-weight: 500;">{{ h.what }}</span>
+                    <span class="faint" style="font-size: 12px;">{{ h.note }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div class="faint" style="font-size: 12px;">Every transition is a row Sentinel wrote — the fingerprint is stable, so a group survives a rename of the message it started from.</div>
+          </sc-if>
+
+        </div>
+      </div>
+    </sc-if>
+
+    <!-- ===================== settings ===================== -->
+    <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ true }}">
+      <div class="pg-main">
+        <div style="display: flex; flex-direction: column; gap: 28px; width: min(100%, 760px); margin: 0 auto; padding: 24px 24px 64px; position: relative;">
+
+          <section style="display: flex; flex-direction: column; gap: 12px;">
+            <div>
+              <h3 class="sec-title">Investigation</h3>
+              <p class="sec-desc">The model every investigation starts with. Each run can pick another. There are no turn, token or cost caps — the session runs beside the group, you watch it, and Stop is one click away.</p>
+            </div>
+            <div class="slist">
+              <div class="srow">
+                <div><div class="sl">Model</div><div class="sd">From the llm-router catalog; only models with JSON output are listed.</div></div>
+                <div class="sc" style="position: relative;">
+                  <div class="select" style="width: 300px;" onClick="{{ st.openModel }}"><span class="mono" style="font-size: 12px;">{{ st.model }}</span><span class="chev">@@icon:chevron-down@@</span></div>
+                  <sc-if value="{{ menus.model }}" hint-placeholder-val="{{ true }}">
+                    <div class="menu" style="top: 42px; right: 0; width: 280px;">
+                      <div class="mh">Model</div>
+                      <sc-for list="{{ modelItems }}" as="m" hint-placeholder-count="3">
+                        <div class="{{ m.cls }}" onClick="{{ m.pick }}">{{ m.label }}</div>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section style="display: flex; flex-direction: column; gap: 12px;">
+            <div>
+              <h3 class="sec-title">Repositories</h3>
+              <p class="sec-desc">Where each worker's source lives on this machine. A worker with no repository is still grouped and investigated from the trace alone.</p>
+            </div>
+            <div class="slist">
+              <div class="srow">
+                <div style="min-width: 0;">
+                  <div class="sl" style="display: flex; align-items: center; gap: 8px;">@@icon:folder@@ workers <span class="mono faint" style="font-size: 12px; font-weight: 400;">/home/layon/workspaces/workers</span></div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;">
+                    <span class="chip mono">harness</span><span class="chip mono">ade</span><span class="chip mono">session-manager</span><span class="chip mono">context-manager</span><span class="chip mono">llm-router</span><span class="chip mono">state</span><span class="chip mono">queue</span><span class="chip mono">provider-anthropic</span><span class="chip">+ 3 more</span>
+                  </div>
+                </div>
+                <div class="sc"><button class="btn ghost sm">Edit</button></div>
+              </div>
+              <div class="srow">
+                <div style="min-width: 0;">
+                  <div class="sl" style="display: flex; align-items: center; gap: 8px;">@@icon:folder@@ iii <span class="mono faint" style="font-size: 12px; font-weight: 400;">/home/layon/workspaces/iii</span></div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;"><span class="chip mono">iii</span><span class="faint" style="font-size: 12px; align-self: center;">engine built-ins report their service as <span class="mono">iii</span></span></div>
+                </div>
+                <div class="sc"><button class="btn ghost sm">Edit</button></div>
+              </div>
+              <div class="srow" style="min-height: 48px; padding: 8px 16px;">
+                <div class="faint" style="font-size: 13px;">Unmapped workers seen in the last 7 days: <span class="mono">memory</span>, <span class="mono">shell</span>, <span class="mono">browser</span></div>
+                <div class="sc"><button class="btn pill sm">@@icon:plus@@ Add repository</button></div>
+              </div>
+            </div>
+          </section>
+
+          <section style="display: flex; flex-direction: column; gap: 12px;">
+            <div>
+              <h3 class="sec-title">Sources</h3>
+              <p class="sec-desc">What counts as an error. Both come from the engine's observability worker; nothing is installed in other workers.</p>
+            </div>
+            <div class="slist">
+              <div class="srow">
+                <div><div class="sl">Error spans</div><div class="sd">Leaf spans with status <span class="mono">error</span>, via the <span class="mono">trace</span> trigger filtered to errors.</div></div>
+                <div class="sc"><span class="{{ st.spansCls }}" onClick="{{ st.toggleSpans }}"></span></div>
+              </div>
+              <div class="srow">
+                <div><div class="sl">Error logs</div><div class="sd">OTel <span class="mono">ERROR</span> records. Joined to a span occurrence when they share a trace within 2 s; otherwise their own group.</div></div>
+                <div class="sc"><span class="{{ st.logsCls }}" onClick="{{ st.toggleLogs }}"></span></div>
+              </div>
+              <div class="srow">
+                <div><div class="sl">Ignored workers</div><div class="sd">Never ingested. Sentinel itself and its investigation sessions are always excluded.</div></div>
+                <div class="sc"><div class="input" style="width: 260px;"><span class="ph">e.g. harness-e2e</span></div></div>
+              </div>
+            </div>
+          </section>
+
+          <section style="display: flex; flex-direction: column; gap: 12px;">
+            <div>
+              <h3 class="sec-title">Triage</h3>
+              <p class="sec-desc">Optional. A cheap pass on every new group, with no code access: a one-line hypothesis labelled as untested, where to look, and a likely category. It never writes a diagnosis and never decides grouping.</p>
+            </div>
+            <div class="slist">
+              <div class="srow">
+                <div><div class="sl">Add a hypothesis to new groups</div><div class="sd">Off: groups show the exception type and the normalized message only.</div></div>
+                <div class="sc"><span class="{{ st.triageCls }}" onClick="{{ st.toggleTriage }}"></span></div>
+              </div>
+              <div class="{{ st.triageRowCls }}">
+                <div><div class="sl">Triage model</div><div class="sd">A small, fast model is enough.</div></div>
+                <div class="sc"><div class="select" style="width: 260px;"><span class="ph">Choose a model</span><span class="chev">@@icon:chevron-down@@</span></div></div>
+              </div>
+            </div>
+          </section>
+
+          <section style="display: flex; flex-direction: column; gap: 12px;">
+            <div>
+              <h3 class="sec-title">Retention</h3>
+              <p class="sec-desc">Evidence is captured at ingest because the engine keeps only the last 10 000 spans in memory. Counters are never dropped.</p>
+            </div>
+            <div class="slist">
+              <div class="srow">
+                <div><div class="sl">Full evidence per group</div><div class="sd">The first occurrence plus the most recent ones keep their span tree and logs.</div></div>
+                <div class="sc"><div class="input" style="width: 120px;"><span class="mono">5</span><span class="ghost" style="margin-left: auto; font-size: 11px;">bundles</span></div></div>
+              </div>
+              <div class="srow">
+                <div><div class="sl">Occurrence rows per group</div><div class="sd">Beyond this the oldest rows go; the hourly counters stay.</div></div>
+                <div class="sc"><div class="input" style="width: 120px;"><span class="mono">1 000</span><span class="ghost" style="margin-left: auto; font-size: 11px;">rows</span></div></div>
+              </div>
+              <div class="srow">
+                <div><div class="sl">Archive to storage</div><div class="sd">Optional JSON copy of every bundle and diagnosis. The database stays the source of truth.</div></div>
+                <div class="sc"><div class="select" style="width: 200px;"><span class="ph">No bucket</span><span class="chev">@@icon:chevron-down@@</span></div></div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </sc-if>
+
+  </div>
+
+  <!-- ===================== chat column ===================== -->
+  <sc-if value="{{ isSplit }}" hint-placeholder-val="{{ true }}">
+    <div class="col">
+      <div class="pg-header">
+        <span class="pg-title">{{ chat.title }}</span>
+        <span class="ghost">·</span>
+        <span class="pg-sub">{{ chat.sub }}</span>
+        <div class="pg-actions">
+          <span style="display: inline-flex; align-items: center; gap: 12px; height: 28px; padding: 0 10px; border-radius: var(--radius); background: var(--color-surface); font-family: var(--font-mono); font-size: 11px; color: var(--color-ink-faint);">
+            <span>{{ chat.ctx }}</span>
+            <span style="display: inline-flex; align-items: center; gap: 6px; color: var(--color-accent);"><span class="{{ chat.statusCls }}"></span>{{ chat.status }}</span>
+          </span>
+          <button class="btn icon" onClick="{{ chat.close }}" title="Close">@@icon:x@@</button>
+        </div>
+      </div>
+
+      <div class="chat-body">
+        <div class="chat-inner">
+          <sc-for list="{{ chat.entries }}" as="c" hint-placeholder-count="5">
+            <sc-if value="{{ c.isUser }}" hint-placeholder-val="{{ true }}">
+              <article class="msg-user">
+                <div class="uh">{{ c.who }}</div>
+                <div class="ub">
+                  {{ c.text }}
+                  <sc-if value="{{ c.hasChips }}" hint-placeholder-val="{{ true }}">
+                    <div style="display: flex; gap: 6px; margin-top: 8px;">
+                      <sc-for list="{{ c.chips }}" as="ch" hint-placeholder-count="2"><span class="chip mono">{{ ch }}</span></sc-for>
+                    </div>
+                  </sc-if>
+                </div>
+              </article>
+            </sc-if>
+            <sc-if value="{{ c.isThought }}" hint-placeholder-val="{{ true }}">
+              <div class="thought"><span class="ln"></span><span class="t">{{ c.text }}</span><span class="ln"></span></div>
+            </sc-if>
+            <sc-if value="{{ c.isCall }}" hint-placeholder-val="{{ true }}">
+              <sc-if value="{{ c.isRecord }}" hint-placeholder-val="{{ true }}">
+                <div class="fcall is-record"><span class="lbl">triggered</span><span class="fn"><i>ƒ</i> {{ c.fn }} <span class="prev">{{ c.arg }}</span></span><span class="st"><span class="chip accent" style="min-height: 18px; padding: 0 6px; font-size: 10px;">{{ c.recordLabel }}</span> {{ c.dur }}</span></div>
+              </sc-if>
+              <sc-if value="{{ c.isCallPlain }}" hint-placeholder-val="{{ true }}">
+                <div class="fcall"><span class="lbl">triggered</span><span class="fn"><i>ƒ</i> {{ c.fn }} <span class="prev">{{ c.arg }}</span></span><span class="st">@@icon:check:i s@@ {{ c.dur }}</span></div>
+              </sc-if>
+            </sc-if>
+            <sc-if value="{{ c.isAssistant }}" hint-placeholder-val="{{ true }}">
+              <article style="display: flex; flex-direction: column; gap: 6px;">
+                <div class="msg-h">assistant · {{ c.model }}</div>
+                <div class="msg-b">{{ c.text }}</div>
+              </article>
+            </sc-if>
+          </sc-for>
+        </div>
+      </div>
+
+      <div class="chat-foot">
+        <div class="composer">
+          <input data-focus-key="draft" class="ed" value="{{ chat.draft }}" onChange="{{ chat.onDraft }}" placeholder="send a message…" style="width: 100%; border: 0; background: transparent; outline: none; font: inherit; color: var(--color-ink);" />
+          <div class="tb">
+            <button class="btn icon30" title="Attach">@@icon:plus@@</button>
+            <span class="chip">agent</span>
+            <span class="chip mono">{{ chat.repo }}</span>
+            <span class="grow"></span>
+            <span class="chip mono">{{ chat.model }}</span>
+            <button class="send" onClick="{{ chat.send }}" title="Send">@@icon:send:i s@@</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ===================== overlays ===================== -->
+  <sc-if value="{{ menus.any }}" hint-placeholder-val="{{ true }}">
+    <div onClick="{{ act.closeMenu }}" style="position: absolute; inset: 0; z-index: 4;"></div>
+  </sc-if>
+
+  <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ true }}">
+    <div style="position: absolute; left: 24px; bottom: 20px; z-index: 20; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: var(--radius); background: var(--color-panel-raised); box-shadow: var(--shadow-floating); font-size: 13px; color: var(--color-ink);">
+      <span class="faint" style="display: flex;">@@icon:info@@</span>
+      <span>{{ toast }}</span>
+      <button class="btn icon" style="width: 24px; height: 24px;" onClick="{{ act.closeToast }}">@@icon:x:i s@@</button>
+    </div>
+  </sc-if>
+
+</div>

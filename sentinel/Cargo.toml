@@ -1,0 +1,42 @@
+[workspace]
+
+[package]
+name = "sentinel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "sentinel"
+path = "src/main.rs"
+
+[lib]
+name = "sentinel"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+cron = "0.12"
+iii-config-client = { path = "../crates/config-client" }
+iii-helpers = "=0.23.0"
+iii-sdk = "=0.23.0"
+regex = "1"
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = [
+    "macros",
+    "process",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+serde_yaml = "0.9"

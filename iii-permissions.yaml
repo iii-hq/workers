@@ -162,6 +162,20 @@ rules:
   - '!security-scan::execute'
   - '!security-scan::on-turn-completed'
   - '!security-scan::on-schedule'
+  # sentinel: trigger and queue targets only. The console drives grouping
+  # through the read surface; the investigation session gets the four
+  # functions below and nothing else.
+  - '!sentinel::ingest'
+  - '!sentinel::on-trace-activity'
+  - '!sentinel::on-log'
+  - '!sentinel::on-turn-completed'
+  - '!sentinel::on-schedule'
+  - '!sentinel::on-config-change'
+  - '!sentinel::ui-content'
+  - 'sentinel::evidence::get'
+  - 'sentinel::trace::get'
+  - 'sentinel::logs::list'
+  - 'sentinel::diagnosis::record'
   # The shaping hop for a trigger bound to an ordinary function: the engine
   # fires it, agents never call it. Agents name their real target in
   # engine::register_trigger's `function_id`, which is checked against the
