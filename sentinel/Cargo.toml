@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 cron = "0.12"
 iii-config-client = { path = "../crates/config-client" }
@@ -40,4 +41,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v7"] }
 
 [dev-dependencies]
+# The same driver the `database` worker runs SQLite on, so the store's
+# statements are tested against the engine they will actually meet.
+rusqlite = { version = "0.31", features = ["bundled"] }
 serde_yaml = "0.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

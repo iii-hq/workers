@@ -22,6 +22,7 @@ pub mod manifest;
 pub mod normalize;
 pub mod redact;
 mod status;
+pub mod store;
 
 pub use config::{
     ArchiveConfigV1, EvidenceConfigV1, FingerprintConfigV1, IngestConfigV1, InvestigationConfigV1,
@@ -39,3 +40,6 @@ pub use lifecycle::{GroupState, Transition};
 pub use normalize::Normalizer;
 pub use redact::Redactor;
 pub use status::Counters;
+pub use store::{
+    Db, GroupRow, NamedRow, OccurrenceWrite, RecordOutcome, Statement, StepResult, Store,
+};
