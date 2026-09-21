@@ -7,11 +7,7 @@ import { parseArgs, promisify } from 'node:util';
 import { registerWorker } from 'iii-sdk';
 import { uiPage, uiStyles } from 'virtual:vscode-ui';
 import { type Config, expandHome, loadConfig } from './config.js';
-import {
-  bindConfigTrigger,
-  fetchRuntime,
-  registerVscodeConfig,
-} from './configuration.js';
+import { bindConfigTrigger, fetchRuntime, registerVscodeConfig } from './configuration.js';
 import {
   type Instance,
   instanceIdFor,

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::sync::{Mutex, OnceLock};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// Prefer atomic ensure. Only its exact missing-function error enables the
 /// non-atomic legacy get/register path. The caller owns routing and retries.
@@ -26,7 +26,12 @@ where
         .ok_or("configuration initialization requires an id")?
         .to_owned();
     warn_legacy_once(&id);
-    let existing = match call("configuration::get", json!({ "id": id, "raw": true })).await {
+    let existing = match call(
+        "configuration::get",
+        serde_json::json!({ "id": id, "raw": true }),
+    )
+    .await
+    {
         Ok(response) => response
             .as_object()
             .and_then(|object| object.get("value"))
@@ -65,6 +70,7 @@ fn warn_legacy_once(id: &str) {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(id.to_owned());
     if first {
-        tracing::warn!(id, "engine lacks configuration::ensure; using non-atomic legacy initialization; upgrade to >=0.24.1 for concurrent-write safety");
+        const WARNING: &str = "engine lacks configuration::ensure; using non-atomic legacy initialization; upgrade to >=0.24.1 for concurrent-write safety";
+        tracing::warn!(id, "{WARNING}");
     }
 }

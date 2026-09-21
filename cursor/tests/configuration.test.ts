@@ -117,7 +117,9 @@ describe('Cursor configuration', () => {
     iii.ensureError = { code: 'function_not_found' };
     await registerCursorConfig(iii.asClient());
     expect(iii.triggerCalls.map((call) => call.function_id)).toEqual([
-      'configuration::ensure', 'configuration::get', 'configuration::register',
+      'configuration::ensure',
+      'configuration::get',
+      'configuration::register',
     ]);
     expect(iii.triggerCalls[1]?.payload).toMatchObject({ raw: true });
     expect(iii.triggerCalls[2]?.payload).not.toHaveProperty('initial_value');
