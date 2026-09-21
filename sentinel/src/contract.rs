@@ -17,6 +17,106 @@ pub struct StatusRequestV1 {
     _caller_worker_id: Option<String>,
 }
 
+/// Where an error event came from. Part of the fingerprint: the same text
+/// seen as a span and as a log is two groups, because one has a trace to
+/// investigate and the other does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ErrorSourceV1 {
+    /// A span with status `error`.
+    Trace,
+    /// An OTel log record at ERROR.
+    Log,
+    /// Reserved for the adapters the spec designs but v1 does not implement.
+    HarnessTurn,
+    Report,
+}
+
+impl ErrorSourceV1 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trace => "trace",
+            Self::Log => "log",
+            Self::HarnessTurn => "harness-turn",
+            Self::Report => "report",
+        }
+    }
+}
+
+/// The lifecycle of a group. `resolved` and `ignored` are human decisions;
+/// `regressed` is the one the ingest makes on its own, and the reason the
+/// worker exists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupStatusV1 {
+    #[default]
+    New,
+    /// The first pass of an investigation is running.
+    Investigating,
+    Diagnosed,
+    Resolved,
+    /// A new occurrence after a resolve.
+    Regressed,
+    Ignored,
+}
+
+impl GroupStatusV1 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Investigating => "investigating",
+            Self::Diagnosed => "diagnosed",
+            Self::Resolved => "resolved",
+            Self::Regressed => "regressed",
+            Self::Ignored => "ignored",
+        }
+    }
+
+    /// Whether the group is one the open list shows.
+    pub fn is_open(self) -> bool {
+        matches!(
+            self,
+            Self::New | Self::Investigating | Self::Diagnosed | Self::Regressed
+        )
+    }
+}
+
+/// How long an ignore lasts. Every rule keeps counting occurrences; what
+/// changes is when the group comes back to the open list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IgnoreRuleV1 {
+    Forever,
+    /// Reopens after this many further occurrences.
+    Occurrences {
+        count: u64,
+    },
+    /// Reopens when the worker version changes.
+    VersionChange,
+}
+
+/// What the ignore rule is measured against, captured when it was set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IgnoreBaselineV1 {
+    pub occurrence_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_version: Option<String>,
+}
+
+/// Why a group changed, for the event siblings subscribe to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupChangeReasonV1 {
+    Regression,
+    IgnoreExpired,
+    Resolved,
+    Ignored,
+    Diagnosed,
+    Reopened,
+    Investigating,
+}
+
 /// State of the engine's in-memory telemetry stores, as the worker last
 /// observed them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

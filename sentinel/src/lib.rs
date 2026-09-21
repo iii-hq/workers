@@ -14,9 +14,13 @@ pub mod configuration;
 mod contract;
 pub mod dependencies;
 mod error;
+pub mod fingerprint;
 pub mod functions;
 pub mod ids;
+pub mod lifecycle;
 pub mod manifest;
+pub mod normalize;
+pub mod redact;
 mod status;
 
 pub use config::{
@@ -26,8 +30,12 @@ pub use config::{
 };
 pub use configuration::{ConfigCell, ConfigErrorCell};
 pub use contract::{
-    EngineStatusV1, GroupCountsV1, IngestStatusV1, InvestigationCountsV1, RepositoryStatusV1,
+    EngineStatusV1, ErrorSourceV1, GroupChangeReasonV1, GroupCountsV1, GroupStatusV1,
+    IgnoreBaselineV1, IgnoreRuleV1, IngestStatusV1, InvestigationCountsV1, RepositoryStatusV1,
     SourcesStatusV1, StatusRequestV1, StatusResponseV1, TraceStoreStateV1,
 };
 pub use error::SentinelError;
+pub use lifecycle::{GroupState, Transition};
+pub use normalize::Normalizer;
+pub use redact::Redactor;
 pub use status::Counters;
