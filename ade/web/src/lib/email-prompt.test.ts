@@ -86,6 +86,10 @@ describe('the address', () => {
   it('accepts one plain address', () => {
     expect(isEmailish('someone@example.com')).toBe(true)
     expect(isEmailish('  someone@example.co.uk  ')).toBe(true)
+    expect(isEmailish('SOMEONE@EXAMPLE.COM')).toBe(true)
+    // A local part may carry dots, an apostrophe, a plus tag and a hyphen.
+    expect(isEmailish("first.o'last+tag-1@sub.example.com")).toBe(true)
+    expect(isEmailish('a@b-c.io')).toBe(true)
   })
 
   it('refuses anything that is not one address', () => {
@@ -97,6 +101,14 @@ describe('the address', () => {
       'someone@example',
       'one@a.co, two@b.co',
       'Someone <someone@a.co>',
+      // A dot may not lead, repeat, or end the local part.
+      '.someone@example.com',
+      'some..one@example.com',
+      'someone.@example.com',
+      // The domain needs an alphabetic TLD and no leading hyphen.
+      'someone@example.c0m',
+      'someone@-example.com',
+      'someone@example..com',
       `${'a'.repeat(250)}@example.com`,
     ]) {
       expect(isEmailish(value), value).toBe(false)

@@ -129,15 +129,22 @@ export const subscribed = (record: EmailPromptRecord): EmailPromptRecord => ({
   status: 'subscribed',
 })
 
-/**
- * What the signup box is allowed to send on: one address, an `@`, a dot after
- * it, and RFC 5321's length ceiling. The list and the engine both check again;
- * this only stops an obvious typo from becoming a request.
- */
+/** RFC 5321's ceiling for a whole address. */
 export const MAX_EMAIL_LENGTH = 254
+
+/**
+ * What the signup box is allowed to send on.
+ *
+ * One address: a local part that neither starts with a dot nor carries two in
+ * a row and does not end on one, then a dotted domain ending in an alphabetic
+ * TLD. The list and the engine both check again; this only stops an obvious
+ * typo from becoming a request.
+ */
+const EMAIL =
+  /^(?!\.)(?!.*\.\.)([a-z0-9_'+\-.]*)[a-z0-9_+-]@([a-z0-9][a-z0-9-]*\.)+[a-z]{2,}$/i
 
 export function isEmailish(value: string): boolean {
   const email = value.trim()
   if (email.length === 0 || email.length > MAX_EMAIL_LENGTH) return false
-  return /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(email)
+  return EMAIL.test(email)
 }
