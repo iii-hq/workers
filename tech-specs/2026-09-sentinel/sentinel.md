@@ -108,7 +108,7 @@ página de traces).
 | Mecanismo | Contrato | Nota |
 |---|---|---|
 | Trigger `trace` | `config: { service_name?, status? }`; entrega `{ trace_ids: string[] }` por janela de ~300 ms, só com os traces cujos spans casaram o filtro | `should_trigger_for_span` (`mod.rs:584`), `fire_trace_triggers` (`mod.rs:2338`). Spans internos (`iii.function.kind=internal`, `engine::*`) nunca disparam. |
-| Trigger `log` | `config: { level }` com **match exato** (`error` = só ERROR); entrega o `StoredLog` completo: `trace_id`, `span_id`, `service_name`, `resource`, `body`, `attributes`, `severity_*` | `should_trigger_for_level` (`mod.rs:577`), `invoke_triggers_for_log` (`mod.rs:2119`). |
+| Trigger `log` | `config: { level }` com **match exato** (`error` = só ERROR); entrega o `StoredLog` completo: `trace_id`, `span_id`, `service_name`, `resource`, `body`, `attributes`, `severity_*`. ⚠ O handler o recebe **tipado** (`StoredLogEventV1`, todo campo `#[serde(default)]`) e não como valor livre: a superfície publicada é o que a captura de interface grava, e um request sem tipo ali não diz nada a quem lê | `should_trigger_for_level` (`mod.rs:577`), `invoke_triggers_for_log` (`mod.rs:2119`). |
 | `engine::traces::list` | Aceita `trace_ids` **combinado** com `status: 'error'` — o ramo `trace_ids` busca os spans e o filtro de sumário aplica o status agregado | `mod.rs:2442` → `mod.rs:836`. Devolve `TraceSummary` com `error_count`, `function_id`, `service_name`, `trace_tags` (`iii.session.id`, `iii.message.id`, `iii.tag.*`). |
 | `engine::traces::tree` | `{ trace_id }` → `{ roots: SpanTreeNode[] }` com `status`, `status_description`, `events` (`exception.type/message/stacktrace`), `attributes`, `resource` | A árvore completa é o que vira evidência. |
 | `engine::logs::list` | `{ trace_id, severity_min?, limit }` → `{ logs }` | Enriquecimento por trace. |
@@ -305,6 +305,13 @@ pode continuar aberto (pai pendente, `end_time_unix_nano = 0`). Depois de
 `settle_delay_ms` (padrão 5 000) o worker refaz `tree` + `logs` uma única vez
 e substitui o bundle da ocorrência mais recente do trace, se o trace ainda
 existir e tiver mudado. Uma só passada: o settle não é um loop de polling.
+
+⚠ **A atribuição atravessa a reconstrução.** O settle reconstrói o bundle a
+partir do span, e um span nomeia o processo que o *emitiu* — não o worker dono
+da função que falhou. Reconstruir sem cuidado re-arquiva a evidência sob o
+emissor (visto ao vivo: `iii:c:my-project` no lugar de `compose`). O `worker`
+do bundle anterior é carregado para o novo; quem decide a atribuição é o passo
+3, uma vez, na captura.
 
 **Workers, versão e namespace.** Dois mapas em memória, renovados ao
 encontrar uma chave desconhecida e por TTL (`workers_ttl_ms`, padrão 60 000):
@@ -788,9 +795,14 @@ duas coisas distintas, e o desenho preserva as duas:
 Três propriedades do harness sustentam isso sem gambiarra:
 
 1. **funções são a interface do agente**: com `expose: "agent_trigger"` o
-   modelo chama qualquer função da lista de allow, e o harness valida o
-   payload contra o schema que a função registrou (`engine::functions::info`)
-   antes de despachar — o `DiagnosisV1` é validado sem contrato de saída;
+   modelo chama qualquer função da lista de allow. ⚠ **Medido no harness
+   (`harness/src/policy.rs:186-215`, `harness/src/trigger.rs:569-608`): o
+   despacho checa a política de globs e que o schema compila, e não valida o
+   payload contra ele.** A validação real é o `serde` do request tipado do
+   SDK — por isso `DiagnosisRecordRequestV1` e todo struct aninhado nele
+   usam `deny_unknown_fields` e enums fechados: é isso, e só isso, que
+   recusa um `DiagnosisV1` malformado, com uma mensagem que o agente lê e
+   corrige;
 2. **steering**: um `send` numa sessão com turno em andamento funde a
    mensagem no turno que roda (`merged: true`) — o usuário interrompe o
    agente no meio da investigação e ele incorpora;
@@ -826,9 +838,11 @@ Três propriedades do harness sustentam isso sem gambiarra:
    segue a política do console; `record` continua sendo a única escrita do
    Sentinel que o agente conhece.
 6. Entrada inversa: **Open in chat** (`mode: "chat"`) cria a sessão sem
-   primeira passada: `session::create { kind: automation, title, metadata }`
-   e `session::append` da evidência como entrada `user` marcada
-   `metadata.sentinel_evidence: true` — só transcript, nenhum turno roda até o
+   primeira passada: ⚠ `session::ensure { session_id, title, kind: automation,
+   metadata }` (`session::create` não aceita id do chamador) e
+   `session::append` da evidência como entrada `user` marcada
+   ⚠ `origin.sentinel_evidence: true` (entradas não têm `metadata`; `origin` é
+   o campo opaco que o append carrega) — só transcript, nenhum turno roda até o
    usuário falar; quando falar, o turno do console monta o contexto com a
    evidência dentro. O console renderiza essa entrada com o renderer de
    transcript do Sentinel, rotulada como dele, não como do usuário. O registro
@@ -842,7 +856,7 @@ sequenceDiagram
   participant C as console · sessão ao lado
 
   P->>S: sentinel::investigate { group_id }
-  S->>H: session::create (kind: automation) · filesystem::grant
+  S->>H: session::ensure (kind: automation) · filesystem::grant
   S->>H: harness::send — 1ª passada (texto, somente leitura)
   S-->>P: { session_id }
   P-->>C: selectConversation
@@ -863,8 +877,9 @@ com `structured_output` nativo ele passa `response_format: json` ao provedor
 e **toda** mensagem do assistente sai JSON — o usuário digitaria no meio da
 passada e receberia JSON ou silêncio. A conversa é a prioridade. O registro
 estruturado é uma **função**, e função é o que o agente já sabe chamar: o
-schema vale (o harness valida o payload contra o registro da função), a
-versão vale (cada chamada é uma linha), e nada constrange a prosa. Também
+schema vale (o request tipado do worker o impõe — ver o ⚠ acima: o harness
+despacha, o `serde` valida), a versão vale (cada chamada é uma linha), e nada
+constrange a prosa. Também
 some a necessidade de a sessão estar ociosa, a fila de pedidos e o
 reconhecimento de turnos "do Sentinel" — o `group_id` na chamada diz tudo.
 
@@ -925,7 +940,12 @@ só se casar um glob de `allow` e nenhum de `deny`
 (`harness/src/policy.rs:112`). Por isso o deny não pode ser `sentinel::*` —
 mataria `sentinel::evidence::get`. A lista nega os ids mutáveis um a um; toda
 função nova do sentinel entra nela por padrão (teste de manifesto: o conjunto
-`registrados − {evidence::get, trace::get, logs::list, status, occurrences::list} ⊆ deny`).
+⚠ `registrados − {evidence::get, trace::get, logs::list, diagnosis::record} ⊆ deny`).
+A isenção de `status` e `occurrences::list` **caiu**: o agente trabalha com a
+evidência que recebeu e o código que pode ler; a superfície de saúde do worker
+e a lista de todas as outras ocorrências são do console, não da investigação.
+Ambas estão no deny, e o teste de manifesto exige que toda função registrada
+esteja numa das duas listas.
 
 Antes do `send`: `harness::filesystem::grant { session_id, root }`.
 
@@ -954,8 +974,8 @@ qualquer chamada sem contexto escolher uma investigação e gravar em nome
 dela. Fora dessa função, a política é a mesma leitura jailed de antes.
 
 No `mode: "chat"` não há primeira passada nem jail: a sessão nasce por
-`session::create`, a evidência entra por `session::append` como entrada
-`user` com `metadata.sentinel_evidence: true` (conteúdo `custom` **nunca**
+⚠ `session::ensure`, a evidência entra por `session::append` como entrada
+`user` com ⚠ `origin.sentinel_evidence: true` (conteúdo `custom` **nunca**
 chega ao modelo, por contrato do harness — não serve para isto), e todo turno
 é do usuário, com a política do console.
 
@@ -1411,8 +1431,9 @@ de allow — e está na de deny, por cinto.
 
 A função que o agente chama de dentro da sessão de investigação — e a única
 escrita que a política da sessão permite. É registrada com o `DiagnosisV1`
-como schema da requisição, então o `agent_trigger` do harness valida o payload
-antes de despachar.
+como schema da requisição. ⚠ O `agent_trigger` **não** valida o payload contra
+esse schema antes de despachar (ver acima); quem o valida é o `serde` do
+request tipado, que recusa campo desconhecido e enum fora do conjunto.
 
 ```typescript
 type DiagnosisRecordRequest = {
@@ -1685,10 +1706,33 @@ segunda é o mínimo para o v1 funcionar sem tocar no console.
 ## Estado e durabilidade
 
 - **Fila** (`queue`): `sentinel-ingest` (FIFO por `trace_id`, concorrência 4,
-  `max_retries 3`, `backoff_ms 1000`, `redeliver_on_engine_restart: true`),
-  definida no boot antes do worker se declarar pronto; falha em definir é
-  falha de boot. Investigações não passam por fila: são um `harness::send`,
-  e o harness já é durável.
+  `max_retries 3`, `backoff_ms 1000`, `redeliver_on_engine_restart: true`).
+  ⚠ Falha em definir **não** é falha de boot: é retry até existir, com o
+  ingest fechado enquanto isso (ver a fase dois abaixo). FIFO exige um campo
+  escalar de agrupamento, então ⚠ **todo job carrega `trace_id` no topo** —
+  `IngestJob { kind: trace | log | settle | promote, trace_id, … }`, com `"-"`
+  quando um log não tem trace. Um trace é processado em ordem, e a janela de
+  junção vira uma espera em vez de uma corrida. Investigações não passam por
+  fila: são um `harness::send`, e o harness já é durável.
+- ⚠ **Prontidão é fazer o trabalho, não consultar o registro.** A sonda
+  óbvia — perguntar ao `engine::functions::info` se `database::execute`
+  existe — responde a outra pergunta: um id nu resolve entre namespaces, então
+  ela diz "sim" para uma função registrada em *outro* namespace enquanto toda
+  chamada real falha, porque chamada roteia para o namespace do chamador.
+  Migrar o schema e definir a fila **são** a sonda, e são as operações que o
+  worker precisa de qualquer forma; a mensagem de falha nomeia o problema real
+  (`UNKNOWN_DB`, namespace errado) em vez de um "não encontrado" genérico.
+- ⚠ **Transações são one-shot, e transições são compare-and-set.** A forma
+  interativa (`beginTransaction`/…/`commit`) prende uma conexão SQLite entre
+  RPCs; com quatro jobs de ingest em voo ela serializa o pipeline inteiro
+  atrás do job mais lento. Cada escrita é uma única `database::transaction`
+  carregando todos os seus statements, e o `UPDATE` do grupo leva o
+  `updated_ms` que o snapshot viu e devolve o id que mudou
+  (`… WHERE id = ? AND updated_ms = ? RETURNING id`). Nenhuma linha de volta
+  significa que alguém moveu o grupo no meio — uma pessoa resolvendo enquanto
+  uma ocorrência caía — e o escritor relê e decide de novo. É assim que "um
+  registro nunca desfaz uma decisão humana" sobrevive à concorrência em vez de
+  ser um comentário numa função.
 - **Boot, em duas fases.** Primeiro a **interface**: config (dependência
   obrigatória) → tipos de trigger → funções → UI → doorbell de configuração.
   Depois, em tarefa de fundo, as **dependências duráveis**: cria tabelas/migra

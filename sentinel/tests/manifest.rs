@@ -116,6 +116,39 @@ fn the_interface_registers_before_the_durable_dependencies_are_claimed() {
 }
 
 #[test]
+fn the_caller_identity_is_read_inside_the_handler_future() {
+    // The SDK evaluates `handler(request)` and *then* wraps the future it
+    // returned with the invocation's OTel context
+    // (`iii-sdk-0.23.0/src/iii.rs:2327`). A baggage read in the closure body
+    // therefore runs outside that context and finds nothing — which showed up
+    // on a live stack as an agent calling `record` six times in a row and
+    // being told each time that its call carried no session.
+    let source = include_str!("../src/functions.rs");
+    let start = source
+        .find("DIAGNOSIS_RECORD_ID,")
+        .expect("the diagnosis write is registered");
+    let block = &source[start..];
+    let end = block.find(".description(").expect("the registration ends");
+    let block = &block[..end];
+
+    let future = block
+        .find("async move {")
+        .expect("the handler returns an async block");
+    let read = block
+        .find("get_baggage_entry")
+        .expect("the caller identity comes from the invocation baggage");
+    assert!(
+        read > future,
+        "the baggage read must sit inside the async block, not in the closure body that \
+         builds it — outside the future there is no invocation context to read from"
+    );
+    assert!(
+        !block.contains("tokio::spawn"),
+        "a bare spawn would drop the context the identity lives in"
+    );
+}
+
+#[test]
 fn the_worker_never_logs_at_error_level() {
     // An ERROR log from this worker would come straight back through its own
     // `log` trigger and ingest itself. Internal failures are WARN plus a

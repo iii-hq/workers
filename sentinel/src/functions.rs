@@ -342,18 +342,22 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
     );
 
     // The agent's one write. Its identity comes from the invocation's
-    // baggage, read here in the handler body — before any spawn, because a
-    // bare `tokio::spawn` would drop the context it lives in.
+    // baggage — and *where* that is read is load-bearing. The SDK evaluates
+    // `handler(request)` and only then wraps the future it returned with the
+    // invocation's OTel context (`iii-sdk-0.23.0/src/iii.rs:2327`), so the
+    // closure body runs **outside** that context and sees no baggage at all.
+    // Reading it inside the async block is what puts the read under the
+    // context; the same reason a bare `tokio::spawn` would lose it.
     let current = deps.clone();
     iii.register_function(
         DIAGNOSIS_RECORD_ID,
         RegisterFunction::new_async(move |request: DiagnosisRecordRequestV1| {
             let deps = current.clone();
-            let caller = Caller {
-                session_id: iii_helpers::observability::get_baggage_entry("iii.session.id"),
-                turn_id: iii_helpers::observability::get_baggage_entry("iii.message.id"),
-            };
             async move {
+                let caller = Caller {
+                    session_id: iii_helpers::observability::get_baggage_entry("iii.session.id"),
+                    turn_id: iii_helpers::observability::get_baggage_entry("iii.message.id"),
+                };
                 let outcome = deps.investigations.record(caller, request).await?;
                 broadcast(&deps, outcome.events).await;
                 Ok::<DiagnosisRecordResponseV1, iii_sdk::errors::Error>(outcome.value)
