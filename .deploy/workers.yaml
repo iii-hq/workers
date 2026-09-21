@@ -850,20 +850,32 @@ workers:
       binary: image-resize
       targets: *id001
     publish: true
-  jev:
+  judge:
     source:
-      path: jev
+      path: judge
       package_manifest: Cargo.toml
     artifact:
       kind: rust-binary
       toolchain:
         name: rust
         version: 1.97.1
-      binary: jev
+      binary: judge
+      targets: *id001
+    publish: true
+  judge-typesafe:
+    source:
+      path: judge-typesafe
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge-typesafe
       targets: *id001
       frontends:
       - workspace_root: .
-        source_path: jev/ui
+        source_path: judge-typesafe/ui
         runtime:
           name: node
           version: 22.20.0
