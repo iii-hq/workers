@@ -12,6 +12,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   EmptyState,
+  ErrorBoundary,
   Eyebrow,
   IconButton,
   MetaRow,
@@ -322,6 +323,7 @@ export function GroupDetailView({
           </TabsTrigger>
         </TabsList>
         <TabsContent value="evidence">
+          <ErrorBoundary>
           {detail.latest_occurrence ? (
             <EvidenceView
               api={api}
@@ -336,11 +338,15 @@ export function GroupDetailView({
               description="The group exists but has no recorded occurrence."
             />
           )}
+          </ErrorBoundary>
         </TabsContent>
         <TabsContent value="occurrences">
-          <OccurrencesTable api={api} groupId={group.id} host={host} />
+          <ErrorBoundary>
+            <OccurrencesTable api={api} groupId={group.id} host={host} />
+          </ErrorBoundary>
         </TabsContent>
         <TabsContent value="diagnosis">
+          <ErrorBoundary>
           <DiagnosisCard
             api={api}
             diagnosis={detail.diagnosis}
@@ -357,9 +363,12 @@ export function GroupDetailView({
             }}
             repositoryPath={repository?.exists ? repository.path : null}
           />
+          </ErrorBoundary>
         </TabsContent>
         <TabsContent value="history">
-          <GroupTimeline api={api} groupId={group.id} />
+          <ErrorBoundary>
+            <GroupTimeline api={api} groupId={group.id} />
+          </ErrorBoundary>
         </TabsContent>
       </Tabs>
     </div>

@@ -14,7 +14,7 @@ import {
 } from '@iii-dev/console-ui'
 import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
 import { Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { catalogKey, modelGroups, splitKey } from './catalog.js'
 import { addRepository, normalize, problems, setPath } from './form-model.js'
 import { useModelCatalog } from './useModelCatalog'
@@ -27,7 +27,12 @@ import { useModelCatalog } from './useModelCatalog'
  * about the decision tier, which this version does not have. Keys it does
  * not render are carried through untouched on every save.
  */
-export function SentinelConfigForm({ host, value, onChange }: ConfigFormProps & { host: Host }) {
+export function SentinelConfigForm({
+  focusField,
+  host,
+  value,
+  onChange,
+}: ConfigFormProps & { host: Host }) {
   const config = normalize(value)
   const { catalog, loading } = useModelCatalog(host)
   const [openRepository, setOpenRepository] = useState<string | null>(null)
@@ -55,8 +60,33 @@ export function SentinelConfigForm({ host, value, onChange }: ConfigFormProps & 
     : []
   const selected = repositories.find((repository) => repository.id === openRepository)
 
+  // A host deep link names a field by its dotted path. Open the deck level
+  // that holds it first, then focus the control and put it on screen.
+  const root = useRef<HTMLDivElement | null>(null)
+  const honoured = useRef<string | null>(null)
+  const path = focusField?.map(String).join('.') ?? null
+  useEffect(() => {
+    if (!path || honoured.current === path) return
+    const index = path.startsWith('repositories.') ? Number(path.split('.')[1]) : Number.NaN
+    if (Number.isInteger(index)) {
+      const wanted = repositories[index]?.id ?? null
+      if (wanted && openRepository !== wanted) {
+        setOpenRepository(wanted)
+        return
+      }
+    }
+    const target = root.current?.querySelector<HTMLElement>(
+      `[data-field="${CSS.escape(path)}"]`,
+    )
+    if (!target) return
+    honoured.current = path
+    target.focus()
+    target.scrollIntoView({ block: 'center' })
+  }, [path, openRepository])
+
+
   return (
-    <div className="sentinel-ui-config">
+    <div className="sentinel-ui-config" ref={root}>
       {issues.length > 0 ? (
         <StatusPanel
           variant="warn"
@@ -152,6 +182,7 @@ export function SentinelConfigForm({ host, value, onChange }: ConfigFormProps & 
         description="Where each worker's code lives. An investigation can read the checkout mapped to the failing worker, and nothing else on this machine."
         action={
           <DirectoryPicker
+            data-settings-deck-fallback
             value={null}
             emptyLabel="Add a checkout"
             onChange={(directory) => onChange(addRepository(config, directory) as ConfigFormProps['value'])}
@@ -197,7 +228,7 @@ export function SentinelConfigForm({ host, value, onChange }: ConfigFormProps & 
             selected ? (
               <SettingsList>
                 <SettingsField
-                  field="repository.workers"
+                  field={`repositories.${repositories.indexOf(selected)}.workers`}
                   label="Workers"
                   description="Comma separated. A worker belongs to at most one checkout."
                   renderControl={(props) => (

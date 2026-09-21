@@ -1,6 +1,7 @@
 import {
   Button,
   EmptyState,
+  LiveRegion,
   PageHeader,
   PageMain,
   PageShell,
@@ -58,7 +59,18 @@ export function SentinelPage({
   const pane = paneId || tabId || 'alone'
   const [filters, setFilters] = usePaneState<Filters>(`sentinel:${pane}:filters`, INITIAL_FILTERS)
   const [selected, setSelected] = usePaneState<string | null>(`sentinel:${pane}:group`, null)
+  // A visual panel says nothing to a screen reader. `seq` is monotonic so
+  // the same sentence twice is announced twice.
   const [notice, setNotice] = useState<string | null>(null)
+  const [announcement, setAnnouncement] = useState<{
+    seq: number
+    text: string
+    urgency: 'polite' | 'assertive'
+  } | null>(null)
+  const announce = useCallback((text: string) => {
+    setNotice(text)
+    setAnnouncement((previous) => ({ seq: (previous?.seq ?? 0) + 1, text, urgency: 'polite' }))
+  }, [])
 
   // A sibling page can open this one on a group (`panels.open`).
   const contextGroup =
@@ -99,7 +111,7 @@ export function SentinelPage({
     refresh.current()
   }, [statuses, filters.service, filters.window, search])
 
-  const bulk = useBulkActions(api, () => groups.refresh(), setNotice)
+  const bulk = useBulkActions(api, () => groups.refresh(), announce)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   useEffect(() => {
     let live = true
@@ -143,6 +155,7 @@ export function SentinelPage({
         }
       />
       <PageMain>
+        <LiveRegion announcement={announcement} />
         {status?.config_error ? (
           <StatusPanel
             variant="alert"

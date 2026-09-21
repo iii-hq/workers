@@ -35,7 +35,20 @@ export function InvestigateWith({ host, onCancel, onInvestigate, open }: Props) 
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : onCancel())}>
-      <DialogContent>
+      <DialogContent
+        className="sentinel-ui-dialog"
+        onKeyDown={(event) => {
+          // Enter submits, the way the creation modal does — but not while
+          // the combobox is open and Enter means "pick this row".
+          if (event.key !== 'Enter' || event.defaultPrevented) return
+          const target = event.target as HTMLElement | null
+          if (target?.getAttribute('aria-expanded') === 'true') return
+          if (!selected) return
+          event.preventDefault()
+          const { model, provider } = splitKey(selected)
+          if (model) onInvestigate(model, provider)
+        }}
+      >
         <DialogTitle>Investigate with…</DialogTitle>
         <DialogDescription>
           For this investigation only. The configured default is unchanged.

@@ -85,9 +85,10 @@ export function DiagnosisCard({
       <CardHeader>
         <div className="sentinel-ui-diagnosis-head">
           <Badge variant={value.confidence === 'high' ? 'ok' : 'default'}>
-            {value.confidence} confidence
+            {value.confidence}
           </Badge>
           <Chip tone="neutral">{value.category}</Chip>
+          <Eyebrow>confidence</Eyebrow>
           <Eyebrow>
             {diagnosis.source === 'first_pass' ? 'first pass' : 'conversation'} ·{' '}
             {formatRelative(diagnosis.created_ms)}
