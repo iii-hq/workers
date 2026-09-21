@@ -69,8 +69,8 @@ See the hub's [mixed Noul/Choice/Score example](../judge/reference.md#evaluate),
 [result and error handling](../judge/reference.md#handle-results-and-failures),
 [model listing](../judge/reference.md#list-models) and
 [cancellation](../judge/reference.md#cancellation). Through the hub, `request_id`
-arrives here as `<caller>/<request_id>`, which is why this worker accepts ids of
-up to 512 bytes.
+arrives here as `<caller length>:<caller>/<request_id>`, which is why this worker
+accepts ids of up to 512 bytes (`judge_contract::MAX_PROVIDER_REQUEST_ID_BYTES`).
 
 ## Configuration
 

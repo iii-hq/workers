@@ -9,7 +9,8 @@ use crate::configuration::SharedConfig;
 use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient, RegisterFunction};
 use judge_contract::{
     provider_function_id, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse,
-    ModelsRequest, ModelsResponse, Stats, CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID,
+    ModelsRequest, ModelsResponse, Stats, CANCEL_FUNCTION_ID, FUNCTION_ID,
+    MAX_PROVIDER_REQUEST_ID_BYTES, MODELS_FUNCTION_ID,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -152,7 +153,8 @@ async fn forward(
     }
     // Providers scope cancellation by (engine caller, request_id). Through the
     // hub the engine caller is always the hub, so the original caller becomes
-    // part of the id. A direct provider call cannot forge that prefix: its own
+    // part of the id, length-prefixed so `("a/b", "c")` and `("a", "b/c")` never
+    // collide. A direct provider call cannot forge that prefix: its own
     // engine-stamped caller differs. Non-string ids reach the provider's strict
     // parser untouched.
     let scoped = match fields.get("request_id") {
@@ -163,7 +165,11 @@ async fn forward(
             if id.len() > MAX_REQUEST_ID_BYTES {
                 return Ok(Err(ErrorCode::InvalidRequest));
             }
-            Some(format!("{caller}/{id}"))
+            let scoped = format!("{}:{caller}/{id}", caller.len());
+            if scoped.len() > MAX_PROVIDER_REQUEST_ID_BYTES {
+                return Ok(Err(ErrorCode::InvalidRequest));
+            }
+            Some(scoped)
         }
         _ => None,
     };

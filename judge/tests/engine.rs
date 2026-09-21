@@ -45,6 +45,8 @@ async fn hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_ca
         MODELS_FUNCTION_ID,
         CANCEL_FUNCTION_ID,
         judge_typesafe::EVALUATE_ID,
+        judge_typesafe::MODELS_ID,
+        judge_typesafe::CANCEL_ID,
     ] {
         wait_for(&owner, id).await;
     }

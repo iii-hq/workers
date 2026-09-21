@@ -85,8 +85,9 @@ iii trigger judge::models::list --json '{"provider": "typesafe"}'
 with the [`judge-contract`](../crates/judge-contract/) request and response
 types (`provider_function_id` builds the ids) and runs as its own worker; the
 hub needs no change. Cancellation stays scoped to the original caller: the hub
-forwards `request_id` as `<caller>/<request_id>`, so provider workers must
-accept ids longer than the public 128-byte bound.
+forwards `request_id` as `<caller length>:<caller>/<request_id>` (unambiguous
+even when ids contain slashes), so provider workers must accept ids up to
+`MAX_PROVIDER_REQUEST_ID_BYTES` (512); the hub rejects longer compositions.
 
 The hub holds no credentials; its configuration entry (`judge`, or
 `III_CONFIG_NAME`) carries only the default provider. For the full API,

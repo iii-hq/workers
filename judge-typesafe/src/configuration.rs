@@ -42,15 +42,8 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&JevConfig>) -> Resul
     };
     iii_config_client::ensure(iii, &spec, seed.map(JevConfig::to_json))
         .await
-        .map_err(|error| {
-            // This shared compatibility message is safe and actionable. Other
-            // remote errors may include credentials or configuration values.
-            if error == iii_config_client::ENSURE_UNAVAILABLE {
-                error
-            } else {
-                "JEV configuration registration failed".into()
-            }
-        })
+        // Remote errors may include credentials or configuration values.
+        .map_err(|_| "JEV configuration registration failed".to_string())
 }
 pub async fn fetch_config(iii: &IIIClient) -> Result<JevConfig, String> {
     match iii_config_client::fetch(iii, config_id())

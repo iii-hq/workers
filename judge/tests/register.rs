@@ -117,7 +117,7 @@ async fn evaluate_forwards_to_the_default_provider_with_a_caller_scoped_id() {
     );
     let forwarded = forwarded.expect("forwarded to the provider");
     assert_eq!(forwarded["function_id"], "judge-typesafe::evaluate");
-    assert_eq!(forwarded["data"]["request_id"], "engine-worker/run-1");
+    assert_eq!(forwarded["data"]["request_id"], "13:engine-worker/run-1");
     assert_eq!(forwarded["data"]["timeout_ms"], 1000);
     assert!(forwarded["data"].get("provider").is_none());
     assert!(forwarded["data"].get("_caller_worker_id").is_none());
@@ -174,8 +174,28 @@ async fn identified_calls_require_trusted_caller_metadata() {
     .await;
     let forwarded = forwarded.unwrap();
     assert_eq!(forwarded["function_id"], "judge-typesafe::cancel");
-    assert_eq!(forwarded["data"], json!({"request_id":"w/run-1"}));
+    assert_eq!(forwarded["data"], json!({"request_id":"1:w/run-1"}));
     assert_eq!(response["result"], json!({"status":"ok","cancelled":true}));
+}
+
+#[tokio::test]
+async fn composed_ids_are_length_prefixed_so_slashes_cannot_collide() {
+    let mut ids = Vec::new();
+    for (caller, id) in [("a/b", "c"), ("a", "b/c")] {
+        let (_, forwarded, _) = invoke(
+            CANCEL_FUNCTION_ID,
+            json!({"_caller_worker_id":caller,"request_id":id}),
+            Ok(json!({"status":"ok","cancelled":false})),
+        )
+        .await;
+        ids.push(
+            forwarded.unwrap()["data"]["request_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    assert_eq!(ids, ["3:a/b/c", "1:a/b/c"]);
 }
 
 #[tokio::test]

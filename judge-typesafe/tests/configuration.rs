@@ -61,6 +61,12 @@ async fn register_and_fetch(
                     }
                 },
                 "configuration::get" => Ok(json!({"value":stored})),
+                "configuration::register" => {
+                    if stored.is_null() {
+                        stored = request["data"]["initial_value"].clone();
+                    }
+                    Ok(json!({"id":request["data"]["id"]}))
+                }
                 _ => Err(json!({"code":"unexpected_rpc","message":"unexpected configuration RPC"})),
             };
             let mut response = json!({
@@ -148,18 +154,33 @@ async fn stored_value_is_fetched_instead_of_default_or_explicit_seed() {
 }
 
 #[tokio::test]
-async fn missing_ensure_fails_closed_with_actionable_error_and_no_legacy_fallback() {
-    let (result, calls) = register_and_fetch(
+async fn missing_ensure_falls_back_to_legacy_get_then_register_seeding() {
+    let (config, calls) = register_and_fetch(
         Value::Null,
         None,
         Some(json!({"code":"function_not_found","message":"remote-test-secret"})),
     )
     .await;
-    assert_eq!(result.unwrap_err(), iii_config_client::ENSURE_UNAVAILABLE);
-    assert!(!calls.is_empty());
-    assert!(calls
+    assert_eq!(config.unwrap().to_json(), JevConfig::default().to_json());
+    let ids: Vec<_> = calls
         .iter()
-        .all(|call| call["function_id"] == "configuration::ensure"));
+        .map(|call| call["function_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "configuration::ensure",
+            "configuration::get",
+            "configuration::register",
+            "configuration::get"
+        ]
+    );
+    assert_eq!(calls[1]["data"]["raw"], true);
+    assert_eq!(
+        calls[2]["data"]["initial_value"],
+        JevConfig::default().to_json()
+    );
+    assert_eq!(calls[2]["data"]["metadata"]["ui_form"], "judge-typesafe");
 }
 
 #[tokio::test]
@@ -170,7 +191,7 @@ async fn other_ensure_errors_are_redacted_even_when_the_message_mentions_missing
             None,
             Some(json!({
                 "code":code,
-                "message":format!("remote-test-secret: remote error (function_not_found): {}", iii_config_client::ENSURE_UNAVAILABLE),
+                "message":"remote-test-secret: remote error (function_not_found): configuration::ensure unavailable",
             })),
         ).await;
         assert_eq!(result.unwrap_err(), "JEV configuration registration failed");

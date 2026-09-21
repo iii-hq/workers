@@ -8,9 +8,6 @@ use std::{
 use tokio::sync::watch;
 
 type CallKey = (String, String);
-/// Public ids are at most 128 bytes; the `judge` hub prefixes them with the
-/// original caller id, so provider-side ids get room for that prefix.
-pub const MAX_CALL_ID_BYTES: usize = 512;
 
 #[derive(Default)]
 pub(crate) struct CancellationRegistry {
@@ -94,7 +91,7 @@ fn call_key(caller: Option<&str>, id: &str) -> Result<CallKey, ErrorCode> {
         .filter(|caller| !caller.trim().is_empty())
         .ok_or(ErrorCode::InvalidRequest)?;
     if id.trim().is_empty()
-        || id.len() > MAX_CALL_ID_BYTES
+        || id.len() > judge_contract::MAX_PROVIDER_REQUEST_ID_BYTES
         || !id.bytes().all(|byte| (b' '..=b'~').contains(&byte))
     {
         return Err(ErrorCode::InvalidRequest);

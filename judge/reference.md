@@ -398,7 +398,8 @@ accepted**, not provider rollback, remote provider cancellation or zero cost.
 
 The provider scopes ownership by the engine caller it sees, which through the
 hub is always the hub itself. The hub therefore forwards `request_id` as
-`<original caller>/<request_id>`, so two callers reusing an id never collide and
+`<caller length>:<original caller>/<request_id>` (at most 512 bytes composed,
+else `invalid_request`), so two callers reusing an id never collide and
 a direct provider call cannot forge another caller's prefix. Cancel through the
 same `provider` the call was started with; another provider answers
 `cancelled: false`. With multiple hub or provider replicas, evaluation/listing

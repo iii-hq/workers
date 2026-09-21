@@ -29,6 +29,10 @@ pub fn provider_function_id(provider: &str, public_id: &str) -> String {
     )
 }
 pub const MAX_EVALUATIONS: usize = 512;
+/// Provider-side `request_id` bound. Public ids are at most 128 bytes; the hub
+/// forwards them as `<caller length>:<caller>/<request_id>`, and rejects the
+/// composed id when it would exceed this.
+pub const MAX_PROVIDER_REQUEST_ID_BYTES: usize = 512;
 pub const DEFAULT_MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_MAX_TIMEOUT_MS: u64 = 300_000;
