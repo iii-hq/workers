@@ -12,9 +12,11 @@ use serde::{Deserialize, Serialize};
 pub struct StatusRequestV1 {
     /// Injected by the iii engine. Accepted on the wire, absent from the
     /// published schema.
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
     #[serde(default)]
     #[schemars(skip)]
-    _caller_worker_id: Option<String>,
+    pub _caller_worker_id: Option<String>,
 }
 
 /// Where an error event came from. Part of the fingerprint: the same text
@@ -115,6 +117,265 @@ pub enum GroupChangeReasonV1 {
     Diagnosed,
     Reopened,
     Investigating,
+}
+
+/// A group as the list shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupSummaryV1 {
+    pub id: String,
+    pub fingerprint: String,
+    pub source: ErrorSourceV1,
+    pub namespace: String,
+    /// The worker that owns the failing function.
+    pub service_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exception_type: Option<String>,
+    pub title: String,
+    pub status: GroupStatusV1,
+    pub occurrence_count: u64,
+    /// Distinct sessions this failure touched. Counted from its own table, so
+    /// it stays true after occurrence rows are pruned.
+    pub sessions_affected: u64,
+    pub first_seen_ms: i64,
+    pub last_seen_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_version: Option<String>,
+    /// Occurrences per hour for the last day, oldest first.
+    pub sparkline: Vec<u64>,
+    pub has_diagnosis: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_rule: Option<IgnoreRuleV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regressed_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupsListRequestV1 {
+    /// Defaults to the open states.
+    #[serde(default)]
+    pub status: Option<Vec<GroupStatusV1>>,
+    #[serde(default)]
+    pub service_name: Option<String>,
+    /// Only groups seen since this moment.
+    #[serde(default)]
+    pub since_ms: Option<i64>,
+    /// Matches the title, the message sample and the function id.
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupsListResponseV1 {
+    pub groups: Vec<GroupSummaryV1>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupGetRequestV1 {
+    pub group_id: String,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+impl GroupGetRequestV1 {
+    pub fn new(group_id: impl Into<String>) -> Self {
+        Self {
+            group_id: group_id.into(),
+            _caller_worker_id: None,
+        }
+    }
+}
+
+/// One recorded instance of a group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OccurrenceSummaryV1 {
+    pub id: String,
+    pub at_ms: i64,
+    pub source: ErrorSourceV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_version: Option<String>,
+    pub message: String,
+    /// Whether the frozen bundle is still kept for this one.
+    pub has_evidence: bool,
+    /// Whether the trace was re-read after the ancestors closed.
+    pub settled: bool,
+    /// The owner could not be pinned to one namespace.
+    pub namespace_ambiguous: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupGetResponseV1 {
+    pub group: GroupSummaryV1,
+    /// The message exactly as it was captured, after redaction.
+    pub message_sample: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_occurrence: Option<OccurrenceSummaryV1>,
+    /// Whether the trace behind the latest occurrence is still in the
+    /// engine's ring. False means the frozen snapshot is all there is.
+    pub trace_available: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OccurrencesListRequestV1 {
+    pub group_id: String,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OccurrencesListResponseV1 {
+    pub occurrences: Vec<OccurrenceSummaryV1>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceGetRequestV1 {
+    pub occurrence_id: String,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceGetResponseV1 {
+    /// Absent when retention has pruned it: the row stays, the bundle goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::evidence::EvidenceBundleV1>,
+    pub pruned: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveRequestV1 {
+    pub group_id: String,
+    /// Occurrences on the version that was resolved keep counting without
+    /// reopening the group — the fix is not deployed here yet.
+    #[serde(default)]
+    pub until_version_change: bool,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IgnoreRequestV1 {
+    pub group_id: String,
+    pub rule: IgnoreRuleV1,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupActionRequestV1 {
+    pub group_id: String,
+    /// Injected by the iii engine. Accepted on the wire, absent from the
+    /// published schema, and never part of a request's meaning.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub _caller_worker_id: Option<String>,
+}
+
+impl GroupActionRequestV1 {
+    pub fn new(group_id: impl Into<String>) -> Self {
+        Self {
+            group_id: group_id.into(),
+            _caller_worker_id: None,
+        }
+    }
+}
+
+/// The state a group was left in, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupStateResponseV1 {
+    pub group_id: String,
+    pub status: GroupStatusV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<GroupChangeReasonV1>,
+}
+
+/// The event siblings and the console subscribe to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GroupChangedEventV1 {
+    pub op: GroupChangedOpV1,
+    pub group_id: String,
+    pub status: GroupStatusV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_status: Option<GroupStatusV1>,
+    pub occurrence_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<GroupChangeReasonV1>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupChangedOpV1 {
+    Created,
+    /// A new occurrence on a group that is otherwise unchanged. Coalesced.
+    Occurrence,
+    Status,
+}
+
+/// What a subscriber may narrow `sentinel::group-changed` to.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct GroupChangedConfigV1 {
+    #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub ops: Option<Vec<GroupChangedOpV1>>,
+    #[serde(default)]
+    pub service_name: Option<String>,
 }
 
 /// State of the engine's in-memory telemetry stores, as the worker last
