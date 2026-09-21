@@ -126,6 +126,39 @@ containers:
     scripts:
       run: cargo run --bin cron
 
+  # The sentinel's store. Nothing else in this stack needs it yet, so it is
+  # here for the sentinel and seeded by harness/config/database.yaml.
+  database:
+    worker: path://../database
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin database
+
+  # Starts last and stays up: it watches everything above it, and a monitor
+  # that booted first would only have itself to look at.
+  sentinel:
+    worker: path://../sentinel
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - database
+      - queue
+      - cron
+      - session-manager
+    environment:
+      RUST_LOG: info
+      CI: "true"
+      # The page is embedded in the binary; building it needs pnpm, which a
+      # dev stack has. A worktree without it sets SKIP_UI_BUILD after one
+      # successful build.
+      SKIP_UI_BUILD: "${SENTINEL_SKIP_UI_BUILD:-}"
+    scripts:
+      run: cargo run --bin sentinel
+
   ade:
     worker: path://../ade
     env_file:

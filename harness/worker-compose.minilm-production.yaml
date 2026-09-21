@@ -327,6 +327,17 @@ containers:
       analysis: { model: "", max_turns: 1, max_output_tokens: 1, max_total_tokens: 1, max_cost_usd: null }
       archive: null
     scripts: { run: cargo run --locked --bin security-scan }
+  sentinel:
+    worker: path://../sentinel
+    start_after: [database, queue, cron, session-manager, harness]
+    config_name: sentinel-minilm-production
+    # Nothing to monitor and nothing to read: interface collection only needs
+    # the surface, and an ingesting monitor would capture the collection run.
+    config_override:
+      enabled: false
+      repositories: []
+      investigation: { model: "" }
+    scripts: { run: cargo run --locked --bin sentinel }
   slack:
     worker: path://../slack
     start_after: [state, harness, session-manager]

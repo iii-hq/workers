@@ -11,11 +11,9 @@ it read the code, you steer it, and it records a structured diagnosis against
 the group. Resolving and ignoring stay human decisions; regressions are
 detected on their own.
 
-> **Early**: this release registers the configuration surface and
-> `sentinel::status`. Grouping, evidence capture and investigations land in
-> the following releases — the
-> [spec](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-09-sentinel/sentinel.md)
-> is the design of record.
+The
+[spec](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-09-sentinel/sentinel.md)
+is the design of record.
 
 ## Install
 
@@ -76,6 +74,42 @@ Three fields carry most of the diagnostic weight:
 - `repositories[].exists` says whether a mapped checkout is really on this
   machine. False disables code access for its workers; grouping, evidence and
   regression keep working.
+
+## The page
+
+The console page appears under `errors` while the worker is up: the open
+groups ordered with regressions first, and behind each one the frozen
+evidence — the span that failed, the exception it carried, the tree around it
+and the logs of that trace.
+
+**Investigate** opens a harness session beside the page. You watch the agent
+read the checkout mapped to the failing worker, and you can write to it at any
+time; a message lands in the turn that is already running. When it has a
+cause it records one by calling `sentinel::diagnosis::record`, which is the
+only write its policy allows — everything else it can reach is a read, and the
+engine's raw telemetry is not on the list at all. Each recording is a version;
+the most recent one stands and the earlier ones stay, so the same failure
+diagnosed twice can be compared.
+
+**Open in chat** does the same thing without running anything: the session is
+created with the evidence already in the transcript and waits for you to
+speak.
+
+Resolving and ignoring are yours. An ignore can last forever, for a number of
+further occurrences, or until the worker version changes — and the counters
+keep running either way, so an ignored group still tells you how often it
+happened.
+
+## Investigating from outside the console
+
+```bash
+iii trigger sentinel::investigate group_id=grp_... mode=assisted
+iii trigger sentinel::investigations::get investigation_id=inv_...
+```
+
+The session id it answers with is a real console conversation: opening it in
+the console puts you in the middle of the investigation, with the same
+controls as any other chat.
 
 ## Configuration
 
