@@ -72,7 +72,11 @@ export class MockIII {
       else this.streamItems.push(clone(payload));
       return null;
     }
-    if (functionId === 'configuration::register') throw new Error('unexpected legacy registration');
+    if (functionId === 'configuration::register') {
+      if (!this.ensureError) throw new Error('unexpected legacy registration');
+      if (Object.hasOwn(payload, 'initial_value')) this.configValue = clone(payload.initial_value);
+      return { ...payload, value: clone(this.configValue) };
+    }
     if (functionId === 'configuration::ensure') {
       if (this.ensureError) throw this.ensureError;
       const empty = this.configValue == null;

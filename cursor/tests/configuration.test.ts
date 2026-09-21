@@ -112,11 +112,17 @@ describe('Cursor configuration', () => {
     expect(iii.triggerCalls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
   });
 
-  it('fails closed with an upgrade error when ensure is unavailable', async () => {
+  it('uses legacy registration immediately when ensure is unavailable', async () => {
     const iii = new MockIII();
     iii.ensureError = { code: 'function_not_found' };
-    await expect(registerCursorConfig(iii.asClient())).rejects.toThrow('upgrade engine');
-    expect(iii.triggerCalls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
+    await registerCursorConfig(iii.asClient());
+    expect(iii.triggerCalls.map((call) => call.function_id)).toEqual([
+      'configuration::ensure',
+      'configuration::get',
+      'configuration::register',
+    ]);
+    expect(iii.triggerCalls[1]?.payload).toMatchObject({ raw: true });
+    expect(iii.triggerCalls[2]?.payload).not.toHaveProperty('initial_value');
     expect(iii.configValue).toEqual(defaultConfig());
   });
 

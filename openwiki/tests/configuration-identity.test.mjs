@@ -1,3 +1,4 @@
+import { InvocationError } from 'iii-sdk';
 import { test } from 'node:test';
 import {
   checkConfigurationContract,
@@ -13,6 +14,7 @@ for (const [index, scenario] of configurationCases.entries()) {
       const config = await import(`../src/lib/configuration.mjs?identity=${index}`);
       await checkConfigurationContract({
         ...scenario,
+        makeError: (body) => new InvocationError(body),
         register: config.registerConfig,
         fetch: config.fetchConfig,
         bind: config.bindConfigTrigger,

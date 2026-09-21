@@ -60,7 +60,7 @@ runtime config. Nothing in the worker repo is loaded by default at runtime.
 |------|------|
 | `./config/<id>.yaml` | Persisted value (configuration worker fs adapter; committable) |
 | `WorkerConfig::default()` | Built-in defaults; registered as `initial_value` only when no stored value exists yet |
-| `--config <path>` (CLI) | **Optional one-time seed** for `initial_value`; installed atomically by `configuration::ensure` **only** when nothing is stored yet, never overwriting an existing stored value (see §2 Atomic initialization) |
+| `--config <path>` (CLI) | **Optional one-time seed**; atomic with ensure, non-atomic on legacy engines (see compatibility matrix) |
 | Console Configuration tab | Same store via `configuration::set` |
 | Committed `<worker>/config.yaml` | **Do not ship** once integrated — omit from the repo |
 
@@ -93,20 +93,34 @@ and metadata are always refreshed. Register/ensure/set/delete are serialized by
 the engine's configuration mutex, and the legacy `configuration::register`
 remains an explicit overwrite used deliberately by Compose and by migrations.
 
-**Engine version requirement — fail closed.** `configuration::ensure` was merged in
-[iii-hq/iii#2214](https://github.com/iii-hq/iii/pull/2214) and is available in
-[`iii/v0.24.0-rc.2`](https://github.com/iii-hq/iii/releases/tag/iii%2Fv0.24.0-rc.2).
-CI boot/interface collection and source-stack integration explicitly use this
-verified release rather than the older stable engine. Registry validation keeps
-its explicitly selected CLI channel. Update the engine *before* the workers that
-call `ensure`. Against an engine that predates it, the first `ensure` call
-returns the engine's `function_not_found` and the worker **fails closed** with a
-clear error — `configuration::ensure unavailable; upgrade engine with atomic
-configuration initialization support` — instead of falling back to the unsafe
-read-then-`register` seed (which could clobber a stored override). A bridged
-`ensure` is forwarded to the remote engine; a remote that lacks it fails closed
-the same way (`ADAPTER_ERROR`), never a legacy fallback. Error codes are the
-usual `INVALID_ID` / `SCHEMA_INVALID` / `ADAPTER_ERROR`.
+**Compatibility matrix (capability detection, not a version comparison).**
+
+| Engine | Initialization | Concurrent-write guarantee |
+|--------|----------------|----------------------------|
+| `0.24.0` without `configuration::ensure` | Legacy `get(raw: true)` then `register` | Non-atomic; a concurrent writer can race initialization |
+| `0.24.1+` with `configuration::ensure` (recommended) | One atomic `ensure` | Engine-serialized preservation of existing values |
+
+Always try `ensure` first. Only its exact lowercase SDK `function_not_found`
+code enables compatibility; a missing get function never means a missing entry.
+Do not cache the capability across reconnects. Emit once per entry/process:
+`engine lacks configuration::ensure; using non-atomic legacy initialization; upgrade to >=0.24.1 for concurrent-write safety`.
+The warning identifies the entry, never its values or secrets.
+
+On the legacy path read the same id in `default` with `raw: true`. A non-null
+stored value (including `false`, `0`, `""`, and environment templates) requires
+registration with the same metadata/schema and **no `initial_value` field**.
+Never copy the read value into registration. Only explicit `null` or exact
+uppercase `NOT_FOUND` from get permits the original seed. A response without a
+`value` field is malformed and must abort initialization without writing.
+The published `iii/v0.24.0` get implementation returns `NOT_FOUND` for absence;
+`NOT_REGISTERED` belongs to set, not this read path.
+
+Lookup/register failures propagate; transport errors, permission denials,
+`SCHEMA_INVALID`, and `ADAPTER_ERROR` never authorize fallback. In particular a
+bridge reporting an unavailable remote ensure as `ADAPTER_ERROR` must not write
+through legacy registration. String-returning Rust retry wrappers match only
+the anchored SDK envelope, optionally preceded by the exact three-attempt
+wrapper for the operation. Node callers inspect the structured SDK code.
 
 `raw` reads, `${VAR:default}` env templates, and the `default` control-plane
 namespace are **unchanged** by `ensure`; the `metadata.ui_form` family id and
@@ -115,7 +129,8 @@ identical to the register path.
 
 Do not claim a client-local lock, a second read, or an unsupported request
 field solves the race — the fix is `configuration::ensure` in the engine,
-serialized with register/set, plus the fail-closed compatibility handling above.
+serialized with register/set. The legacy compatibility path deliberately cannot
+supply this guarantee, even when a cached read saw an existing value.
 
 ### Finding another worker's entry
 
@@ -151,7 +166,7 @@ All ids are kebab-case (`<worker>::<verb>`), per [`binary-worker.md`](binary-wor
 - `configuration::register` — declare or refresh the same schema and metadata.
   Preserve the stored value only when `initial_value` is omitted; an explicit
   `initial_value` replaces it. Use this legacy operation for intentional
-  replacement, not conditional worker initialization.
+  replacement, or the explicitly warned compatibility path described above.
 - `configuration::set` — replace the value for a registered id; validates
   against the schema and emits `configuration:updated`.
 - `configuration::get` — read one entry by id; expands `${VAR:default}`
