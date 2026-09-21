@@ -43,6 +43,7 @@ fn write(dedupe: &str, at_ms: i64) -> OccurrenceWrite {
         worker_version: Some("0.23.0".into()),
         evidence: Some(r#"{"version":1}"#.into()),
         namespace_ambiguous: false,
+        pending_occurrence_id: None,
     }
 }
 

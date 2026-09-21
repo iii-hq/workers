@@ -9,6 +9,10 @@
 //! Design of record:
 //! <https://github.com/iii-hq/workers/blob/main/tech-specs/2026-09-sentinel/sentinel.md>.
 
+/// The name this worker registers under. Its own traces are recognised by it,
+/// so it is a constant rather than a string spelled out per call site.
+pub const WORKER_NAME: &str = "sentinel";
+
 pub mod adapters;
 mod config;
 pub mod configuration;
@@ -19,10 +23,12 @@ pub mod evidence;
 pub mod fingerprint;
 pub mod functions;
 pub mod ids;
+pub mod ingest;
 pub mod lifecycle;
 pub mod manifest;
 pub mod normalize;
 pub mod redact;
+pub mod registry;
 mod status;
 pub mod store;
 
@@ -40,9 +46,11 @@ pub use contract::{
 };
 pub use error::SentinelError;
 pub use evidence::EvidenceBundleV1;
+pub use ingest::{Ingest, IngestJob, IngestReport, Telemetry, TraceSummary};
 pub use lifecycle::{GroupState, Transition};
 pub use normalize::Normalizer;
 pub use redact::Redactor;
+pub use registry::{Owner, Registry};
 pub use status::Counters;
 pub use store::{
     Db, GroupRow, NamedRow, OccurrenceWrite, RecordOutcome, Statement, StepResult, Store,
