@@ -7,7 +7,12 @@ import { parseArgs, promisify } from 'node:util';
 import { registerWorker } from 'iii-sdk';
 import { uiPage, uiStyles } from 'virtual:vscode-ui';
 import { type Config, expandHome, loadConfig } from './config.js';
-import { bindConfigTrigger, fetchRuntime, registerVscodeConfig } from './configuration.js';
+import {
+  bindConfigTrigger,
+  ENSURE_UNAVAILABLE,
+  fetchRuntime,
+  registerVscodeConfig,
+} from './configuration.js';
 import {
   type Instance,
   instanceIdFor,
@@ -297,7 +302,8 @@ if (uiWatchEnabled) {
 try {
   await registerVscodeConfig(iii, holder.current);
 } catch (err) {
-  console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
+  if (err instanceof Error && err.message === ENSURE_UNAVAILABLE) throw err;
+  console.warn(`configuration::ensure failed; continuing with the seed: ${String(err)}`);
 }
 
 await bindConfigTrigger(iii, async () => {

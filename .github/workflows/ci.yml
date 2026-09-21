@@ -11,6 +11,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Atomic worker initialization requires configuration::ensure (MOT-4736).
+  III_RELEASE_TAG: 'iii/v0.24.0-rc.2'
 
 jobs:
   scripts-tests:
@@ -420,7 +422,6 @@ jobs:
 
       - name: Install pinned iii engine
         env:
-          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -513,7 +514,6 @@ jobs:
 
       - name: Install pinned iii engine
         env:
-          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -709,10 +709,6 @@ jobs:
       - name: Install iii CLI + engine
         if: steps.optout.outputs.skip != 'true'
         env:
-          # Must be a tag that still exists on iii-hq/iii (old releases get
-          # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
-          # with the workers' iii-sdk protocol line.
-          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail

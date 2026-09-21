@@ -189,14 +189,14 @@ pub fn build_runtime(cfg: &ShellConfig, iii: &IIIClient) -> Result<ShellRuntime,
 /// built-in seed is `ShellConfig::seed_default()`, a bootable permissive dev
 /// default.
 ///
-/// Seeding is gated on the stored value being absent or null:
-/// `configuration::register` REPLACES the stored value whenever
-/// `initial_value` is present (not only on first registration), so an
-/// ungated seed would let every reboot with a `--config` file clobber
-/// runtime `configuration::set` changes — the documented contract is the
-/// opposite ("the live value takes precedence once an entry exists"). The
-/// null case is a boot that previously could not seed (MOT-4252): re-seeding
-/// over it repairs the entry instead of leaving the worker in a crash loop.
+/// The candidate seed is installed atomically by `configuration::ensure`
+/// ONLY against an absent/null entry, so a stored operator/Compose value (or
+/// a runtime `configuration::set`) is preserved without a client-side
+/// read-then-register race. The `--config`/legacy candidate is only COMPUTED
+/// and validated when nothing is stored yet, but the seed decision itself is
+/// the engine's — forwarding a candidate can never clobber a stored value. The
+/// null case is a boot that previously could not seed (MOT-4252): ensure
+/// repairs it instead of leaving the worker in a crash loop.
 pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Result<(), String> {
     iii_console_ui::register_configuration_identity(iii, "ide", config_id());
     let mut payload = json!({
@@ -234,8 +234,36 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
             ),
         }
     }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+    ensure_configuration(iii, payload).await
+}
+
+/// Forward `payload` to the engine's atomic `configuration::ensure`. Fails
+/// CLOSED against an engine that predates it (`function_not_found`): surface
+/// the upgrade-required error instead of falling back to the legacy
+/// read-then-`register` seed, which could clobber a stored override.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    match trigger_configuration_with_retry(iii, "configuration::ensure", payload).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Upgrade-required error surfaced when the engine lacks atomic
+/// `configuration::ensure` (fail CLOSED; never a legacy seed-over-stored write).
+const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
+
+/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
+/// `function_not_found` (an engine without `configuration::ensure`). Same
+/// envelope discipline as `is_not_found`: peel the one retry wrapper, then
+/// require the envelope at the very start so a stray token still propagates.
+fn is_function_not_found(error: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "function_not_found"
+        || raw == "remote error (function_not_found):"
+        || raw.starts_with("remote error (function_not_found): ")
 }
 
 /// The configuration entry id before the rename to `ide`.

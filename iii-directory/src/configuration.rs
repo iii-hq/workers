@@ -97,11 +97,12 @@ impl SharedState {
     }
 }
 
-/// Register the `iii-directory` configuration schema with the configuration
-/// worker. `initial_value` (the `--config` seed, else built-in defaults) is
-/// sent only when no stored value exists: `configuration::register` replaces
-/// the stored value whenever `initial_value` is present, so sending it on
-/// every boot would stomp runtime edits (console Settings, `configuration::set`).
+/// Register the `iii-directory` configuration schema. The candidate
+/// `initial_value` (the `--config` seed, else built-in defaults) is forwarded
+/// unconditionally to `configuration::ensure`, which installs it atomically
+/// ONLY against an absent/null entry — a stored value (console Settings,
+/// `configuration::set`) is preserved without a client-side
+/// read-then-register race.
 pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Result<(), String> {
     let mut payload = json!({
         "id": config_id(),
@@ -116,18 +117,19 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
         "schema": SkillsConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(value) = initial_value(seed, should_seed_default_value(iii).await?) {
-        payload["initial_value"] = value;
-    }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+    // The candidate (seed, else the built-in default) is forwarded
+    // unconditionally: `configuration::ensure` installs it atomically ONLY
+    // against an absent/null entry, so a stored operator/Compose override is
+    // preserved without a client-side read-then-register race.
+    payload["initial_value"] = initial_value(seed);
+    ensure_configuration(iii, payload).await
 }
 
-/// `initial_value` for `configuration::register`: the seed (else built-in
-/// defaults) on first boot, nothing once a stored value exists.
-fn initial_value(seed: Option<&SkillsConfig>, first_boot: bool) -> Option<Value> {
-    first_boot
-        .then(|| seed.map_or_else(|| SkillsConfig::default().to_json(), SkillsConfig::to_json))
+/// The `initial_value` candidate for `configuration::ensure`: the `--config`
+/// seed, else the built-in defaults. Always forwarded; the engine installs it
+/// only when nothing is stored yet, so runtime edits survive atomically.
+fn initial_value(seed: Option<&SkillsConfig>) -> Value {
+    seed.map_or_else(|| SkillsConfig::default().to_json(), SkillsConfig::to_json)
 }
 
 /// Read the live `iii-directory` configuration (env-expanded by the
@@ -141,12 +143,33 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<SkillsConfig, String> {
     SkillsConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
-        None => Ok(true),
-        Some(value) if value.is_null() => Ok(true),
-        Some(_) => Ok(false),
+/// Forward `payload` to the engine's atomic `configuration::ensure`. Fails
+/// CLOSED against an engine that predates it (`function_not_found`): surface
+/// the upgrade-required error instead of falling back to the legacy
+/// read-then-`register` seed, which could clobber a stored override.
+async fn ensure_configuration(iii: &IIIClient, payload: Value) -> Result<(), String> {
+    match trigger_configuration_with_retry(iii, "configuration::ensure", payload).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
+        Err(e) => Err(e),
     }
+}
+
+/// Upgrade-required error surfaced when the engine lacks atomic
+/// `configuration::ensure` (fail CLOSED; never a legacy seed-over-stored write).
+const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
+
+/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
+/// `function_not_found` (an engine without `configuration::ensure`). Same
+/// envelope discipline as `is_not_found`: peel the one retry wrapper, then
+/// require the envelope at the very start so a stray token still propagates.
+fn is_function_not_found(error: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "function_not_found"
+        || raw == "remote error (function_not_found):"
+        || raw.starts_with("remote error (function_not_found): ")
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
@@ -362,17 +385,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seed_is_sent_only_on_first_boot() {
+    fn candidate_initial_value_is_seed_else_default() {
         let seed = SkillsConfig {
             function_search_mode: FunctionSearchMode::Jev,
             ..SkillsConfig::default()
         };
-        assert_eq!(initial_value(Some(&seed), true), Some(seed.to_json()));
-        assert_eq!(
-            initial_value(None, true),
-            Some(SkillsConfig::default().to_json())
-        );
-        assert_eq!(initial_value(Some(&seed), false), None);
-        assert_eq!(initial_value(None, false), None);
+        // The candidate is always the seed (else the built-in default); the
+        // engine's `configuration::ensure` decides seed-vs-preserve, not this.
+        assert_eq!(initial_value(Some(&seed)), seed.to_json());
+        assert_eq!(initial_value(None), SkillsConfig::default().to_json());
     }
 }

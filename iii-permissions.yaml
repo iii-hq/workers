@@ -49,6 +49,10 @@ rules:
   # safe read-only introspection. Mutations stay denied.
   - '!configuration::set'
   - '!configuration::register'
+  # configuration::ensure is the atomic register/seed twin (same schema/seed
+  # mutation power under a new name); deny it too so an agent cannot bypass the
+  # register deny above.
+  - '!configuration::ensure'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'

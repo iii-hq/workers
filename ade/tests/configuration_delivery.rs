@@ -52,8 +52,7 @@ async fn exercise_delivery() {
     let captured = frames.clone();
     let fixture_id = id.clone();
     let unavailable = scenario == "unavailable";
-    // A service failure whose message merely mentions NOT_FOUND: the worker
-    // must treat it as an error, never as an absent entry to seed over.
+    // A service failure mentioning NOT_FOUND is not permission to use legacy registration.
     let service_error = scenario == "service_error";
     let stored = (scenario == "stored").then(|| json!({"http_port":3213,"other":"${UNCHANGED}"}));
     let (identity_tx, identity_rx) = tokio::sync::oneshot::channel();
@@ -119,23 +118,30 @@ async fn exercise_delivery() {
                     assert_eq!(frame["data"]["id"], fixture_id);
                     let mut reply = json!({"type":"invocationresult", "function_id":function,
                         "invocation_id":frame["invocation_id"]});
-                    if unavailable {
-                        reply["error"] = json!({"code":"function_not_found","message":"configuration service absent"});
+                    if function == "configuration::ensure" {
+                        if unavailable {
+                            reply["error"] =
+                                json!({"code":"function_not_found","message":"ensure absent"});
+                        } else if service_error {
+                            reply["error"] = json!({"code":"OTHER","message":"remote error (NOT_FOUND): mentioned only"});
+                        } else {
+                            let empty = stored.as_ref().is_none_or(Value::is_null);
+                            if empty {
+                                stored = Some(frame["data"]["initial_value"].clone());
+                            }
+                            reply["result"] = json!({
+                                "action": if empty { "seeded" } else { "preserved" },
+                                "entry": { "id":fixture_id,"value":stored }
+                            });
+                        }
                     } else if function == "configuration::get" {
                         if let Some(value) = &stored {
                             reply["result"] = json!({"id":fixture_id,"value":value});
-                        } else if service_error {
-                            reply["error"] = json!({"code":"OTHER","message":"NOT_FOUND"});
                         } else {
                             reply["error"] = json!({"code":"NOT_FOUND","message":"entry absent"});
                         }
-                    } else if function == "configuration::register" {
-                        if let Some(initial) = frame["data"].get("initial_value") {
-                            stored = Some(initial.clone());
-                        }
-                        reply["result"] = json!({});
                     } else {
-                        panic!("unexpected RPC {function}");
+                        panic!("unexpected RPC {function}; no legacy registration is allowed");
                     }
                     ws.send(Message::Text(reply.to_string())).await.unwrap();
                 }
@@ -161,7 +167,12 @@ async fn exercise_delivery() {
     let result = ade::configuration::register_console_config(&iii, 3113).await;
     assert_eq!(identity_rx.await.unwrap(), json!({"id":id}));
     if unavailable || service_error {
-        assert!(result.is_err());
+        let error = result.expect_err("failed ensure must not become successful initialization");
+        if unavailable {
+            assert!(error.contains("upgrade engine"), "{error}");
+        } else {
+            assert!(error.contains("OTHER"), "{error}");
+        }
         assert!(!frames
             .lock()
             .unwrap()
@@ -177,13 +188,13 @@ async fn exercise_delivery() {
         let snapshot = frames.lock().unwrap();
         let registration = snapshot
             .iter()
-            .find(|f| f["function_id"] == "configuration::register")
+            .find(|f| f["type"] == "invokefunction" && f["function_id"] == "configuration::ensure")
             .unwrap();
         assert_eq!(registration["data"]["metadata"]["ui_form"], "console");
-        assert_eq!(
-            registration["data"].get("initial_value").is_some(),
-            scenario == "missing"
-        );
+        assert_eq!(registration["data"]["initial_value"]["http_port"], 3113);
+        assert!(!snapshot
+            .iter()
+            .any(|f| f["function_id"] == "configuration::register"));
     }
     iii.shutdown_async().await;
     server.abort();

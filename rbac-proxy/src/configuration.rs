@@ -74,13 +74,10 @@ pub async fn register_config(
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     // A seed initializes an absent entry; it never replaces a Compose override.
-    if should_seed_default_value(iii).await? {
-        payload["initial_value"] = seed
-            .map(|value| value.to_json())
-            .unwrap_or_else(|| default_config(default_engine_url).to_json());
-    }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+    payload["initial_value"] = seed
+        .map(|value| value.to_json())
+        .unwrap_or_else(|| default_config(default_engine_url).to_json());
+    ensure_configuration(iii, payload).await
 }
 
 /// Read the live `rbac-proxy` configuration (env-expanded by the configuration
@@ -132,12 +129,33 @@ fn is_not_found(error: &str) -> bool {
         || raw.starts_with("remote error (NOT_FOUND): ")
 }
 
-async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
-        None => Ok(true),
-        Some(value) if value.is_null() => Ok(true),
-        Some(_) => Ok(false),
+/// Forward `payload` to the engine's atomic `configuration::ensure`. Fails
+/// CLOSED against an engine that predates it (`function_not_found`): surface
+/// the upgrade-required error instead of falling back to the legacy
+/// read-then-`register` seed, which could clobber a stored override.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    match trigger_configuration_with_retry(iii, "configuration::ensure", payload).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_function_not_found(&e) => Err(ENSURE_UNAVAILABLE.to_string()),
+        Err(e) => Err(e),
     }
+}
+
+/// Upgrade-required error surfaced when the engine lacks atomic
+/// `configuration::ensure` (fail CLOSED; never a legacy seed-over-stored write).
+const ENSURE_UNAVAILABLE: &str = "configuration::ensure unavailable; upgrade engine with atomic configuration initialization support";
+
+/// `true` when the error is the engine's lowercase missing-FUNCTION envelope
+/// `function_not_found` (an engine without `configuration::ensure`). Same
+/// envelope discipline as `is_not_found`: peel the one retry wrapper, then
+/// require the envelope at the very start so a stray token still propagates.
+fn is_function_not_found(error: &str) -> bool {
+    const RETRY_WRAPPER: &str = "configuration::ensure failed after 3 attempts: ";
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "function_not_found"
+        || raw == "remote error (function_not_found):"
+        || raw.starts_with("remote error (function_not_found): ")
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {

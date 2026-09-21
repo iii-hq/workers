@@ -79,7 +79,13 @@ interface RunParams {
  */
 export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
-  deny: ['approval::*', 'configuration::register', 'shell::workspace::*'],
+  deny: [
+    'approval::*',
+    'configuration::register',
+    // Atomic register/seed twin — same schema/seed power under a new name.
+    'configuration::ensure',
+    'shell::workspace::*',
+  ],
   expose: 'agent_trigger',
 }
 

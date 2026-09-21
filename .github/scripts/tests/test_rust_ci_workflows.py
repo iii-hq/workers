@@ -167,10 +167,11 @@ def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
     ) in run
 
 
-def test_harness_integration_downloads_latest_rc_engine_without_building_it() -> None:
+def test_harness_integration_downloads_verified_rc_engine_without_building_it() -> None:
     integration = workflow("_harness-integration.yml")
     steps = integration["jobs"]["build"]["steps"]
-    install = named_step(steps, "Install latest iii @rc")
+    install = named_step(steps, "Install verified iii RC")
+    assert integration["env"]["III_RELEASE_TAG"] == "iii/v0.24.0-rc.2"
     stack_cache = named_step(steps, "Restore integration Rust cache")
 
     assert "https://install.iii.dev/iii/main/install.sh" in install["run"]
@@ -181,6 +182,44 @@ def test_harness_integration_downloads_latest_rc_engine_without_building_it() ->
     assert "integration-engine-src" not in (WORKFLOWS / "_harness-integration.yml").read_text()
     assert "cron -> target" in stack_cache["with"]["workspaces"]
     assert "database -> target" in stack_cache["with"]["workspaces"]
+
+    summary = next(
+        step["run"] for step in steps
+        if "$GITHUB_STEP_SUMMARY" in step.get("run", "")
+    )
+    assert 'echo "The iii engine is pinned to $III_RELEASE_TAG."' in summary
+    assert "latest @rc channel" not in summary
+
+
+def test_every_engine_installer_uses_the_atomic_configuration_release() -> None:
+    """No boot path may override the verified engine with a legacy or mutable tag."""
+    covered = set()
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        doc = workflow(path.name)
+        for job_name, job in doc.get("jobs", {}).items():
+            for step in job.get("steps", []):
+                if "https://install.iii.dev/iii/main/install.sh" not in str(step):
+                    continue
+                effective_env = {
+                    **doc.get("env", {}),
+                    **job.get("env", {}),
+                    **step.get("env", {}),
+                }
+                assert effective_env.get("III_RELEASE_TAG") == "iii/v0.24.0-rc.2", (
+                    path.name, job_name, step.get("name"), effective_env.get("III_RELEASE_TAG")
+                )
+                covered.add(path.name)
+    registry_validation = workflow("_worker-e2e.yml")
+    assert "III_RELEASE_TAG" not in registry_validation.get("env", {})
+    source_install = named_step(
+        registry_validation["jobs"]["build"]["steps"], "Install published iii release"
+    )
+    assert source_install["if"] == "inputs.stack_mode == 'source'"
+    assert covered == {
+        "ci.yml", "build.yml", "_worker-e2e.yml", "_harness-integration.yml",
+        "database-e2e.yml", "rbac-proxy-e2e.yml", "ide-e2e.yml",
+        "storage-e2e.yml", "browser-scrapling-e2e.yml",
+    }
 
 
 def test_harness_integration_cache_key_ignores_preinstalled_toolchains() -> None:

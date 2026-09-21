@@ -17,6 +17,7 @@ import { type Config, loadConfig } from './config.js';
 import {
   bindConfigTrigger,
   type ConfigHolder,
+  ENSURE_UNAVAILABLE,
   fetchRuntime,
   registerClaudeConfig,
 } from './configuration.js';
@@ -56,7 +57,8 @@ const iii = registerWorker(url, { workerName: 'claude-code' });
 try {
   await registerClaudeConfig(iii, bootConfig);
 } catch (err) {
-  console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
+  if (err instanceof Error && err.message === ENSURE_UNAVAILABLE) throw err;
+  console.warn(`configuration::ensure failed; continuing with the seed: ${String(err)}`);
 }
 
 // Live snapshot: start from the seed, then refresh from the configuration
