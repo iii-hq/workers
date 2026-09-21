@@ -17,6 +17,7 @@
 //! how "a record never undoes a human decision" survives concurrency instead
 //! of being a comment on a function.
 
+pub mod investigations;
 pub mod schema;
 
 use async_trait::async_trait;
@@ -127,7 +128,7 @@ pub struct Store<D: Db> {
 /// How many times a compare-and-set is retried before giving up. A miss means
 /// another writer moved the row; five rounds is far past any real contention
 /// on a single group.
-const CAS_ATTEMPTS: usize = 5;
+pub(crate) const CAS_ATTEMPTS: usize = 5;
 
 impl<D: Db> Store<D> {
     pub fn new(db: D) -> Self {

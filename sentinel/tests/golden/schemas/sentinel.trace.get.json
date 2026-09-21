@@ -1,0 +1,43 @@
+{
+  "description": "Read a trace from the live engine through the redactor, for an investigation comparing the frozen snapshot with what is there now. Answers null once the trace has left the engine's ring.",
+  "function_id": "sentinel::trace::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "include_spans": {
+        "default": false,
+        "description": "Also return the flat span list, for a trace whose shape matters more than its tree.",
+        "type": "boolean"
+      },
+      "trace_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "trace_id"
+    ],
+    "title": "TraceGetRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "redactions": {
+        "description": "Values rewritten before the response left this worker.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "trace": {
+        "description": "Null when the trace has already left the engine's ring: the frozen evidence is then all there is."
+      }
+    },
+    "required": [
+      "redactions"
+    ],
+    "title": "TraceGetResponseV1",
+    "type": "object"
+  }
+}

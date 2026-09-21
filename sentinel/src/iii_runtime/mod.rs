@@ -7,6 +7,8 @@
 //! *are* the traces that would otherwise tick the trigger that feeds this
 //! worker.
 
+pub mod harness;
+
 use std::sync::Arc;
 use std::time::Duration;
 

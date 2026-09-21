@@ -1,0 +1,183 @@
+{
+  "description": "Stop an investigation's first pass. The group returns to the state it was in unless a diagnosis was already recorded.",
+  "function_id": "sentinel::investigations::cancel",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "investigation_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "investigation_id"
+    ],
+    "title": "InvestigationCancelRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "InvestigationModeV1": {
+        "description": "How an investigation was opened.",
+        "oneOf": [
+          {
+            "description": "A first pass runs automatically, then the conversation continues.",
+            "enum": [
+              "assisted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The session is created with the evidence and nothing runs until a person speaks.",
+            "enum": [
+              "chat"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass is in flight.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass ended.",
+            "enum": [
+              "completed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A chat-mode session: no first pass ever ran, the conversation is the investigation.",
+            "enum": [
+              "open"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "checkout_ref": {
+        "description": "The commit the mapped checkout was on when the pass started.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cost_usd": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "created_ms": {
+        "format": "int64",
+        "type": "integer"
+      },
+      "duration_ms": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "finished_ms": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "first_pass_turn_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "group_id": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      },
+      "investigated_version": {
+        "description": "The worker version the investigated occurrence ran on.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "mode": {
+        "$ref": "#/definitions/InvestigationModeV1"
+      },
+      "model": {
+        "type": "string"
+      },
+      "occurrence_id": {
+        "type": "string"
+      },
+      "provider": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "repository_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "description": "The harness session. The console opens this beside the page.",
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/InvestigationStatusV1"
+      },
+      "turns": {
+        "description": "Observed after the fact, and informative only: this worker imposes no ceiling on an investigation.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "created_ms",
+      "group_id",
+      "id",
+      "mode",
+      "model",
+      "occurrence_id",
+      "session_id",
+      "status"
+    ],
+    "title": "InvestigationSummaryV1",
+    "type": "object"
+  }
+}

@@ -21,8 +21,11 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions};
 use sentinel::events::{Emitter, Subscribers};
+use sentinel::iii_runtime::harness::{IiiEngineWindow, IiiHarness};
 use sentinel::iii_runtime::{Checkouts, IiiDb, IiiRegistry, IiiTelemetry, IngestQueue, Runtime};
 use sentinel::ingest::{ring::PhantomRing, Ingest};
+use sentinel::investigation::proxies::Proxies;
+use sentinel::investigation::Investigations;
 use sentinel::registry::Registry;
 use sentinel::service::Service;
 use sentinel::store::Store;
@@ -114,6 +117,17 @@ async fn main() -> Result<()> {
     let queue = Arc::new(IngestQueue::new(runtime.clone(), INGEST_CONCURRENCY));
     let subscribers = Subscribers::default();
     let emitter = Emitter::new(iii.clone(), subscribers.clone());
+    let checkouts = Arc::new(Checkouts::new(cell.clone()));
+    let investigations = Arc::new(Investigations::new(
+        store.clone(),
+        Arc::new(IiiHarness::new(runtime.clone())),
+        checkouts.clone(),
+        cell.clone(),
+    ));
+    let proxies = Arc::new(Proxies::new(
+        Arc::new(IiiEngineWindow::new(runtime.clone())),
+        cell.clone(),
+    ));
 
     let deps = Arc::new(functions::Deps {
         config: cell.clone(),
@@ -125,10 +139,12 @@ async fn main() -> Result<()> {
             store.clone(),
             telemetry.clone(),
             registry.clone(),
-            Arc::new(Checkouts::new(cell.clone())),
+            checkouts,
             counters.clone(),
             ring.clone(),
         )),
+        investigations: investigations.clone(),
+        proxies,
         queue: queue.clone(),
         emitter,
     });
@@ -154,6 +170,7 @@ async fn main() -> Result<()> {
         counters.clone(),
         cell.clone(),
         bindings.clone(),
+        deps.clone(),
     ));
     let sweeper = tokio::spawn(sweep_parked_logs(
         store.clone(),
@@ -172,7 +189,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Claim the durable dependencies, then keep the bindings alive.
+/// Claim the durable dependencies, then keep the bindings alive and the
+/// investigations honest.
+#[allow(clippy::too_many_arguments)]
 async fn claim_dependencies(
     iii: Arc<IIIClient>,
     store: Arc<Store<IiiDb>>,
@@ -180,6 +199,7 @@ async fn claim_dependencies(
     counters: Arc<Counters>,
     config: sentinel::ConfigCell,
     bindings: Bindings,
+    deps: Arc<functions::Deps<IiiRegistry>>,
 ) {
     dependencies::claim(store, queue, counters).await;
 
@@ -188,6 +208,10 @@ async fn claim_dependencies(
     loop {
         let snapshot = config.read().await.clone();
         bindings.reconcile(&iii, &snapshot).await;
+        // A doorbell that never rang — the harness restarted, the trigger was
+        // not bound yet — would otherwise leave a first pass running forever.
+        let events = deps.investigations.reconcile().await;
+        functions::broadcast(&deps, events).await;
         let (trace, log) = bindings.bound();
         if snapshot.enabled
             && ((snapshot.sources.trace.enabled && !trace)

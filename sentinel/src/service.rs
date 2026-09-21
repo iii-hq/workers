@@ -128,10 +128,24 @@ impl<D: Db> Service<D> {
             Some(trace_id) => self.traces.trace_exists(trace_id).await,
             None => false,
         };
+        // The diagnosis in force is the newest row, not the id cached on the
+        // group: the two agree, and reading the row is what carries the
+        // provenance the console shows next to it.
+        let diagnosis = self
+            .store
+            .diagnoses_for_group(&request.group_id, 1)
+            .await?
+            .into_iter()
+            .next();
+        let active_investigation = self.store.running_investigation(&request.group_id).await?;
+        let latest_investigation = self.store.latest_investigation(&request.group_id).await?;
         Ok(GroupGetResponseV1 {
             group,
             message_sample: text(&row, "message_sample").unwrap_or_default(),
             latest_occurrence: latest,
+            diagnosis,
+            active_investigation,
+            latest_investigation,
             trace_available,
         })
     }
@@ -462,7 +476,7 @@ fn escape_like(value: &str) -> String {
     value.replace(['%', '_'], "")
 }
 
-fn status_of(value: Option<&str>) -> GroupStatusV1 {
+pub fn status_of(value: Option<&str>) -> GroupStatusV1 {
     match value {
         Some("investigating") => GroupStatusV1::Investigating,
         Some("diagnosed") => GroupStatusV1::Diagnosed,

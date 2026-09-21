@@ -17,14 +17,22 @@ use crate::configuration::ConfigCell;
 use crate::events::Emitter;
 use crate::iii_runtime::{IiiDb, IngestQueue};
 use crate::ingest::{Ingest, IngestJob};
+use crate::investigation::proxies::Proxies;
+use crate::investigation::record::Caller;
+use crate::investigation::{Announcement, Investigations};
 use crate::registry::EngineRegistry;
 use crate::service::Service;
 use crate::store::Store;
 use crate::{
-    ids, Counters, EvidenceGetRequestV1, EvidenceGetResponseV1, GroupActionRequestV1,
-    GroupChangedOpV1, GroupGetRequestV1, GroupGetResponseV1, GroupStateResponseV1,
-    GroupsListRequestV1, GroupsListResponseV1, IgnoreRequestV1, OccurrencesListRequestV1,
-    OccurrencesListResponseV1, ResolveRequestV1, StatusRequestV1, StatusResponseV1,
+    ids, Counters, DiagnosisRecordRequestV1, DiagnosisRecordResponseV1, DoorbellResponseV1,
+    EvidenceGetRequestV1, EvidenceGetResponseV1, GroupActionRequestV1, GroupChangedOpV1,
+    GroupGetRequestV1, GroupGetResponseV1, GroupStateResponseV1, GroupsListRequestV1,
+    GroupsListResponseV1, IgnoreRequestV1, InvestigateRequestV1, InvestigateResponseV1,
+    InvestigationCancelRequestV1, InvestigationGetRequestV1, InvestigationGetResponseV1,
+    InvestigationSummaryV1, InvestigationsListRequestV1, InvestigationsListResponseV1,
+    LogsListRequestV1, LogsListResponseV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
+    ResolveRequestV1, StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1,
+    TurnCompletedEventV1,
 };
 
 pub const STATUS_ID: &str = "sentinel::status";
@@ -63,8 +71,26 @@ pub const ON_TURN_COMPLETED_DESC: &str =
 pub const ON_SCHEDULE_ID: &str = "sentinel::on-schedule";
 pub const ON_SCHEDULE_DESC: &str = "Internal daily prune of buckets and archived groups.";
 
+pub const INVESTIGATE_ID: &str = "sentinel::investigate";
+pub const INVESTIGATE_DESC: &str = "Open an investigation on a group: a harness session beside the page that starts from the frozen evidence. Mode assisted runs a first pass immediately; mode chat only seats the evidence and waits for a person. A first pass already running is returned rather than duplicated.";
+pub const INVESTIGATIONS_GET_ID: &str = "sentinel::investigations::get";
+pub const INVESTIGATIONS_GET_DESC: &str =
+    "Read one investigation and every diagnosis it recorded, newest first.";
+pub const INVESTIGATIONS_LIST_ID: &str = "sentinel::investigations::list";
+pub const INVESTIGATIONS_LIST_DESC: &str =
+    "List investigations, newest first, optionally narrowed to one group or a set of states.";
+pub const INVESTIGATIONS_CANCEL_ID: &str = "sentinel::investigations::cancel";
+pub const INVESTIGATIONS_CANCEL_DESC: &str = "Stop an investigation's first pass. The group returns to the state it was in unless a diagnosis was already recorded.";
+
+pub const TRACE_GET_ID: &str = "sentinel::trace::get";
+pub const TRACE_GET_DESC: &str = "Read a trace from the live engine through the redactor, for an investigation comparing the frozen snapshot with what is there now. Answers null once the trace has left the engine's ring.";
+pub const LOGS_LIST_ID: &str = "sentinel::logs::list";
+pub const LOGS_LIST_DESC: &str =
+    "Read logs from the live engine through the redactor, for an investigation.";
+
 /// The one write an investigation may make.
 pub const DIAGNOSIS_RECORD_ID: &str = "sentinel::diagnosis::record";
+pub const DIAGNOSIS_RECORD_DESC: &str = "Record what an investigation concluded about a group. Called by the agent from inside its own investigation session; the session's identity comes from the invocation, never from the payload. Each call is a new version and the most recent one stands.";
 
 pub use crate::configuration::{CONFIG_CHANGE_DESC, CONFIG_CHANGE_ID};
 
@@ -143,6 +169,8 @@ pub struct Deps<E: EngineRegistry + 'static> {
     pub store: Arc<Store<IiiDb>>,
     pub service: Arc<Service<IiiDb>>,
     pub ingest: Arc<Ingest<IiiDb, E>>,
+    pub investigations: Arc<Investigations<IiiDb>>,
+    pub proxies: Arc<Proxies>,
     pub queue: Arc<IngestQueue>,
     pub emitter: Arc<Emitter>,
 }
@@ -254,6 +282,116 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
         .description(EVIDENCE_GET_DESC),
     );
 
+    // ── investigation ───────────────────────────────────────────────────
+    let current = deps.clone();
+    iii.register_function(
+        INVESTIGATE_ID,
+        RegisterFunction::new_async(move |request: InvestigateRequestV1| {
+            let deps = current.clone();
+            async move {
+                let outcome = deps.investigations.investigate(request).await?;
+                broadcast(&deps, outcome.events).await;
+                Ok::<InvestigateResponseV1, iii_sdk::errors::Error>(outcome.value)
+            }
+        })
+        .description(INVESTIGATE_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        INVESTIGATIONS_GET_ID,
+        RegisterFunction::new_async(move |request: InvestigationGetRequestV1| {
+            let deps = current.clone();
+            async move {
+                deps.investigations
+                    .get(request)
+                    .await
+                    .map_err(iii_sdk::errors::Error::from)
+            }
+        })
+        .description(INVESTIGATIONS_GET_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        INVESTIGATIONS_LIST_ID,
+        RegisterFunction::new_async(move |request: InvestigationsListRequestV1| {
+            let deps = current.clone();
+            async move {
+                deps.investigations
+                    .list(request)
+                    .await
+                    .map_err(iii_sdk::errors::Error::from)
+            }
+        })
+        .description(INVESTIGATIONS_LIST_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        INVESTIGATIONS_CANCEL_ID,
+        RegisterFunction::new_async(move |request: InvestigationCancelRequestV1| {
+            let deps = current.clone();
+            async move {
+                let outcome = deps.investigations.cancel(request).await?;
+                broadcast(&deps, outcome.events).await;
+                Ok::<InvestigationSummaryV1, iii_sdk::errors::Error>(outcome.value)
+            }
+        })
+        .description(INVESTIGATIONS_CANCEL_DESC),
+    );
+
+    // The agent's one write. Its identity comes from the invocation's
+    // baggage, read here in the handler body — before any spawn, because a
+    // bare `tokio::spawn` would drop the context it lives in.
+    let current = deps.clone();
+    iii.register_function(
+        DIAGNOSIS_RECORD_ID,
+        RegisterFunction::new_async(move |request: DiagnosisRecordRequestV1| {
+            let deps = current.clone();
+            let caller = Caller {
+                session_id: iii_helpers::observability::get_baggage_entry("iii.session.id"),
+                turn_id: iii_helpers::observability::get_baggage_entry("iii.message.id"),
+            };
+            async move {
+                let outcome = deps.investigations.record(caller, request).await?;
+                broadcast(&deps, outcome.events).await;
+                Ok::<DiagnosisRecordResponseV1, iii_sdk::errors::Error>(outcome.value)
+            }
+        })
+        .description(DIAGNOSIS_RECORD_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        TRACE_GET_ID,
+        RegisterFunction::new_async(move |request: TraceGetRequestV1| {
+            let deps = current.clone();
+            async move {
+                deps.proxies
+                    .trace(request)
+                    .await
+                    .map_err(iii_sdk::errors::Error::from)
+            }
+        })
+        .description(TRACE_GET_DESC),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
+        LOGS_LIST_ID,
+        RegisterFunction::new_async(move |request: LogsListRequestV1| {
+            let deps = current.clone();
+            async move {
+                deps.proxies
+                    .logs(request)
+                    .await
+                    .map_err(iii_sdk::errors::Error::from)
+            }
+        })
+        .description(LOGS_LIST_DESC),
+    );
+
     // ── internal: the pipeline's own plumbing ───────────────────────────
     let current = deps.clone();
     iii.register_function(
@@ -290,6 +428,21 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
 
     let current = deps.clone();
     iii.register_function(
+        ON_TURN_COMPLETED_ID,
+        RegisterFunction::new_async(move |event: TurnCompletedEventV1| {
+            let deps = current.clone();
+            async move {
+                let outcome = deps.investigations.on_turn_completed(event).await?;
+                broadcast(&deps, outcome.events).await;
+                Ok::<DoorbellResponseV1, iii_sdk::errors::Error>(outcome.value)
+            }
+        })
+        .description(ON_TURN_COMPLETED_DESC)
+        .metadata(json!({ "internal": true, "trace_hidden": true })),
+    );
+
+    let current = deps.clone();
+    iii.register_function(
         ON_SCHEDULE_ID,
         RegisterFunction::new_async(move |_event: ScheduleEventV1| {
             let deps = current.clone();
@@ -304,16 +457,12 @@ async fn status<E: EngineRegistry>(deps: &Deps<E>) -> StatusResponseV1 {
     let config = deps.config.read().await.clone();
     let config_error = deps.config_error.read().await.clone();
     let groups = deps.store.group_counts().await.unwrap_or_default();
+    let investigations = deps.store.investigation_counts().await.unwrap_or_default();
     if let Ok(pending) = deps.store.pending_log_count().await {
         deps.counters.set_logs_pending_join(pending);
     }
-    deps.counters.snapshot(
-        &config,
-        ids::now_ms(),
-        groups,
-        Default::default(),
-        config_error,
-    )
+    deps.counters
+        .snapshot(&config, ids::now_ms(), groups, investigations, config_error)
 }
 
 /// The tick handler does as little as possible: the engine ignores its
@@ -433,6 +582,22 @@ async fn prune<E: EngineRegistry>(deps: &Deps<E>) -> Result<PruneResponseV1, cra
     })
 }
 
+/// Deliver whatever an investigation decided. The decision logic returns
+/// events rather than emitting them, so every path through it is testable
+/// without a live client.
+pub async fn broadcast<E: EngineRegistry>(deps: &Arc<Deps<E>>, events: Vec<Announcement>) {
+    for event in events {
+        match event {
+            Announcement::Group(state) => announce(deps, &state).await,
+            Announcement::Investigation(event) => {
+                if let Ok(payload) = serde_json::to_value(&event) {
+                    deps.emitter.investigation_changed(payload).await;
+                }
+            }
+        }
+    }
+}
+
 /// Tell the console a human decision landed.
 async fn announce<E: EngineRegistry>(deps: &Arc<Deps<E>>, response: &GroupStateResponseV1) {
     if response.reason.is_none() {
@@ -503,12 +668,35 @@ pub fn catalog() -> Vec<FunctionSpec> {
             OCCURRENCES_LIST_DESC,
         ),
         spec::<EvidenceGetRequestV1, EvidenceGetResponseV1>(EVIDENCE_GET_ID, EVIDENCE_GET_DESC),
+        spec::<InvestigateRequestV1, InvestigateResponseV1>(INVESTIGATE_ID, INVESTIGATE_DESC),
+        spec::<InvestigationGetRequestV1, InvestigationGetResponseV1>(
+            INVESTIGATIONS_GET_ID,
+            INVESTIGATIONS_GET_DESC,
+        ),
+        spec::<InvestigationsListRequestV1, InvestigationsListResponseV1>(
+            INVESTIGATIONS_LIST_ID,
+            INVESTIGATIONS_LIST_DESC,
+        ),
+        spec::<InvestigationCancelRequestV1, InvestigationSummaryV1>(
+            INVESTIGATIONS_CANCEL_ID,
+            INVESTIGATIONS_CANCEL_DESC,
+        ),
+        spec::<DiagnosisRecordRequestV1, DiagnosisRecordResponseV1>(
+            DIAGNOSIS_RECORD_ID,
+            DIAGNOSIS_RECORD_DESC,
+        ),
+        spec::<TraceGetRequestV1, TraceGetResponseV1>(TRACE_GET_ID, TRACE_GET_DESC),
+        spec::<LogsListRequestV1, LogsListResponseV1>(LOGS_LIST_ID, LOGS_LIST_DESC),
         spec::<TraceActivityEventV1, QueuedResponseV1>(
             ON_TRACE_ACTIVITY_ID,
             ON_TRACE_ACTIVITY_DESC,
         ),
         spec::<StoredLogEventV1, QueuedResponseV1>(ON_LOG_ID, ON_LOG_DESC),
         spec::<IngestJob, IngestResponseV1>(INGEST_ID, INGEST_DESC),
+        spec::<TurnCompletedEventV1, DoorbellResponseV1>(
+            ON_TURN_COMPLETED_ID,
+            ON_TURN_COMPLETED_DESC,
+        ),
         spec::<ScheduleEventV1, PruneResponseV1>(ON_SCHEDULE_ID, ON_SCHEDULE_DESC),
         spec::<iii_config_client::OnConfigChangeEvent, iii_config_client::OnConfigChangeResponse>(
             CONFIG_CHANGE_ID,
@@ -521,7 +709,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
 /// in this design, so this list is the whole permission model: it holds the
 /// reads an investigation needs and exactly one write, which is this worker's
 /// own record of the diagnosis.
-pub const INVESTIGATION_ALLOW: [&str; 10] = [
+pub const INVESTIGATION_ALLOW: [&str; 11] = [
     "coder::info",
     "coder::read-file",
     "coder::search",
@@ -530,13 +718,14 @@ pub const INVESTIGATION_ALLOW: [&str; 10] = [
     "engine::functions::info",
     "engine::functions::list",
     EVIDENCE_GET_ID,
-    "sentinel::trace::get",
+    TRACE_GET_ID,
+    LOGS_LIST_ID,
     DIAGNOSIS_RECORD_ID,
 ];
 
 /// Denied outright. Deny wins over allow in the harness policy, so a function
 /// added to this worker later is refused until somebody decides otherwise.
-pub const INVESTIGATION_DENY: [&str; 18] = [
+pub const INVESTIGATION_DENY: [&str; 20] = [
     "shell::*",
     "state::*",
     "queue::*",
@@ -551,6 +740,8 @@ pub const INVESTIGATION_DENY: [&str; 18] = [
     "session::*",
     "router::*",
     "sentinel::groups::*",
+    "sentinel::investigate",
+    "sentinel::investigations::*",
     "sentinel::on-*",
     "sentinel::ingest",
     // The agent works from the evidence it was handed and the code it can
@@ -573,8 +764,13 @@ mod tests {
             .collect();
         assert_eq!(
             own,
-            vec![EVIDENCE_GET_ID, "sentinel::trace::get", DIAGNOSIS_RECORD_ID],
-            "two reads and one write — nothing else of this worker's surface"
+            vec![
+                EVIDENCE_GET_ID,
+                TRACE_GET_ID,
+                LOGS_LIST_ID,
+                DIAGNOSIS_RECORD_ID
+            ],
+            "three reads and one write — nothing else of this worker's surface"
         );
         assert!(
             !INVESTIGATION_ALLOW

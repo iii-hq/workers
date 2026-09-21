@@ -1,0 +1,104 @@
+{
+  "description": "Open an investigation on a group: a harness session beside the page that starts from the frozen evidence. Mode assisted runs a first pass immediately; mode chat only seats the evidence and waits for a person. A first pass already running is returned rather than duplicated.",
+  "function_id": "sentinel::investigate",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "InvestigationModeV1": {
+        "description": "How an investigation was opened.",
+        "oneOf": [
+          {
+            "description": "A first pass runs automatically, then the conversation continues.",
+            "enum": [
+              "assisted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The session is created with the evidence and nothing runs until a person speaks.",
+            "enum": [
+              "chat"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "group_id": {
+        "type": "string"
+      },
+      "mode": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/InvestigationModeV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Defaults to `assisted`."
+      },
+      "model": {
+        "default": null,
+        "description": "Catalog id, or a raw model id alongside `provider`. Falls back to the configured one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "occurrence_id": {
+        "default": null,
+        "description": "Defaults to the most recent occurrence that still has evidence.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "provider": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "group_id"
+    ],
+    "title": "InvestigateRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "existing": {
+        "description": "A first pass was already running: this is that one, not a second.",
+        "type": "boolean"
+      },
+      "first_pass_turn_id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "investigation_id": {
+        "type": "string"
+      },
+      "session_id": {
+        "description": "What the console opens beside the page.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "existing",
+      "investigation_id",
+      "session_id"
+    ],
+    "title": "InvestigateResponseV1",
+    "type": "object"
+  }
+}

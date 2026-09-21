@@ -26,6 +26,7 @@ pub mod functions;
 pub mod ids;
 pub mod iii_runtime;
 pub mod ingest;
+pub mod investigation;
 pub mod lifecycle;
 pub mod manifest;
 pub mod normalize;
@@ -45,18 +46,27 @@ pub use config::{
 };
 pub use configuration::{ConfigCell, ConfigErrorCell};
 pub use contract::{
-    EngineStatusV1, ErrorSourceV1, EvidenceGetRequestV1, EvidenceGetResponseV1,
-    GroupActionRequestV1, GroupChangeReasonV1, GroupChangedConfigV1, GroupChangedEventV1,
-    GroupChangedOpV1, GroupCountsV1, GroupGetRequestV1, GroupGetResponseV1, GroupStateResponseV1,
-    GroupStatusV1, GroupSummaryV1, GroupsListRequestV1, GroupsListResponseV1, IgnoreBaselineV1,
-    IgnoreRequestV1, IgnoreRuleV1, IngestStatusV1, InvestigationCountsV1, OccurrenceSummaryV1,
-    OccurrencesListRequestV1, OccurrencesListResponseV1, RepositoryStatusV1, ResolveRequestV1,
-    SourcesStatusV1, StatusRequestV1, StatusResponseV1, TraceStoreStateV1,
+    ConfidenceV1, DiagnosisCategoryV1, DiagnosisEvidenceV1, DiagnosisRecordRequestV1,
+    DiagnosisRecordResponseV1, DiagnosisRecordV1, DiagnosisSourceV1, DiagnosisV1,
+    DoorbellResponseV1, EngineStatusV1, ErrorSourceV1, EvidenceGetRequestV1, EvidenceGetResponseV1,
+    EvidenceKindV1, GroupActionRequestV1, GroupChangeReasonV1, GroupChangedConfigV1,
+    GroupChangedEventV1, GroupChangedOpV1, GroupCountsV1, GroupGetRequestV1, GroupGetResponseV1,
+    GroupStateResponseV1, GroupStatusV1, GroupSummaryV1, GroupsListRequestV1, GroupsListResponseV1,
+    IgnoreBaselineV1, IgnoreRequestV1, IgnoreRuleV1, IngestStatusV1, InvestigateRequestV1,
+    InvestigateResponseV1, InvestigationCancelRequestV1, InvestigationChangedEventV1,
+    InvestigationChangedOpV1, InvestigationCountsV1, InvestigationGetRequestV1,
+    InvestigationGetResponseV1, InvestigationModeV1, InvestigationStatusV1, InvestigationSummaryV1,
+    InvestigationsListRequestV1, InvestigationsListResponseV1, LogsListRequestV1,
+    LogsListResponseV1, OccurrenceSummaryV1, OccurrencesListRequestV1, OccurrencesListResponseV1,
+    ProposedFixV1, RepositoryStatusV1, ResolveRequestV1, RiskV1, RootCauseV1, SourcesStatusV1,
+    StatusRequestV1, StatusResponseV1, TraceGetRequestV1, TraceGetResponseV1, TraceStoreStateV1,
+    TurnCompletedEventV1,
 };
 pub use error::SentinelError;
 pub use events::Emitter;
 pub use evidence::EvidenceBundleV1;
 pub use ingest::{Ingest, IngestJob, IngestReport, Telemetry, TraceSummary};
+pub use investigation::Investigations;
 pub use lifecycle::{GroupState, Transition};
 pub use normalize::Normalizer;
 pub use redact::Redactor;

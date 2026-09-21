@@ -414,6 +414,15 @@ impl WorkerConfig {
     }
 
     /// The repository holding a worker's source, when one is mapped.
+    /// The repository a mapped id names, for a caller that already resolved
+    /// one and only kept the id.
+    pub fn repository_for_worker_id(&self, id: Option<&str>) -> Option<&RepositoryConfigV1> {
+        let id = id?;
+        self.repositories
+            .iter()
+            .find(|repository| repository.id == id)
+    }
+
     pub fn repository_for_worker(&self, worker: &str) -> Option<&RepositoryConfigV1> {
         self.repositories
             .iter()
