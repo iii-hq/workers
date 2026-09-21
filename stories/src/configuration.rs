@@ -30,7 +30,7 @@ fn entry_spec() -> EntrySpec {
 /// default becomes `initial_value` only when nothing is stored yet.
 pub async fn register(iii: &IIIClient, seed: Option<Value>) -> Result<(), String> {
     let seed = seed.map(|value| config::normalize(&value).to_json());
-    iii_config_client::register(iii, &entry_spec(), seed).await
+    iii_config_client::ensure(iii, &entry_spec(), seed).await
 }
 
 /// The live value, repaired by [`config::normalize`]; the built-in default

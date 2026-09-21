@@ -25,37 +25,37 @@ import {
   uiClasses,
   useTheme,
 } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { useContainerNarrow, usePaneState, useWorkerLive } from '@iii-dev/console-ui/hooks'
+import {
+  BookOpen,
+  Box,
+  ChevronRight,
+  CircleSmall,
+  File as FileIcon,
+  Folder,
+  Hammer,
+  ListFilter,
+  RefreshCw,
+  TriangleAlert,
+} from 'lucide-react'
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Inspector, InspectorReset, PatchView, SideBySide, StoryFrame } from './preview'
 import {
-  AlertIcon,
   api,
   type BuildEvent,
-  type Change,
   type ChangeKind,
-  ChevronRightIcon,
+  type ChangeSummary,
   type CompareOutput,
-  ComponentIcon,
   type ComponentSummary,
   changeTone,
-  errorMessage,
-  FileIcon,
-  FilterIcon,
-  FolderIcon,
   type FsNode,
   type FsTree,
   type GetOutput,
-  HammerIcon,
   isBuildingError,
   lineLabel,
-  RefreshIcon,
   type Selection,
-  StateIcon,
-  StoriesIcon,
   shortSha,
-  subscribe,
-  useContainerTier,
-  usePaneState,
   type Workspace,
 } from './shared'
 
@@ -66,6 +66,9 @@ type Tab = 'preview' | 'changes' | 'props'
     props inspector earns its own column instead of a tab. */
 const NARROW_BELOW = 760
 const WIDE_FROM = 1080
+
+/** `stories:changed` re-runs every fetch; `stories:build` is bound by the page. */
+const LIVE = ['stories:changed'] as const
 
 const isChanged = (kind: ChangeKind | undefined) => kind !== undefined && kind !== 'unchanged'
 
@@ -133,12 +136,19 @@ function LinePicker({
 }
 
 export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: PageRenderProps & { host: Host }) {
+  const iii = host.iii
   const paneKey = paneId || tabId || 'default'
   const theme = useTheme()
-  const [rootRef, tier] = useContainerTier(NARROW_BELOW, WIDE_FROM)
-  const narrow = tier === 'narrow'
-  const wide = tier === null || tier === 'wide'
-  const [workspaces, setWorkspaces] = useState<Workspace[] | null>(null)
+  const { ref: narrowRef, narrow } = useContainerNarrow({ below: NARROW_BELOW })
+  const { ref: wideRef, narrow: notWide } = useContainerNarrow({ below: WIDE_FROM })
+  const rootRef = useCallback(
+    (node: HTMLElement | null) => {
+      narrowRef(node)
+      wideRef(node)
+    },
+    [narrowRef, wideRef],
+  )
+  const wide = !notWide
   const [workspaceName, setWorkspaceName] = usePaneState<string>(`stories:workspace:${paneKey}`, '')
   const [mode, setMode] = usePaneState<Mode>(`stories:mode:${paneKey}`, 'explorer')
   const [base, setBase] = usePaneState<string>(`stories:base:${paneKey}`, 'HEAD')
@@ -147,13 +157,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
   const [compareB, setCompareB] = usePaneState<string>(`stories:compare-b:${paneKey}`, 'worktree')
   const [selection, setSelection] = usePaneState<Selection | null>(`stories:selection:${paneKey}`, null)
   const [tab, setTab] = useState<Tab>('preview')
-  const [tree, setTree] = useState<FsTree | null>(null)
-  const [treeError, setTreeError] = useState<string | null>(null)
-  const [treeLoading, setTreeLoading] = useState(false)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
-  const [compare, setCompare] = useState<CompareOutput | null>(null)
-  const [compareError, setCompareError] = useState<string | null>(null)
-  const [compareLoading, setCompareLoading] = useState(false)
   const [detail, setDetail] = useState<GetOutput | null>(null)
   const [detailA, setDetailA] = useState<GetOutput | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -164,96 +168,65 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
   const [diff, setDiff] = useState<{ path: string; text: string } | null>(null)
   const [diffLoading, setDiffLoading] = useState(false)
 
+  const workspacesLive = useWorkerLive({
+    iii,
+    triggers: LIVE,
+    handlerId: 'iii::stories-ui::workspaces',
+    fetch: () => api.workspaces(iii).then((result) => result.workspaces),
+  })
+  const workspaces = workspacesLive.data
   const workspace = workspaces?.find((w) => w.name === workspaceName) ?? workspaces?.[0] ?? null
   const ws = workspace?.name
   const lineB = mode === 'compare' ? compareB : 'worktree'
   const lineA = mode === 'compare' ? compareA : base
+
+  /** The sidebar's listing: the tree in explorer mode, the changes in compare. */
+  const listing = useWorkerLive<{ tree?: FsTree; compare?: CompareOutput } | null>({
+    iii,
+    triggers: LIVE,
+    handlerId: 'iii::stories-ui::listing',
+    fetch: async () => {
+      if (!ws) return null
+      return mode === 'explorer'
+        ? { tree: await api.tree(iii, { workspace: ws, base }) }
+        : { compare: await api.compare(iii, { workspace: ws, a: compareA || 'HEAD', b: compareB || 'worktree' }) }
+    },
+  })
+  const tree = listing.data?.tree ?? null
+  const compare = listing.data?.compare ?? null
+  const listingError = workspacesLive.error ?? listing.error
+  const refreshListing = listing.refresh
+  const refresh = useCallback(() => {
+    workspacesLive.refresh()
+    refreshListing()
+  }, [workspacesLive.refresh, refreshListing])
+
+  // The listing's inputs are re-run tokens for its fetch.
+  useEffect(() => refreshListing(), [refreshListing, ws, mode, base, compareA, compareB])
 
   // The props tab only exists while the inspector has no column of its own.
   useEffect(() => {
     if (wide && tab === 'props') setTab('preview')
   }, [wide, tab])
 
-  const loadWorkspaces = useCallback(async () => {
-    try {
-      const result = await api.workspaces(host.iii)
-      // Same payload, same state: a fresh array per fetch would re-render
-      // the whole page for nothing.
-      setWorkspaces((current) => (JSON.stringify(current) === JSON.stringify(result.workspaces) ? current : result.workspaces))
-    } catch (error) {
-      setTreeError(errorMessage(error))
-    }
-  }, [host])
-
+  // `stories:build` carries the banner's payload, so it keeps its own binding;
+  // only ref-line builds need its refresh (`stories:changed` covers the tree).
+  const wsRef = useRef(ws)
+  wsRef.current = ws
   useEffect(() => {
-    if (workspaces && !workspaces.some((w) => w.name === workspaceName) && workspaces[0]) {
-      setWorkspaceName(workspaces[0].name)
-    }
-  }, [workspaces, workspaceName, setWorkspaceName])
-
-  const loadTree = useCallback(async () => {
-    if (!ws) return
-    setTreeLoading(true)
-    setTreeError(null)
-    try {
-      setTree(await api.tree(host.iii, { workspace: ws, base }))
-    } catch (error) {
-      setTreeError(errorMessage(error))
-    } finally {
-      setTreeLoading(false)
-    }
-  }, [host, ws, base])
-
-  const loadCompare = useCallback(async () => {
-    if (!ws) return
-    setCompareLoading(true)
-    setCompareError(null)
-    try {
-      setCompare(await api.compare(host.iii, { workspace: ws, a: compareA || 'HEAD', b: compareB || 'worktree' }))
-    } catch (error) {
-      setCompareError(errorMessage(error))
-    } finally {
-      setCompareLoading(false)
-    }
-  }, [host, ws, compareA, compareB])
-
-  useEffect(() => {
-    void loadWorkspaces()
-  }, [loadWorkspaces])
-
-  useEffect(() => {
-    if (mode === 'explorer') void loadTree()
-  }, [mode, loadTree])
-
-  useEffect(() => {
-    if (mode === 'compare') void loadCompare()
-  }, [mode, loadCompare])
-
-  // One subscription per pane: the handlers read the latest loaders through
-  // a ref so a base or mode change never re-registers the triggers.
-  const latest = useRef({ ws, mode, loadTree, loadCompare, loadWorkspaces })
-  latest.current = { ws, mode, loadTree, loadCompare, loadWorkspaces }
-  useEffect(() => {
-    return subscribe(
-      host.iii,
-      () => {
-        const { mode, loadTree, loadCompare, loadWorkspaces } = latest.current
-        void loadWorkspaces()
-        if (mode === 'explorer') void loadTree()
-        else void loadCompare()
-      },
-      (event) => {
-        const { ws, mode, loadTree, loadCompare, loadWorkspaces } = latest.current
-        if (ws && event.workspace !== ws) return
+    const id = 'iii::stories-ui::build'
+    const offs = [
+      iii.on<BuildEvent>(id, (event) => {
+        if (wsRef.current && event.workspace !== wsRef.current) return
         setBuilding(event.status === 'done' ? null : event)
-        if (event.status === 'done') {
-          void loadWorkspaces()
-          if (mode === 'explorer') void loadTree()
-          else void loadCompare()
-        }
-      },
-    )
-  }, [host])
+        if (event.status === 'done') refresh()
+      }),
+      iii.registerTrigger({ type: 'stories:build', function_id: `${id}::${iii.browserId}`, config: {} }),
+    ]
+    return () => {
+      for (const off of offs) off()
+    }
+  }, [iii, refresh])
 
   useEffect(() => {
     setOverrides({})
@@ -266,7 +239,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
     let cancelled = false
     const payload = { workspace: ws, id: selection.id, project: selection.project }
     void api
-      .get(host.iii, { ...payload, line: lineB, base: lineA })
+      .get(iii, { ...payload, line: lineB, base: lineA })
       .then((result) => {
         if (!cancelled) setDetail(result)
       })
@@ -275,7 +248,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
       })
     if (mode === 'compare') {
       void api
-        .get(host.iii, { ...payload, line: lineA })
+        .get(iii, { ...payload, line: lineA })
         .then((result) => {
           if (!cancelled) setDetailA(result)
         })
@@ -286,14 +259,14 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
     return () => {
       cancelled = true
     }
-  }, [host, ws, selection?.id, selection?.project, lineA, lineB, mode])
+  }, [iii, ws, selection?.id, selection?.project, lineA, lineB, mode])
 
   useEffect(() => {
     if (!ws || !diffPath) return
     let cancelled = false
     setDiffLoading(true)
     void api
-      .diffFile(host.iii, { workspace: ws, a: lineA, b: lineB, path: diffPath })
+      .diffFile(iii, { workspace: ws, a: lineA, b: lineB, path: diffPath })
       .then((result) => {
         if (!cancelled) setDiff({ path: diffPath, text: result.identical ? '' : result.diff })
       })
@@ -306,12 +279,12 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
     return () => {
       cancelled = true
     }
-  }, [host, ws, diffPath, lineA, lineB])
+  }, [iii, ws, diffPath, lineA, lineB])
 
   const rebuild = (line: string) => {
     if (!ws) return
     setActionError(null)
-    void api.build(host.iii, { workspace: ws, line, wait: false }).catch((error) => setActionError(errorMessage(error)))
+    void api.build(iii, { workspace: ws, line, wait: false }).catch((error) => setActionError(errorMessage(error)))
   }
 
   const select = (component: ComponentSummary, state?: string) =>
@@ -349,7 +322,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
           tabIndex={0}
         >
           <span className={uiClasses.treeItemIcon} data-color={component.error ? 'rose' : 'purple'}>
-            <ComponentIcon />
+            <Box aria-hidden size={16} />
           </span>
           <span className={uiClasses.treeItemLabel}>{component.title.split('/').pop()}</span>
           {component.states.length > 0 ? (
@@ -363,7 +336,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
               }}
               type="button"
             >
-              <ChevronRightIcon />
+              <ChevronRight aria-hidden size={16} />
             </button>
           ) : null}
           <span className={uiClasses.treeItemTrailing}>
@@ -385,7 +358,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
                   type="button"
                 >
                   <span className={uiClasses.treeItemIcon} data-color="teal">
-                    <StateIcon />
+                    <CircleSmall aria-hidden size={16} />
                   </span>
                   <span className={uiClasses.treeItemLabel}>{state.name}</span>
                 </button>
@@ -409,11 +382,11 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
           type="button"
         >
           <span className={uiClasses.treeItemIcon} data-color={isFile ? 'blue' : 'amber'}>
-            {isFile ? <FileIcon /> : <FolderIcon />}
+            {isFile ? <FileIcon aria-hidden size={16} /> : <Folder aria-hidden size={16} />}
           </span>
           <span className={uiClasses.treeItemLabel}>{node.name}</span>
-          <span aria-hidden className={uiClasses.treeItemCaret} data-open={open ? 'true' : undefined}>
-            <ChevronRightIcon />
+          <span aria-hidden className={uiClasses.treeItemCaret}>
+            <ChevronRight size={16} />
           </span>
           <span className={uiClasses.treeItemTrailing}>
             {node.git ? <span className={uiClasses.treeItemMeta}>{node.git}</span> : null}
@@ -435,46 +408,58 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
   }, [tree, impactedOnly])
 
   /** Only the kinds that occurred; four zero-chips said nothing. */
-  const summaryRow = (summary: { direct: number; indirect: number; new: number; removed: number } | undefined, note?: string) => {
-    if (!summary && !note) return null
-    const kinds = summary ? (['direct', 'indirect', 'new', 'removed'] as const).filter((kind) => summary[kind] > 0) : []
-    return (
-      <div className="stories-summary">
-        {kinds.map((kind) => (
-          <Chip key={kind} tone={changeTone(kind)}>
-            {summary?.[kind]} {kind}
-          </Chip>
-        ))}
-        {summary && kinds.length === 0 ? <span className="stories-summary__note">no changes</span> : null}
-        {note ? <span className="stories-summary__note">{note}</span> : null}
-      </div>
-    )
-  }
+  const summary: ChangeSummary | undefined = mode === 'explorer' ? tree?.summary : compare?.summary
+  const kinds = (['direct', 'indirect', 'new', 'removed'] as const).filter((kind) => summary && summary[kind] > 0)
+  const basePending = mode === 'explorer' && tree?.base_pending
 
-  const buildingPanel = (message: string) => (
-    <div className="stories-pad">
-      <StatusPanel detail={message} headline="Building" variant="info" />
-      <div className="stories-actions">
-        <Button onClick={() => (mode === 'explorer' ? void loadTree() : void loadCompare())} size="sm" variant="pill">
-          Retry
-        </Button>
-        <Button
-          onClick={() => {
-            rebuild(lineA)
-            rebuild(lineB)
-          }}
-          size="sm"
-          variant="pill"
-        >
-          Build
-        </Button>
-      </div>
-    </div>
+  const retry = (
+    <Button onClick={refresh} size="sm" variant="pill">
+      Retry
+    </Button>
   )
+  const listingStatus = listingError ? (
+    <div className="stories-pad">
+      {isBuildingError(listingError) ? (
+        <StatusPanel
+          action={
+            <>
+              {retry}
+              <Button
+                onClick={() => {
+                  rebuild(lineA)
+                  rebuild(lineB)
+                }}
+                size="sm"
+                variant="pill"
+              >
+                Build
+              </Button>
+            </>
+          }
+          detail={listingError}
+          headline="Building"
+          variant="info"
+        />
+      ) : (
+        <StatusPanel
+          action={retry}
+          detail={listingError}
+          headline={mode === 'explorer' ? 'Stories could not be read' : 'Lines could not be compared'}
+          icon={<TriangleAlert aria-hidden size={16} />}
+          variant="alert"
+        />
+      )}
+    </div>
+  ) : listing.loading && !(mode === 'explorer' ? tree : compare) ? (
+    <div className="stories-pad">
+      <Skeleton className="stories-skeleton" />
+      <Skeleton className="stories-skeleton" />
+      <Skeleton className="stories-skeleton" />
+    </div>
+  ) : null
 
   const sidebar = (
     <PageSidebar
-      className="stories-sidebar"
       collapsible
       defaultWidth={280}
       header={
@@ -498,7 +483,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
               tooltipSide="bottom"
               variant="ghost"
             >
-              <FilterIcon />
+              <ListFilter aria-hidden size={16} />
             </IconButton>
           ) : null}
         </div>
@@ -535,75 +520,35 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
           </>
         )}
       </div>
-      {mode === 'explorer'
-        ? summaryRow(tree?.summary, tree?.base_pending ? 'base line building…' : undefined)
-        : summaryRow(compare?.summary)}
+      {summary || basePending ? (
+        <div className="stories-summary">
+          {kinds.map((kind) => (
+            <Chip key={kind} tone={changeTone(kind)}>
+              {summary?.[kind]} {kind}
+            </Chip>
+          ))}
+          {summary && kinds.length === 0 ? <span className="stories-summary__note">no changes</span> : null}
+          {basePending ? <span className="stories-summary__note">base line building…</span> : null}
+        </div>
+      ) : null}
       <div className="stories-sidebar__body">
+        {listingStatus}
         {mode === 'explorer' ? (
-          <>
-            {treeError ? (
-              isBuildingError(treeError) ? (
-                buildingPanel(treeError)
-              ) : (
-                <div className="stories-pad">
-                  <StatusPanel
-                    detail={treeError}
-                    headline="Stories could not be read"
-                    icon={<AlertIcon />}
-                    variant="alert"
-                  />
-                  <Button onClick={() => void loadTree()} size="sm" variant="pill">
-                    Retry
-                  </Button>
-                </div>
-              )
-            ) : null}
-            {treeLoading && !tree ? (
-              <div className="stories-pad">
-                <Skeleton className="stories-skeleton" />
-                <Skeleton className="stories-skeleton" />
-                <Skeleton className="stories-skeleton" />
-              </div>
-            ) : null}
-            {visibleRoot ? (
-              <div className={uiClasses.tree} data-narrow={narrow ? '' : undefined} role="tree">
-                {(visibleRoot.children ?? []).map((child) => renderNode(child, 0))}
-              </div>
-            ) : tree && impactedOnly ? (
-              <div className="stories-pad">
-                <StatusPanel
-                  headline="Nothing impacted"
-                  detail="No component differs from the base line."
-                  variant="success"
-                />
-              </div>
-            ) : null}
-          </>
+          visibleRoot ? (
+            <div className={uiClasses.tree} data-narrow={narrow ? '' : undefined}>
+              {(visibleRoot.children ?? []).map((child) => renderNode(child, 0))}
+            </div>
+          ) : tree && impactedOnly ? (
+            <div className="stories-pad">
+              <StatusPanel
+                headline="Nothing impacted"
+                detail="No component differs from the base line."
+                variant="success"
+              />
+            </div>
+          ) : null
         ) : (
           <>
-            {compareError ? (
-              isBuildingError(compareError) ? (
-                buildingPanel(compareError)
-              ) : (
-                <div className="stories-pad">
-                  <StatusPanel
-                    detail={compareError}
-                    headline="Lines could not be compared"
-                    icon={<AlertIcon />}
-                    variant="alert"
-                  />
-                  <Button onClick={() => void loadCompare()} size="sm" variant="pill">
-                    Retry
-                  </Button>
-                </div>
-              )
-            ) : null}
-            {compareLoading && !compare ? (
-              <div className="stories-pad">
-                <Skeleton className="stories-skeleton" />
-                <Skeleton className="stories-skeleton" />
-              </div>
-            ) : null}
             {compare && compare.changes.length === 0 ? (
               <div className="stories-pad">
                 <StatusPanel
@@ -620,7 +565,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
                     <ListGroupLabel>{project}</ListGroupLabel>
                     {compare.changes
                       .filter((c) => c.project === project)
-                      .map((change: Change) => (
+                      .map((change) => (
                         <ListItem
                           description={<span className="stories-mono">{change.file}</span>}
                           key={`${change.project}:${change.id}`}
@@ -661,7 +606,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
       : null
 
   const main = (
-    <PageMain className="stories-main">
+    <PageMain>
       {building ? (
         <div className="stories-banner">
           <StatusPanel
@@ -673,7 +618,12 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
       ) : null}
       {actionError ? (
         <div className="stories-banner">
-          <StatusPanel detail={actionError} headline="That action failed" icon={<AlertIcon />} variant="alert" />
+          <StatusPanel
+            detail={actionError}
+            headline="That action failed"
+            icon={<TriangleAlert aria-hidden size={16} />}
+            variant="alert"
+          />
         </div>
       ) : null}
       {!selection ? (
@@ -684,7 +634,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
                 ? 'Pick a component or a state in the tree to preview it here.'
                 : 'Pick a changed component to see both lines side by side.'
             }
-            icon={StoriesIcon}
+            icon={BookOpen}
             title="No component selected"
           />
         </div>
@@ -693,7 +643,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
           <StatusPanel
             detail={detailError}
             headline="The component could not be read"
-            icon={<AlertIcon />}
+            icon={<TriangleAlert aria-hidden size={16} />}
             variant="alert"
           />
         </div>
@@ -782,7 +732,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
                     />
                   </div>
                 ) : (
-                  <List className="stories-files">
+                  <List>
                     {change.files.map((file) => (
                       <ListItem
                         description={`${file.status} · ${file.hop === 0 ? 'story file' : `${file.hop} hop${file.hop === 1 ? '' : 's'} away`}`}
@@ -815,7 +765,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
                   <span>Props</span>
                   <InspectorReset onChange={setOverrides} overrides={overrides} />
                 </div>
-                <Inspector controls={state.controls} onChange={setOverrides} overrides={overrides} />
+                <Inspector controls={state.controls} narrow={narrow} onChange={setOverrides} overrides={overrides} />
               </div>
             ) : null}
           </div>
@@ -828,7 +778,6 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
   const inspector =
     wide && component && state ? (
       <PageSidebar
-        className="stories-inspector-pane"
         collapsible
         defaultWidth={300}
         header={
@@ -845,7 +794,7 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
         storageKey="stories:inspector"
       >
         <div className="stories-inspector__scroll">
-          <Inspector controls={state.controls} onChange={setOverrides} overrides={overrides} />
+          <Inspector controls={state.controls} narrow={narrow} onChange={setOverrides} overrides={overrides} />
         </div>
       </PageSidebar>
     ) : null
@@ -854,23 +803,15 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
   const showMain = !narrow || selection !== null
 
   return (
-    <PageShell className="stories-shell">
+    <PageShell ref={rootRef}>
       <PageHeader
         actions={
           <>
-            <IconButton
-              label="Refresh"
-              onClick={() => {
-                void loadWorkspaces()
-                if (mode === 'explorer') void loadTree()
-                else void loadCompare()
-              }}
-              variant="ghost"
-            >
-              <RefreshIcon />
+            <IconButton label="Refresh" onClick={refresh} variant="ghost">
+              <RefreshCw aria-hidden size={16} />
             </IconButton>
             <IconButton label="Rebuild working tree" onClick={() => rebuild('worktree')} variant="ghost">
-              <HammerIcon />
+              <Hammer aria-hidden size={16} />
             </IconButton>
           </>
         }
@@ -879,17 +820,15 @@ export function StoriesPage({ host, onRequestClose, paneId, tabId, panelSide }: 
             ? `${workspace.name} · ${workspace.branch ?? shortSha(workspace.head)}${workspace.dirty ? ' · dirty' : ''}`
             : undefined
         }
-        icon={<StoriesIcon />}
+        icon={<BookOpen />}
         onClose={onRequestClose}
         title="Stories"
       />
-      <div className={`stories-root${narrow ? ' narrow' : ''}`} ref={rootRef}>
-        <PageBody className="stories-body" side={panelSide}>
-          {showSidebar ? sidebar : null}
-          {showMain ? main : null}
-          {showMain ? inspector : null}
-        </PageBody>
-      </div>
+      <PageBody side={panelSide}>
+        {showSidebar ? sidebar : null}
+        {showMain ? main : null}
+        {showMain ? inspector : null}
+      </PageBody>
     </PageShell>
   )
 }
