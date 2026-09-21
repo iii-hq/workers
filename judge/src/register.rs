@@ -5,6 +5,7 @@
 //! request id to the original caller so provider-side cancellation keeps its
 //! ownership semantics, and enforces the shared response contract on whatever
 //! the provider returns.
+use crate::configuration::SharedConfig;
 use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient, RegisterFunction};
 use judge_contract::{
     provider_function_id, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse,
@@ -34,15 +35,14 @@ pub fn validate_provider(provider: &str) -> Result<(), ErrorCode> {
 }
 
 /// Register `judge::evaluate`, `judge::models::list` and `judge::cancel`.
-/// `default_provider` names the `judge-<provider>` worker for requests that
-/// omit `provider`; it need not be running at registration time.
-pub fn register(iii: &Arc<IIIClient>, default_provider: &str) {
-    let default_provider: Arc<str> = default_provider.into();
-
-    let (engine, provider) = (iii.clone(), default_provider.clone());
+/// Each call snapshots `config` for the `judge-<provider>` worker used when a
+/// request omits `provider`; that worker need not be running at registration.
+pub fn register(iii: &Arc<IIIClient>, config: SharedConfig) {
+    let (engine, cell) = (iii.clone(), config.clone());
     let registration = RegisterFunction::new_async(move |payload: Value| {
-        let (engine, provider) = (engine.clone(), provider.clone());
+        let (engine, cell) = (engine.clone(), cell.clone());
         async move {
+            let provider = cell.read().await.provider.clone();
             let timeout = timeout_ms(&payload)
                 .unwrap_or(0)
                 .saturating_add(FORWARD_SLACK_MS);
@@ -60,10 +60,11 @@ pub fn register(iii: &Arc<IIIClient>, default_provider: &str) {
     });
     iii.register_function(FUNCTION_ID, registration.request_format(request_schema::<EvaluateRequest>()).description("Evaluate Noul, Choice and Score questions against arbitrary JSON state through the selected judge-<provider> worker. Results are atomic; stats retain known accepted usage. No credentials are accepted in the request."));
 
-    let (engine, provider) = (iii.clone(), default_provider.clone());
+    let (engine, cell) = (iii.clone(), config.clone());
     let registration = RegisterFunction::new_async(move |payload: Value| {
-        let (engine, provider) = (engine.clone(), provider.clone());
+        let (engine, cell) = (engine.clone(), cell.clone());
         async move {
+            let provider = cell.read().await.provider.clone();
             let timeout = timeout_ms(&payload)
                 .unwrap_or(MODELS_DEFAULT_TIMEOUT_MS)
                 .saturating_add(FORWARD_SLACK_MS);
@@ -81,10 +82,11 @@ pub fn register(iii: &Arc<IIIClient>, default_provider: &str) {
     });
     iii.register_function(MODELS_FUNCTION_ID, registration.request_format(request_schema::<ModelsRequest>()).description("List the selected provider's available model names, descriptions and release dates; performs no inference."));
 
-    let (engine, provider) = (iii.clone(), default_provider);
+    let (engine, cell) = (iii.clone(), config);
     let registration = RegisterFunction::new_async(move |payload: Value| {
-        let (engine, provider) = (engine.clone(), provider.clone());
+        let (engine, cell) = (engine.clone(), cell.clone());
         async move {
+            let provider = cell.read().await.provider.clone();
             let reply = forward(
                 &engine,
                 &provider,

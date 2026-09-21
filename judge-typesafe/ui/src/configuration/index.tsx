@@ -1,12 +1,20 @@
 import {
+  Button,
+  Chip,
   type ConfigFormProps,
+  type ExtensionIii,
   Input,
+  Select,
+  type SelectOption,
   SettingsField,
   SettingsList,
   SettingsSection,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+/** What the worker uses when the entry stores no model. */
+export const BUILT_IN_MODEL = 'jev-latest'
 
 const limitFields = [
   {
@@ -30,29 +38,74 @@ const limitFields = [
 ]
 const knownFields = ['api_key', 'model', ...limitFields.map(({ field }) => field)]
 
-export function JevConfigForm(props: ConfigFormProps) {
+export interface ModelCard {
+  name: string
+  description: string
+  release_date: string
+}
+type ModelsReply = { status: 'ok'; models: ModelCard[] } | { status: 'error'; code: string }
+type Engine = Pick<ExtensionIii, 'trigger'>
+
+/** A typed provider refusal (`missing_key`, `http`, …) as opposed to a bus failure. */
+export class ProviderError extends Error {
+  constructor(readonly code: string) {
+    super(code)
+  }
+}
+
+/** The catalog as the running worker answers it with its saved credentials. */
+export async function listModels(iii: Engine): Promise<ModelCard[]> {
+  const reply = await iii.trigger<ModelsReply>('judge-typesafe::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
+  if (reply?.status === 'ok' && Array.isArray(reply.models)) return reply.models
+  throw new ProviderError(reply?.status === 'error' && reply.code ? reply.code : 'invalid_response')
+}
+
+/** Bind the form to the console's engine client once, at registration. */
+export function createJevConfigForm(iii: Engine) {
+  return function BoundJevConfigForm(props: ConfigFormProps) {
+    return <JevConfigForm {...props} iii={iii} />
+  }
+}
+
+export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine }) {
   const rootRef = useRef<HTMLDivElement>(null)
+  // null = the first listing has not answered yet.
+  const [catalog, setCatalog] = useState<ModelCard[] | null>(null)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const refresh = useCallback(() => {
+    setCatalogError(null)
+    listModels(iii)
+      .then(setCatalog)
+      .catch((error: unknown) => {
+        setCatalogError(error instanceof ProviderError ? error.code : error instanceof Error ? error.message : String(error))
+        setCatalog((current) => current ?? [])
+      })
+  }, [iii])
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
   const focusField = props.focusField?.[0]
   useEffect(() => {
     if (!focusField || !knownFields.includes(focusField)) return
-    const input = rootRef.current?.querySelector<HTMLInputElement>(`input[name="${focusField}"]`)
-    input?.scrollIntoView?.({ block: 'center' })
-    input?.focus()
+    const control = rootRef.current?.querySelector<HTMLElement>(`#jev-cfg-${focusField}`)
+    control?.scrollIntoView?.({ block: 'center' })
+    control?.focus()
   }, [focusField])
 
   if (props.value !== null && (typeof props.value !== 'object' || Array.isArray(props.value))) {
     return (
       <StatusPanel
         variant="info"
-        headline="JEV configuration is supplied as a single value"
+        headline="Judge TypeSafe configuration is supplied as a single value"
         detail="Edit this value in the configuration source. It is preserved until you replace it with an object."
       />
     )
   }
   const value = props.value ?? {}
-  const setString = (field: string, raw: string) => {
+  const setString = (field: string, raw: string | undefined) => {
     const next = { ...value }
-    if (raw === '') delete next[field]
+    if (raw === undefined || raw === '') delete next[field]
     else next[field] = raw
     props.onChange(next)
   }
@@ -70,19 +123,40 @@ export function JevConfigForm(props: ConfigFormProps) {
     ([pointer]) => !knownFields.some((field) => pointer === `/${field}`),
   )
 
+  const storedModel = typeof value.model === 'string' ? value.model : undefined
+  const modelOptions: SelectOption[] = (catalog ?? []).map((card) => ({
+    value: card.name,
+    label: card.name,
+    description: [card.description, card.release_date?.slice(0, 10)].filter(Boolean).join(' · '),
+  }))
+  if (storedModel && !modelOptions.some((option) => option.value === storedModel)) {
+    modelOptions.push({ value: storedModel, label: storedModel, description: 'Not in the current catalog' })
+  }
+  const keyStatus =
+    catalog === null ? (
+      <Chip tone="neutral">Checking the worker…</Chip>
+    ) : catalogError === 'missing_key' ? (
+      <Chip tone="warning">No key reaches the worker</Chip>
+    ) : catalogError ? (
+      <Chip tone="warning">Listing failed · {catalogError}</Chip>
+    ) : (
+      <Chip tone="success">Key accepted · {catalog.length} models</Chip>
+    )
+
   return (
     <div className="jev-ui-form" ref={rootRef}>
       <SettingsSection
-        title="JEV evaluation"
-        description="Configure TypeSafe evaluation and model listing for calling workers. Changes apply to new calls without restarting."
+        title="Credentials"
+        description="The key judge-typesafe sends to TypeSafe for evaluations and model listing. Saved changes apply to new calls without restarting."
       >
         <SettingsList>
           <SettingsField
             id="jev-cfg-api_key"
             field="api_key"
             label="API key"
-            description="A configured key takes precedence over TYPESAFE_API_KEY in the JEV worker process environment. Clear it to use the environment key. Restart JEV after changing its environment."
+            description="Overrides TYPESAFE_API_KEY in the worker's environment. Clear it to fall back to that variable; restart judge-typesafe after changing the environment."
             error={props.errors?.get('/api_key')}
+            meta={keyStatus}
             renderControl={(controlProps) => (
               <Input
                 {...controlProps}
@@ -96,22 +170,36 @@ export function JevConfigForm(props: ConfigFormProps) {
               />
             )}
           />
+        </SettingsList>
+      </SettingsSection>
+      <SettingsSection
+        title="Model"
+        description="Catalog as answered by judge-typesafe::models::list with the saved credentials. Callers may still name a model per call."
+        action={
+          <Button type="button" variant="ghost" size="sm" onClick={refresh} disabled={catalog === null}>
+            Refresh
+          </Button>
+        }
+      >
+        <SettingsList>
           <SettingsField
             id="jev-cfg-model"
             field="model"
             label="Default model"
-            description="Used when an evaluation omits its model. Callers can supply their own model override. Clear to use jev-1.13.0."
+            description={`Used when an evaluation omits its model. Versioned ids stay accepted even when the catalog lists only aliases. Clear to use ${BUILT_IN_MODEL}.`}
             error={props.errors?.get('/model')}
             renderControl={(controlProps) => (
-              <Input
+              <Select
                 {...controlProps}
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="Default model"
-                placeholder="jev-1.13.0"
-                value={typeof value.model === 'string' ? value.model : ''}
+                value={storedModel}
+                options={modelOptions}
+                placeholder={`Built-in default (${BUILT_IN_MODEL})`}
+                allowEmpty
+                emptyLabel={`Built-in default (${BUILT_IN_MODEL})`}
+                onClear={() => setString('model', undefined)}
                 onChange={(next) => setString('model', next)}
+                aria-label="Default model"
+                aria-busy={catalog === null}
               />
             )}
           />
@@ -146,6 +234,24 @@ export function JevConfigForm(props: ConfigFormProps) {
           ))}
         </SettingsList>
       </SettingsSection>
+      {catalogError === 'missing_key' ? (
+        <StatusPanel
+          variant="warn"
+          headline="No API key reaches the worker"
+          detail="Save a key above, or export TYPESAFE_API_KEY in the judge-typesafe process and restart it. Evaluations and model listing answer missing_key until then."
+        />
+      ) : catalogError ? (
+        <StatusPanel
+          variant="warn"
+          headline="Could not list models"
+          detail={`${catalogError}. The stored model stays selectable; retry once the provider answers.`}
+          action={
+            <Button type="button" variant="ghost" size="sm" onClick={refresh}>
+              Retry
+            </Button>
+          }
+        />
+      ) : null}
       {unassociatedErrors.length > 0 ? (
         <StatusPanel
           variant="alert"

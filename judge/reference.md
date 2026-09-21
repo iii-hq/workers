@@ -28,12 +28,22 @@ describes when an agent should invoke evaluation.
 
 ## Configuration
 
-The hub keeps no configuration entry. `JUDGE_PROVIDER` in the hub's process
-environment (or `--provider`) names the default `judge-<provider>` worker; it is
-`typesafe` unless set, so `judge::*` reaches `judge-typesafe::*`. Any request may
-override it with a top-level `provider` string (lowercase letters, digits and
-hyphens, at most 64 bytes). A provider that is not registered on the engine
-returns `{"status":"error","code":"provider_unavailable"}`.
+The hub requires `configuration` at startup (engine **`iii/v0.24.0-rc.2`** or
+later, with `configuration::ensure`). Its entry, `judge` by default or the
+worker's `III_CONFIG_NAME`, holds one field:
+
+```yaml
+provider: typesafe   # judge-<provider> worker used when a request omits provider
+```
+
+Edit it under **Settings → Workers → judge** in the Console; valid changes apply
+to new calls (in-flight calls keep their snapshot, rejected reloads keep the last
+valid value). `JUDGE_PROVIDER` in the hub's process environment (or `--provider`)
+seeds the entry only when nothing is stored yet; it is `typesafe` unless set, so
+`judge::*` reaches `judge-typesafe::*`. Any request may override the stored value
+with a top-level `provider` string (lowercase letters, digits and hyphens, at
+most 64 bytes). A provider that is not registered on the engine returns
+`{"status":"error","code":"provider_unavailable"}`.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read

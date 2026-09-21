@@ -76,13 +76,16 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
 
       - name: Install UI dependencies
-        run: pnpm --filter '@iii-workers/judge-typesafe-ui...' install --frozen-lockfile 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/ui-install.log"
+        run: pnpm --filter '@iii-workers/judge-ui...' --filter '@iii-workers/judge-typesafe-ui...' install --frozen-lockfile 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/ui-install.log"
 
-      - name: judge-typesafe UI Vitest
-        run: pnpm --dir judge-typesafe/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/ui-test.log"
+      - name: UI Vitest (judge, judge-typesafe)
+        run: |
+          pnpm --dir judge/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-ui-test.log"
+          pnpm --dir judge-typesafe/ui test 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-typesafe-ui-test.log"
 
       - name: Build real embedded UI assets
         run: |
+          pnpm --dir judge/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-ui-build.log"
           pnpm --dir judge-typesafe/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-typesafe-ui-build.log"
           # Reuse these assets in both Cargo feature variants.
           echo 'SKIP_UI_BUILD=1' >> "$GITHUB_ENV"
@@ -104,10 +107,15 @@ jobs:
           cargo test --manifest-path judge-typesafe/Cargo.toml --locked --release --no-default-features \
             2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-typesafe-no-default-features.log"
 
-      - name: judge hub routing tests
+      - name: judge hub routing, lifecycle and embedded UI tests
         run: >-
-          cargo test --manifest-path judge/Cargo.toml --locked --release
-          2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge.log"
+          cargo test --manifest-path judge/Cargo.toml --locked --release --all-features
+          2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-all-features.log"
+
+      - name: judge hub tests without console UI
+        run: >-
+          cargo test --manifest-path judge/Cargo.toml --locked --release --no-default-features
+          2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-no-default-features.log"
 
       - name: Install pinned iii engine
         env:

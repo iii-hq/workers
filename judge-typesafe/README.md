@@ -19,7 +19,9 @@ this repository's CI. Wait for JEV's functions to register before making a call.
 
 ## Quickstart
 
-In the Console, open **Settings → Workers → judge-typesafe** and set **API key**, or supply
+In the Console, open **Settings → Workers → Judge TypeSafe** and set **API key**
+(the form checks the saved key against `judge-typesafe::models::list` and offers
+the answered catalog in the **Default model** select), or supply
 `TYPESAFE_API_KEY` in the JEV service's environment before starting it. See
 [Configuration](#configuration) for precedence and reload behavior.
 
@@ -77,7 +79,7 @@ environment to use `judge-typesafe-prod`. The form masks the API key and exposes
 
 ```yaml
 api_key: null                  # Fall back to the worker's TYPESAFE_API_KEY.
-model: jev-1.13.0               # Default unless a call supplies its own model.
+model: jev-latest               # Default unless a call supplies its own model.
 max_request_bytes: 8388608      # Maximum JSON bytes per upstream evaluation.
 max_response_bytes: 8388608     # Maximum bytes per upstream response.
 max_timeout_ms: 300000          # Whole-call timeout ceiling in milliseconds.

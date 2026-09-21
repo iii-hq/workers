@@ -14,9 +14,7 @@ pub fn build_manifest() -> ModuleManifest {
         name: "judge".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         description: DESCRIPTION.into(),
-        // Provider selection is JUDGE_PROVIDER in the process environment; the
-        // hub keeps no configuration entry of its own.
-        default_config: serde_json::json!({}),
+        default_config: crate::config::JudgeConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").into()],
     }
 }

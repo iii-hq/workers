@@ -1,6 +1,6 @@
 //! TypeSafe JEV provider for the `judge` hub; the bus contract is shared through `judge_contract`.
 /// TypeSafe model used when neither configuration nor the request names one.
-pub const DEFAULT_MODEL: &str = "jev-1.13.0";
+pub const DEFAULT_MODEL: &str = "jev-latest";
 /// Suffix the `judge` hub selects this worker by (`judge-typesafe`).
 pub const PROVIDER: &str = "typesafe";
 pub const EVALUATE_ID: &str = "judge-typesafe::evaluate";

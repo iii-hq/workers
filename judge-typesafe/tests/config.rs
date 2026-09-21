@@ -68,7 +68,7 @@ async fn apply_replaces_snapshot_and_rejects_invalid_model() {
         )
         .await
     );
-    assert_eq!(old.model, "jev-1.13.0");
+    assert_eq!(old.model, "jev-latest");
     assert_eq!(cell.read().await.model, "another-model");
     assert!(
         !judge_typesafe::configuration::apply_config(

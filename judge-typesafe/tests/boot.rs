@@ -141,7 +141,7 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                     assert_eq!(value["namespace"], "default");
                     assert_eq!(value["data"]["id"], "jev-boot-test");
                     assert_eq!(value["data"]["metadata"]["ui_form"], "judge-typesafe");
-                    assert_eq!(value["data"]["initial_value"]["model"], "jev-1.13.0");
+                    assert_eq!(value["data"]["initial_value"]["model"], "jev-latest");
                     assert!(value["data"]["initial_value"].get("api_key").is_none());
                     config = true;
                 }

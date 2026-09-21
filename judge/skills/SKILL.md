@@ -13,8 +13,8 @@ description: >-
 questions. `judge::models::list` lists provider models using the same credentials
 and transport. `judge::cancel` signals cancellation of an identified evaluation or
 listing owned by the same caller. Each call is forwarded to `judge-<provider>`:
-`JUDGE_PROVIDER` in the hub environment (default `typesafe`) or a top-level
-`provider` field selects it. Credentials and the default model live with the
+the **Default provider** under Console Settings → Workers → judge (seeded from
+`JUDGE_PROVIDER`, default `typesafe`) or a top-level `provider` field selects it. Credentials and the default model live with the
 provider: for TypeSafe, configure `api_key` in the `judge-typesafe` entry under
 Console Settings → Workers or supply `TYPESAFE_API_KEY` to that worker process.
 An unregistered provider returns `code: "provider_unavailable"`.

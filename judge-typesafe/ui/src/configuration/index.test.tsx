@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
-import type { ConfigFormProps, SettingsFieldProps } from '@iii-dev/console-ui'
-import { act, type InputHTMLAttributes, type ReactNode } from 'react'
-import { createRoot } from 'react-dom/client'
+import type { ConfigFormProps, ExtensionIii, SelectProps, SettingsFieldProps } from '@iii-dev/console-ui'
+import { act, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { JevConfigForm } from './index'
+import { JevConfigForm, listModels } from './index'
 
 const changes = vi.hoisted(() => new Map<string, (value: string) => void>())
 const limits = [
@@ -17,6 +17,8 @@ const limits = [
 // The console provides these components via its import map. Mirror the public
 // contract so the form can run without a live console or configuration store.
 vi.mock('@iii-dev/console-ui', () => ({
+  Button: ({ children, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
+  Chip: ({ tone, children }: { tone?: string; children: ReactNode }) => <span data-chip={tone}>{children}</span>,
   Input: ({
     onChange,
     ...props
@@ -26,10 +28,32 @@ vi.mock('@iii-dev/console-ui', () => ({
     changes.set(props.name!, onChange)
     return <input {...props} onChange={(event) => onChange(event.currentTarget.value)} />
   },
-  SettingsField: ({ id, field, label, description, error, renderControl }: SettingsFieldProps) => (
+  Select: ({ id, name, value, options, onChange, onClear, allowEmpty, emptyLabel, 'aria-busy': busy, ...props }: SelectProps) => {
+    changes.set(name!, (next) => (next === '' ? onClear?.() : onChange(next)))
+    return (
+      <select
+        id={id}
+        name={name}
+        value={value ?? ''}
+        aria-busy={busy}
+        aria-invalid={props['aria-invalid']}
+        aria-describedby={props['aria-describedby']}
+        onChange={(event) => (event.currentTarget.value === '' ? onClear?.() : onChange(event.currentTarget.value))}
+      >
+        {allowEmpty ? <option value="">{emptyLabel}</option> : null}
+        {options?.map((option) => (
+          <option key={option.value} value={option.value} data-description={option.description}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    )
+  },
+  SettingsField: ({ id, field, label, description, error, meta, renderControl }: SettingsFieldProps) => (
     <div data-field={field}>
       <label htmlFor={id}>{label}</label>
       <span id={`${id}-description`}>{description}</span>
+      {meta ? <div data-meta>{meta}</div> : null}
       {error ? <span id={`${id}-error`}>{error}</span> : null}
       {renderControl({
         id: id!,
@@ -40,29 +64,73 @@ vi.mock('@iii-dev/console-ui', () => ({
     </div>
   ),
   SettingsList: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  SettingsSection: ({ title, description, children }: { title: string; description: string; children: ReactNode }) => (
+  SettingsSection: ({ title, description, action, children }: { title: string; description: string; action?: ReactNode; children: ReactNode }) => (
     <section>
       <h2>{title}</h2>
       <p>{description}</p>
+      {action}
       {children}
     </section>
   ),
-  StatusPanel: ({ headline, detail }: { headline: string; detail: ReactNode }) => (
-    <div role="alert">
+  StatusPanel: ({ variant, headline, detail, action }: { variant?: string; headline: ReactNode; detail?: ReactNode; action?: ReactNode }) => (
+    <div role="alert" data-variant={variant}>
       {headline}
       {detail}
+      {action}
     </div>
   ),
 }))
 
+const catalog = {
+  status: 'ok',
+  models: [
+    { name: 'jev-latest', description: 'Latest JEV', release_date: '2026-09-10T18:38:01Z' },
+    { name: 'jev-preview', description: 'Preview', release_date: '2026-09-10T18:39:06Z' },
+  ],
+}
+type Engine = Pick<ExtensionIii, 'trigger'>
+const engine = (reply: unknown = catalog) => {
+  const trigger = vi.fn(async (_id: string, _payload?: Record<string, unknown>, _options?: { timeoutMs?: number }) => {
+    if (reply instanceof Error) throw reply
+    return reply
+  })
+  return { trigger } as unknown as Engine & { trigger: typeof trigger }
+}
+
+// Effects never run here, so the catalog stays in its "checking" state.
 function render(value: ConfigFormProps['value'] = {}, errors = new Map<string, string>()) {
   changes.clear()
   const onChange = vi.fn()
   const html = renderToStaticMarkup(
-    <JevConfigForm id="judge-typesafe" schema={{}} value={value} errors={errors} onChange={onChange} />,
+    <JevConfigForm id="judge-typesafe" schema={{}} value={value} errors={errors} onChange={onChange} iii={engine()} />,
   )
   return { html, onChange }
 }
+
+let root: Root | undefined
+async function mount(value: ConfigFormProps['value'], iii = engine(), extra: Partial<ConfigFormProps> = {}) {
+  changes.clear()
+  const container = document.body.appendChild(document.createElement('div'))
+  root = createRoot(container)
+  const onChange = vi.fn()
+  await act(async () =>
+    root!.render(<JevConfigForm id="judge-typesafe" schema={{}} value={value} onChange={onChange} iii={iii} {...extra} />),
+  )
+  return { container, onChange, iii }
+}
+afterEach(async () => {
+  if (root) await act(async () => root!.unmount())
+  root = undefined
+  document.body.innerHTML = ''
+})
+
+describe('listModels', () => {
+  it('returns the catalog and turns typed refusals into ProviderError codes', async () => {
+    await expect(listModels(engine())).resolves.toEqual(catalog.models)
+    await expect(listModels(engine({ status: 'error', code: 'missing_key' }))).rejects.toMatchObject({ code: 'missing_key' })
+    await expect(listModels(engine({ bogus: true }))).rejects.toMatchObject({ code: 'invalid_response' })
+  })
+})
 
 describe('JevConfigForm', () => {
   it('masks the key and explains worker environment fallback and the default model', () => {
@@ -72,9 +140,9 @@ describe('JevConfigForm', () => {
     expect(key).toContain('autoComplete="new-password"')
     expect(key).toContain('spellCheck="false"')
     expect(html).toContain('TYPESAFE_API_KEY')
-    expect(html).toContain('JEV worker process')
-    expect(html).toContain('takes precedence')
-    expect(html).toContain('placeholder="jev-1.13.0"')
+    expect(html).toContain('restart judge-typesafe')
+    expect(html).toContain('Built-in default (jev-latest)')
+    expect(html).toContain('Checking the worker…')
   })
 
   it.each([
@@ -161,11 +229,14 @@ describe('JevConfigForm', () => {
         ['/future', 'Unknown setting'],
       ]),
     )
-    for (const field of ['api_key', 'model', ...limits.map(([field]) => field)]) {
+    for (const field of ['api_key', ...limits.map(([field]) => field)]) {
       const input = html.match(new RegExp(`<input[^>]*name="${field}"[^>]*>`))?.[0]
       expect(input).toContain('aria-invalid="true"')
       expect(input).toContain(`jev-cfg-${field}-error`)
     }
+    const select = html.match(/<select[^>]*name="model"[^>]*>/)?.[0]
+    expect(select).toContain('aria-invalid="true"')
+    expect(select).toContain('jev-cfg-model-error')
     for (const [field] of limits) {
       expect(html.split(`Invalid ${field}`)).toHaveLength(2)
     }
@@ -181,24 +252,63 @@ describe('JevConfigForm', () => {
   })
 })
 
-describe('JEV configuration deep links', () => {
-  afterEach(() => vi.unstubAllGlobals())
+describe('JevConfigForm catalog', () => {
+  it('lists the catalog the worker answers, keeps the stored model selectable, and reports the key as accepted', async () => {
+    const { container, iii } = await mount({ model: 'jev-1.13.0' })
+    expect(iii.trigger).toHaveBeenCalledWith('judge-typesafe::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
+    const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
+    expect([...select.options].map((option) => option.value)).toEqual(['', 'jev-latest', 'jev-preview', 'jev-1.13.0'])
+    expect(select.options[1].dataset.description).toBe('Latest JEV · 2026-09-10')
+    expect(select.options[3].dataset.description).toBe('Not in the current catalog')
+    expect(select.value).toBe('jev-1.13.0')
+    expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Key accepted · 2 models')
+    expect(container.querySelector('[role="alert"]')).toBeNull()
+  })
 
+  it('selects a catalog model and clears back to the built-in default', async () => {
+    const value = Object.freeze({ model: 'jev-1.13.0', future: { keep: true } })
+    const { container, onChange } = await mount(value)
+    const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
+    await act(async () => {
+      select.value = 'jev-latest'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...value, model: 'jev-latest' })
+    onChange.mockClear()
+    await act(async () => {
+      select.value = ''
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ future: { keep: true } })
+  })
+
+  it('explains a missing key on the credentials field and in a panel', async () => {
+    const { container } = await mount({}, engine({ status: 'error', code: 'missing_key' }))
+    expect(container.querySelector('[data-chip="warning"]')?.textContent).toBe('No key reaches the worker')
+    const alert = container.querySelector('[role="alert"][data-variant="warn"]')!
+    expect(alert.textContent).toContain('No API key reaches the worker')
+    expect(alert.textContent).toContain('TYPESAFE_API_KEY')
+    expect(alert.querySelector('button')).toBeNull()
+    expect([...container.querySelector<HTMLSelectElement>('select[name="model"]')!.options].map((o) => o.value)).toEqual([''])
+  })
+
+  it('surfaces other listing failures with a retry that asks the worker again', async () => {
+    const iii = engine(new Error('invocation timed out'))
+    const { container } = await mount({ model: 'jev-1.13.0' }, iii)
+    expect(container.querySelector('[data-chip="warning"]')?.textContent).toBe('Listing failed · invocation timed out')
+    const alert = container.querySelector('[role="alert"][data-variant="warn"]')!
+    expect(alert.textContent).toContain('Could not list models')
+    expect(container.querySelector<HTMLSelectElement>('select[name="model"]')!.value).toBe('jev-1.13.0')
+    await act(async () => alert.querySelector('button')!.click())
+    expect(iii.trigger).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('JEV configuration deep links', () => {
   it.each(['api_key', 'model', ...limits.map(([field]) => field)])('focuses %s from global Settings', async (field) => {
-    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
-    const container = document.createElement('div')
-    document.body.append(container)
-    const root = createRoot(container)
-    try {
-      await act(async () =>
-        root.render(<JevConfigForm id="judge-typesafe" schema={{}} value={{}} onChange={() => {}} focusField={[field]} />),
-      )
-      const input = container.querySelector(`input[name="${field}"]`)
-      expect(input).not.toBeNull()
-      expect(document.activeElement).toBe(input)
-    } finally {
-      await act(async () => root.unmount())
-      container.remove()
-    }
+    const { container } = await mount({}, engine(), { focusField: [field] })
+    const control = container.querySelector(`#jev-cfg-${field}`)
+    expect(control).not.toBeNull()
+    expect(document.activeElement).toBe(control)
   })
 })

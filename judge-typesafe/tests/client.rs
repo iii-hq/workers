@@ -227,7 +227,7 @@ async fn mixed_wire_questions_preserve_structured_descriptions_and_typed_answers
 async fn independent_ticket_evaluation_uses_generic_wire_and_counts_known_usage() {
     let server = Server::start(|body| Reply::ok(answer(body))).await;
     let (model, results, stats) = ok(server.client().evaluate(request(1), DEFAULT_MODEL).await);
-    assert_eq!(model, "jev-1.13.0");
+    assert_eq!(model, DEFAULT_MODEL);
     assert!(matches!(
         results["ticket-0"].answers["urgent"],
         Answer::Noul { noul: 0.75 }

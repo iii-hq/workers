@@ -127,6 +127,7 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
+  - '!judge::on-config-change'
   - '!judge-typesafe::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell

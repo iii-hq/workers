@@ -1,5 +1,5 @@
 use judge_contract::*;
-const DEFAULT_MODEL: &str = "jev-1.13.0";
+const DEFAULT_MODEL: &str = "jev-latest";
 use serde_json::{json, Value};
 
 #[test]

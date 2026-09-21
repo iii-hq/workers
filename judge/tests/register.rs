@@ -60,7 +60,10 @@ async fn invoke(
         }
     });
     let iii = Arc::new(register_worker(&address, InitOptions::default()));
-    judge::register(&iii, "typesafe");
+    judge::register(
+        &iii,
+        judge::configuration::new_cell(judge::JudgeConfig::default()),
+    );
     let (mut registration, mut forwarded, mut response) = (None, None, None);
     while response.is_none() {
         let (kind, frame) = timeout(Duration::from_secs(3), rx.recv())

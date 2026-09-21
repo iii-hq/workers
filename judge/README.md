@@ -68,9 +68,12 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 
 ## Providers
 
-`JUDGE_PROVIDER` in the hub's environment (or `--provider`) names the default
-provider; it is `typesafe` unless set. A request may pick another one with a
-top-level `provider` field:
+The default provider is a Console setting: **Settings → Workers → judge**,
+field **Default provider**. The form lists every worker currently registered as
+`judge-<provider>` (with its namespace), flags a stored provider that is not
+running, and clears back to the built-in `typesafe`. It hot-reloads for new calls. `JUDGE_PROVIDER` in the hub's environment (or
+`--provider`) only seeds that entry on first boot; it is `typesafe` unless set.
+A request may pick another provider with a top-level `provider` field:
 
 ```bash
 iii trigger judge::models::list --json '{"provider": "typesafe"}'
@@ -85,6 +88,7 @@ hub needs no change. Cancellation stays scoped to the original caller: the hub
 forwards `request_id` as `<caller>/<request_id>`, so provider workers must
 accept ids longer than the public 128-byte bound.
 
-The hub keeps no configuration entry and holds no credentials. For the full API,
+The hub holds no credentials; its configuration entry (`judge`, or
+`III_CONFIG_NAME`) carries only the default provider. For the full API,
 read [reference.md](reference.md); for the provider's build, configuration and
 tests, read [judge-typesafe](../judge-typesafe/README.md).

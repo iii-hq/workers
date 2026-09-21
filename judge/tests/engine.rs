@@ -36,7 +36,10 @@ async fn hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_ca
             format!("{}/v1/systemone", server.uri()),
         ),
     );
-    judge::register(&hub, "typesafe");
+    judge::register(
+        &hub,
+        judge::configuration::new_cell(judge::JudgeConfig::default()),
+    );
     for id in [
         FUNCTION_ID,
         MODELS_FUNCTION_ID,
