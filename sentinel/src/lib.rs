@@ -9,11 +9,13 @@
 //! Design of record:
 //! <https://github.com/iii-hq/workers/blob/main/tech-specs/2026-09-sentinel/sentinel.md>.
 
+pub mod adapters;
 mod config;
 pub mod configuration;
 mod contract;
 pub mod dependencies;
 mod error;
+pub mod evidence;
 pub mod fingerprint;
 pub mod functions;
 pub mod ids;
@@ -24,6 +26,7 @@ pub mod redact;
 mod status;
 pub mod store;
 
+pub use adapters::ErrorEvent;
 pub use config::{
     ArchiveConfigV1, EvidenceConfigV1, FingerprintConfigV1, IngestConfigV1, InvestigationConfigV1,
     LogSourceConfigV1, RedactionConfigV1, RepositoryConfigV1, RetentionConfigV1, SourcesConfigV1,
@@ -36,6 +39,7 @@ pub use contract::{
     SourcesStatusV1, StatusRequestV1, StatusResponseV1, TraceStoreStateV1,
 };
 pub use error::SentinelError;
+pub use evidence::EvidenceBundleV1;
 pub use lifecycle::{GroupState, Transition};
 pub use normalize::Normalizer;
 pub use redact::Redactor;
