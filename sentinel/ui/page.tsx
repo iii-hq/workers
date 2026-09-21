@@ -1,5 +1,5 @@
 import type { Host } from '@iii-dev/console-ui'
-import { SentinelConfigForm } from './src/config/SentinelConfigForm'
+import { SentinelConfigForm } from './src/settings/SentinelConfigForm'
 import { SentinelPage } from './src/page'
 import { diagnosisRecordRenderer } from './src/renderers/diagnosis-record'
 import { CONFIGURATION_ID, PAGE_ID } from './src/shared'
