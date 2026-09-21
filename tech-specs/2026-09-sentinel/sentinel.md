@@ -963,7 +963,18 @@ da sessão vem **só** do contexto da invocação, nunca do payload: o
 `harness::turn step` estampa `iii.session.id` na baggage OTel do turno
 (`harness/src/functions/turn.rs:51-53`), o engine a carrega na invocação
 (`InvokeFunction.baggage`, `engine/src/protocol.rs:176`) e o handler a lê
-com `get_baggage_entry` do SDK. O agente não escreve baggage. O Sentinel
+com `get_baggage_entry` do SDK. O agente não escreve baggage.
+
+⚠ **Onde essa leitura acontece é load-bearing, e errar é silencioso.** O SDK
+avalia `handler(request)` e **só então** embrulha o futuro devolvido com o
+contexto OTel da invocação (`iii-sdk-0.23.0/src/iii.rs:2327`
+— `handler(data, metadata).with_context(otel_cx).await`). Ler a baggage no
+corpo do closure roda **fora** desse contexto e devolve `None`: compila,
+passa em todo teste unitário, e só falha quando há um modelo do outro lado.
+A leitura tem de estar dentro do bloco `async` — pela mesma razão que um
+`tokio::spawn` nu perde o contexto. Medido ao vivo: seis chamadas seguidas de
+`record` recusadas com `sentinel/no_investigation` enquanto a regra estava
+certa e a leitura no lugar errado. Um teste de fonte fixa a posição. O Sentinel
 resolve `session_id → investigação` e aceita a chamada só quando essa
 investigação é do `group_id` informado. Sem `iii.session.id`, ou com um id
 que não é de investigação → `sentinel/no_investigation`; investigação de
@@ -1613,6 +1624,20 @@ configuração registrado no console (`host.configForms.register("sentinel",
 Página injetada (`iii-console-ui`, ativos `sentinel/page.js` e
 `sentinel/styles.css`), registrada com `host.pages.register`. Três vistas:
 
+> ⚠ **O que o v1 entregou desta seção.** A lista, o detalhe, as abas *Latest
+> occurrence*, *Occurrences* e *Diagnosis*, as ações humanas, *Investigate* e
+> *Open in chat*, *Open session*, *Stop*, *Ask for a diagnosis*, o form de
+> configuração e a atualização ao vivo. Ficaram de fora, deliberadamente, e
+> cada um é uma adição isolada: **ações em lote** na lista, **Investigate
+> with…** (trocar o modelo no ato; o v1 usa o configurado), a aba **History**
+> (o v1 deriva o estado dos campos do grupo, sem tabela de transições), a
+> **lista de diagnósticos anteriores** na aba Diagnosis (o vigente é
+> mostrado; os anteriores ficam em `investigations::get`), os **links de
+> sessão e turno** na aba Occurrences, e o **seletor de modelo alimentado
+> pelo catálogo** no form — que hoje é um campo de texto. O renderer da
+> evidência em modo chat está bloqueado por falta de consumidor no console
+> (ver "A evidência no transcript").
+
 **Lista de grupos.** Filtros: estado (padrão: abertos — `new`,
 `investigating`, `diagnosed`, `regressed`; chips para `regressed`, `ignored`,
 `resolved`), worker, janela (24 h / 7 d / 30 d / tudo), busca. Colunas:
@@ -1671,10 +1696,14 @@ investigação, triagem (liga/desliga e modelo), fontes, repositórios (id,
 path, workers), retenção. Sem campos de orçamento.
 
 **A evidência no transcript.** Em `mode: "chat"` a evidência é uma entrada
-`user` com `metadata.sentinel_evidence: true`; o Sentinel registra um
-`host.chat.registerTranscriptRenderer` para ela, que a rotula como do
-Sentinel e mostra os chips de evidência — sem o renderer, o console a
-exibiria como fala do usuário. A chamada `sentinel::diagnosis::record`
+`user` com ⚠ `origin.sentinel_evidence: true`. ⚠ **O renderer que a rotularia
+como do Sentinel não existe no v1**: `host.chat.registerTranscriptRenderer` só
+está declarado como tipo (`packages/console-ui/index.d.ts:550`) e não há
+consumidor em `ade/web/src`, então o console exibe a entrada como fala do
+usuário. O cabeçalho `## Sentinel · evidence — <título>` no próprio texto é o
+que a identifica, e o renderer vira follow-up no `ade`. A chamada
+`sentinel::diagnosis::record` **tem** renderer (`host.functionTriggers`) e
+aparece no transcript como a conclusão que é. A chamada `sentinel::diagnosis::record`
 aparece no transcript como qualquer `triggered ƒ`, com um marcador do
 Sentinel; a aba Diagnosis atualiza no mesmo instante. *Ask for a diagnosis*
 compõe "grave o que você tem até agora" na sessão — não há estado
@@ -1702,6 +1731,11 @@ adicionar ao `ade` uma navegação de host para telas built-in com contexto
 trace a partir do próprio snapshot — que ele precisa fazer de qualquer forma
 para o caso em que o trace já sumiu. A primeira é a experiência certa; a
 segunda é o mínimo para o v1 funcionar sem tocar no console.
+
+⚠ **Decidido na entrega: a segunda.** A página renderiza a árvore a partir do
+bundle congelado e marca com um chip quando o trace já saiu do anel. Nenhuma
+mudança no `ade`, e o caminho que importa — "o trace sumiu, e mesmo assim dá
+para ver o que aconteceu" — é o mesmo caminho nos dois casos.
 
 ## Estado e durabilidade
 
