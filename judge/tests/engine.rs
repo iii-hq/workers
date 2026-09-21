@@ -104,7 +104,6 @@ async fn hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_ca
         .await;
     let mut identified = evaluation;
     identified["request_id"] = json!("ticket-run-42");
-    identified["options"] = json!({"retry":{"max_retries":0}});
     let evaluating_owner = owner.clone();
     let pending = tokio::spawn(async move {
         invoke(&evaluating_owner, FUNCTION_ID, identified)

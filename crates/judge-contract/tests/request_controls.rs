@@ -6,14 +6,13 @@ fn request_controls_accept_partial_overrides_and_preserve_legacy_calls() {
     let legacy = json!({"timeout_ms":1000,"evaluations":[{"id":"ticket","state":"Checkout is down","questions":{"urgent":{"type":"noul"}}}]});
     let parsed: EvaluateRequest = serde_json::from_value(legacy.clone()).unwrap();
     let encoded = serde_json::to_value(parsed).unwrap();
-    assert_eq!(encoded["options"]["retry"]["max_retries"], 2);
+    assert_eq!(encoded["options"], json!({}));
     let mut call = legacy;
     call["request_id"] = json!("job-42");
-    call["options"] = json!({"headers":{"x-project":"helpdesk"},"retry":{"max_retries":0},"attempt_timeout_ms":500});
+    call["options"] = json!({"attempt_timeout_ms":500});
     let parsed: EvaluateRequest = serde_json::from_value(call).unwrap();
     let wire = serde_json::to_value(parsed).unwrap();
-    assert_eq!(wire["options"]["retry"]["max_retries"], 0);
-    assert_eq!(wire["options"]["retry"]["backoff_initial_ms"], 500);
+    assert_eq!(wire["options"]["attempt_timeout_ms"], 500);
     assert_eq!(wire["request_id"], "job-42");
 }
 
@@ -39,26 +38,25 @@ fn provider_errors_keep_validation_detail_and_retry_delay() {
 #[test]
 fn models_accept_the_same_controls() {
     let request: ModelsRequest = serde_json::from_value(
-        json!({"request_id":"catalog-refresh","options":{"retry":{"max_retries":1}}}),
+        json!({"request_id":"catalog-refresh","options":{"attempt_timeout_ms":250}}),
     )
     .unwrap();
     let wire = serde_json::to_value(request).unwrap();
-    assert_eq!(wire["options"]["retry"]["max_retries"], 1);
+    assert_eq!(wire["options"]["attempt_timeout_ms"], 250);
 }
 
 #[test]
 fn controls_reject_unknown_fields_and_advertise_cancellation_and_usage() {
-    let bad: Result<ModelsRequest, _> =
-        serde_json::from_value(json!({"options":{"retry":{"retry_forever":true}}}));
-    assert!(bad.is_err());
+    for bad in [
+        json!({"options":{"retry":{"max_retries":0}}}),
+        json!({"options":{"headers":{"x-tag":"a"}}}),
+    ] {
+        assert!(serde_json::from_value::<ModelsRequest>(bad).is_err());
+    }
     let schema = serde_json::to_value(schemars::schema_for!(EvaluateRequest)).unwrap();
     assert_eq!(schema["properties"]["request_id"]["maxLength"], 128);
     assert_eq!(
-        schema["definitions"]["RetryPolicy"]["properties"]["max_retries"]["maximum"],
-        10.0
-    );
-    assert_eq!(
-        schema["definitions"]["RetryPolicy"]["additionalProperties"],
+        schema["definitions"]["RequestOptions"]["additionalProperties"],
         false
     );
     let cancel: judge_contract::CancelRequest =

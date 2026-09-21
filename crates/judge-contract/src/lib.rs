@@ -4,9 +4,9 @@ mod answers;
 mod encoding;
 mod options;
 mod questions;
-pub use options::{RequestOptions, RetryPolicy};
+pub use options::RequestOptions;
 
-pub use answers::{validate_answer, Answer};
+pub use answers::{unique_map, validate_answer, Answer};
 pub use encoding::{
     encode_evaluation, encode_evaluation_with_limits, validate_request,
     validate_request_with_limits,
@@ -37,19 +37,6 @@ pub const DEFAULT_MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const DEFAULT_MAX_TIMEOUT_MS: u64 = 300_000;
 
-#[derive(Clone, Copy, Debug)]
-pub struct EncodingLimits {
-    pub max_body_bytes: usize,
-    pub max_state_question_bytes: Option<usize>,
-}
-impl Default for EncodingLimits {
-    fn default() -> Self {
-        Self {
-            max_body_bytes: DEFAULT_MAX_REQUEST_BYTES,
-            max_state_question_bytes: None,
-        }
-    }
-}
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EvaluateRequest {

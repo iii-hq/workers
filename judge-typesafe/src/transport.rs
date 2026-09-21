@@ -1,8 +1,8 @@
 //! Bounded provider HTTP requests and retries.
 
 use crate::client::ExecutionLimits;
-use judge_contract::{ErrorCode, ProviderError, RequestOptions, RetryPolicy};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use judge_contract::{ErrorCode, ProviderError, RequestOptions};
+use reqwest::header::HeaderMap;
 use serde_json::Value;
 use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -14,6 +14,23 @@ use tokio::{
 };
 
 const MAX_ERROR_BYTES: usize = 64 * 1024;
+
+/// Retry policy after the official TypeSafe SDK defaults. Not a caller knob;
+/// tests inject faster variants.
+#[derive(Clone, Copy, Debug)]
+pub struct RetryPolicy {
+    pub max_retries: u32,
+    pub backoff_initial_ms: u64,
+    pub backoff_max_ms: u64,
+    /// Server `Retry-After` hints above this fall back to backoff.
+    pub max_retry_after_ms: u64,
+}
+pub const DEFAULT_RETRY: RetryPolicy = RetryPolicy {
+    max_retries: 2,
+    backoff_initial_ms: 500,
+    backoff_max_ms: 5_000,
+    max_retry_after_ms: 60_000,
+};
 
 #[derive(Debug)]
 pub(crate) struct Failure {
@@ -39,76 +56,17 @@ pub(crate) fn validate_options(
     limits: ExecutionLimits,
 ) -> Result<(), ErrorCode> {
     limits.validate()?;
-    let retry = &options.retry;
-    let safe_duration = |ms| {
+    let safe = |ms: u64| {
         ms > 0
             && i64::try_from(ms).is_ok()
             && Instant::now()
                 .checked_add(Duration::from_millis(ms))
                 .is_some()
     };
-    if retry.max_retries > 10
-        || !safe_duration(retry.backoff_initial_ms)
-        || !safe_duration(retry.backoff_max_ms)
-        || !safe_duration(retry.max_retry_after_ms)
-        || !retry.backoff_jitter.is_finite()
-        || !(0.0..=1.0).contains(&retry.backoff_jitter)
-        || retry
-            .http_statuses
-            .iter()
-            .any(|status| !(100..=599).contains(status))
-        || options
-            .attempt_timeout_ms
-            .is_some_and(|ms| !safe_duration(ms))
-    {
+    if options.attempt_timeout_ms.is_some_and(|ms| !safe(ms)) {
         return Err(ErrorCode::InvalidRequest);
     }
-    request_headers(options)?;
     Ok(())
-}
-
-fn request_headers(options: &RequestOptions) -> Result<HeaderMap, ErrorCode> {
-    if options.headers.len() > 64 {
-        return Err(ErrorCode::InvalidRequest);
-    }
-    let mut size = 0usize;
-    let mut headers = HeaderMap::new();
-    for (name, value) in &options.headers {
-        size = size
-            .checked_add(name.len())
-            .and_then(|size| size.checked_add(value.len()))
-            .ok_or(ErrorCode::InvalidRequest)?;
-        if size > 16 * 1024 {
-            return Err(ErrorCode::InvalidRequest);
-        }
-        let name =
-            HeaderName::from_bytes(name.as_bytes()).map_err(|_| ErrorCode::InvalidRequest)?;
-        if matches!(
-            name.as_str(),
-            "authorization"
-                | "proxy-authorization"
-                | "proxy-authenticate"
-                | "host"
-                | "content-length"
-                | "transfer-encoding"
-                | "content-type"
-                | "content-encoding"
-                | "connection"
-                | "keep-alive"
-                | "proxy-connection"
-                | "te"
-                | "trailer"
-                | "upgrade"
-                | "expect"
-        ) || headers.contains_key(&name)
-        {
-            return Err(ErrorCode::InvalidRequest);
-        }
-        let mut value = HeaderValue::from_str(value).map_err(|_| ErrorCode::InvalidRequest)?;
-        value.set_sensitive(true);
-        headers.insert(name, value);
-    }
-    Ok(headers)
 }
 
 /// This guard also covers cancellation by dropping the future. Once a provider
@@ -133,23 +91,22 @@ pub(crate) async fn send_http(
     key: &str,
     limits: ExecutionLimits,
     options: &RequestOptions,
+    retry: RetryPolicy,
     deadline: Instant,
     attempts: &AtomicUsize,
     unknown_usage: &AtomicBool,
     build: impl Fn() -> Result<reqwest::RequestBuilder, Failure>,
 ) -> Result<Vec<u8>, Failure> {
     validate_options(options, limits)?;
-    let headers = request_headers(options)?;
-    let redactor = Redactor::new(key, options);
+    let redactor = Redactor::new(key);
     timeout_at(deadline, async {
-        for retry in 0..=options.retry.max_retries {
+        for attempt in 0..=retry.max_retries {
             check_deadline(deadline)?;
             let result = {
                 let _permit = permits.acquire().await.map_err(|_| ErrorCode::Transport)?;
                 check_deadline(deadline)?;
                 // Finish validation/building before counting an HTTP attempt.
                 let request = build()?
-                    .headers(headers.clone())
                     .bearer_auth(key)
                     .build()
                     .map_err(|_| ErrorCode::InvalidRequest)?;
@@ -192,16 +149,15 @@ pub(crate) async fn send_http(
                 Ok(bytes) => return Ok(bytes),
                 Err(failure) => {
                     check_deadline(deadline)?;
-                    if retry == options.retry.max_retries || !retryable(&failure, &options.retry) {
+                    if attempt == retry.max_retries || !retryable(&failure) {
                         return Err(failure);
                     }
-                    let delay = retry_delay(
-                        &options.retry,
-                        retry,
+                    sleep(Duration::from_millis(retry_delay(
+                        &retry,
+                        attempt,
                         failure.retry_after_ms,
-                        rand::random(),
-                    );
-                    sleep(Duration::from_millis(delay)).await;
+                    )))
+                    .await;
                 }
             }
         }
@@ -211,7 +167,7 @@ pub(crate) async fn send_http(
     .unwrap_or_else(|_| Err(ErrorCode::Deadline.into()))
 }
 
-fn check_deadline(deadline: Instant) -> Result<(), ErrorCode> {
+pub(crate) fn check_deadline(deadline: Instant) -> Result<(), ErrorCode> {
     if Instant::now() >= deadline {
         Err(ErrorCode::Deadline)
     } else {
@@ -293,42 +249,31 @@ async fn http_failure(
     }
 }
 
-fn retryable(failure: &Failure, policy: &RetryPolicy) -> bool {
+/// 408/429/5xx, connection failures and attempt timeouts; everything else is final.
+fn retryable(failure: &Failure) -> bool {
     match failure.code {
         ErrorCode::Http => failure
             .http_status
-            .is_some_and(|status| policy.http_statuses.contains(&status)),
-        ErrorCode::Transport => policy.api_connection_error,
-        ErrorCode::AttemptTimeout => policy.api_timeout_error,
+            .is_some_and(|status| matches!(status, 408 | 429 | 500..=599)),
+        ErrorCode::Transport | ErrorCode::AttemptTimeout => true,
         _ => false,
     }
 }
 
-fn retry_delay(policy: &RetryPolicy, retry: u32, retry_after_ms: Option<u64>, random: f64) -> u64 {
-    if let Some(delay) =
-        retry_after_ms.filter(|&ms| policy.respect_retry_after && ms <= policy.max_retry_after_ms)
-    {
+/// Honored server hint, else capped exponential backoff minus up to 25% jitter.
+fn retry_delay(policy: &RetryPolicy, attempt: u32, retry_after_ms: Option<u64>) -> u64 {
+    if let Some(delay) = retry_after_ms.filter(|&ms| ms <= policy.max_retry_after_ms) {
         return delay;
     }
     let base = policy
         .backoff_initial_ms
-        .saturating_mul(1u64.checked_shl(retry).unwrap_or(u64::MAX))
+        .saturating_mul(1u64.checked_shl(attempt).unwrap_or(u64::MAX))
         .min(policy.backoff_max_ms);
-    ((base as f64 * (1.0 - policy.backoff_jitter * random)) as u64).min(base)
+    base - rand::random_range(0..=base / 4)
 }
 
 fn retry_after(headers: &HeaderMap, now: SystemTime) -> Option<u64> {
-    fn number(value: &str) -> Option<u64> {
-        let value = value.trim();
-        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        Some(value.bytes().fold(0u64, |value, digit| {
-            value
-                .saturating_mul(10)
-                .saturating_add(u64::from(digit - b'0'))
-        }))
-    }
+    let number = |value: &str| value.trim().parse::<u64>().ok();
     if let Some(ms) = headers
         .get("retry-after-ms")
         .and_then(|value| value.to_str().ok())
@@ -350,17 +295,10 @@ struct Redactor {
 }
 
 impl Redactor {
-    fn new(key: &str, options: &RequestOptions) -> Self {
-        let mut secrets = Vec::new();
-        for secret in std::iter::once(key).chain(options.headers.values().map(String::as_str)) {
-            if secret.is_empty() {
-                continue;
-            }
-            secrets.push(secret.to_owned());
-            // Malformed/truncated JSON may still contain escaped credentials.
-            let escaped = serde_json::to_string(secret).expect("strings serialize");
-            secrets.push(escaped[1..escaped.len() - 1].to_owned());
-        }
+    fn new(key: &str) -> Self {
+        // Malformed/truncated JSON may still contain the escaped credential.
+        let escaped = serde_json::to_string(key).expect("strings serialize");
+        let mut secrets = vec![key.to_owned(), escaped[1..escaped.len() - 1].to_owned()];
         secrets.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
         secrets.dedup();
         Self { secrets }
@@ -483,6 +421,7 @@ mod tests {
     use super::*;
     use crate::client::ExecutionLimits;
     use judge_contract::{ErrorCode, RequestOptions};
+    use reqwest::header::HeaderValue;
     use serde_json::json;
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -592,16 +531,28 @@ mod tests {
             .unwrap()
     }
     fn options() -> RequestOptions {
-        let mut options = RequestOptions::default();
-        options.retry.max_retries = 0;
-        options.retry.backoff_initial_ms = 1;
-        options.retry.backoff_max_ms = 4;
-        options.retry.backoff_jitter = 0.0;
-        options
+        RequestOptions::default()
+    }
+    /// Millisecond backoff so retry paths run fast; `DEFAULT_RETRY` is production.
+    fn fast(max_retries: u32) -> RetryPolicy {
+        RetryPolicy {
+            max_retries,
+            backoff_initial_ms: 1,
+            backoff_max_ms: 4,
+            ..DEFAULT_RETRY
+        }
     }
     async fn call(
         server: &Server,
         options: &RequestOptions,
+        limits: ExecutionLimits,
+    ) -> (Result<Vec<u8>, Failure>, usize, bool) {
+        call_with(server, options, fast(0), limits).await
+    }
+    async fn call_with(
+        server: &Server,
+        options: &RequestOptions,
+        retry: RetryPolicy,
         limits: ExecutionLimits,
     ) -> (Result<Vec<u8>, Failure>, usize, bool) {
         let client = client();
@@ -613,6 +564,7 @@ mod tests {
             "test-key",
             limits,
             options,
+            retry,
             Instant::now() + Duration::from_secs(3),
             &attempts,
             &unknown,
@@ -629,11 +581,8 @@ mod tests {
     #[tokio::test]
     async fn transport_preserves_validation_detail_and_redacts_nested_secrets() {
         let server = Server::start(|_| Reply::new(422, json!({"detail":[{"loc":["body","questions","urgent"],"msg":"test-key private-header","input":{"test-key":"private-header","nested":["test-key"]}}]}).to_string())).await;
-        let mut options = options();
-        options
-            .headers
-            .insert("X-Correlation-Id".into(), "private-header".into());
-        let (result, attempts, unknown) = call(&server, &options, ExecutionLimits::default()).await;
+        let (result, attempts, unknown) =
+            call(&server, &options(), ExecutionLimits::default()).await;
         let failure = result.unwrap_err();
         assert_eq!(failure.code, ErrorCode::Http);
         assert_eq!(failure.http_status, Some(422));
@@ -645,11 +594,13 @@ mod tests {
         );
         let serialized = serde_json::to_string(&error).unwrap();
         assert!(!serialized.contains("test-key"));
-        assert!(!serialized.contains("private-header"));
+        assert!(
+            serialized.contains("private-header"),
+            "only the key is a secret"
+        );
         assert_eq!(attempts, 1);
         assert!(!unknown);
         let requests = server.requests.lock().unwrap();
-        assert!(requests[0].contains("x-correlation-id: private-header"));
         assert!(requests[0].contains("authorization: Bearer test-key"));
     }
 
@@ -668,9 +619,8 @@ mod tests {
             reply
         })
         .await;
-        let mut options = options();
-        options.retry.max_retries = 2;
-        let (result, attempts, unknown) = call(&server, &options, ExecutionLimits::default()).await;
+        let (result, attempts, unknown) =
+            call_with(&server, &options(), fast(2), ExecutionLimits::default()).await;
         assert_eq!(result.unwrap(), b"done");
         assert_eq!(attempts, 3);
         assert!(!unknown);
@@ -684,9 +634,8 @@ mod tests {
             reply
         })
         .await;
-        let mut options = options();
-        options.retry.max_retries = 2;
-        let (result, attempts, unknown) = call(&server, &options, ExecutionLimits::default()).await;
+        let (result, attempts, unknown) =
+            call_with(&server, &options(), fast(2), ExecutionLimits::default()).await;
         let failure = result.unwrap_err();
         assert_eq!(failure.http_status, Some(503));
         assert_eq!(failure.retry_after_ms, Some(0));
@@ -710,98 +659,27 @@ mod tests {
                 reply
             })
             .await;
-            let mut options = options();
-            options.retry.max_retries = 1;
             let (result, attempts, unknown) =
-                call(&server, &options, ExecutionLimits::default()).await;
+                call_with(&server, &options(), fast(1), ExecutionLimits::default()).await;
             assert_eq!(result.unwrap(), b"ok");
             assert_eq!(attempts, 2);
             assert!(unknown);
         }
     }
 
-    #[tokio::test]
-    async fn transport_rejects_malformed_or_protected_headers_before_dispatch() {
-        let server = Server::start(|_| Reply::new(200, "ok")).await;
-        for (name, value) in [
-            ("Authorization", "evil"),
-            ("Proxy-Authorization", "evil"),
-            ("Host", "elsewhere"),
-            ("Content-Length", "1"),
-            ("Transfer-Encoding", "chunked"),
-            ("Content-Type", "text/plain"),
-            ("Connection", "close"),
-            ("Keep-Alive", "1"),
-            ("TE", "trailers"),
-            ("Trailer", "X-Secret"),
-            ("Upgrade", "websocket"),
-            ("Proxy-Connection", "close"),
-            ("bad name", "ok"),
-            ("X-Test", "hello\r\nInjected: yes"),
-        ] {
-            let mut options = options();
-            options.headers.insert(name.into(), value.into());
-            let (result, attempts, unknown) =
-                call(&server, &options, ExecutionLimits::default()).await;
-            assert_eq!(
-                result.unwrap_err().code,
-                ErrorCode::InvalidRequest,
-                "{name}"
-            );
-            assert_eq!(attempts, 0);
-            assert!(!unknown);
-        }
-        assert!(server.requests.lock().unwrap().is_empty());
-    }
-
     #[test]
-    fn transport_validates_header_budgets_duplicates_and_retry_settings() {
+    fn transport_validates_attempt_timeouts() {
         let limits = ExecutionLimits::default();
-        let mut duplicate = options();
-        duplicate.headers.insert("X-Id".into(), "a".into());
-        duplicate.headers.insert("x-id".into(), "b".into());
-        assert_eq!(
-            validate_options(&duplicate, limits),
-            Err(ErrorCode::InvalidRequest)
-        );
-        let mut count = options();
-        for n in 0..65 {
-            count.headers.insert(format!("x-{n}"), "a".into());
-        }
-        assert_eq!(
-            validate_options(&count, limits),
-            Err(ErrorCode::InvalidRequest)
-        );
-        let mut bytes = options();
-        bytes.headers.insert("x-test".into(), "a".repeat(16 * 1024));
-        assert_eq!(
-            validate_options(&bytes, limits),
-            Err(ErrorCode::InvalidRequest)
-        );
-        for change in [
-            |o: &mut RequestOptions| o.retry.max_retries = 11,
-            |o: &mut RequestOptions| o.retry.backoff_initial_ms = 0,
-            |o: &mut RequestOptions| o.retry.backoff_max_ms = 0,
-            |o: &mut RequestOptions| o.retry.backoff_initial_ms = u64::MAX,
-            |o: &mut RequestOptions| o.retry.backoff_max_ms = u64::MAX,
-            |o: &mut RequestOptions| o.retry.backoff_jitter = f64::NAN,
-            |o: &mut RequestOptions| o.retry.backoff_jitter = -0.1,
-            |o: &mut RequestOptions| o.retry.backoff_jitter = 1.01,
-            |o: &mut RequestOptions| o.retry.max_retry_after_ms = 0,
-            |o: &mut RequestOptions| o.retry.max_retry_after_ms = u64::MAX,
-            |o: &mut RequestOptions| o.retry.http_statuses = vec![99],
-            |o: &mut RequestOptions| o.retry.http_statuses = vec![600],
-            |o: &mut RequestOptions| o.attempt_timeout_ms = Some(0),
-            |o: &mut RequestOptions| o.attempt_timeout_ms = Some(u64::MAX),
-        ] {
-            let mut options = options();
-            change(&mut options);
+        assert_eq!(validate_options(&RequestOptions::default(), limits), Ok(()));
+        for ms in [0, u64::MAX] {
+            let options = RequestOptions {
+                attempt_timeout_ms: Some(ms),
+            };
             assert_eq!(
                 validate_options(&options, limits),
                 Err(ErrorCode::InvalidRequest)
             );
         }
-        assert_eq!(validate_options(&RequestOptions::default(), limits), Ok(()));
     }
 
     #[tokio::test]
@@ -839,9 +717,9 @@ mod tests {
         })
         .await;
         let mut options = options();
-        options.retry.max_retries = 1;
         options.attempt_timeout_ms = Some(40);
-        let (result, attempts, unknown) = call(&server, &options, ExecutionLimits::default()).await;
+        let (result, attempts, unknown) =
+            call_with(&server, &options, fast(1), ExecutionLimits::default()).await;
         assert_eq!(result.unwrap(), b"ok");
         assert_eq!(attempts, 2);
         assert!(unknown);
@@ -861,6 +739,7 @@ mod tests {
                 "key",
                 ExecutionLimits::default(),
                 &options(),
+                fast(0),
                 Instant::now() + Duration::from_millis(20),
                 &attempts,
                 &unknown,
@@ -876,7 +755,7 @@ mod tests {
 
     #[test]
     fn transport_error_message_budget_includes_json_escaping() {
-        let redactor = Redactor::new("test-key", &options());
+        let redactor = Redactor::new("test-key");
         let error = redactor.provider_error(&[0; 64], false, 64);
         assert!(
             serde_json::to_string(&error.message.unwrap())
@@ -889,7 +768,7 @@ mod tests {
 
     #[test]
     fn transport_redacts_a_credential_cut_inside_a_utf8_character() {
-        let redactor = Redactor::new("token-éclair", &options());
+        let redactor = Redactor::new("token-éclair");
         for bytes in [
             b"prefix token-\xc3".as_slice(),
             b"\xff prefix token-\xc3".as_slice(),
@@ -911,7 +790,7 @@ mod tests {
             (Some(" 25 "), Some("12"), Some(25)),
             (Some("invalid"), Some("12"), Some(12000)),
             (Some("-1"), Some("12"), Some(12000)),
-            (Some("184467440737095516160000"), Some("12"), Some(u64::MAX)),
+            (Some("184467440737095516160000"), Some("12"), Some(12000)),
             (None, Some("18446744073709551615"), Some(u64::MAX)),
             (None, Some("Sun, 06 Nov 1994 08:49:39 GMT"), Some(2000)),
             (None, Some("Sun, 06 Nov 1994 08:49:30 GMT"), Some(0)),
@@ -937,23 +816,23 @@ mod tests {
 
     #[test]
     fn transport_backoff_caps_before_subtractive_jitter_and_ignores_long_retry_after() {
-        let mut policy = RetryPolicy::default();
-        assert_eq!(retry_delay(&policy, 0, None, 0.0), 500);
-        assert_eq!(retry_delay(&policy, 0, None, 1.0), 375);
-        assert_eq!(retry_delay(&policy, 1, None, 0.0), 1000);
-        assert_eq!(retry_delay(&policy, 10, None, 1.0), 3750);
-        assert_eq!(retry_delay(&policy, 1000, None, 0.0), 5000);
-        assert_eq!(retry_delay(&policy, 0, Some(60_000), 0.0), 60_000);
-        assert_eq!(retry_delay(&policy, 0, Some(60_001), 0.0), 500);
-        assert_eq!(retry_delay(&policy, 0, Some(u64::MAX), 0.0), 500);
-        assert_eq!(retry_delay(&policy, 0, Some(0), 0.0), 0);
-        policy.respect_retry_after = false;
-        assert_eq!(retry_delay(&policy, 0, Some(0), 0.0), 500);
-        policy.backoff_jitter = 1.0;
-        assert_eq!(retry_delay(&policy, 0, None, 1.0), 0);
-        policy.backoff_initial_ms = i64::MAX as u64;
-        policy.backoff_max_ms = 5000;
-        assert_eq!(retry_delay(&policy, 10, None, 0.0), 5000);
+        let policy = DEFAULT_RETRY;
+        for _ in 0..64 {
+            assert!((375..=500).contains(&retry_delay(&policy, 0, None)));
+            assert!((750..=1000).contains(&retry_delay(&policy, 1, None)));
+            assert!((3750..=5000).contains(&retry_delay(&policy, 10, None)));
+            assert!((3750..=5000).contains(&retry_delay(&policy, 1000, None)));
+            assert!((375..=500).contains(&retry_delay(&policy, 0, Some(60_001))));
+            assert!((375..=500).contains(&retry_delay(&policy, 0, Some(u64::MAX))));
+        }
+        assert_eq!(retry_delay(&policy, 0, Some(60_000)), 60_000);
+        assert_eq!(retry_delay(&policy, 0, Some(0)), 0);
+        let huge = RetryPolicy {
+            backoff_initial_ms: i64::MAX as u64,
+            backoff_max_ms: 5000,
+            ..policy
+        };
+        assert!((3750..=5000).contains(&retry_delay(&huge, 10, None)));
     }
 
     #[tokio::test]
@@ -1006,39 +885,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_disabling_retry_categories_preserves_one_attempt() {
-        for category in [0, 1, 2] {
-            let server = Server::start(move |_| {
-                let mut reply = Reply::new(if category == 0 { 503 } else { 200 }, "ok");
-                reply.disconnect = category == 1;
-                if category == 2 {
-                    reply.delay = Duration::from_millis(200);
-                }
-                reply
-            })
-            .await;
-            let mut options = options();
-            options.retry.max_retries = 2;
-            options.retry.http_statuses.clear();
-            options.retry.api_connection_error = false;
-            options.retry.api_timeout_error = false;
-            options.attempt_timeout_ms = Some(40);
-            let (result, attempts, unknown) =
-                call(&server, &options, ExecutionLimits::default()).await;
-            assert_eq!(
-                result.unwrap_err().code,
-                [
-                    ErrorCode::Http,
-                    ErrorCode::Transport,
-                    ErrorCode::AttemptTimeout
-                ][category]
-            );
-            assert_eq!(attempts, 1);
-            assert_eq!(unknown, category != 0);
-        }
-    }
-
-    #[tokio::test]
     async fn transport_releases_permit_during_backoff_and_total_deadline_stops_retry() {
         let server = Server::start(|_| {
             let mut reply = Reply::new(429, "busy");
@@ -1051,14 +897,14 @@ mod tests {
         let permits = Semaphore::new(1);
         let attempts = AtomicUsize::new(0);
         let unknown = AtomicBool::new(false);
-        let mut options = options();
-        options.retry.max_retries = 2;
+        let options = options();
         let future = send_http(
             &http,
             &permits,
             "key",
             ExecutionLimits::default(),
             &options,
+            fast(2),
             Instant::now() + Duration::from_millis(100),
             &attempts,
             &unknown,
@@ -1071,7 +917,7 @@ mod tests {
                 while server.requests.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
                 let other_attempts = AtomicUsize::new(0);
                 let other_unknown = AtomicBool::new(false);
-                let result = send_http(&http, &permits, "key", ExecutionLimits::default(), &RequestOptions::default(), Instant::now() + Duration::from_millis(70), &other_attempts, &other_unknown, || Ok(http.get(&unrelated.url))).await;
+                let result = send_http(&http, &permits, "key", ExecutionLimits::default(), &RequestOptions::default(), fast(0), Instant::now() + Duration::from_millis(70), &other_attempts, &other_unknown, || Ok(http.get(&unrelated.url))).await;
                 assert_eq!(result.unwrap(), b"available");
                 assert_eq!(attempts.load(Ordering::SeqCst), 1);
                 assert_eq!(other_attempts.load(Ordering::SeqCst), 1);
@@ -1106,6 +952,7 @@ mod tests {
                     "key",
                     ExecutionLimits::default(),
                     &options,
+                    fast(0),
                     deadline,
                     &attempts,
                     &unknown,
@@ -1135,6 +982,7 @@ mod tests {
             "test-key",
             ExecutionLimits::default(),
             &options(),
+            fast(0),
             Instant::now() + Duration::from_secs(1),
             &attempts,
             &unknown,
@@ -1169,23 +1017,14 @@ mod tests {
     }
 
     #[test]
-    fn transport_malformed_escape_variants_cannot_expose_keys_or_headers() {
-        let mut options = options();
-        options
-            .headers
-            .insert("X-Private".into(), "private/header".into());
-        let redactor = Redactor::new("test/key", &options);
+    fn transport_malformed_escape_variants_cannot_expose_the_key() {
+        let redactor = Redactor::new("test/key");
         for body in [
             r#"{"detail":"\u0074est/key","broken":"#,
             r#"{"detail":"test\u002Fkey","broken":"#,
             r#"{"detail":"test\/key","broken":"#,
-            r#"{"detail":"\u0070rivate/header","broken":"#,
-            r#"{"detail":"private\u002fheader","broken":"#,
-            r#"{"detail":"private\/header","broken":"#,
             r#"{"detail":"test\/key""#,
-            r#"{"detail":"private\/header""#,
             r#"{"detail":"\u0074est/ke"#,
-            r#"{"detail":"private\u002fhea"#,
         ] {
             for truncated in [false, true] {
                 let error = redactor.provider_error(body.as_bytes(), truncated, 1024);
@@ -1194,24 +1033,16 @@ mod tests {
                 assert!(error.truncated, "{body}");
             }
         }
-        for body in [
-            r#"{"detail":"\u0074est\/key"}"#,
-            r#"{"detail":"\u0070rivate\u002Fheader"}"#,
-        ] {
-            let error = redactor.provider_error(body.as_bytes(), false, 1024);
-            assert_eq!(error.detail, Some(json!("[REDACTED]")));
-            assert!(error.message.is_none());
-            assert!(!error.truncated);
-        }
+        let body = r#"{"detail":"\u0074est\/key"}"#;
+        let error = redactor.provider_error(body.as_bytes(), false, 1024);
+        assert_eq!(error.detail, Some(json!("[REDACTED]")));
+        assert!(error.message.is_none());
+        assert!(!error.truncated);
     }
 
     #[test]
     fn transport_plaintext_diagnostics_preserve_paths_and_redact_complete_and_partial_secrets() {
-        let mut options = options();
-        options
-            .headers
-            .insert("X-Private".into(), "private-header".into());
-        let redactor = Redactor::new("test-key", &options);
+        let redactor = Redactor::new("test-key");
         for (body, truncated, expected) in [
             (
                 "Invalid path /questions/urgent: expected integer",
@@ -1226,10 +1057,9 @@ mod tests {
             (
                 "Rejected test-key and private-header",
                 false,
-                "Rejected [REDACTED] and [REDACTED]",
+                "Rejected [REDACTED] and private-header",
             ),
             ("Rejected test-ke", true, "Rejected [REDACTED]"),
-            ("Rejected private-hea", true, "Rejected [REDACTED]"),
             (
                 r#"{"detail":"test-key","broken":"#,
                 false,
@@ -1254,12 +1084,9 @@ mod tests {
         })
         .await;
         let mut options = options();
-        options
-            .headers
-            .insert("X-Private".into(), "private-header".into());
-        options.retry.max_retries = 1;
         options.attempt_timeout_ms = Some(50);
-        let (result, attempts, unknown) = call(&server, &options, ExecutionLimits::default()).await;
+        let (result, attempts, unknown) =
+            call_with(&server, &options, fast(1), ExecutionLimits::default()).await;
         assert_eq!(attempts, 1);
         let failure = result.unwrap_err();
         assert_eq!(failure.code, ErrorCode::Http);
@@ -1268,7 +1095,7 @@ mod tests {
         let error = failure.provider_error.unwrap();
         assert_eq!(
             error.message.as_deref(),
-            Some("invalid /questions/urgent: [REDACTED] [REDACTED]")
+            Some("invalid /questions/urgent: [REDACTED] private-hea")
         );
         assert!(error.truncated);
         assert!(!unknown);
@@ -1290,9 +1117,9 @@ mod tests {
         })
         .await;
         let mut options = options();
-        options.retry.max_retries = 1;
         options.attempt_timeout_ms = Some(50);
-        let (result, attempts, unknown) = call(&server, &options, ExecutionLimits::default()).await;
+        let (result, attempts, unknown) =
+            call_with(&server, &options, fast(1), ExecutionLimits::default()).await;
         assert_eq!(result.unwrap(), b"ok");
         assert_eq!(attempts, 2);
         assert!(!unknown);
@@ -1313,10 +1140,9 @@ mod tests {
         })
         .await;
         let mut options = options();
-        options.retry.max_retries = 1;
-        options.retry.api_timeout_error = false;
         options.attempt_timeout_ms = Some(50);
-        let (result, attempts, unknown) = call(&server, &options, ExecutionLimits::default()).await;
+        let (result, attempts, unknown) =
+            call_with(&server, &options, fast(1), ExecutionLimits::default()).await;
         let failure = result.unwrap_err();
         assert_eq!(failure.code, ErrorCode::Http);
         assert_eq!(failure.http_status, Some(429));
@@ -1342,7 +1168,6 @@ mod tests {
                 let attempts = AtomicUsize::new(0);
                 let unknown = AtomicBool::new(false);
                 let mut options = options();
-                options.retry.max_retries = 1;
                 options.attempt_timeout_ms = Some(if during_body { 1000 } else { 50 });
                 let deadline =
                     Instant::now() + Duration::from_millis(if cancel { 2000 } else { 150 });
@@ -1354,6 +1179,7 @@ mod tests {
                         "key",
                         ExecutionLimits::default(),
                         &options,
+                        fast(1),
                         deadline,
                         &attempts,
                         &unknown,

@@ -43,19 +43,16 @@ pub fn register(iii: &Arc<IIIClient>, config: SharedConfig) {
     let registration = RegisterFunction::new_async(move |payload: Value| {
         let (engine, cell) = (engine.clone(), cell.clone());
         async move {
-            let provider = cell.read().await.provider.clone();
             let timeout = timeout_ms(&payload)
                 .unwrap_or(0)
                 .saturating_add(FORWARD_SLACK_MS);
-            let reply = forward(&engine, &provider, FUNCTION_ID, payload, timeout).await?;
-            Ok::<EvaluateResponse, Error>(reply.and_then(typed).unwrap_or_else(|code| {
-                EvaluateResponse::Error {
-                    code,
-                    http_status: None,
-                    provider_error: None,
-                    retry_after_ms: None,
-                    stats: Stats::default(),
-                }
+            let reply = call(&engine, &cell, FUNCTION_ID, payload, timeout).await?;
+            Ok::<EvaluateResponse, Error>(reply.unwrap_or_else(|code| EvaluateResponse::Error {
+                code,
+                http_status: None,
+                provider_error: None,
+                retry_after_ms: None,
+                stats: Stats::default(),
             }))
         }
     });
@@ -65,19 +62,16 @@ pub fn register(iii: &Arc<IIIClient>, config: SharedConfig) {
     let registration = RegisterFunction::new_async(move |payload: Value| {
         let (engine, cell) = (engine.clone(), cell.clone());
         async move {
-            let provider = cell.read().await.provider.clone();
             let timeout = timeout_ms(&payload)
                 .unwrap_or(MODELS_DEFAULT_TIMEOUT_MS)
                 .saturating_add(FORWARD_SLACK_MS);
-            let reply = forward(&engine, &provider, MODELS_FUNCTION_ID, payload, timeout).await?;
-            Ok::<ModelsResponse, Error>(reply.and_then(typed).unwrap_or_else(|code| {
-                ModelsResponse::Error {
-                    code,
-                    http_status: None,
-                    provider_error: None,
-                    retry_after_ms: None,
-                    stats: Stats::default(),
-                }
+            let reply = call(&engine, &cell, MODELS_FUNCTION_ID, payload, timeout).await?;
+            Ok::<ModelsResponse, Error>(reply.unwrap_or_else(|code| ModelsResponse::Error {
+                code,
+                http_status: None,
+                provider_error: None,
+                retry_after_ms: None,
+                stats: Stats::default(),
             }))
         }
     });
@@ -87,31 +81,37 @@ pub fn register(iii: &Arc<IIIClient>, config: SharedConfig) {
     let registration = RegisterFunction::new_async(move |payload: Value| {
         let (engine, cell) = (engine.clone(), cell.clone());
         async move {
-            let provider = cell.read().await.provider.clone();
-            let reply = forward(
+            let reply = call(
                 &engine,
-                &provider,
+                &cell,
                 CANCEL_FUNCTION_ID,
                 payload,
                 CANCEL_TIMEOUT_MS,
             )
             .await?;
-            Ok::<CancelResponse, Error>(
-                reply
-                    .and_then(typed)
-                    .unwrap_or_else(|code| CancelResponse::Error { code }),
-            )
+            Ok::<CancelResponse, Error>(reply.unwrap_or_else(|code| CancelResponse::Error { code }))
         }
     });
     iii.register_function(CANCEL_FUNCTION_ID, registration.request_format(request_schema::<judge_contract::CancelRequest>()).description("Signal cancellation of an active evaluation or model listing started by the calling worker through the same provider. Returns whether a signal was accepted; does not roll back provider work."));
 }
 
-fn timeout_ms(payload: &Value) -> Option<u64> {
-    payload.get("timeout_ms").and_then(Value::as_u64)
+/// Snapshot the default provider, forward, and enforce the shared response
+/// contract on the reply. `Ok(Err(code))` is a typed judge error.
+async fn call<T: DeserializeOwned>(
+    iii: &IIIClient,
+    config: &SharedConfig,
+    public_id: &str,
+    payload: Value,
+    timeout_ms: u64,
+) -> Result<Result<T, ErrorCode>, Error> {
+    let provider = config.read().await.provider.clone();
+    Ok(forward(iii, &provider, public_id, payload, timeout_ms)
+        .await?
+        .and_then(|value| serde_json::from_value(value).map_err(|_| ErrorCode::InvalidResponse)))
 }
 
-fn typed<T: DeserializeOwned>(value: Value) -> Result<T, ErrorCode> {
-    serde_json::from_value(value).map_err(|_| ErrorCode::InvalidResponse)
+fn timeout_ms(payload: &Value) -> Option<u64> {
+    payload.get("timeout_ms").and_then(Value::as_u64)
 }
 
 /// Shared contract schema plus the hub-only `provider` selector.

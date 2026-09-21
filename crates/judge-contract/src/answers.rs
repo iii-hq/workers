@@ -89,7 +89,7 @@ fn distribution(values: &BTreeMap<String, f64>) -> bool {
         && values.values().all(|value| probability(*value))
         && (values.values().sum::<f64>() - 1.0).abs() <= 0.020_000_001
 }
-pub(crate) fn unique_map<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
+pub fn unique_map<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

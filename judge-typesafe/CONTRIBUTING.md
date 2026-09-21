@@ -34,9 +34,8 @@ JEV process environment:
 cargo run --manifest-path judge-typesafe/Cargo.toml --locked -- --url ws://127.0.0.1:49134
 ```
 
-`III_URL` is the environment equivalent of `--url`. Append `--config <path>` to
-seed a missing configuration entry with YAML or JSON; stored values take
-precedence. `III_CONFIG_NAME` selects the entry ID. The worker can boot without
+`III_URL` is the environment equivalent of `--url`; `III_CONFIG_NAME` selects
+the configuration entry ID. The worker can boot without
 provider credentials; evaluation and model listing then return `missing_key`
 without HTTP. See [configuration](../judge/reference.md#configuration) for reload rules.
 

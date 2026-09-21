@@ -128,58 +128,20 @@ Set the corresponding RPC timeout when invoking from another worker too.
 
 ## Request options and retries
 
-Evaluation and model listing accept an optional `options` object. Omitted fields,
-including fields inside a partial `retry` object, inherit these defaults:
+Evaluation and model listing accept an optional `options` object with one
+field, `attempt_timeout_ms`: a positive millisecond bound on each network
+attempt, including reading its body. The whole-call `timeout_ms` /
+`expires_at_unix_ms` budget still covers validation, permit waits, every attempt
+and backoff; an attempt timeout never extends it.
 
-| Field in `options` | Default | Meaning |
-| --- | --- | --- |
-| `headers` | `{}` | Additional HTTP headers, subject to validation below. |
-| `attempt_timeout_ms` | Omitted | Optional network deadline for each attempt; the whole-call deadline still applies. |
-| `retry.max_retries` | `2` | Retries after the initial attempt, per upstream request; `0` disables, maximum `10`. |
-| `retry.backoff_initial_ms` | `500` | Initial exponential backoff delay. |
-| `retry.backoff_max_ms` | `5000` | Cap on exponentially doubled backoff. |
-| `retry.backoff_jitter` | `0.25` | Fraction randomly subtracted from backoff, within `[0, 1]`. |
-| `retry.http_statuses` | `[408, 429, 500, …, 599]` | Array of HTTP statuses eligible for retry. |
-| `retry.api_connection_error` | `true` | Retry transport failures, including interrupted bodies. |
-| `retry.api_timeout_error` | `true` | Retry attempt timeouts while the whole-call budget remains. |
-| `retry.respect_retry_after` | `true` | Honor eligible server retry delays. |
-| `retry.max_retry_after_ms` | `60000` | Largest honored server delay; longer delays use backoff. |
-
-These defaults follow the TypeSafe [RequestOptions](https://docs.typesafe.ai/sdk/javascript/api/interfaces/RequestOptions)
-and [RetryPolicy](https://docs.typesafe.ai/sdk/javascript/api/interfaces/RetryPolicy)
-references, using JEV's snake_case fields. JEV retains a **whole-call**
-`timeout_ms`/`expires_at_unix_ms` budget across all evaluations, semaphore waits,
-attempts and backoff. `options.attempt_timeout_ms` separately bounds one network
-attempt, including reading its body; it never extends the whole-call budget.
-
-For example, this model listing disables retries, adds a tracing header and
-bounds each attempt to 1000 ms within a 5000 ms total budget:
-
-```bash
-iii trigger judge::models::list --timeout-ms 6000 --json '{
-  "timeout_ms": 5000,
-  "options": {
-    "headers": {"x-request-tag": "catalog-refresh"},
-    "retry": {"max_retries": 0},
-    "attempt_timeout_ms": 1000
-  }
-}'
-```
-
-Delay and timeout settings must be positive, platform-safe millisecond integers;
-malformed options fail before HTTP. Header names and values must be valid, with
-at most 64 entries and 16 KiB combined. Case-insensitive duplicate names are
-invalid. Caller headers cannot override credentials (`Authorization`, proxy
-authorization), `Host`, content type, framing (`Content-Length`,
-`Transfer-Encoding`), connection or other hop-by-hop headers. Header values are
-never logged, and requests still cannot select a provider URL or API key.
-
-The worker prefers `retry-after-ms` over `Retry-After`; the latter accepts
-delta-seconds or an HTTP date. A zero delay is valid. Invalid values are ignored;
-oversized numeric values are handled without overflow. Server delays above
-`max_retry_after_ms` use normal backoff; the whole-call deadline bounds every wait. Retry backoff releases the
-shared HTTP permit. Exhaustion retains the final provider error. Callers can set
-`max_retries: 0` when they need a single-attempt policy.
+Retries are the provider's policy, not the caller's. `judge-typesafe` follows
+the TypeSafe SDK defaults: two retries after the first attempt on HTTP 408, 429
+and 5xx, connection failures and attempt timeouts; exponential backoff from
+500 ms, capped at 5 s, minus up to 25% jitter; a server `retry-after-ms` or
+`Retry-After` (delta-seconds or HTTP date) up to 60 s is honored instead.
+Backoff releases the shared HTTP permit, the whole-call deadline bounds every
+wait, and exhaustion returns the final provider error. Requests never carry
+credentials, provider URLs or extra HTTP headers.
 
 ## Handle results and failures
 

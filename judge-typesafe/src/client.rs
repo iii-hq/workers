@@ -1,13 +1,13 @@
 //! Atomic JEV calls with worker-wide concurrency and cancellation.
 use crate::{
     cancellation::CancellationRegistry,
-    transport::{self, Failure},
+    transport::{self, check_deadline, Failure, RetryPolicy, DEFAULT_RETRY},
 };
 use judge_contract::{
     encode_evaluation_with_limits, validate_answer, validate_request_with_limits, Answer,
-    CancelRequest, CancelResponse, EncodingLimits, ErrorCode, EvaluateRequest, EvaluateResponse,
-    Evaluation, EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, RequestOptions, Stats,
-    Usage, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_TIMEOUT_MS,
+    CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
+    EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, RequestOptions, Stats, Usage,
+    DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
 use serde::Deserialize;
 use std::{
@@ -60,13 +60,6 @@ impl ExecutionLimits {
         }
         Ok(())
     }
-
-    fn encoding(self) -> EncodingLimits {
-        EncodingLimits {
-            max_body_bytes: self.max_request_bytes,
-            max_state_question_bytes: None,
-        }
-    }
 }
 
 /// Clone or use `with_api_key` for every handler; constructing another client
@@ -80,6 +73,7 @@ pub struct JevClient {
     api_key: Option<Arc<str>>,
     permits: Arc<Semaphore>,
     limits: ExecutionLimits,
+    retry: RetryPolicy,
     calls: Arc<CancellationRegistry>,
     caller_id: Option<Arc<str>>,
 }
@@ -93,7 +87,7 @@ impl std::fmt::Debug for JevClient {
 #[derive(Deserialize)]
 struct ProviderResponse {
     model: String,
-    #[serde(deserialize_with = "unique_answers")]
+    #[serde(deserialize_with = "judge_contract::unique_map")]
     answers: BTreeMap<String, Answer>,
     usage: Usage,
 }
@@ -157,6 +151,7 @@ impl JevClient {
             api_key: normalized_key(api_key.as_deref()),
             permits: Arc::new(Semaphore::new(CONCURRENCY)),
             limits: ExecutionLimits::default(),
+            retry: DEFAULT_RETRY,
             calls: Arc::new(CancellationRegistry::default()),
             caller_id: Some(Arc::from("local")),
         }
@@ -175,6 +170,15 @@ impl JevClient {
     pub fn with_limits(&self, limits: ExecutionLimits) -> Self {
         Self {
             limits,
+            ..self.clone()
+        }
+    }
+
+    /// Test hook: faster or single-attempt policies. Production keeps `DEFAULT_RETRY`.
+    #[doc(hidden)]
+    pub fn with_retry(&self, retry: RetryPolicy) -> Self {
+        Self {
+            retry,
             ..self.clone()
         }
     }
@@ -292,33 +296,30 @@ impl JevClient {
         let deadline = call.deadline;
         check_deadline(deadline)?;
         transport::validate_options(&call.options, self.limits)?;
-        let validation = validate_request_with_limits(&request, self.limits.encoding());
+        let validation = validate_request_with_limits(&request, self.limits.max_request_bytes);
         check_deadline(deadline)?;
         validation?;
         let model = request.model.as_deref().unwrap_or(default_model);
-        // Preflight ALL evaluations before spawning any HTTP work.
+        // Preflight ALL evaluations before spawning any HTTP work, retaining no
+        // bodies: each task re-encodes after acquiring one of the HTTP permits,
+        // which bounds live buffers to the worker's concurrency.
         for evaluation in &request.evaluations {
             check_deadline(deadline)?;
-            let body = encode_evaluation_with_limits(model, evaluation, self.limits.encoding());
-            check_deadline(deadline)?;
-            // Preflight the whole batch atomically, retaining no encoded bodies.
-            // Encoding again after acquiring a permit bounds duplicate buffers
-            // to the worker's HTTP concurrency, even for 512 large evaluations.
-            drop(body?);
+            encode_evaluation_with_limits(model, evaluation, self.limits.max_request_bytes)?;
         }
         self.api_key.as_ref().ok_or(ErrorCode::MissingKey)?;
         let model: Arc<str> = Arc::from(model);
-        // Backoff releases HTTP permits. Let the rest of a retrying batch use
-        // them instead of occupying every scheduling slot with sleeping calls.
-        // Validation caps the batch at 512; encoding still occurs after permit
-        // acquisition, bounding encoded buffers to the four HTTP slots.
-        let initial_window = if call.options.retry.max_retries == 0 {
+        // Single-attempt policies keep unsent work unspawned so one failure
+        // aborts the batch after at most a permit's worth of extra requests.
+        // Retrying policies spawn everything: backoff releases the HTTP permit,
+        // and the rest of the batch should use it instead of waiting in line.
+        let window = if self.retry.max_retries == 0 {
             CONCURRENCY
         } else {
             request.evaluations.len()
         };
         let mut evaluations = request.evaluations.into_iter();
-        for evaluation in evaluations.by_ref().take(initial_window) {
+        for evaluation in evaluations.by_ref().take(window) {
             self.spawn(pending, evaluation, model.clone(), call);
         }
         while let Some(result) = pending.join_next().await {
@@ -355,8 +356,11 @@ impl JevClient {
         timeout_at(deadline, async {
             let bytes = self
                 .send_http(&call, || {
-                    let body =
-                        encode_evaluation_with_limits(&model, &evaluation, self.limits.encoding())?;
+                    let body = encode_evaluation_with_limits(
+                        &model,
+                        &evaluation,
+                        self.limits.max_request_bytes,
+                    )?;
                     Ok(self
                         .http
                         .post(self.endpoint.as_ref())
@@ -494,6 +498,7 @@ impl JevClient {
             key,
             self.limits,
             &call.options,
+            self.retry,
             call.deadline,
             &call.attempts,
             &call.unknown_usage,
@@ -506,13 +511,6 @@ fn normalized_key(key: Option<&str>) -> Option<Arc<str>> {
     key.map(str::trim)
         .filter(|key| !key.is_empty())
         .map(Arc::from)
-}
-fn check_deadline(deadline: Instant) -> Result<(), ErrorCode> {
-    if Instant::now() >= deadline {
-        Err(ErrorCode::Deadline)
-    } else {
-        Ok(())
-    }
 }
 fn merge(outcome: &mut Outcome, accepted: Accepted) -> Result<(), ErrorCode> {
     let response = accepted.response;
@@ -553,31 +551,6 @@ fn record_usage(outcome: &mut Outcome, response: &ProviderResponse) -> Result<()
     outcome.missing_usage |=
         response.usage.input_tokens.is_none() || response.usage.output_tokens.is_none();
     Ok(())
-}
-
-fn unique_answers<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<BTreeMap<String, Answer>, D::Error> {
-    struct AnswersVisitor;
-    impl<'de> serde::de::Visitor<'de> for AnswersVisitor {
-        type Value = BTreeMap<String, Answer>;
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("unique answer IDs")
-        }
-        fn visit_map<M: serde::de::MapAccess<'de>>(
-            self,
-            mut map: M,
-        ) -> Result<Self::Value, M::Error> {
-            let mut answers = BTreeMap::new();
-            while let Some((id, answer)) = map.next_entry()? {
-                if answers.insert(id, answer).is_some() {
-                    return Err(serde::de::Error::custom("duplicate answer ID"));
-                }
-            }
-            Ok(answers)
-        }
-    }
-    deserializer.deserialize_map(AnswersVisitor)
 }
 
 #[cfg(test)]
@@ -650,13 +623,16 @@ mod tests {
             });
             let request: EvaluateRequest = serde_json::from_value(json!({
                 "timeout_ms": 3000,
-                "options": {"retry":{"max_retries":0}},
                 "evaluations": (0..4).map(|index| json!({
                     "id": format!("ticket-{index}"), "state": {"index": index},
                     "questions": {"urgent": {"type": "noul", "instructions": "Is this urgent?"}}
                 })).collect::<Vec<_>>()
             })).unwrap();
-            let client = JevClient::with_endpoint(Some("test-credential".into()), endpoint);
+            let client = JevClient::with_endpoint(Some("test-credential".into()), endpoint)
+                .with_retry(RetryPolicy {
+                    max_retries: 0,
+                    ..DEFAULT_RETRY
+                });
             let evaluation = client.evaluate(request, crate::DEFAULT_MODEL);
             tokio::pin!(evaluation);
             assert!(poll!(evaluation.as_mut()).is_pending());

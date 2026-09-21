@@ -1,4 +1,6 @@
 use futures_util::{SinkExt, StreamExt};
+#[path = "support/fake_engine.rs"]
+mod fake_engine;
 use iii_sdk::{register_worker, InitOptions};
 use judge_typesafe::{JevClient, JevConfig};
 use serde_json::{json, Value};
@@ -32,34 +34,22 @@ async fn invoke_client(
     config: judge_typesafe::SharedConfig,
     client: JevClient,
 ) -> (Value, Value) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = format!("ws://{}", listener.local_addr().unwrap());
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = accept_async(stream).await.unwrap();
-        socket
-            .send(Message::Text(
-                json!({"type":"workerregistered","worker_id":"jev-test-worker"})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-        while let Some(Ok(frame)) = socket.next().await {
-            let Message::Text(text) = frame else {
-                continue;
-            };
-            let message: Value = serde_json::from_str(&text).unwrap();
-            if message["type"] == "registerfunction" && message["id"] == function_id {
-                tx.send(message.clone()).unwrap();
-                socket.send(Message::Text(json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000001","function_id":function_id,"data":payload}).to_string().into())).await.unwrap();
-            } else if message["type"] == "invocationresult" {
+    let mut payload = Some(payload);
+    let engine = fake_engine::start(move |message| {
+        if message["type"] == "registerfunction" && message["id"] == function_id {
+            tx.send(message).unwrap();
+            let data = payload.take().expect("registered once");
+            vec![json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000001","function_id":function_id,"data":data})]
+        } else {
+            if message["type"] == "invocationresult" {
                 tx.send(message).unwrap();
             }
+            vec![]
         }
-    });
-    let iii = Arc::new(register_worker(&address, InitOptions::default()));
+    })
+    .await;
+    let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
     judge_typesafe::register(&iii, config, client);
     let registration = timeout(Duration::from_secs(2), rx.recv())
         .await
@@ -70,7 +60,6 @@ async fn invoke_client(
         .unwrap()
         .unwrap();
     iii.shutdown_async().await;
-    server.abort();
     (registration, response)
 }
 

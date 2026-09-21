@@ -1,11 +1,11 @@
 //! Routing, validation and contract enforcement over a mocked engine socket.
-use futures_util::{SinkExt, StreamExt};
+#[path = "../../judge-typesafe/tests/support/fake_engine.rs"]
+mod fake_engine;
 use iii_sdk::{register_worker, InitOptions};
 use judge_contract::{CANCEL_FUNCTION_ID, FUNCTION_ID, MODELS_FUNCTION_ID};
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
-use tokio::{net::TcpListener, sync::mpsc, time::timeout};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio::{sync::mpsc, time::timeout};
 
 /// Drive one public call through the hub. The fake engine answers the hub's
 /// forwarded invocation with `provider_reply` (`Err(code)` = remote error) and
@@ -16,50 +16,33 @@ async fn invoke(
     payload: Value,
     provider_reply: Result<Value, &'static str>,
 ) -> (Value, Option<Value>, Value) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = format!("ws://{}", listener.local_addr().unwrap());
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = accept_async(stream).await.unwrap();
-        socket
-            .send(Message::Text(
-                json!({"type":"workerregistered","worker_id":"judge-test-worker"})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-        while let Some(Ok(frame)) = socket.next().await {
-            let Message::Text(text) = frame else {
-                continue;
-            };
-            let message: Value = serde_json::from_str(&text).unwrap();
-            match message["type"].as_str() {
-                Some("registerfunction") if message["id"] == function_id => {
-                    tx.send(("registration", message.clone())).unwrap();
-                    socket.send(Message::Text(json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000001","function_id":function_id,"data":payload}).to_string().into())).await.unwrap();
-                }
-                // The SDK also fires a void `engine::workers::register` at
-                // connect; only awaited invocations are forwarded calls.
-                Some("invokefunction") if !message["invocation_id"].is_null() => {
-                    let mut reply = json!({"type":"invocationresult","invocation_id":message["invocation_id"],"function_id":message["function_id"]});
-                    match &provider_reply {
-                        Ok(result) => reply["result"] = result.clone(),
-                        Err(code) => reply["error"] = json!({"code":code,"message":"mock"}),
-                    }
-                    tx.send(("forwarded", message)).unwrap();
-                    socket
-                        .send(Message::Text(reply.to_string().into()))
-                        .await
-                        .unwrap();
-                }
-                Some("invocationresult") => tx.send(("response", message)).unwrap(),
-                _ => {}
-            }
+    let mut payload = Some(payload);
+    let engine = fake_engine::start(move |message| match message["type"].as_str() {
+        Some("registerfunction") if message["id"] == function_id => {
+            tx.send(("registration", message)).unwrap();
+            let data = payload.take().expect("registered once");
+            vec![json!({"type":"invokefunction","invocation_id":"00000000-0000-0000-0000-000000000001","function_id":function_id,"data":data})]
         }
-    });
-    let iii = Arc::new(register_worker(&address, InitOptions::default()));
+        // The SDK also fires a void `engine::workers::register` at connect;
+        // only awaited invocations are forwarded calls.
+        Some("invokefunction") if !message["invocation_id"].is_null() => {
+            let mut reply = json!({"type":"invocationresult","invocation_id":message["invocation_id"],"function_id":message["function_id"]});
+            match &provider_reply {
+                Ok(result) => reply["result"] = result.clone(),
+                Err(code) => reply["error"] = json!({"code":code,"message":"mock"}),
+            }
+            tx.send(("forwarded", message)).unwrap();
+            vec![reply]
+        }
+        Some("invocationresult") => {
+            tx.send(("response", message)).unwrap();
+            vec![]
+        }
+        _ => vec![],
+    })
+    .await;
+    let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
     judge::register(
         &iii,
         judge::configuration::new_cell(judge::JudgeConfig::default()),
@@ -77,7 +60,6 @@ async fn invoke(
         }
     }
     iii.shutdown_async().await;
-    server.abort();
     (registration.unwrap(), forwarded, response.unwrap())
 }
 

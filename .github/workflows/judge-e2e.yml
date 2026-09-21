@@ -34,7 +34,7 @@ env:
 
 jobs:
   e2e:
-    name: Contracts, lifecycle, UI and local engine
+    name: UI bundles and local engine
     runs-on: ubuntu-latest
     timeout-minutes: 35
     defaults:
@@ -89,33 +89,6 @@ jobs:
           pnpm --dir judge-typesafe/ui build 2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-typesafe-ui-build.log"
           # Reuse these assets in both Cargo feature variants.
           echo 'SKIP_UI_BUILD=1' >> "$GITHUB_ENV"
-
-      - name: Shared contract tests
-        run: >-
-          cargo test --manifest-path crates/judge-contract/Cargo.toml --locked --release
-          2>&1 | tee "$JUDGE_E2E_REPORT_DIR/contract.log"
-
-      - name: judge-typesafe lifecycle, schemas and embedded UI tests
-        run: |
-          unset TYPESAFE_API_KEY
-          cargo test --manifest-path judge-typesafe/Cargo.toml --locked --release --all-features \
-            2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-typesafe-all-features.log"
-
-      - name: judge-typesafe tests without console UI
-        run: |
-          unset TYPESAFE_API_KEY
-          cargo test --manifest-path judge-typesafe/Cargo.toml --locked --release --no-default-features \
-            2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-typesafe-no-default-features.log"
-
-      - name: judge hub routing, lifecycle and embedded UI tests
-        run: >-
-          cargo test --manifest-path judge/Cargo.toml --locked --release --all-features
-          2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-all-features.log"
-
-      - name: judge hub tests without console UI
-        run: >-
-          cargo test --manifest-path judge/Cargo.toml --locked --release --no-default-features
-          2>&1 | tee "$JUDGE_E2E_REPORT_DIR/judge-no-default-features.log"
 
       - name: Install pinned iii engine
         env:

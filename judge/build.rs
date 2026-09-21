@@ -5,11 +5,6 @@ use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
-    println!(
-        "cargo:rustc-env=TARGET={}",
-        std::env::var("TARGET").unwrap()
-    );
-
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CONSOLE_UI");
     if std::env::var_os("CARGO_FEATURE_CONSOLE_UI").is_none() {
         return;

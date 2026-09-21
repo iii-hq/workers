@@ -67,15 +67,6 @@ impl JevConfig {
         config.validate()?;
         Ok(config)
     }
-    /// Read an optional YAML or JSON seed; runtime authoritative values arrive
-    /// through the configuration worker, which owns environment expansion.
-    pub fn from_file(path: &str) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|_| "Cannot read JEV configuration seed".to_string())?;
-        let value: Value = serde_yaml::from_str(&text)
-            .map_err(|_| "Invalid JEV configuration seed".to_string())?;
-        Self::from_json(&value)
-    }
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).expect("JEV config serializes")
     }

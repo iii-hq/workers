@@ -8,13 +8,13 @@ pub const MODELS_ID: &str = "judge-typesafe::models::list";
 pub const CANCEL_ID: &str = "judge-typesafe::cancel";
 pub mod client;
 pub use client::{ExecutionLimits, JevClient};
+pub use transport::{RetryPolicy, DEFAULT_RETRY};
 pub mod config;
 pub mod configuration;
 pub mod register;
 pub use config::JevConfig;
 pub use configuration::SharedConfig;
 pub use register::register;
-pub mod manifest;
 #[cfg(feature = "console-ui")]
 pub mod ui;
 

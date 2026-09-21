@@ -1,51 +1,29 @@
-//! Boot the generic JEV worker using the shared configuration-client lifecycle.
+//! Boot the TypeSafe JEV provider using the shared configuration-client lifecycle.
 use clap::Parser;
 use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_typesafe::{configuration, manifest, register, JevClient, JevConfig};
+use judge_typesafe::{configuration, register, JevClient};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "judge-typesafe", about = manifest::DESCRIPTION)]
+#[command(
+    name = "judge-typesafe",
+    about = "TypeSafe JEV provider for the judge hub: typed Noul, Choice and Score evaluations over arbitrary JSON state."
+)]
 struct Cli {
-    /// One-time YAML/JSON seed, used only if no authoritative config exists.
-    #[arg(long)]
-    config: Option<String>,
     /// Engine websocket URL.
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
-    /// Print the registry manifest and exit without connecting.
-    #[arg(long)]
-    manifest: bool,
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    if cli.manifest {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&manifest::build_manifest())?
-        );
-        return Ok(());
-    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
     let client = JevClient::new(std::env::var("TYPESAFE_API_KEY").ok());
-    let seed = cli
-        .config
-        .as_deref()
-        .and_then(|path| match JevConfig::from_file(path) {
-            Ok(seed) => Some(seed),
-            Err(_) => {
-                tracing::warn!(
-                    "Cannot load JEV config seed; using authoritative config or defaults"
-                );
-                None
-            }
-        });
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
@@ -60,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
             ..InitOptions::default()
         },
     ));
-    configuration::register_config(&iii, seed.as_ref())
+    configuration::register_config(&iii, None)
         .await
         .map_err(anyhow::Error::msg)?;
     let config = configuration::new_cell(

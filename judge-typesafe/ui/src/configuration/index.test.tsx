@@ -127,8 +127,8 @@ afterEach(async () => {
 describe('listModels', () => {
   it('returns the catalog and turns typed refusals into ProviderError codes', async () => {
     await expect(listModels(engine())).resolves.toEqual(catalog.models)
-    await expect(listModels(engine({ status: 'error', code: 'missing_key' }))).rejects.toMatchObject({ code: 'missing_key' })
-    await expect(listModels(engine({ bogus: true }))).rejects.toMatchObject({ code: 'invalid_response' })
+    await expect(listModels(engine({ status: 'error', code: 'missing_key' }))).rejects.toThrow('missing_key')
+    await expect(listModels(engine({ bogus: true }))).rejects.toThrow('invalid_response')
   })
 })
 

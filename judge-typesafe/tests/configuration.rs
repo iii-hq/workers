@@ -1,90 +1,67 @@
 //! Verify JEV's configuration RPC contract against a mock service.
 //! The mock implements ensure's documented preservation rule; these tests do
 //! not exercise engine persistence, serialization, or atomicity.
-use futures_util::{SinkExt, StreamExt};
+#[path = "support/fake_engine.rs"]
+mod fake_engine;
 use iii_sdk::{register_worker, InitOptions};
 use judge_typesafe::{configuration, JevConfig};
 use serde_json::{json, Value};
 use std::time::Duration;
-use tokio::{net::TcpListener, sync::mpsc, time::timeout};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio::{sync::mpsc, time::timeout};
 
 async fn register_and_fetch(
     mut stored: Value,
     seed: Option<JevConfig>,
     ensure_error: Option<Value>,
 ) -> (Result<JevConfig, String>, Vec<Value>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}", listener.local_addr().unwrap());
     let (tx, mut requests) = mpsc::unbounded_channel();
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = accept_async(stream).await.unwrap();
-        socket
-            .send(Message::Text(
-                json!({"type":"workerregistered","worker_id":"configuration-test"})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-        while let Some(Ok(frame)) = socket.next().await {
-            let Message::Text(text) = frame else {
-                continue;
-            };
-            let request: Value = serde_json::from_str(&text).unwrap();
-            if request["type"] != "invokefunction" {
-                continue;
-            }
-            // The SDK also emits telemetry RPCs, unrelated to this contract.
-            if !request["function_id"]
+    // The mock implements ensure's preservation rule and the legacy register path.
+    let engine = fake_engine::start(move |request| {
+        // The SDK also emits telemetry RPCs, unrelated to this contract.
+        if request["type"] != "invokefunction"
+            || !request["function_id"]
                 .as_str()
                 .unwrap()
                 .starts_with("configuration::")
-            {
-                continue;
-            }
-            tx.send(request.clone()).unwrap();
-            let result = match request["function_id"].as_str().unwrap() {
-                "configuration::ensure" => match &ensure_error {
-                    Some(error) => Err(error.clone()),
-                    None => {
-                        let action = if stored.is_null() {
-                            stored = request["data"]["initial_value"].clone();
-                            "seeded"
-                        } else {
-                            "preserved"
-                        };
-                        Ok(
-                            json!({"action":action,"entry":{"id":request["data"]["id"],"value":stored}}),
-                        )
-                    }
-                },
-                "configuration::get" => Ok(json!({"value":stored})),
-                "configuration::register" => {
-                    if stored.is_null() {
-                        stored = request["data"]["initial_value"].clone();
-                    }
-                    Ok(json!({"id":request["data"]["id"]}))
-                }
-                _ => Err(json!({"code":"unexpected_rpc","message":"unexpected configuration RPC"})),
-            };
-            let mut response = json!({
-                "type":"invocationresult",
-                "invocation_id":request["invocation_id"],
-                "function_id":request["function_id"],
-            });
-            match result {
-                Ok(result) => response["result"] = result,
-                Err(error) => response["error"] = error,
-            }
-            socket
-                .send(Message::Text(response.to_string().into()))
-                .await
-                .unwrap();
+        {
+            return vec![];
         }
-    });
-    let iii = register_worker(&url, InitOptions::default());
+        tx.send(request.clone()).unwrap();
+        let result = match request["function_id"].as_str().unwrap() {
+            "configuration::ensure" => match &ensure_error {
+                Some(error) => Err(error.clone()),
+                None => {
+                    let action = if stored.is_null() {
+                        stored = request["data"]["initial_value"].clone();
+                        "seeded"
+                    } else {
+                        "preserved"
+                    };
+                    Ok(json!({"action":action,"entry":{"id":request["data"]["id"],"value":stored}}))
+                }
+            },
+            "configuration::get" => Ok(json!({"value":stored})),
+            "configuration::register" => {
+                if stored.is_null() {
+                    stored = request["data"]["initial_value"].clone();
+                }
+                Ok(json!({"id":request["data"]["id"]}))
+            }
+            _ => Err(json!({"code":"unexpected_rpc","message":"unexpected configuration RPC"})),
+        };
+        let mut response = json!({
+            "type":"invocationresult",
+            "invocation_id":request["invocation_id"],
+            "function_id":request["function_id"],
+        });
+        match result {
+            Ok(result) => response["result"] = result,
+            Err(error) => response["error"] = error,
+        }
+        vec![response]
+    })
+    .await;
+    let iii = register_worker(&engine.url, InitOptions::default());
     let result = timeout(Duration::from_secs(10), async {
         configuration::register_config(&iii, seed.as_ref()).await?;
         configuration::fetch_config(&iii).await
@@ -93,7 +70,6 @@ async fn register_and_fetch(
     tokio::task::spawn_blocking(move || iii.shutdown())
         .await
         .unwrap();
-    server.abort();
     let mut calls = Vec::new();
     while let Ok(request) = requests.try_recv() {
         calls.push(request);

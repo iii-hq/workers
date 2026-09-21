@@ -92,7 +92,7 @@ value. Changing the process environment requires a restart.
 
 The `configuration` service persists values at `./config/<configuration-id>.yaml`
 with its default filesystem adapter. Keep literal API keys out of committed
-project configuration. An optional `--config` file only seeds a missing entry.
+project configuration.
 The form retains unknown values when editing other fields and shows errors
 returned by the configuration service; a `${TYPESAFE_API_KEY}` value expands in
 the configuration service's environment instead of this process.

@@ -123,12 +123,3 @@ fn noul_criteria_schema(
     }
     .into()
 }
-impl Question {
-    pub fn instructions(&self) -> &Content {
-        match self {
-            Self::Noul { instructions, .. }
-            | Self::Choice { instructions, .. }
-            | Self::Score { instructions, .. } => instructions,
-        }
-    }
-}

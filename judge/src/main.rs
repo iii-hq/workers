@@ -1,12 +1,15 @@
 //! Boot the judge hub using the shared configuration-client lifecycle.
 use clap::Parser;
 use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge::{configuration, manifest, register, validate_provider, JudgeConfig, DEFAULT_PROVIDER};
+use judge::{configuration, register, validate_provider, JudgeConfig, DEFAULT_PROVIDER};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "judge", about = manifest::DESCRIPTION)]
+#[command(
+    name = "judge",
+    about = "Provider-neutral Noul, Choice and Score evaluations: judge::* forwarded to the selected judge-<provider> worker."
+)]
 struct Cli {
     /// Engine websocket URL.
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
@@ -15,20 +18,10 @@ struct Cli {
     /// boot; the stored value (Console Settings → Workers → judge) wins afterwards.
     #[arg(long, env = "JUDGE_PROVIDER", default_value = DEFAULT_PROVIDER)]
     provider: String,
-    /// Print the registry manifest and exit without connecting.
-    #[arg(long)]
-    manifest: bool,
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    if cli.manifest {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&manifest::build_manifest())?
-        );
-        return Ok(());
-    }
     if validate_provider(&cli.provider).is_err() {
         anyhow::bail!(
             "provider must be a worker-name suffix: lowercase letters, digits and hyphens, at most 64 bytes"

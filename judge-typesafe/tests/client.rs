@@ -2,7 +2,7 @@ use judge_contract::{
     Answer, EvaluateRequest, EvaluateResponse, Evaluation, ModelsRequest, ModelsResponse, Question,
     Stats,
 };
-use judge_typesafe::{ExecutionLimits, JevClient, DEFAULT_MODEL};
+use judge_typesafe::{ExecutionLimits, JevClient, RetryPolicy, DEFAULT_MODEL, DEFAULT_RETRY};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -103,8 +103,10 @@ impl Server {
             task,
         }
     }
+    /// Single attempt by default; retry cases opt in with `with_retry(fast(n))`.
     fn client(&self) -> JevClient {
         JevClient::with_endpoint(Some("test-credential".into()), self.endpoint.clone())
+            .with_retry(fast(0))
     }
     fn count(&self) -> usize {
         self.observed.requests.lock().unwrap().len()
@@ -119,15 +121,18 @@ impl Server {
         .expect("upstream requests arrive");
     }
 }
+/// Millisecond backoff so retry paths run fast; `DEFAULT_RETRY` is production.
+fn fast(max_retries: u32) -> RetryPolicy {
+    RetryPolicy {
+        max_retries,
+        backoff_initial_ms: 1,
+        backoff_max_ms: 4,
+        ..DEFAULT_RETRY
+    }
+}
 fn request(count: usize) -> EvaluateRequest {
     EvaluateRequest {
-        options: judge_contract::RequestOptions {
-            retry: judge_contract::RetryPolicy {
-                max_retries: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        options: Default::default(),
         request_id: None,
         model: None,
         timeout_ms: 3000,
@@ -276,6 +281,7 @@ async fn missing_or_blank_key_sends_no_http() {
     for key in [None, Some("  \n".into())] {
         let stats = error(
             JevClient::with_endpoint(key, server.endpoint.clone())
+                .with_retry(fast(0))
                 .evaluate(request(1), DEFAULT_MODEL)
                 .await,
             "missing_key",
@@ -600,6 +606,7 @@ async fn closed_endpoint_is_transport_failure_with_an_attempt() {
     drop(listener);
     let stats = error(
         JevClient::with_endpoint(Some("test-credential".into()), endpoint)
+            .with_retry(fast(0))
             .evaluate(request(1), DEFAULT_MODEL)
             .await,
         "transport",
@@ -717,8 +724,7 @@ async fn partial_or_null_usage_keeps_answers_and_marks_every_missing_counter() {
 }
 
 fn models_request(timeout_ms: u64) -> ModelsRequest {
-    serde_json::from_value(json!({"timeout_ms":timeout_ms,"options":{"retry":{"max_retries":0}}}))
-        .unwrap()
+    serde_json::from_value(json!({"timeout_ms":timeout_ms})).unwrap()
 }
 fn model_cards() -> Value {
     json!({"models":[
@@ -749,7 +755,8 @@ async fn models_get_uses_origin_credentials_and_returns_unfiltered_cards_without
     let endpoint = server
         .endpoint
         .replace("/evaluate", "/v1/systemone?test=ignored");
-    let client = JevClient::with_endpoint(Some("boot-test-key".into()), endpoint);
+    let client =
+        JevClient::with_endpoint(Some("boot-test-key".into()), endpoint).with_retry(fast(0));
     let request = serde_json::from_value(json!({})).unwrap();
     let (models, stats) = models_ok(
         client
@@ -816,6 +823,7 @@ async fn models_failures_are_typed_sanitized_and_not_retried() {
     drop(listener);
     let stats = models_error(
         JevClient::with_endpoint(Some("test-key".into()), endpoint)
+            .with_retry(fast(0))
             .list_models(models_request(1000))
             .await,
         "transport",
@@ -827,7 +835,7 @@ async fn models_failures_are_typed_sanitized_and_not_retried() {
 async fn models_require_key_valid_timeout_and_unexpired_work_before_sending() {
     let server = Server::start(|_| Reply::ok(model_cards())).await;
     for key in [None, Some("  ".into())] {
-        let client = JevClient::with_endpoint(key, server.endpoint.clone());
+        let client = JevClient::with_endpoint(key, server.endpoint.clone()).with_retry(fast(0));
         assert_eq!(
             models_error(
                 client.list_models(models_request(1000)).await,
@@ -1258,8 +1266,9 @@ async fn streaming_bodies_cannot_bypass_configured_response_limits() {
             stream.write_all(wire.as_bytes()).await.unwrap();
         }
     });
-    let client =
-        JevClient::with_endpoint(Some("test-key".into()), endpoint).with_limits(ExecutionLimits {
+    let client = JevClient::with_endpoint(Some("test-key".into()), endpoint)
+        .with_retry(fast(0))
+        .with_limits(ExecutionLimits {
             max_response_bytes: 128,
             ..ExecutionLimits::default()
         });
@@ -1365,15 +1374,14 @@ async fn cancel_interrupts_backoff_without_a_new_attempt() {
         slow_body: false,
     })
     .await;
-    let client = server.client();
-    let mut input = request(1);
-    input.request_id = Some("backoff".into());
-    input.options.retry = judge_contract::RetryPolicy {
+    let client = server.client().with_retry(RetryPolicy {
+        max_retries: 2,
         backoff_initial_ms: 1000,
         backoff_max_ms: 1000,
-        backoff_jitter: 0.0,
-        ..Default::default()
-    };
+        ..DEFAULT_RETRY
+    });
+    let mut input = request(1);
+    input.request_id = Some("backoff".into());
     let call = tokio::spawn({
         let client = client.clone();
         async move { client.evaluate(input, DEFAULT_MODEL).await }
@@ -1467,13 +1475,11 @@ async fn retry_after_attempt_timeout_keeps_known_usage_but_marks_total_incomplet
     .await;
     let mut input = request(1);
     input.options.attempt_timeout_ms = Some(60);
-    input.options.retry = judge_contract::RetryPolicy {
-        max_retries: 1,
-        backoff_initial_ms: 1,
-        backoff_jitter: 0.0,
-        ..Default::default()
-    };
-    let (_, results, stats) = ok(server.client().evaluate(input, DEFAULT_MODEL).await);
+    let (_, results, stats) = ok(server
+        .client()
+        .with_retry(fast(1))
+        .evaluate(input, DEFAULT_MODEL)
+        .await);
     assert_eq!(stats.attempts, 2);
     assert_eq!(
         (stats.requests, stats.input_tokens, stats.output_tokens),
@@ -1530,10 +1536,8 @@ async fn invalid_options_fail_the_entire_batch_before_http() {
     let server = Server::start(|body| Reply::ok(answer(body))).await;
     let client = server.client();
     for invalid in [
-        json!({"headers":{"Authorization":"caller-key"}}),
-        json!({"retry":{"max_retries":11}}),
         json!({"attempt_timeout_ms":0}),
-        json!({"headers":{"x-label":"line\r\nbreak"}}),
+        json!({"attempt_timeout_ms":u64::MAX}),
     ] {
         let mut input = request(5);
         input.options = serde_json::from_value(invalid).unwrap();
@@ -1564,18 +1568,12 @@ async fn default_retry_policy_recovers_rate_limits_for_evaluation_and_models() {
             }
         })
         .await;
-        let client = server.client();
-        let mut options = judge_contract::RequestOptions::default();
-        options.retry.backoff_initial_ms = 1;
-        options.retry.backoff_jitter = 0.0;
+        // Production retry count, millisecond backoff.
+        let client = server.client().with_retry(fast(DEFAULT_RETRY.max_retries));
         let stats = if listing {
-            let mut input = models_request(3000);
-            input.options = options;
-            models_ok(client.list_models(input).await).1
+            models_ok(client.list_models(models_request(3000)).await).1
         } else {
-            let mut input = request(1);
-            input.options = options;
-            ok(client.evaluate(input, DEFAULT_MODEL).await).2
+            ok(client.evaluate(request(1), DEFAULT_MODEL).await).2
         };
         assert_eq!((stats.attempts, stats.requests), (3, 1));
         assert!(stats.usage_complete);
@@ -1609,14 +1607,13 @@ async fn later_batch_entries_use_http_slots_while_earlier_entries_back_off() {
     .await;
     let mut input = request(8);
     input.timeout_ms = 650;
-    input.options.retry = judge_contract::RetryPolicy {
+    let client = server.client().with_retry(RetryPolicy {
         max_retries: 1,
         backoff_initial_ms: 400,
         backoff_max_ms: 400,
-        backoff_jitter: 0.0,
-        ..Default::default()
-    };
-    let (_, results, stats) = ok(server.client().evaluate(input, DEFAULT_MODEL).await);
+        ..DEFAULT_RETRY
+    });
+    let (_, results, stats) = ok(client.evaluate(input, DEFAULT_MODEL).await);
     assert_eq!(results.len(), 8);
     assert_eq!(
         (stats.attempts, stats.requests, stats.input_tokens),

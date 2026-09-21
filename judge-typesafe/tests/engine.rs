@@ -149,24 +149,21 @@ async fn independent_consumer_evaluates_mixed_primitives_and_lists_models() {
             json!({"timeout_ms": 3000}),
         ),
     ] {
+        // Production policy: 429 is retried twice, honoring the 250 ms hint.
         Mock::given(method(http_method))
             .and(path(endpoint))
-            .respond_with(|request: &Request| {
-                assert_eq!(request.headers["x-request-tag"], "private-request-tag");
+            .respond_with(|_: &Request| {
                 ResponseTemplate::new(429)
                     .insert_header("retry-after-ms", "250")
                     .set_body_json(json!({"detail": [{
                         "loc": ["body", "questions"],
-                        "msg": "Rate limited: local-test-key private-request-tag"
+                        "msg": "Rate limited: local-test-key"
                     }]}))
             })
-            .expect(1)
+            .expect(3)
             .mount(&server)
             .await;
-        payload["options"] = json!({
-            "headers": {"x-request-tag": "private-request-tag"},
-            "retry": {"max_retries": 0}
-        });
+        payload["options"] = json!({"attempt_timeout_ms": 1000});
         let error = invoke(&consumer, function_id, payload).await.unwrap();
         assert_eq!(error["code"], "http", "{error}");
         assert_eq!(error["http_status"], 429);
@@ -177,8 +174,7 @@ async fn independent_consumer_evaluates_mixed_primitives_and_lists_models() {
         );
         assert_eq!(error["provider_error"]["truncated"], false);
         assert!(!error.to_string().contains("local-test-key"));
-        assert!(!error.to_string().contains("private-request-tag"));
-        assert_eq!(error["stats"]["attempts"], 1);
+        assert_eq!(error["stats"]["attempts"], 3);
         if function_id == FUNCTION_ID {
             serde_json::from_value::<EvaluateResponse>(error).unwrap();
         } else {
@@ -233,7 +229,6 @@ async fn cancellation_is_scoped_to_the_persistent_engine_caller() {
             FUNCTION_ID,
             json!({
                 "request_id": "ticket-run-42", "timeout_ms": 3000,
-                "options": {"retry": {"max_retries": 0}},
                 "evaluations": [{
                     "id": "ticket", "state": {"message": "Sign-in is blocked"},
                     "questions": {"urgent": {"type": "noul"}}

@@ -79,10 +79,7 @@ fn rejects_ambiguous_inputs_before_sending_any_evaluations() {
 
 #[test]
 fn byte_guards_account_for_utf8_and_all_questions() {
-    let limits = EncodingLimits {
-        max_body_bytes: 48 * 1024,
-        max_state_question_bytes: Some(16 * 1024),
-    };
+    let limits = 16 * 1024;
     let mut evaluation = request().evaluations.remove(0);
     evaluation.state = json!({"message": "🦀".repeat(5000)});
     assert_eq!(

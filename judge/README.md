@@ -68,26 +68,14 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 
 ## Providers
 
-The default provider is a Console setting: **Settings → Workers → judge**,
-field **Default provider**. The form lists every worker currently registered as
-`judge-<provider>` (with its namespace), flags a stored provider that is not
-running, and clears back to the built-in `typesafe`. It hot-reloads for new calls. `JUDGE_PROVIDER` in the hub's environment (or
-`--provider`) only seeds that entry on first boot; it is `typesafe` unless set.
-A request may pick another provider with a top-level `provider` field:
-
-```bash
-iii trigger judge::models::list --json '{"provider": "typesafe"}'
-```
-
-`judge::evaluate`, `judge::models::list` and `judge::cancel` forward to
-`judge-<provider>::evaluate`, `judge-<provider>::models::list` and
-`judge-<provider>::cancel`. A new provider implements those three functions
-with the [`judge-contract`](../crates/judge-contract/) request and response
-types (`provider_function_id` builds the ids) and runs as its own worker; the
-hub needs no change. Cancellation stays scoped to the original caller: the hub
-forwards `request_id` as `<caller length>:<caller>/<request_id>` (unambiguous
-even when ids contain slashes), so provider workers must accept ids up to
-`MAX_PROVIDER_REQUEST_ID_BYTES` (512); the hub rejects longer compositions.
+**Settings → Workers → judge** selects the default provider from the workers
+registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`);
+a request may name its own with a top-level `provider`. A new provider is a
+worker that registers `judge-<provider>::evaluate`, `::models::list` and
+`::cancel` with the [`judge-contract`](../crates/judge-contract/) types and
+accepts request ids up to 512 bytes; the hub needs no change. See
+[Configuration](reference.md#configuration) and
+[Cancellation](reference.md#cancellation).
 
 The hub holds no credentials; its configuration entry (`judge`, or
 `III_CONFIG_NAME`) carries only the default provider. For the full API,

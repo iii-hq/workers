@@ -125,38 +125,24 @@ fn invalid_description_shapes_cardinalities_and_unknown_fields_are_rejected() {
 
 #[test]
 fn callers_can_apply_smaller_limits_than_the_generic_defaults() {
-    let caller_limits = EncodingLimits {
-        max_body_bytes: 48 * 1024,
-        max_state_question_bytes: Some(16 * 1024),
-    };
+    let caller_limit = 48 * 1024;
     let mut request = request(json!({"type":"noul","instructions":"Is checkout failing?"}));
     request.timeout_ms = 60000;
     request.evaluations[0].state = json!({"events":"Checkout unavailable. ".repeat(4000)});
     validate_request(&request).unwrap();
     let evaluation = &request.evaluations[0];
     let bytes = encode_evaluation(DEFAULT_MODEL, evaluation).unwrap();
-    assert!(bytes.len() > caller_limits.max_body_bytes);
+    assert!(bytes.len() > caller_limit);
     assert_eq!(
-        encode_evaluation_with_limits(DEFAULT_MODEL, evaluation, caller_limits),
+        encode_evaluation_with_limits(DEFAULT_MODEL, evaluation, caller_limit),
         Err(ErrorCode::PayloadTooLarge)
     );
-    let limit = EncodingLimits {
-        max_body_bytes: bytes.len(),
-        max_state_question_bytes: None,
-    };
     assert_eq!(
-        encode_evaluation_with_limits(DEFAULT_MODEL, evaluation, limit).unwrap(),
+        encode_evaluation_with_limits(DEFAULT_MODEL, evaluation, bytes.len()).unwrap(),
         bytes
     );
     assert_eq!(
-        encode_evaluation_with_limits(
-            DEFAULT_MODEL,
-            evaluation,
-            EncodingLimits {
-                max_body_bytes: bytes.len() - 1,
-                ..limit
-            }
-        ),
+        encode_evaluation_with_limits(DEFAULT_MODEL, evaluation, bytes.len() - 1),
         Err(ErrorCode::PayloadTooLarge)
     );
 }

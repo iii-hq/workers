@@ -46,18 +46,12 @@ export interface ModelCard {
 type ModelsReply = { status: 'ok'; models: ModelCard[] } | { status: 'error'; code: string }
 type Engine = Pick<ExtensionIii, 'trigger'>
 
-/** A typed provider refusal (`missing_key`, `http`, …) as opposed to a bus failure. */
-export class ProviderError extends Error {
-  constructor(readonly code: string) {
-    super(code)
-  }
-}
-
 /** The catalog as the running worker answers it with its saved credentials. */
 export async function listModels(iii: Engine): Promise<ModelCard[]> {
   const reply = await iii.trigger<ModelsReply>('judge-typesafe::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
   if (reply?.status === 'ok' && Array.isArray(reply.models)) return reply.models
-  throw new ProviderError(reply?.status === 'error' && reply.code ? reply.code : 'invalid_response')
+  // Typed provider refusals (`missing_key`, `http`, …) surface by code; bus failures by message.
+  throw new Error(reply?.status === 'error' && reply.code ? reply.code : 'invalid_response')
 }
 
 /** Bind the form to the console's engine client once, at registration. */
@@ -77,7 +71,7 @@ export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine
     listModels(iii)
       .then(setCatalog)
       .catch((error: unknown) => {
-        setCatalogError(error instanceof ProviderError ? error.code : error instanceof Error ? error.message : String(error))
+        setCatalogError(error instanceof Error ? error.message : String(error))
         setCatalog((current) => current ?? [])
       })
   }, [iii])
