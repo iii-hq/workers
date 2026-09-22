@@ -108,6 +108,8 @@ describe('LayaConfigForm', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ...value, model: 'laya-multilingual' })
     await act(async () => changes.get('revision')?.('abc123'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, revision: 'abc123' })
+    await act(async () => changes.get('threads')?.('6'))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, threads: 6 })
     await act(async () => changes.get('batch_questions')?.('32'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, batch_questions: 32 })
     await act(async () => changes.get('batch_questions')?.(''))

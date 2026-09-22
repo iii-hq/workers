@@ -6,6 +6,7 @@ fn config_validates_model_revision_and_limits() {
     let defaults = LayaConfig::default().to_json();
     assert_eq!(defaults["model"], "laya");
     assert_eq!(defaults["batch_questions"], 16);
+    assert!((1..=8).contains(&defaults["threads"].as_u64().unwrap()));
     assert!(defaults.get("revision").is_none());
     let ok = LayaConfig::from_json(
         &json!({"model": "laya-multilingual", "revision": "abc123", "batch_questions": 4}),
@@ -17,6 +18,8 @@ fn config_validates_model_revision_and_limits() {
         json!({"revision": " "}),
         json!({"revision": "../x"}),
         json!({"batch_questions": 0}),
+        json!({"threads": 0}),
+        json!({"threads": 257}),
         json!({"batch_questions": 257}),
         json!({"max_timeout_ms": 0}),
         json!({"api_key": "test-marker"}),

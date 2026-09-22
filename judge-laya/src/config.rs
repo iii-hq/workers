@@ -14,6 +14,10 @@ pub struct LayaConfig {
     /// Hugging Face revision of `convaiinnovations/laya`; null follows `main`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// CPU threads for the forward pass (`RAYON_NUM_THREADS`), applied at the next
+    /// worker start. Hybrid CPUs run faster below their logical core count.
+    #[schemars(range(min = 1, max = 256))]
+    pub threads: usize,
     /// Questions per forward pass; cancellation and deadlines are checked between batches.
     #[schemars(range(min = 1, max = 256))]
     pub batch_questions: usize,
@@ -24,12 +28,22 @@ pub struct LayaConfig {
     #[schemars(range(min = 1))]
     pub max_timeout_ms: u64,
 }
+/// Measured on an i9-14900K: 6–8 threads answer a question in ~0.3 s, all 32
+/// logical cores in ~0.8 s. Cap the default; operators can raise it.
+pub fn default_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(8)
+}
+
 impl Default for LayaConfig {
     fn default() -> Self {
         let limits = Limits::default();
         Self {
             model: "laya".into(),
             revision: None,
+            threads: default_threads(),
             batch_questions: limits.batch_questions,
             max_request_bytes: limits.max_request_bytes,
             max_timeout_ms: limits.max_timeout_ms,
@@ -49,7 +63,9 @@ impl LayaConfig {
         }) {
             return Err("laya revision must be a Hugging Face branch, tag or commit".into());
         }
-        if self.batch_questions == 0
+        if self.threads == 0
+            || self.threads > 256
+            || self.batch_questions == 0
             || self.batch_questions > 256
             || self.max_request_bytes == 0
             || self.max_timeout_ms == 0

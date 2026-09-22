@@ -44,8 +44,13 @@ the option probabilities and `confidence`; `score` carries the level
 distribution, the probability-weighted `score`, `confidence` and the `legend`.
 `confidence` is laya's own calibrated readout (1 − normalized entropy after the
 checkpoint's per-bucket temperature). `usage.input_tokens` counts encoder
-tokens, `output_tokens` is always 0 and `usage_complete` is true. On a CPU the
-four-question example above takes about 1.5 s.
+tokens, `output_tokens` is always 0 and `usage_complete` is true.
+
+Measured on an i9-14900K (CPU only, 140-token rows): one question answers in
+about 0.3 s with 6–8 threads and 0.8 s when all 32 logical cores are used, so
+the default caps threads at 8; batching questions barely changes the
+per-question cost (0.26 s at 32 per batch). `RAYON_NUM_THREADS` in the worker
+environment overrides the `threads` setting.
 
 ## Configuration
 
@@ -55,6 +60,7 @@ four-question example above takes about 1.5 s.
 |---|---|---|
 | `model` | `laya` | next start (`laya-multilingual` for non-English) |
 | `revision` | `main` | next start |
+| `threads` | min(8, logical cores) | next start (`RAYON_NUM_THREADS` in the environment wins) |
 | `batch_questions` | 16 | new calls |
 | `max_request_bytes` | 8388608 | new calls |
 | `max_timeout_ms` | 300000 | new calls |

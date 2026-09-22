@@ -20,7 +20,7 @@ const limitFields = [
   { field: 'max_request_bytes', label: 'Maximum request bytes', fallback: 8388608, description: 'Maximum encoded request size. Clear to use 8388608 (8 MiB).' },
   { field: 'max_timeout_ms', label: 'Maximum timeout (ms)', fallback: 300000, description: 'Maximum caller timeout. Clear to use 300000 (5 minutes).' },
 ]
-const knownFields = ['model', 'revision', ...limitFields.map(({ field }) => field)]
+const knownFields = ['model', 'revision', 'threads', ...limitFields.map(({ field }) => field)]
 
 interface ModelCard {
   name: string
@@ -151,6 +151,25 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
                 placeholder="main"
                 value={typeof value.revision === 'string' ? value.revision : ''}
                 onChange={(next) => setString('revision', next)}
+              />
+            )}
+          />
+          <SettingsField
+            id="laya-cfg-threads"
+            field="threads"
+            label="CPU threads"
+            description="Threads for the forward pass, applied at the next worker start. Hybrid CPUs are fastest around their performance-core count; the built-in default is min(8, logical cores)."
+            error={props.errors?.get('/threads')}
+            renderControl={(controlProps) => (
+              <Input
+                {...controlProps}
+                type="number"
+                min={1}
+                step={1}
+                aria-label="CPU threads"
+                placeholder="8"
+                value={typeof value.threads === 'number' ? String(value.threads) : ''}
+                onChange={(next) => setNumber('threads', next)}
               />
             )}
           />

@@ -49,6 +49,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     let (model, revision) = (initial.model.clone(), initial.revision.clone());
+    // candle reads RAYON_NUM_THREADS per call; an operator export wins.
+    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+        std::env::set_var("RAYON_NUM_THREADS", initial.threads.to_string());
+    }
     let config = configuration::new_cell(initial);
     // Functions register only once the model answers: until then the hub
     // reports provider_unavailable, which is the honest state.
