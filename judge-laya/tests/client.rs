@@ -89,7 +89,8 @@ async fn mixed_evaluation_answers_every_question_with_valid_distributions_and_co
     let usage = ticket.usage.as_ref().unwrap();
     assert!(usage.input_tokens.unwrap() > 0);
     assert_eq!(usage.output_tokens, Some(0));
-    assert_eq!((stats.requests, stats.questions), (1, 4));
+    // One request per evaluation (two here), whatever the batch layout.
+    assert_eq!((stats.requests, stats.questions), (2, 4));
     assert_eq!(
         stats.input_tokens,
         results
@@ -110,7 +111,7 @@ async fn batches_split_by_the_configured_size_and_respect_deadlines_and_model_na
     let EvaluateResponse::Ok { stats, .. } = response else {
         unreachable!()
     };
-    assert_eq!((stats.attempts, stats.requests, stats.questions), (4, 4, 4));
+    assert_eq!((stats.attempts, stats.requests, stats.questions), (4, 2, 4));
 
     let expired = request(json!({"expires_at_unix_ms": 1}));
     let response = tiny_client().evaluate(expired).await;

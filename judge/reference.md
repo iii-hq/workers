@@ -289,7 +289,9 @@ iii trigger judge::models::list --json '{"timeout_ms":5000}'
 ```
 
 Success has `status: "ok"`, a `models` array and `stats`. Each model card has
-string fields `name`, `description` and `release_date`; cards and aliases are
+string fields `name`, `description` and `release_date`, plus an optional
+`context_window` (tokens one evaluation row can hold, for providers with a
+fixed window such as `laya`); cards and aliases are
 returned without filtering to locally known versions. An example reply
 (illustrative values):
 

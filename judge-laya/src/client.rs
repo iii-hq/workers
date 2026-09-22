@@ -215,7 +215,6 @@ impl LayaClient {
                             .map_err(|_| ErrorCode::InvalidResponse)?
                     }
                 };
-                stats.requests += 1;
                 per_row = batch_started.elapsed() / batch.len() as u32;
                 for (row, z) in batch.iter().zip(logits) {
                     let question = &request.evaluations[row.evaluation].questions[&row.qid];
@@ -228,8 +227,19 @@ impl LayaClient {
                     if let Some(usage) = &mut result.usage {
                         usage.input_tokens = usage.input_tokens.map(|n| n + row.ids.len() as u64);
                     }
-                    stats.questions += 1;
-                    stats.input_tokens += row.ids.len() as u64;
+                    // The contract's unit of a "request" is one evaluation (one
+                    // upstream POST for hosted providers): count usage when an
+                    // evaluation completes, so failures keep only whole ones.
+                    let questions = request.evaluations[row.evaluation].questions.len();
+                    if result.answers.len() == questions {
+                        stats.requests += 1;
+                        stats.questions += questions;
+                        stats.input_tokens += result
+                            .usage
+                            .as_ref()
+                            .and_then(|usage| usage.input_tokens)
+                            .unwrap_or(0);
+                    }
                 }
             }
             Ok(())
@@ -276,6 +286,7 @@ impl LayaClient {
                     self.name, self.model.agent.encoder
                 ),
                 release_date: self.revision.to_string(),
+                context_window: Some(self.model.agent.max_len as u32),
             }],
             stats: stats(true),
         }
