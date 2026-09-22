@@ -39,6 +39,15 @@
   min-width: 0;
 }
 
+/* The one vertical scroll of the page. `PageMain` is a clipping flex
+   column, so without this everything past the fold was unreachable. */
+[data-iii-ui="sentinel"] .sentinel-ui-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 [data-iii-ui="sentinel"] .sentinel-ui-banners {
   display: flex;
   flex-direction: column;

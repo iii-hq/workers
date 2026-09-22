@@ -137,6 +137,13 @@ export function SentinelPage({
   }, [])
   useEffect(() => setNow(Date.now()), [groups.data])
 
+  // Opening a group, or going back, starts at the top rather than wherever
+  // the other view was scrolled to.
+  const scroller = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    scroller.current?.scrollTo({ top: 0 })
+  }, [selected])
+
   const [opened, setOpened] = useState<GroupSummary | null>(null)
   useEffect(() => {
     if (!selected) setOpened(null)
@@ -207,77 +214,80 @@ export function SentinelPage({
       </PageHeader>
       <PageMain>
         <LiveRegion announcement={announcement} />
-        {/* Page-wide news sits in the same column as the content under it. */}
-        <div className={selected ? 'sentinel-ui-banners sentinel-ui-banners--column' : 'sentinel-ui-banners'}>
-          {status?.config_error ? (
-            <StatusPanel
-              variant="alert"
-              headline="The stored configuration was refused"
-              detail={`${status.config_error} — the worker is running on defaults and is not ingesting.`}
-            />
-          ) : null}
-          {status && !status.enabled && !status.config_error ? (
-            <StatusPanel
-              variant="warn"
-              headline="Nothing is being recorded"
-              detail="Either the configuration switches ingest off, or the worker's store or queue has not answered yet."
-            />
-          ) : null}
-          {notice ? (
-            <StatusPanel
-              variant="info"
-              headline={notice}
-              action={
-                <Button size="sm" variant="ghost" onClick={() => setNotice(null)}>
-                  Dismiss
-                </Button>
-              }
-            />
-          ) : null}
-          {groups.error ? (
-            <StatusPanel
-              variant="alert"
-              headline="Could not read the error groups"
-              detail={groups.error}
-              action={
-                <Button size="sm" onClick={() => groups.refresh()}>
-                  Retry
-                </Button>
-              }
-            />
-          ) : null}
-        </div>
+        {/* `PageMain` clips by contract; the page owns its scroll. */}
+        <div className="sentinel-ui-scroll" ref={scroller}>
+          {/* Page-wide news sits in the same column as the content under it. */}
+          <div className={selected ? 'sentinel-ui-banners sentinel-ui-banners--column' : 'sentinel-ui-banners'}>
+            {status?.config_error ? (
+              <StatusPanel
+                variant="alert"
+                headline="The stored configuration was refused"
+                detail={`${status.config_error} — the worker is running on defaults and is not ingesting.`}
+              />
+            ) : null}
+            {status && !status.enabled && !status.config_error ? (
+              <StatusPanel
+                variant="warn"
+                headline="Nothing is being recorded"
+                detail="Either the configuration switches ingest off, or the worker's store or queue has not answered yet."
+              />
+            ) : null}
+            {notice ? (
+              <StatusPanel
+                variant="info"
+                headline={notice}
+                action={
+                  <Button size="sm" variant="ghost" onClick={() => setNotice(null)}>
+                    Dismiss
+                  </Button>
+                }
+              />
+            ) : null}
+            {groups.error ? (
+              <StatusPanel
+                variant="alert"
+                headline="Could not read the error groups"
+                detail={groups.error}
+                action={
+                  <Button size="sm" onClick={() => groups.refresh()}>
+                    Retry
+                  </Button>
+                }
+              />
+            ) : null}
+          </div>
 
-        {selected ? (
-          <GroupDetailView
-            api={api}
-            host={host}
-            groupId={selected}
-            conversationId={conversationId ?? null}
-            narrow={narrow}
-            repositories={status?.repositories ?? []}
-            now={now}
-            onBack={() => setSelected(null)}
-            onChanged={() => groups.refresh()}
-            onLoaded={setOpened}
-            announce={announce}
-          />
-        ) : (
-          <GroupsListView
-            busy={bulk.busy}
-            onBulk={bulk.run}
-            status={status}
-            filters={filters}
-            groups={groups.data?.groups ?? []}
-            loading={groups.loading || !groups.data}
-            narrow={narrow}
-            now={now}
-            onFilters={setFilters}
-            onOpen={setSelected}
-            total={groups.data?.total ?? 0}
-            workers={workers}
-          />
-        )}
+          {selected ? (
+            <GroupDetailView
+              api={api}
+              host={host}
+              groupId={selected}
+              conversationId={conversationId ?? null}
+              narrow={narrow}
+              repositories={status?.repositories ?? []}
+              now={now}
+              onBack={() => setSelected(null)}
+              onChanged={() => groups.refresh()}
+              onLoaded={setOpened}
+              announce={announce}
+            />
+          ) : (
+            <GroupsListView
+              busy={bulk.busy}
+              onBulk={bulk.run}
+              status={status}
+              filters={filters}
+              groups={groups.data?.groups ?? []}
+              loading={groups.loading || !groups.data}
+              narrow={narrow}
+              now={now}
+              onFilters={setFilters}
+              onOpen={setSelected}
+              total={groups.data?.total ?? 0}
+              workers={workers}
+            />
+          )}
+        </div>
       </PageMain>
     </PageShell>
   )
