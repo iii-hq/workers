@@ -13,8 +13,6 @@ default = ["console-ui"]
 console-ui = ["dep:iii-console-ui"]
 # GPU offload through llama.cpp's Vulkan backend (needs the Vulkan loader and glslc to build).
 vulkan = ["llama-cpp-2/vulkan"]
-# GPU offload through llama.cpp's HIP backend (needs a ROCm install; see README).
-rocm = ["llama-cpp-2/rocm"]
 
 [dependencies]
 judge-contract = { path = "../crates/judge-contract" }

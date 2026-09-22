@@ -7,8 +7,8 @@ a softmax over the next-token logits of the option letters `A`–`P`, no decodin
 Its published Qwen3.5-4B baseline agrees with Jev's own references on 0.845 of
 TypeSafe's public subset (Jev 0.883). This worker runs the same prompt through
 llama.cpp (the [`llama-cpp-2`](https://crates.io/crates/llama-cpp-2) crate) on
-the CPU, on Metal (macOS), on Vulkan (`--features vulkan`) or on ROCm
-(`--features rocm`).
+the CPU, on Metal (macOS) or on Vulkan (`--features vulkan`: AMD, NVIDIA and
+Intel GPUs).
 
 ## Install
 
@@ -76,12 +76,12 @@ Per request, 16 questions about one state; `parallel_questions` 8 unless noted:
 |---|---|---|
 | CPU, 8 threads | 3.8 s (6.9 s with parallel 1) | 6.6 s |
 | Vulkan | 0.79 s (1.18 s with parallel 1) | 3.4 s |
-| ROCm (gfx1030) | 0.86 s | 3.1 s |
 
 Before the token-level prefix, the directory block decoded every question in
 full: 75k tokens and 35.8 s on Vulkan, against 6k tokens and 3.4 s now.
 Parallel suffixes pay off on short states; long states are dominated by the
-one-time prefill, where ROCm is slightly ahead of Vulkan. A single short
+one-time prefill. On the same card llama.cpp's ROCm backend measured within
+10% of Vulkan either way, so the worker ships Vulkan alone. A single short
 decision takes 67–140 ms on the GPU and 1.1–1.4 s on the CPU.
 
 GPU, reuse and batching change probabilities by up to 0.02 against fresh CPU
@@ -107,9 +107,7 @@ llama.cpp is compiled from source: `cmake`, a C++ compiler and `libclang`
 (for bindgen) are required; if libclang lives outside the default search path
 set `LIBCLANG_PATH` (and `BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its
 builtin headers are not found). `--features vulkan` also needs the Vulkan
-loader headers and `glslc`; `--features rocm` needs ROCm (HIP, hipBLAS; set
-`ROCM_PATH` and `AMDGPU_TARGETS`, e.g. `gfx1030`). CI checks
-`--features console-ui,vulkan`: the ROCm SDK is too large for its runners. Published binaries use default features (CPU on
+loader headers and `glslc`. Published binaries use default features (CPU on
 Linux, Metal on macOS); Windows is not published yet.
 
 For the full API, read the hub's [reference](../judge/reference.md).
