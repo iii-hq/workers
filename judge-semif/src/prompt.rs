@@ -67,15 +67,3 @@ pub fn render(state: &Value, criterion: &str, options: &[String]) -> String {
         &json!({"evidence": state, "criterion": criterion, "options": options}),
     ))
 }
-
-/// The prompt text every question about `state` starts with (SemIf's
-/// `_state_prefix`): the template head plus `{"evidence": <state>`. The
-/// caller drops the prefix's last token, which can merge with what follows.
-pub fn state_prefix(state: &Value) -> String {
-    let evidence = python_json(&json!({"evidence": state}));
-    let head = chat("");
-    let user_at = head
-        .find("<|im_end|>\n<|im_start|>assistant")
-        .expect("template has a user turn");
-    format!("{}{}", &head[..user_at], &evidence[..evidence.len() - 1])
-}

@@ -7,7 +7,6 @@ Run from a SemIf checkout (github.com/TheoLeeCJ/SemIf):
 import json, sys
 from transformers import AutoTokenizer
 from semif_phase1.core import direct_messages
-from semif_phase1.shared import _state_prefix
 
 tok = AutoTokenizer.from_pretrained(sys.argv[1])
 rows = [
@@ -19,8 +18,7 @@ rows = [
 out = []
 for row in rows:
     prompt = tok.apply_chat_template(direct_messages(row), tokenize=False, add_generation_prompt=True, enable_thinking=False)
-    prefix = tok.decode(_state_prefix(tok, row["state"]))
     out.append({"state": row["state"], "question": row["question"], "options": [o["description"] for o in row["options"]],
-                "prompt": prompt, "prefix_tokens_text": prefix, "token_ids": tok.encode(prompt, add_special_tokens=False)})
+                "prompt": prompt, "token_ids": tok.encode(prompt, add_special_tokens=False)})
 json.dump(out, open(sys.argv[2], "w"), ensure_ascii=False, indent=1)
 print("wrote", len(out))

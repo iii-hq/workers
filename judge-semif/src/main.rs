@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         threads: initial.threads,
         gpu_layers: initial.gpu_layers,
         context_tokens: initial.context_tokens,
+        parallel: initial.parallel_questions,
     };
     let config = configuration::new_cell(initial);
     // Functions register only once the model answers: until then the hub

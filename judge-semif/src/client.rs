@@ -168,10 +168,7 @@ impl SemifClient {
                 ));
                 evaluation_plans.push((qid.clone(), plan));
             }
-            jobs.push(engine::Evaluation {
-                prefix: prompt::state_prefix(&evaluation.state),
-                prompts,
-            });
+            jobs.push(engine::Evaluation { prompts });
             plans.push(evaluation_plans);
         }
         let cancel = Arc::new(AtomicBool::new(false));

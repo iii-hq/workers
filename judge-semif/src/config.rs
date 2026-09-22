@@ -24,6 +24,11 @@ pub struct SemifConfig {
     /// SemIf never truncates evidence.
     #[schemars(range(min = 512, max = 262144))]
     pub context_tokens: u32,
+    /// Questions about one state decoded together in a batch, applied at the
+    /// next start. Pays off on GPUs; 1 decodes them one at a time. Their
+    /// prompts share the context window, so long states run fewer at once.
+    #[schemars(range(min = 1, max = 64))]
+    pub parallel_questions: usize,
     /// Maximum encoded request bytes.
     #[schemars(range(min = 1))]
     pub max_request_bytes: usize,
@@ -48,6 +53,7 @@ impl Default for SemifConfig {
             threads: default_threads(),
             gpu_layers: None,
             context_tokens: 16384,
+            parallel_questions: 8,
             max_request_bytes: limits.max_request_bytes,
             max_timeout_ms: limits.max_timeout_ms,
         }
@@ -61,6 +67,7 @@ impl SemifConfig {
         }
         if !(1..=256).contains(&self.threads)
             || !(512..=262_144).contains(&self.context_tokens)
+            || !(1..=64).contains(&self.parallel_questions)
             || self.max_request_bytes == 0
             || self.max_timeout_ms == 0
             || i64::try_from(self.max_timeout_ms).is_err()

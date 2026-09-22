@@ -6,6 +6,7 @@ fn config_validates_model_placement_and_limits() {
     let defaults = SemifConfig::default().to_json();
     assert_eq!(defaults["model"], "qwen3.5-4b");
     assert_eq!(defaults["context_tokens"], 16384);
+    assert_eq!(defaults["parallel_questions"], 8);
     assert!((1..=8).contains(&defaults["threads"].as_u64().unwrap()));
     assert!(defaults.get("gpu_layers").is_none());
     let ok = SemifConfig::from_json(&json!({"gpu_layers": 0, "context_tokens": 4096})).unwrap();
@@ -15,6 +16,8 @@ fn config_validates_model_placement_and_limits() {
         json!({"threads": 0}),
         json!({"threads": 257}),
         json!({"context_tokens": 100}),
+        json!({"parallel_questions": 0}),
+        json!({"parallel_questions": 65}),
         json!({"max_timeout_ms": 0}),
         json!({"api_key": "test-marker"}),
     ] {

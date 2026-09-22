@@ -7,7 +7,6 @@
    "Billing support."
   ],
   "prompt": "<|im_start|>system\nApply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning.<|im_end|>\n<|im_start|>user\n{\"evidence\": \"Customer cannot access an account after a password reset.\", \"criterion\": \"Which queue should handle this request?\", \"options\": [{\"letter\": \"A\", \"description\": \"Account access support.\"}, {\"letter\": \"B\", \"description\": \"Billing support.\"}]}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
-  "prefix_tokens_text": "<|im_start|>system\nApply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning.<|im_end|>\n<|im_start|>user\n{\"evidence\": \"Customer cannot access an account after a password reset",
   "token_ids": [
    248045,
    8678,
@@ -134,7 +133,6 @@
    "No, the statement does not hold."
   ],
   "prompt": "<|im_start|>system\nApply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning.<|im_end|>\n<|im_start|>user\n{\"evidence\": {\"from\": \"ops@acme.com\", \"body\": \"Café payments failed — 502 errors\", \"n\": 3, \"tags\": [\"urgent\", null, true], \"ratio\": 0.5}, \"criterion\": \"Is the checkout flow impacted?\", \"options\": [{\"letter\": \"A\", \"description\": \"Yes, the statement holds.\"}, {\"letter\": \"B\", \"description\": \"No, the statement does not hold.\"}]}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
-  "prefix_tokens_text": "<|im_start|>system\nApply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning.<|im_end|>\n<|im_start|>user\n{\"evidence\": {\"from\": \"ops@acme.com\", \"body\": \"Café payments failed — 502 errors\", \"n\": 3, \"tags\": [\"urgent\", null, true], \"ratio\": 0.5",
   "token_ids": [
    248045,
    8678,

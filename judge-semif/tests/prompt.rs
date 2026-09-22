@@ -1,6 +1,6 @@
 //! The frozen prompt against SemIf's own `apply_chat_template` output
 //! (`tests/fixtures/prompts.json`, from `make_prompts.py`).
-use judge_semif::prompt::{render, state_prefix};
+use judge_semif::prompt::render;
 use serde_json::Value;
 
 fn fixtures() -> Vec<Value> {
@@ -8,16 +8,11 @@ fn fixtures() -> Vec<Value> {
 }
 
 #[test]
-fn prompts_and_state_prefixes_match_semif() {
+fn prompts_match_semif() {
     for case in fixtures() {
         let options: Vec<String> = serde_json::from_value(case["options"].clone()).unwrap();
         let prompt = render(&case["state"], case["question"].as_str().unwrap(), &options);
         assert_eq!(prompt, case["prompt"].as_str().unwrap());
-        // SemIf drops the prefix's last token; its decoded text must still
-        // lead our prefix, and our prefix must lead every prompt.
-        let prefix = state_prefix(&case["state"]);
-        assert!(prefix.starts_with(case["prefix_tokens_text"].as_str().unwrap()));
-        assert!(prompt.starts_with(&prefix));
     }
 }
 

@@ -5,7 +5,8 @@
 //! Each evaluation shares one state across its questions, and SemIf's prompt
 //! puts the evidence first, so the engine prefills that prefix once, snapshots
 //! the sequence (`state_seq_get`; Qwen3.5's hybrid memory cannot copy
-//! sequences), and restores it before decoding each question's suffix.
+//! sequences), restores it into up to `parallel` sequences and decodes their
+//! question suffixes together in one batch (SemIf's parallel suffixes).
 use crate::{download::Checkpoint, prompt::LETTERS};
 use anyhow::{anyhow, bail, Result};
 use llama_cpp_2::{
@@ -25,8 +26,10 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-/// Tokens per `llama_decode`; deadlines and cancellation are observed between chunks.
-const CHUNK: usize = 512;
+/// Tokens per `llama_decode` (and llama.cpp's physical batch): large batches
+/// keep a GPU busy on prompt processing. Deadlines and cancellation are
+/// observed between chunks.
+const CHUNK: usize = 2048;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -34,11 +37,13 @@ pub struct Options {
     /// None offloads every layer when a GPU device exists.
     pub gpu_layers: Option<u32>,
     pub context_tokens: u32,
+    /// Questions decoded together in one batch (1 = one at a time).
+    pub parallel: usize,
 }
 
-/// One evaluation: its shared-state prefix and one prompt per question.
+/// One evaluation: one prompt (and option count) per question, all about
+/// the same state.
 pub struct Evaluation {
-    pub prefix: String,
     pub prompts: Vec<(String, usize)>,
 }
 
@@ -126,7 +131,10 @@ impl Engine {
                                 .with_n_ctx(NonZeroU32::new(options.context_tokens))
                                 .with_n_batch(CHUNK as u32)
                                 .with_n_ubatch(CHUNK as u32)
-                                .with_n_seq_max(1)
+                                .with_n_seq_max(options.parallel.max(1) as u32)
+                                // One KV pool shared by the parallel sequences,
+                                // so a long prompt can still use the whole window.
+                                .with_kv_unified(true)
                                 .with_n_threads(threads)
                                 .with_n_threads_batch(threads),
                         )
@@ -137,6 +145,7 @@ impl Engine {
                             model,
                             ctx,
                             letters,
+                            parallel: options.parallel.max(1),
                         },
                         device,
                     ))
@@ -206,6 +215,7 @@ struct Scorer {
     model: &'static LlamaModel,
     ctx: LlamaContext<'static>,
     letters: Vec<LlamaToken>,
+    parallel: usize,
 }
 
 impl Scorer {
@@ -239,20 +249,30 @@ impl Scorer {
             if prompts.iter().any(|(ids, _)| ids.len() > n_ctx) {
                 return Err(Stop::TooLong);
             }
-            let mut prefix = tokenize(&evaluation.prefix)?;
-            prefix.pop();
-            // Reuse pays off from the second question on, and only when every
-            // prompt really starts with the prefix tokens.
-            let shared = prompts.len() > 1
-                && !prefix.is_empty()
-                && prompts
-                    .iter()
-                    .all(|(ids, _)| ids.len() > prefix.len() && ids.starts_with(&prefix));
+            // The shared prefix is the longest common run of prompt tokens, not
+            // a re-tokenized text prefix: the state's closing bytes can merge
+            // with what follows it (`{}}` vs `{}`) more than one token back.
+            let common = prompts.iter().skip(1).fold(
+                prompts.first().map_or(0, |(ids, _)| ids.len()),
+                |n, (ids, _)| {
+                    prompts[0].0[..n]
+                        .iter()
+                        .zip(ids)
+                        .take_while(|(a, b)| a == b)
+                        .count()
+                },
+            );
+            // Every question keeps at least its last token to decode.
+            let common =
+                common.min(prompts.iter().map(|(ids, _)| ids.len()).min().unwrap_or(1) - 1);
+            let prefix = prompts.first().map_or(&[][..], |(ids, _)| &ids[..common]);
+            // Reuse pays off from the second question on.
+            let shared = prompts.len() > 1 && !prefix.is_empty();
             let mut tokens = 0u64;
             let mut scores = Vec::with_capacity(prompts.len());
             let saved = if shared {
                 self.ctx.clear_kv_cache();
-                self.decode(&prefix, 0, false, &check)?;
+                self.decode(&[(prefix, 0, None)], &check)?;
                 tokens += prefix.len() as u64;
                 Some(
                     self.ctx
@@ -262,30 +282,31 @@ impl Scorer {
             } else {
                 None
             };
-            for (ids, options) in &prompts {
+            let skip = if saved.is_some() { prefix.len() } else { 0 };
+            // The unified KV pool holds every branch of a group: the prefix
+            // once per sequence plus the suffixes.
+            let longest = prompts.iter().map(|(ids, _)| ids.len()).max().unwrap_or(1);
+            let group = self.parallel.min((n_ctx / longest).max(1));
+            for chunk in prompts.chunks(group) {
                 check()?;
-                let logits = match &saved {
-                    Some(state) => {
+                self.ctx.clear_kv_cache();
+                if let Some(state) = &saved {
+                    for seq in 0..chunk.len() {
                         self.ctx
-                            .clear_kv_cache_seq(Some(0), None, None)
+                            .state_seq_set(state, seq as i32)
                             .map_err(|_| Stop::Failed)?;
-                        self.ctx.state_seq_set(state, 0).map_err(|_| Stop::Failed)?;
-                        tokens += (ids.len() - prefix.len()) as u64;
-                        self.decode(&ids[prefix.len()..], prefix.len(), true, &check)?
                     }
-                    None => {
-                        self.ctx.clear_kv_cache();
-                        tokens += ids.len() as u64;
-                        self.decode(ids, 0, true, &check)?
-                    }
-                };
-                let z: Vec<f32> = self.letters[..*options]
+                }
+                let spans: Vec<(&[LlamaToken], usize, Option<usize>)> = chunk
                     .iter()
-                    .map(|t| logits[t.0 as usize])
+                    .map(|(ids, options)| (&ids[skip..], skip, Some(*options)))
                     .collect();
-                scores.push(Scored {
-                    probabilities: softmax(&z).ok_or(Stop::Failed)?,
-                });
+                tokens += spans.iter().map(|s| s.0.len() as u64).sum::<u64>();
+                for z in self.decode(&spans, &check)? {
+                    scores.push(Scored {
+                        probabilities: softmax(&z).ok_or(Stop::Failed)?,
+                    });
+                }
             }
             outcome.scores.push(scores);
             outcome.tokens.push(tokens);
@@ -293,35 +314,49 @@ impl Scorer {
         Ok(outcome)
     }
 
-    /// Decode `tokens` at positions `start..`; with `want`, return the logits
-    /// of the last position.
+    /// Decode each span `(tokens, start, options)` into sequence `i` at
+    /// positions `start..`, packed into batches of `CHUNK` tokens. For spans
+    /// with `Some(options)`, return the option-letter logits of their last
+    /// position, in span order.
+    #[allow(clippy::type_complexity)]
     fn decode(
         &mut self,
-        tokens: &[LlamaToken],
-        start: usize,
-        want: bool,
+        spans: &[(&[LlamaToken], usize, Option<usize>)],
         check: &dyn Fn() -> Result<(), Stop>,
-    ) -> Result<Vec<f32>, Stop> {
-        let mut last = 0;
-        for (index, chunk) in tokens.chunks(CHUNK).enumerate() {
+    ) -> Result<Vec<Vec<f32>>, Stop> {
+        let flat: Vec<(usize, usize)> = spans
+            .iter()
+            .enumerate()
+            .flat_map(|(seq, (tokens, _, _))| (0..tokens.len()).map(move |i| (seq, i)))
+            .collect();
+        let mut out: Vec<Option<Vec<f32>>> = vec![None; spans.len()];
+        for chunk in flat.chunks(CHUNK) {
             check()?;
-            let final_chunk = (index + 1) * CHUNK >= tokens.len();
             let mut batch = LlamaBatch::new(chunk.len(), 1);
-            for (offset, token) in chunk.iter().enumerate() {
-                let position = (start + index * CHUNK + offset) as i32;
-                let logits = want && final_chunk && offset + 1 == chunk.len();
+            let mut wanted = Vec::new();
+            for (row, &(seq, i)) in chunk.iter().enumerate() {
+                let (tokens, start, options) = spans[seq];
+                let last = options.is_some() && i + 1 == tokens.len();
                 batch
-                    .add(*token, position, &[0], logits)
+                    .add(tokens[i], (start + i) as i32, &[seq as i32], last)
                     .map_err(|_| Stop::Failed)?;
+                if last {
+                    wanted.push((seq, row as i32));
+                }
             }
             self.ctx.decode(&mut batch).map_err(|_| Stop::Failed)?;
-            last = batch.n_tokens() - 1;
+            for (seq, row) in wanted {
+                let logits = self.ctx.get_logits_ith(row);
+                let options = spans[seq].2.unwrap_or(0);
+                out[seq] = Some(
+                    self.letters[..options]
+                        .iter()
+                        .map(|t| logits[t.0 as usize])
+                        .collect(),
+                );
+            }
         }
-        if !want {
-            return Ok(Vec::new());
-        }
-        let vocab = self.model.n_vocab() as usize;
-        Ok(self.ctx.get_logits_ith(last)[..vocab].to_vec())
+        Ok(out.into_iter().flatten().collect())
     }
 }
 

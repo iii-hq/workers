@@ -21,6 +21,7 @@ pub fn tiny_client() -> SemifClient {
                     threads: 2,
                     gpu_layers: Some(0),
                     context_tokens: 2048,
+                    parallel: 4,
                 },
             )
             .expect("tiny GGUF loads")

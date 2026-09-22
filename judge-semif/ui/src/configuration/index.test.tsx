@@ -116,6 +116,8 @@ describe('SemifConfigForm', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ...value, gpu_layers: 0 })
     await act(async () => changes.get('context_tokens')?.('8192'))
     expect(onChange).toHaveBeenLastCalledWith({ ...value, context_tokens: 8192 })
+    await act(async () => changes.get('parallel_questions')?.('16'))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, parallel_questions: 16 })
     await act(async () => changes.get('threads')?.(''))
     expect(onChange).toHaveBeenLastCalledWith({ future: { keep: true } })
     onChange.mockClear()

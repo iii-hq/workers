@@ -250,22 +250,32 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # judge-semif compiles llama.cpp (cmake) and its bindings (bindgen needs
-      # libclang); --all-features adds the Vulkan backend (loader + glslc).
+      # libclang); its gate adds the Vulkan backend (loader + glslc). The `rocm`
+      # feature needs a multi-GB ROCm SDK, so that worker's gate lists its
+      # features instead of --all-features.
       - name: Provision llama.cpp build tools (judge-semif)
         if: matrix.worker == 'judge-semif'
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc
 
       - name: Run clippy
-        if: matrix.worker != 'browser'
+        if: matrix.worker != 'browser' && matrix.worker != 'judge-semif'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run clippy (judge-semif, all features but rocm)
+        if: matrix.worker == 'judge-semif'
+        run: cargo clippy --locked --all-targets --features console-ui,vulkan -- -D warnings
 
       - name: Run clippy (default features)
         if: matrix.worker == 'browser'
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run tests
-        if: matrix.worker != 'browser'
+        if: matrix.worker != 'browser' && matrix.worker != 'judge-semif'
         run: cargo test --locked --all-features
+
+      - name: Run tests (judge-semif, all features but rocm)
+        if: matrix.worker == 'judge-semif'
+        run: cargo test --locked --features console-ui,vulkan
 
       - name: Run tests (default features)
         if: matrix.worker == 'browser'

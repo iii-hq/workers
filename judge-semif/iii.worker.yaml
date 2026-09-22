@@ -11,6 +11,7 @@ config:
   model: qwen3.5-4b
   threads: 8
   context_tokens: 16384
+  parallel_questions: 8
   max_request_bytes: 8388608
   max_timeout_ms: 300000
 dependencies:

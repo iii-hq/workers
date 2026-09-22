@@ -7,7 +7,8 @@ a softmax over the next-token logits of the option letters `A`–`P`, no decodin
 Its published Qwen3.5-4B baseline agrees with Jev's own references on 0.845 of
 TypeSafe's public subset (Jev 0.883). This worker runs the same prompt through
 llama.cpp (the [`llama-cpp-2`](https://crates.io/crates/llama-cpp-2) crate) on
-the CPU, on Metal (macOS) or on Vulkan (`--features vulkan`).
+the CPU, on Metal (macOS), on Vulkan (`--features vulkan`) or on ROCm
+(`--features rocm`).
 
 ## Install
 
@@ -60,19 +61,31 @@ probabilities are conditional on the offered options and uncalibrated. At most
 `payload_too_large`: SemIf never truncates evidence.
 
 Every question of one evaluation shares its state, and SemIf puts the evidence
-first, so the worker prefills that prefix once, snapshots it, and restores it
-before each question (SemIf's serial prefix reuse). `usage.input_tokens` counts
-the decoded tokens (the shared prefix once).
+first. The worker prefills the prompts' longest common token run once,
+snapshots it, restores it into up to `parallel_questions` sequences and decodes
+their suffixes together in one batch (SemIf's parallel suffixes). The prefix is
+found on tokens, not re-tokenized text: a state ending in `{}` merges with the
+following `}` two tokens back, which SemIf's own `_state_prefix` rejects.
+`usage.input_tokens` counts the decoded tokens (the shared prefix once).
 
 ## Speed (Qwen3.5-4B Q4_K_M, i9-14900K, RX 6900 XT)
 
-| | one short decision (~140 tokens) | 16 questions on a 541-token state, fresh | with prefix reuse |
-|---|---|---|---|
-| CPU, 8 threads | 1.1–1.4 s | 6.1 s each | 0.66 s each |
-| Vulkan (RX 6900 XT) | 67–140 ms | 227 ms each | 57 ms each + 0.29 s prefill |
+Per request, 16 questions about one state; `parallel_questions` 8 unless noted:
 
-GPU and prefix-reuse probabilities differ from fresh CPU scoring by up to 0.02,
-as SemIf documents for its own fast paths.
+| | incident (541-token state) | directory block (4.6k-token state, 64 functions) |
+|---|---|---|
+| CPU, 8 threads | 3.8 s (6.9 s with parallel 1) | 6.6 s |
+| Vulkan | 0.79 s (1.18 s with parallel 1) | 3.4 s |
+| ROCm (gfx1030) | 0.86 s | 3.1 s |
+
+Before the token-level prefix, the directory block decoded every question in
+full: 75k tokens and 35.8 s on Vulkan, against 6k tokens and 3.4 s now.
+Parallel suffixes pay off on short states; long states are dominated by the
+one-time prefill, where ROCm is slightly ahead of Vulkan. A single short
+decision takes 67–140 ms on the GPU and 1.1–1.4 s on the CPU.
+
+GPU, reuse and batching change probabilities by up to 0.02 against fresh CPU
+scoring, as SemIf documents for its own fast paths.
 
 ## Configuration
 
@@ -84,6 +97,7 @@ as SemIf documents for its own fast paths.
 | `threads` | min(8, logical cores) | next start |
 | `gpu_layers` | all layers when a GPU backend and device exist | next start (`0` = CPU) |
 | `context_tokens` | 16384 | next start |
+| `parallel_questions` | 8 | next start (`1` = one question per decode) |
 | `max_request_bytes` | 8388608 | new calls |
 | `max_timeout_ms` | 300000 | new calls |
 
@@ -93,7 +107,9 @@ llama.cpp is compiled from source: `cmake`, a C++ compiler and `libclang`
 (for bindgen) are required; if libclang lives outside the default search path
 set `LIBCLANG_PATH` (and `BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its
 builtin headers are not found). `--features vulkan` also needs the Vulkan
-loader headers and `glslc`. Published binaries use default features (CPU on
+loader headers and `glslc`; `--features rocm` needs ROCm (HIP, hipBLAS; set
+`ROCM_PATH` and `AMDGPU_TARGETS`, e.g. `gfx1030`). CI checks
+`--features console-ui,vulkan`: the ROCm SDK is too large for its runners. Published binaries use default features (CPU on
 Linux, Metal on macOS); Windows is not published yet.
 
 For the full API, read the hub's [reference](../judge/reference.md).
