@@ -4,6 +4,24 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// Built-in configuration entry id; also the stable `metadata.ui_form` family.
+pub const DEFAULT_CONFIG_ID: &str = "quick-tunnel";
+
+/// The configuration entry this worker owns: `III_CONFIG_NAME` when a
+/// supervisor set it (trimmed, non-empty), else the built-in name. Cached for
+/// the process lifetime because `EntrySpec` needs a `'static` identity.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {

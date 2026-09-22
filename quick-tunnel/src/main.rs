@@ -3,7 +3,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use quick_tunnel::{config::Config, manager::Manager, service};
+use quick_tunnel::{
+    config::{self, Config},
+    manager::Manager,
+    service,
+};
 use serde_json::json;
 
 #[derive(Parser)]
@@ -80,17 +84,18 @@ async fn run(
     let config = if *local_config {
         seed.unwrap_or_default()
     } else {
-        let config_id = std::env::var("III_CONFIG_NAME").unwrap_or_else(|_| "quick-tunnel".into());
-        // EntrySpec requires a static identity; one allocation lives for this process.
         let spec = iii_config_client::EntrySpec {
-            id: Box::leak(config_id.into_boxed_str()),
-            form_id: "quick-tunnel",
+            id: config::config_id(),
+            form_id: config::DEFAULT_CONFIG_ID,
             name: "Quick Tunnel",
             description: "Authorized origins and cloudflared lifecycle limits (restart to apply)",
             schema: serde_json::to_value(schemars::schema_for!(Config))?,
             default_value: serde_json::to_value(Config::default())?,
         };
-        iii_config_client::register(&iii, &spec, seed.map(serde_json::to_value).transpose()?)
+        // `configuration::ensure` seeds the candidate only when nothing is
+        // stored yet and preserves an operator/Compose value atomically; on an
+        // engine without it the client falls back to the warned legacy path.
+        iii_config_client::ensure(&iii, &spec, seed.map(serde_json::to_value).transpose()?)
             .await
             .map_err(anyhow::Error::msg)?;
         let value = iii_config_client::fetch(&iii, spec.id)
