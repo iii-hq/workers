@@ -143,13 +143,13 @@ pub enum FunctionSearchMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FunctionSearchJudgeQuestion {
-    // The default: one Noul per shortlisted document, admitted by the
-    // min_relevance settings. A doc comment would turn the schema into a oneOf.
-    #[default]
+    // One Noul per shortlisted document, admitted by the min_relevance
+    // settings. A doc comment would turn the schema into a oneOf.
     Noul,
-    // One Choice per capability over its shortlist: the documents compete,
-    // the best is always kept, the others need
+    // The default: one Choice per capability over its shortlist; the
+    // documents compete, the best is always kept, the others need
     // function_search_judge_choice_min_probability.
+    #[default]
     Choice,
 }
 
@@ -401,12 +401,12 @@ pub struct SkillsConfig {
     #[schemars(range(min = 0, max = 1))]
     pub function_search_judge_side_lane_min_relevance: f64,
 
-    /// `noul` asks one yes/no question per shortlisted document (up to 16 per
-    /// capability) and admits them by the min_relevance settings. `choice`
-    /// asks one multiple-choice question per capability over the same
-    /// shortlist: 16× fewer questions, and documents compete instead of each
-    /// being approved on its own. Local judges (SemIf, laya) need `choice` to
-    /// fit the deadline. Hot-reloadable.
+    /// `choice` (the default) asks one multiple-choice question per capability
+    /// over its shortlist: 16× fewer questions, and documents compete instead
+    /// of each being approved on its own. `noul` asks one yes/no question per
+    /// shortlisted document (up to 16 per capability) and admits them by the
+    /// min_relevance settings. Local judges (SemIf, laya) need `choice` to fit
+    /// the deadline. Hot-reloadable.
     #[serde(default)]
     pub function_search_judge_question: FunctionSearchJudgeQuestion,
 
@@ -757,23 +757,23 @@ mod tests {
     }
 
     #[test]
-    fn judge_question_defaults_to_noul_and_choice_carries_its_threshold() {
+    fn judge_question_defaults_to_choice_with_its_threshold() {
         let defaults = SkillsConfig::default().to_json();
-        assert_eq!(defaults["function_search_judge_question"], "noul");
+        assert_eq!(defaults["function_search_judge_question"], "choice");
         assert_eq!(
             defaults["function_search_judge_choice_min_probability"],
             0.1
         );
-        let choice = SkillsConfig::from_json(&serde_json::json!({
-            "function_search_judge_question": "choice",
+        let noul = SkillsConfig::from_json(&serde_json::json!({
+            "function_search_judge_question": "noul",
             "function_search_judge_choice_min_probability": 0.05
         }))
         .unwrap();
         assert_eq!(
-            choice.function_search_judge_question,
-            FunctionSearchJudgeQuestion::Choice
+            noul.function_search_judge_question,
+            FunctionSearchJudgeQuestion::Noul
         );
-        assert_eq!(choice.function_search_judge_choice_min_probability, 0.05);
+        assert_eq!(noul.function_search_judge_choice_min_probability, 0.05);
         let schema = SkillsConfig::json_schema();
         assert_eq!(
             schema["definitions"]["FunctionSearchJudgeQuestion"]["enum"],

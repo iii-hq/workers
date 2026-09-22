@@ -161,18 +161,18 @@ describe('DirectoryConfigForm function search settings', () => {
     }
   })
 
-  it('renders the judge question as one yes/no per function by default', () => {
+  it('renders the judge question as one choice per capability by default', () => {
     const html = renderConfiguration({})
 
     expect(html).toContain('Judge question')
-    expect(html).toContain('<option value="noul" selected="">')
-    expect(html).toContain('<option value="choice">')
+    expect(html).toContain('<option value="choice" selected="">')
+    expect(html).toContain('<option value="noul">')
   })
 
   it.each([
     ['function_search_mode', 'judge', 'judge'],
     ['function_search_mode', 'lexical', 'lexical'],
-    ['function_search_judge_question', 'choice', 'choice'],
+    ['function_search_judge_question', 'noul', 'noul'],
   ])('edits %s while preserving the rest of the draft and host errors', (field, raw, expected) => {
     const draft = Object.freeze({
       function_search_mode: 'hybrid',

@@ -1203,7 +1203,7 @@ mod tests {
             lanes(
                 &["send"],
                 &[
-                    tool("engine::internal"),
+                    tool("engine::functions::list"),
                     tool("directory::search_functions"),
                 ],
             ),

@@ -2482,6 +2482,12 @@ mod tests {
     fn excluded_from_search_hides_claim_namespace_and_infra() {
         assert!(excluded_from_search(SEARCH_FN));
         assert!(excluded_from_search("engine::functions::list"));
+        assert!(excluded_from_search("engine::workers::register"));
+        assert!(excluded_from_search("engine::registered-triggers::list"));
+        // Capabilities of workers bundled with the engine stay searchable.
+        assert!(!excluded_from_search("engine::traces::list"));
+        assert!(!excluded_from_search("engine::logs::list"));
+        assert!(!excluded_from_search("engine::queue::enqueue"));
         assert!(excluded_from_search("state::claim-namespace"));
         assert!(
             excluded_from_search("state::on-config-change"),

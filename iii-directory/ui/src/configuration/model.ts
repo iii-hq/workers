@@ -32,7 +32,7 @@ export const JUDGE_QUESTION_OPTIONS = [
   {
     value: 'noul',
     label: 'One yes/no per function',
-    description: 'Ask about every shortlisted function on its own (up to 16 per capability).',
+    description: 'Ask about every shortlisted function on its own (up to 16 per capability); admitted by the minimum relevance.',
   },
   {
     value: 'choice',
@@ -44,7 +44,7 @@ export const JUDGE_QUESTION_OPTIONS = [
 export type JudgeQuestion = (typeof JUDGE_QUESTION_OPTIONS)[number]['value']
 
 export function judgeQuestionWithDefault(value: unknown): JudgeQuestion {
-  return value === 'choice' ? 'choice' : 'noul'
+  return value === 'noul' ? 'noul' : 'choice'
 }
 
 /** Keys the worker no longer reads. A stored config can still carry them,

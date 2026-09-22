@@ -1,6 +1,6 @@
 use super::*;
 use crate::functions::search_judge::{JudgeError, JudgeSearch};
-use judge_contract::EvaluateRequest;
+use judge_contract::{EvaluateRequest, Question};
 use std::sync::Mutex;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -27,10 +27,12 @@ fn tools() -> Vec<ToolSchema> {
 
 /// Skill roots for judge tests: the defaults resolve to the crate's shipped
 /// `skills/` and the developer's `~/.agents/skills`, which would add a
-/// nondeterministic skill evaluation to every search.
+/// nondeterministic skill evaluation to every search. These tests cover the
+/// Noul admission floors; Choice is covered in `search_judge`.
 fn skill_roots(root: &std::path::Path) -> SkillsConfig {
     SkillsConfig {
         function_search_mode: FunctionSearchMode::Judge,
+        function_search_judge_question: crate::config::FunctionSearchJudgeQuestion::Noul,
         function_search_model_path: None,
         registry_search: false,
         skills_folder: root.join("skills").display().to_string(),
@@ -174,6 +176,53 @@ async fn judge_finds_nonlexical_candidates_without_a_local_model() {
     let body = bodies[0].to_string();
     assert!(!body.contains("engine::functions::list"));
     assert!(!body.contains("directory::search_functions"));
+}
+
+#[tokio::test]
+async fn default_choice_asks_one_question_and_keeps_the_best_and_the_runner_up_above_the_floor() {
+    let (judge, requests) = mock_hub(0, |request| {
+        let mut results = serde_json::Map::new();
+        for evaluation in &request.evaluations {
+            let Some(Question::Choice { criteria, .. }) = evaluation.questions.get("c0") else {
+                panic!("the default asks one Choice per capability");
+            };
+            let probabilities: serde_json::Map<String, Value> = criteria
+                .iter()
+                .map(|(key, option)| {
+                    let id = serde_json::to_value(option).unwrap()["function_id"].clone();
+                    let p = match id.as_str() {
+                        Some("mail::send") => 0.8,
+                        Some("state::get") => 0.15,
+                        _ => 0.05,
+                    };
+                    (key.clone(), json!(p))
+                })
+                .collect();
+            results.insert(
+                evaluation.id.clone(),
+                json!({"answers": {"c0": {"type": "choice", "choice": "f0",
+                    "probabilities": probabilities, "confidence": 0.5}}}),
+            );
+        }
+        Ok(json!({"status":"ok","model":"qwen3.5-4b","results":results,
+            "stats":{"attempts":1,"requests":1,"questions":1,"input_tokens":10,
+                "output_tokens":0,"elapsed_ms":1,"usage_complete":true}}))
+    });
+    let deps = Deps {
+        config: SkillsConfig {
+            function_search_judge_question: crate::config::FunctionSearchJudgeQuestion::default(),
+            ..skill_roots(empty_skill_root())
+        }
+        .into_shared(),
+        ..deps(judge)
+    };
+    let response = ask(&deps, &["dispatch correspondence"]).await;
+    // 0.15 clears the 0.1 default floor; the 0.05 option does not.
+    assert_eq!(ids(&response), ["mail::send", "state::get"]);
+    assert_eq!(response.search_mode, FunctionSearchMode::Judge);
+    let bodies = bodies(&requests);
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies[0]["questions"].as_object().unwrap().len(), 1);
 }
 
 #[tokio::test]

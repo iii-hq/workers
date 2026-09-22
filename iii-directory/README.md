@@ -155,9 +155,9 @@ hint_min_workers: 2                          # minimum surface width before the 
 registry_search: true                        # include installable registry workers in every search
 function_search_mode: judge                  # lexical | hybrid | judge (default)
 function_search_judge_timeout_ms: 3000        # integer 1..30000; shared judge deadline per public search
-function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; initial calibration value
-function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; floor for the skills and triggers sections
-function_search_judge_question: noul         # noul (default: one yes/no per shortlisted document) | choice (one question per capability)
+function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; noul floor (initial calibration value)
+function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; noul floor for the skills and triggers sections
+function_search_judge_question: choice       # choice (default: one question per capability) | noul (one yes/no per shortlisted document)
 function_search_judge_choice_min_probability: 0.1 # finite 0..1 inclusive; with choice, the floor for all but the best document
 ```
 
@@ -567,7 +567,7 @@ function_search_mode: judge
 function_search_judge_timeout_ms: 3000
 function_search_judge_min_relevance: 0.5
 function_search_judge_side_lane_min_relevance: 0.3
-function_search_judge_question: noul
+function_search_judge_question: choice
 function_search_judge_choice_min_probability: 0.1
 ```
 
@@ -590,10 +590,10 @@ Exact eligible IDs, internal-function exclusions, session deduplication and
 result limits stay local.
 
 `function_search_judge_question` sets how each capability's shortlist is
-asked. `noul` (the default) asks one yes/no question per document and admits
-each by the relevance floors. `choice` asks one multiple-choice question per
-capability whose options are the shortlisted documents: 16× fewer questions,
-and the documents compete. The best one is always kept and every other needs
+asked. `choice` (the default) asks one multiple-choice question per capability
+whose options are the shortlisted documents: 16× fewer questions, and the
+documents compete. `noul` asks one yes/no question per document and admits
+each by the relevance floors. The best one is always kept and every other needs
 `function_search_judge_choice_min_probability` (the relevance floors do not
 apply). Local judges need `choice` to fit the deadline: judge-semif answers a
 capability in about 0.3 s on a GPU, where the Noul shortlist of every lane
