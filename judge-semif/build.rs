@@ -165,10 +165,13 @@ fn llama_runtime() {
         profile_dir.join("deps"),
         profile_dir.join("examples"),
     ];
+    let linux = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
+    // Release copies are what ships: strip them like the binary (`strip = true`).
+    let strip = linux && std::env::var("PROFILE").as_deref() == Ok("release");
     for module in files(&backends) {
-        copy_into(&module, &profile_dir);
+        copy_into(&module, &profile_dir, strip);
     }
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+    if linux {
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
         let libraries = backends
             .parent()
@@ -187,7 +190,7 @@ fn llama_runtime() {
             });
             if soname {
                 for dir in library_dirs.iter().filter(|dir| dir.is_dir()) {
-                    copy_into(&library, dir);
+                    copy_into(&library, dir, strip);
                 }
             }
         }
@@ -201,8 +204,9 @@ fn files(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Copy the file's contents (following symlinks) under its own name.
-fn copy_into(path: &Path, dir: &Path) {
+/// Copy the file's contents (following symlinks) under its own name; `strip`
+/// removes the symbols the loader does not need (release builds).
+fn copy_into(path: &Path, dir: &Path, strip: bool) {
     let destination = dir.join(path.file_name().expect("file has a name"));
     let _ = std::fs::remove_file(&destination);
     std::fs::copy(path, &destination).unwrap_or_else(|error| {
@@ -212,4 +216,14 @@ fn copy_into(path: &Path, dir: &Path) {
             destination.display()
         )
     });
+    // Drop the symbols the loader does not need.
+    if strip
+        && !Command::new("strip")
+            .arg("--strip-unneeded")
+            .arg(&destination)
+            .status()
+            .is_ok_and(|status| status.success())
+    {
+        println!("cargo:warning=could not strip {}", destination.display());
+    }
 }

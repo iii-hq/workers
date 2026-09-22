@@ -47,6 +47,10 @@ futures-util = "0.3"
 tempfile = "3"
 tokio-tungstenite = "0.28"
 
-# The model runs here: keep full optimization, no size-first profile.
+# Size-first like the other judge workers: inference runs in llama.cpp, which
+# CMake compiles with its own Release flags whatever the Rust opt-level.
 [profile.release]
-opt-level = 3
+opt-level = "z"
+strip = true
+lto = "fat"
+codegen-units = 1
