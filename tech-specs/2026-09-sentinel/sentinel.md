@@ -82,6 +82,24 @@ correlacionados no momento em que vê o erro; a UI e o harness leem a cópia do
 sentinel, e só recorrem ao engine quando o trace ainda existe (deep link para a
 página de traces).
 
+⚠ **A segunda restrição: o handler não tem thread própria.** O SDK Rust dá
+cada invocação a `tokio::spawn` (`iii-sdk-0.23.0/src/iii.rs:2274`) dentro do
+runtime que ele constrói na sua thread `iii-connection` — e esse runtime é
+`current_thread` (`iii.rs:1136`). Todos os handlers em voo dividem uma thread
+com o socket que traz as respostas que esses mesmos handlers estão esperando.
+O ingest é pesado o bastante para segurá-la: ele mede e apara um bundle de
+evidência por span de erro do trace, quatro traces por vez. Medido na stack de
+dev (21/09): a thread ficou em 99,6% de CPU, as chamadas do próprio worker
+estouraram o timeout, a fila reentregou os jobs que as causaram, e as
+reentregas caíram na mesma thread saturada — nada se recuperava sozinho, e
+`sentinel::groups::list` no console estourava os 10 s da página.
+
+Consequência: **o pipeline roda no runtime do worker, não no da conexão**. Um
+`offload` fino entrega o futuro ao `Handle` do runtime multi-thread guardado no
+boot, e a thread de conexão volta a não fazer nada além de carregar mensagens
+(1,5% de CPU depois da correção). Vale para qualquer handler que gaste CPU, não
+só para este.
+
 ## Vocabulário
 
 | Termo | Significado |
@@ -152,6 +170,15 @@ de fonte log é criado ou incrementado. Na janela, a pendente é uma linha de
 preenche a coluna, a da dobra apaga a linha e leva o log para a evidência do
 span. A janela é o fallback: com o tier ligado, `log_join` decide se o log
 descreve a mesma falha sem depender de tempo.
+
+⚠ **Ler as pendentes vencidas é reivindicá-las.** A varredura roda a cada
+500 ms e uma linha que ela não consegue promover — o span nunca veio, a
+gravação falhou — continua vencida, então sem guarda a mesma linha é
+enfileirada milhares de vezes por minuto e a fila cresce mais rápido do que
+drena (visto na stack de dev, 21/09). A leitura empurra `join_deadline_ms`
+30 s adiante na mesma transação: uma linha travada volta num backoff em vez
+de duas vezes por segundo, e o prazo continua no banco, onde um restart não
+recomeça a enxurrada.
 
 ### Adapters futuros (o `ErrorEvent` já nasce para eles)
 
