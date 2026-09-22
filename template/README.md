@@ -1,13 +1,14 @@
-# Download templates
+# Download templates for local development
 
 `sync.sh` downloads the contents of `iii/<name>/` from
 [`iii-hq/templates`](https://github.com/iii-hq/templates) into `template/<name>/`.
 The default name is `harness`.
 
-The sync only downloads files. It does not validate the project's structure,
-check whether it is running, configure workers, install dependencies, or execute
-anything from the template. Follow the downloaded template's own instructions
-to configure and run it.
+After downloading, sync updates `worker-compose.yaml` to use matching workers
+from this repository. For example, `package://harness` becomes
+`path://../../harness`, with `scripts.run: cargo run --bin harness`.
+It does not start workers or execute anything from the template. Follow the
+downloaded template's instructions to configure authentication and run it.
 
 ## Usage
 
@@ -16,7 +17,7 @@ From the repository root:
 ```bash
 cd template
 
-# Download iii/harness/ into template/harness/.
+# Download iii/harness/ into template/harness/ and configure local workers.
 ./sync.sh
 
 # Download iii/harness-kanban/ into template/harness-kanban/.
@@ -41,16 +42,38 @@ Different templates have independent destinations.
 Every tracked file inside the selected folder is copied, including hidden files
 (such as `.env` and `.gitignore`), README, `template.yaml`, Compose, configuration,
 source code, scripts, binary assets and symlinks. File contents and executable
-bits are preserved. Nothing is rewritten, no local configuration seeds are
-added, and no sync manifest is generated inside the download.
+bits are preserved, except for the Compose changes below. No local configuration
+seeds are added, and no sync manifest is generated inside the download.
+
+### Local workers
+
+For each active `package://<name>` entry in the downloaded `worker-compose.yaml`,
+sync looks for `<repository>/<name>/iii.worker.yaml`. Paths are relative to the
+downloaded Compose file, not the shell's working directory. Container aliases
+do not change which source directory is selected.
+
+Rust workers with a `Cargo.toml` get `scripts.run: cargo run --bin <bin>`, using
+the binary name from the worker manifest. Existing run commands and hooks are
+preserved. Other local workers use their manifest's `scripts.start`. Workers
+without a local manifest or a usable start command keep their package source.
+Existing `path://` entries and custom registry URLs are kept.
+
+The YAML editor preserves comments, including disabled provider examples, and
+keeps environment, configuration and dependency settings. The `version` field
+is retained with its comments; Compose does not use it for `path://` sources.
+If no workers change, the Compose file is copied byte for byte. A Compose symlink
+is copied without following or editing its target.
+
+`--dry-run` lists the local worker paths without changing the destination.
+Adaptation runs in the staging folder, so invalid YAML fails before installation.
 
 Only the selected folder's contents are downloaded: files referenced elsewhere
 by an installer manifest are not resolved or added. Git submodules are external
 references rather than folder contents; they produce an explicit error instead
 of an incomplete download.
 
-There is no requirement for `agents/`, `skills/`, Markdown, Compose, or any other
-project file. A template folder only needs to exist at the selected Git ref.
+There is no requirement for `agents/`, `skills/`, Markdown, or Compose. Templates
+without a `worker-compose.yaml` file are copied without adaptation.
 
 **If the destination folder already exists, sync asks before overwriting files.**
 The English prompt warns you to back up your files and asks for `yes` or `no`
@@ -93,26 +116,35 @@ tracked files.
 
 ## Requirements and tests
 
-Downloading requires only Bash, Git and Python 3.11+ (standard library). The
-script tries `python3`, then `python`, and uses the first compatible interpreter.
+Downloading requires Bash, Git, Python 3.11+ and `ruamel.yaml`. The script tries
+`python3`, then `python`, and uses the first compatible interpreter. If the YAML
+library is missing, it uses `uv` to supply the pinned dependency in an isolated
+cache. It does not install system packages. Without either the library or `uv`,
+use the container below.
 Keep `scripts/sync_template.py` beside the launcher in its `scripts/` directory.
 A missing importer is reported before fetching anything.
 
-From `template/`, run the offline download tests:
+From the repository root, build the container and run the offline tests:
 
 ```bash
-bash -n sync.sh
-python3 -m unittest discover -s tests -p test_sync.py -v
-# Use python instead of python3 if that is your interpreter's command name.
+docker build -t workers-template-tests template
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/workspace:ro" workers-template-tests
+docker run --rm --network none -v "$PWD:/workspace:ro" \
+  workers-template-tests bash -n template/sync.sh
 ```
 
-To also run the structural checks for the retained root-level Harness baseline:
+The same image can run sync with access to the local workers and the destination:
 
 ```bash
-uv run --with PyYAML==6.0.3 python -m unittest discover -s tests -v
+docker run --rm -it --user "$(id -u):$(id -g)" \
+  -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/workspace" \
+  workers-template-tests bash template/sync.sh
 ```
 
 The download tests use temporary local Git repositories and cover templates
 without agents/skills (including a Harness + Kanban fixture), byte-for-byte
-copies, executable bits, hidden files, symlinks, repeat downloads, Git isolation,
-previews, fetch failures and Python command selection. No template is started.
+copies when no worker matches, local Compose paths and Cargo commands, preserved
+settings and comments, executable bits, hidden files, symlinks, repeat downloads,
+Git isolation, previews, fetch failures and Python command selection. The suite
+also checks the retained root-level Harness baseline. No template is started.

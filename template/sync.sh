@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download a template folder verbatim. Do not configure or run the project.
+# Download a template and configure matching local workers. Do not run it.
 set -euo pipefail
 
 usage() {
@@ -9,7 +9,8 @@ Usage: ./sync.sh [--template NAME] [--ref REF] [--repo URL_OR_PATH] [--dry-run]
 Download all contents of iii/NAME/ into the folder NAME beside sync.sh.
 The default template is harness. Downloaded folders are ignored by Git.
 Existing files with matching paths are overwritten; local-only files are kept.
-No project structure or runtime-state checks, configuration changes or scripts.
+Compose package references use matching workers from this source checkout.
+Rust workers get cargo run commands. No project scripts are executed.
 
   --template NAME Template folder under iii/ (default: harness)
   --ref REF       Branch, tag, commit, or pull request ref (default: main)
@@ -17,7 +18,7 @@ No project structure or runtime-state checks, configuration changes or scripts.
   --dry-run       List files without creating or changing the destination
   --help          Show this help
 
-Requires Bash, Git and Python 3.11+ (standard library only).
+Requires Bash, Git and Python 3.11+ with ruamel.yaml, or uv to supply it.
 Automatically tries python3, then python, using the first compatible interpreter.
 Run from any working directory; destinations are always beside sync.sh.
 HELP
@@ -79,6 +80,15 @@ if [[ -z "$python_bin" ]]; then
   echo 'Python 3.11+ is required. Neither python3 nor python is available with a compatible version.' >&2
   exit 1
 fi
+python_command=("$python_bin")
+if ! "$python_bin" -c 'import ruamel.yaml' >/dev/null 2>&1; then
+  command -v uv >/dev/null 2>&1 || {
+    echo 'ruamel.yaml is required. Use the container workflow in template/README.md or make uv available.' >&2
+    exit 1
+  }
+  # uv supplies the pinned dependency in its cache, without a system install.
+  python_command=(uv run --quiet --python "$python_bin" --script)
+fi
 
 # This lock only prevents concurrent downloads; it is not a project-state check.
 lock="$script_dir/.sync.lock"
@@ -99,4 +109,4 @@ git init --quiet "$scratch/repo"
 GIT_TERMINAL_PROMPT=0 git -C "$scratch/repo" -c protocol.ext.allow=never \
   fetch --quiet --depth=1 --no-tags -- "$repo" "$ref"
 commit=$(git -C "$scratch/repo" rev-parse --verify 'FETCH_HEAD^{commit}')
-"$python_bin" "$importer" --checkout "$scratch/repo" --commit "$commit" "${options[@]}"
+"${python_command[@]}" "$importer" --checkout "$scratch/repo" --commit "$commit" "${options[@]}"
