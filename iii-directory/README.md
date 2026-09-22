@@ -592,10 +592,10 @@ result limits stay local.
 `function_search_judge_question` sets how each capability's shortlist is
 asked. `choice` (the default) asks one multiple-choice question per capability
 whose options are the shortlisted documents: 16× fewer questions, and the
-documents compete. `noul` asks one yes/no question per document and admits
-each by the relevance floors. The best one is always kept and every other needs
+documents compete. The best document is always kept and every other needs
 `function_search_judge_choice_min_probability` (the relevance floors do not
-apply). Local judges need `choice` to fit the deadline: judge-semif answers a
+apply). `noul` asks one yes/no question per document and admits each by the
+relevance floors. Local judges need `choice` to fit the deadline: judge-semif answers a
 capability in about 0.3 s on a GPU, where the Noul shortlist of every lane
 takes it past 30 s. On 22 English capabilities over the 16-document
 shortlist, `choice` with 0.1 kept a correct function in every search for both
