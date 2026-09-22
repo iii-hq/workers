@@ -69,9 +69,15 @@ async fn main() -> anyhow::Result<()> {
             revision = checkpoint.revision,
             "loading laya checkpoint"
         );
-        // ponytail: CPU only; a GPU device is a build feature to add when a deployment
-        // needs it (candle's cuda feature breaks --all-features builds without a toolkit).
-        LayaClient::load(&checkpoint, Device::Cpu)
+        // Metal is compiled in on macOS only (Cargo target table); elsewhere
+        // new_metal fails at runtime and the CPU path stays. CUDA is deliberately
+        // out: candle's cuda feature breaks --all-features builds without a toolkit.
+        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        tracing::info!(
+            device = if device.is_metal() { "metal" } else { "cpu" },
+            "selected inference device"
+        );
+        LayaClient::load(&checkpoint, device)
     })
     .await??;
     register(&iii, config.clone(), client);

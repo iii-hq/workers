@@ -49,8 +49,16 @@ tokens, `output_tokens` is always 0 and `usage_complete` is true.
 Measured on an i9-14900K (CPU only, 140-token rows): one question answers in
 about 0.3 s with 6–8 threads and 0.8 s when all 32 logical cores are used, so
 the default caps threads at 8; batching questions barely changes the
-per-question cost (0.26 s at 32 per batch). `RAYON_NUM_THREADS` in the worker
-environment overrides the `threads` setting.
+per-question cost (0.26 s at 32 per batch). Rows that fill the 512-token window
+cost 1.4–1.8 s each, so a request with a big state and a hundred questions
+takes minutes: keep `timeout_ms` honest or route such callers to a hosted
+provider. `RAYON_NUM_THREADS` in the worker environment overrides the
+`threads` setting.
+
+On macOS the build enables candle's `metal` and `accelerate` features: the
+worker picks the Metal GPU when one is present (logged as
+`selected inference device`) and falls back to the Accelerate-backed CPU path.
+Not yet measured on Apple hardware.
 
 ## Configuration
 
@@ -76,6 +84,7 @@ on that spelling. Choice options are encoded in the contract's key order.
 Sequences are capped at the checkpoint's window (512 tokens for `laya`, 1024
 for `laya-multilingual`; option text ≤48 tokens each, header ≤192): a request
 whose options cannot all fit answers `payload_too_large`, longer states are
-truncated on the right. Requests naming another `model` answer `invalid_request`.
+truncated on the right (logged as `state truncated to the checkpoint window`;
+the model then answers without the dropped part). Requests naming another `model` answer `invalid_request`.
 
 For the full API, read the hub's [reference](../judge/reference.md).

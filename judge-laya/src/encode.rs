@@ -141,6 +141,8 @@ pub fn serialize_state(state: &Value) -> String {
 pub struct Sequence {
     pub ids: Vec<u32>,
     pub markers: Vec<usize>,
+    /// State tokens the window could not hold (right-truncated, like laya).
+    pub state_dropped: usize,
 }
 
 pub struct Encoder {
@@ -214,11 +216,16 @@ impl Encoder {
         ids.push(self.sep);
         let room = self.max_len.saturating_sub(ids.len() + 1);
         let mut st = self.encode(&serialize_state(state).replace(&self.mask_text, " "))?;
+        let state_dropped = st.len().saturating_sub(room);
         st.truncate(room);
         ids.extend(st);
         ids.push(self.sep);
         ids.truncate(self.max_len);
         markers.retain(|&m| m < self.max_len);
-        Ok(Sequence { ids, markers })
+        Ok(Sequence {
+            ids,
+            markers,
+            state_dropped,
+        })
     }
 }

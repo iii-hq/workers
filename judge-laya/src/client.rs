@@ -184,15 +184,19 @@ impl LayaClient {
             })
             .collect();
         let outcome: Result<(), ErrorCode> = async {
+            let mut per_row = Duration::ZERO;
             for batch in rows.chunks(self.limits.batch_questions) {
-                let _permit = self
-                    .permit
-                    .acquire()
+                // Queued behind another caller's forward: give up at the deadline.
+                let permit = timeout_at(deadline, self.permit.clone().acquire_owned())
                     .await
+                    .map_err(|_| ErrorCode::Deadline)?
                     .map_err(|_| ErrorCode::Transport)?;
-                if Instant::now() >= deadline {
+                // Results are atomic, so a batch that cannot finish in time is
+                // pure CPU waste: predict from the previous batch and stop early.
+                if Instant::now() + per_row * batch.len() as u32 >= deadline {
                     return Err(ErrorCode::Deadline);
                 }
+                let batch_started = Instant::now();
                 let model = self.model.clone();
                 let inputs: Vec<(Vec<u32>, Vec<usize>, u32)> = batch
                     .iter()
@@ -202,7 +206,9 @@ impl LayaClient {
                 let logits = tokio::select! {
                     biased;
                     _ = guard.cancelled() => return Err(ErrorCode::Cancelled),
-                    joined = timeout_at(deadline, tokio::task::spawn_blocking(move || model.logits(&inputs))) => {
+                    // The permit travels with the forward: a timed-out batch keeps
+                    // running on the CPU and must not overlap the next caller's.
+                    joined = timeout_at(deadline, tokio::task::spawn_blocking(move || { let _permit = permit; model.logits(&inputs) })) => {
                         joined
                             .map_err(|_| ErrorCode::Deadline)?
                             .map_err(|_| ErrorCode::Transport)?
@@ -210,6 +216,7 @@ impl LayaClient {
                     }
                 };
                 stats.requests += 1;
+                per_row = batch_started.elapsed() / batch.len() as u32;
                 for (row, z) in batch.iter().zip(logits) {
                     let question = &request.evaluations[row.evaluation].questions[&row.qid];
                     let answer = self.answer(row, &z)?;
@@ -276,6 +283,7 @@ impl LayaClient {
 
     fn rows(&self, request: &EvaluateRequest) -> Result<Vec<Row>, ErrorCode> {
         let mut rows = Vec::new();
+        let (mut truncated, mut dropped) = (0usize, 0usize);
         for (index, evaluation) in request.evaluations.iter().enumerate() {
             for (qid, question) in &evaluation.questions {
                 let (qtype, instructions, criteria, keys, legend) = match question {
@@ -336,6 +344,8 @@ impl LayaClient {
                 if sequence.markers.len() != rendered.options.len() {
                     return Err(ErrorCode::PayloadTooLarge);
                 }
+                truncated += usize::from(sequence.state_dropped > 0);
+                dropped += sequence.state_dropped;
                 rows.push(Row {
                     evaluation: index,
                     qid: qid.clone(),
@@ -346,6 +356,17 @@ impl LayaClient {
                     markers: sequence.markers,
                 });
             }
+        }
+        if truncated > 0 {
+            // The model answers about state it never saw: callers sending big
+            // states (registry searches) need a long-window provider instead.
+            tracing::warn!(
+                rows = rows.len(),
+                truncated,
+                dropped_tokens = dropped,
+                window = self.encoder.max_len,
+                "state truncated to the checkpoint window"
+            );
         }
         Ok(rows)
     }

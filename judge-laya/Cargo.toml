@@ -31,6 +31,12 @@ hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustl
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 tracing = "0.1"
 
+# macOS: Metal GPU when one is present, Accelerate (AMX) for the CPU path.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", features = ["metal", "accelerate"] }
+candle-nn = { version = "0.11", features = ["metal", "accelerate"] }
+candle-transformers = { version = "0.11", features = ["metal", "accelerate"] }
+
 [dev-dependencies]
 futures-util = "0.3"
 tempfile = "3"
