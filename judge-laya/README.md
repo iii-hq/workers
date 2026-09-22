@@ -105,7 +105,14 @@ options stay in the contract's key order, where laya reorders them by rank.
 
 State and structured criteria are serialized exactly as laya's Python
 `json.dumps` (`", "` and `": "` separators), because the checkpoint was trained
-on that spelling. Choice options are encoded in the contract's key order.
+on that spelling. Choice options are encoded in the contract's key order, and
+JSON object keys (state, criteria) arrive **sorted** through the bus, so the
+same logical request can tokenize differently than in Python laya, whose dicts
+keep insertion order. laya is order-sensitive (one ticket flipped from
+`billing` 0.57 to `sales` 0.69 when its four options were reordered), so
+answers here are deterministic but not byte-identical to Python's; the port
+itself matches Python's logits to 1e-4 on identical token sequences for the
+English and multilingual checkpoints.
 Sequences are capped at the checkpoint's window (512 tokens for `laya`, 1024
 for `laya-multilingual` and `laya-typed-decisions`; option text ≤48 tokens
 each, header ≤192 or ≤256): a request
