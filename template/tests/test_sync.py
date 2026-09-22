@@ -641,6 +641,9 @@ containers:
     def test_missing_yaml_uses_uv_with_the_selected_python(self):
         """Use script metadata for isolated dependencies, retaining path quoting."""
         self.local_worker("harness")
+        launcher_alias = self.root / "launcher alias"
+        launcher_alias.symlink_to(self.launcher, target_is_directory=True)
+        self.launcher = launcher_alias
         env, _ = self.python_environment({"python3": "missing-yaml"})
         uv = Path(env["PATH"]) / "uv"
         arguments = uv.with_suffix(".args")
@@ -654,7 +657,7 @@ containers:
         self.run_sync(env=env)
         self.assertEqual(arguments.read_text().splitlines()[:6], [
             "run", "--quiet", "--python", "python3", "--script",
-            str(self.launcher / "scripts/sync_template.py"),
+            str((self.launcher / "scripts/sync_template.py").resolve()),
         ])
         containers = YAML().load(self.destination / "worker-compose.yaml")["containers"]
         self.assertEqual(containers["harness"]["worker"], "path://../../harness")
