@@ -72,7 +72,8 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`);
 a request may name its own with a top-level `provider`. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
-`::cancel` with the [`judge-contract`](../crates/judge-contract/) types and
+`::cancel` with the [`judge-contract`](../crates/judge-contract/) types,
+marked `metadata.internal: true` so default discovery shows only the hub, and
 accepts request ids up to 512 bytes; the hub needs no change. See
 [Configuration](reference.md#configuration) and
 [Cancellation](reference.md#cancellation).

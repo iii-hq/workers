@@ -15,8 +15,7 @@ pub(crate) const MAX_INPUT_BYTES: usize = 2_048;
 /// Byte budget for a slimmed contract description (first sentence).
 const INDEX_DESCRIPTION_BYTES: usize = 160;
 /// Function-id prefixes that never participate in search: the engine's own
-/// surface, this worker, and the reflex spike (its hook machinery must not
-/// be discovered as a capability).
+/// surface. Workers hide their plumbing with `metadata.internal: true`.
 pub(crate) const EXCLUDED_NAMESPACE_PREFIXES: [&str; 1] = ["engine::"];
 /// The search's own id: never searchable, never operating evidence.
 pub(crate) const SEARCH_FN: &str = "directory::search_functions";

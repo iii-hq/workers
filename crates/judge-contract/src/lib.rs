@@ -21,7 +21,7 @@ pub const FUNCTION_ID: &str = "judge::evaluate";
 pub const MODELS_FUNCTION_ID: &str = "judge::models::list";
 pub const CANCEL_FUNCTION_ID: &str = "judge::cancel";
 /// The hub forwards each public function to `judge-<provider>::<surface>`;
-/// provider workers register exactly these ids.
+/// provider workers register exactly these ids, as internal functions.
 pub fn provider_function_id(provider: &str, public_id: &str) -> String {
     format!(
         "judge-{provider}::{}",

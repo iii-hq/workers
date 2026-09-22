@@ -31,6 +31,7 @@ import {
   functionSearchModeWithDefault,
   semanticModeNeedsModel,
   withFunctionSearchMode,
+  withoutRetiredKeys,
 } from './model'
 
 type JsonObject = { [key: string]: JsonValue }
@@ -70,11 +71,9 @@ const INLINE_ERROR_POINTERS = new Set([
   '/hint_min_workers',
   '/registry_search',
   '/function_search_mode',
-  '/function_search_jev_api_key',
-  '/function_search_jev_model',
-  '/function_search_jev_timeout_ms',
-  '/function_search_jev_min_relevance',
-  '/function_search_jev_side_lane_min_relevance',
+  '/function_search_judge_timeout_ms',
+  '/function_search_judge_min_relevance',
+  '/function_search_judge_side_lane_min_relevance',
   '/function_search_model_path',
   '/function_search_model_download',
 ])
@@ -85,7 +84,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
     ([pointer]) => !INLINE_ERROR_POINTERS.has(pointer),
   )
 
-  const commit = (next: JsonObject) => props.onChange(next)
+  const commit = (next: JsonObject) => props.onChange(withoutRetiredKeys(next))
 
   const setString = (field: string, raw: string) => {
     const next = { ...value }
@@ -256,7 +255,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <SettingsSection
         title="Function search"
-        description="Choose how function contracts are ranked. Mode changes and Jev options apply without restarting iii-directory."
+        description="Choose how function contracts are ranked. Mode changes and judge options apply without restarting iii-directory."
       >
         <SettingsList>
           <SearchModeField
@@ -265,58 +264,39 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             onChange={setFunctionSearchMode}
             errors={props.errors}
           />
-          <TextField
-            field="function_search_jev_api_key"
-            label="Jev API key"
-            placeholder="Use TYPESAFE_API_KEY from the worker environment"
-            type="password"
-            hint="This key takes precedence over TYPESAFE_API_KEY in the worker process environment. Changes apply without restarting. Clear it to use the environment key again."
-            value={asString(value.function_search_jev_api_key)}
-            onChange={setString}
-            errors={props.errors}
-          />
-          <TextField
-            field="function_search_jev_model"
-            label="Jev model"
-            placeholder="jev-1.13.0"
-            hint="Non-empty TypeSafe model name."
-            value={asString(value.function_search_jev_model)}
-            onChange={setString}
-            errors={props.errors}
-          />
           <NumberField
-            field="function_search_jev_timeout_ms"
-            label="Jev timeout (ms)"
+            field="function_search_judge_timeout_ms"
+            label="Judge timeout (ms)"
             placeholder="3000"
-            hint="1–30000 ms for all Jev requests in one search, excluding Hybrid fallback and registry requests. Missing credentials or service errors try Hybrid, then Lexical if unavailable; a valid empty result stays empty."
+            hint="1–30000 ms for all judge requests in one search, excluding Hybrid fallback and registry requests. A judge that is not running or fails tries Hybrid, then Lexical if unavailable; a valid empty result stays empty. Credentials and the model live in the judge-typesafe worker settings."
             min={1}
             max={30000}
             step={1}
-            value={value.function_search_jev_timeout_ms}
+            value={value.function_search_judge_timeout_ms}
             onChange={setNumber}
             errors={props.errors}
           />
           <NumberField
-            field="function_search_jev_min_relevance"
-            label="Jev minimum relevance"
+            field="function_search_judge_min_relevance"
+            label="Judge minimum relevance"
             placeholder="0.5"
             hint="Finite value from 0 to 1, inclusive. Higher values admit fewer functions. The default 0.5 is a starting point for calibration."
             max={1}
             step="any"
             inputMode="decimal"
-            value={value.function_search_jev_min_relevance}
+            value={value.function_search_judge_min_relevance}
             onChange={setNumber}
             errors={props.errors}
           />
           <NumberField
-            field="function_search_jev_side_lane_min_relevance"
-            label="Jev minimum relevance for skills and triggers"
+            field="function_search_judge_side_lane_min_relevance"
+            label="Judge minimum relevance for skills and triggers"
             placeholder="0.3"
             hint="Finite value from 0 to 1, inclusive, for the installed-skills and registered-triggers sections. Those documents score lower than functions for the same capability, so the default 0.3 sits under the function floor."
             max={1}
             step="any"
             inputMode="decimal"
-            value={value.function_search_jev_side_lane_min_relevance}
+            value={value.function_search_judge_side_lane_min_relevance}
             onChange={setNumber}
             errors={props.errors}
           />
@@ -324,7 +304,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             field="function_search_model_path"
             label="Semantic model directory"
             placeholder="not set — e.g. ~/.cache/iii/all-MiniLM-L6-v2-<revision>"
-            hint="Directory holding the pinned MiniLM bundle for Hybrid and Jev's fallback (default under ~/.cache/iii). If unavailable, fallback uses Lexical. Changing this path requires a worker restart."
+            hint="Directory holding the pinned MiniLM bundle for Hybrid and the judge's fallback (default under ~/.cache/iii). If unavailable, fallback uses Lexical. Changing this path requires a worker restart."
             value={asString(value.function_search_model_path)}
             onChange={setString}
             errors={props.errors}
@@ -332,7 +312,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
           <CheckField
             field="function_search_model_download"
             label="Download the model on first run"
-            hint="When Hybrid is on and the bundle is missing at startup, fetch the pinned files from Hugging Face once, each verified by length and SHA-256. Turn off for air-gapped stacks."
+            hint="When Hybrid or Judge is on and the bundle is missing at startup, fetch the pinned files from Hugging Face once, each verified by length and SHA-256. Turn off for air-gapped stacks."
             checked={booleanWithDefault(value.function_search_model_download, true)}
             onChange={setBool}
             errors={props.errors}
@@ -432,7 +412,6 @@ function TextField({
   label,
   placeholder,
   hint,
-  type = 'text',
   value,
   onChange,
   errors,
@@ -441,7 +420,6 @@ function TextField({
   label: string
   placeholder: string
   hint?: string
-  type?: 'text' | 'password'
   value: string
   onChange: (field: string, raw: string) => void
   errors?: ConfigFormProps['errors']
@@ -458,11 +436,11 @@ function TextField({
           id={presentation.id}
           name={field}
           className="dir-ui-config-control"
-          type={type}
+          type="text"
           value={value}
           placeholder={placeholder}
           spellCheck={false}
-          autoComplete={type === 'password' ? 'new-password' : 'off'}
+          autoComplete="off"
           aria-label={label}
           aria-invalid={presentation.invalid || undefined}
           aria-describedby={presentation.describedBy}
@@ -551,7 +529,7 @@ function SearchModeField({
   errors?: ConfigFormProps['errors']
 }) {
   const field = 'function_search_mode'
-  const hint = 'Hybrid (default) fuses BM25 with the local semantic model. Lexical uses BM25. Jev evaluates relevance remotely with TypeSafe and falls back to Hybrid, then Lexical.'
+  const hint = 'Judge (default) ranks with the judge worker whenever it is running and otherwise behaves as Hybrid. Hybrid fuses BM25 with the local semantic model. Lexical uses BM25.'
   const presentation = fieldPresentation(field, hint, errors)
   const needsModel = semanticModeNeedsModel(value, modelPath)
   const noticeId = needsModel ? `${presentation.id}-model-notice` : undefined

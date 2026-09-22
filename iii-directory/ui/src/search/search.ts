@@ -40,10 +40,12 @@ export interface DiscoverTriggerView {
   config: unknown
 }
 
-/** The search mode that actually ranked the results: remote relevance (`jev`),
- * local BM25+MiniLM (`hybrid`), or BM25 only (`lexical`). Absent on transcript
- * rows from workers that predate the field. */
-export type DiscoverSearchMode = 'lexical' | 'hybrid' | 'jev'
+/** The search mode that actually ranked the results: the judge worker
+ * (`judge`), local BM25+MiniLM (`hybrid`), or BM25 only (`lexical`). Absent on
+ * transcript rows from workers that predate the field. */
+export type DiscoverSearchMode = 'lexical' | 'hybrid' | 'judge'
+
+const SEARCH_MODES: readonly DiscoverSearchMode[] = ['lexical', 'hybrid', 'judge']
 
 export interface DiscoverView {
   guidance: string
@@ -184,13 +186,9 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
       })
     }
   }
-  let searchMode: DiscoverSearchMode | undefined
-  if ('search_mode' in value && value.search_mode !== undefined) {
-    if (value.search_mode !== 'lexical' && value.search_mode !== 'hybrid' && value.search_mode !== 'jev') {
-      return null
-    }
-    searchMode = value.search_mode
-  }
+  // The mode is only a badge: an unknown value (such as `jev` from older
+  // transcripts) renders like an absent one instead of dropping the card.
+  const searchMode = SEARCH_MODES.find((mode) => 'search_mode' in value && value.search_mode === mode)
   return {
     guidance: value.guidance,
     workers,

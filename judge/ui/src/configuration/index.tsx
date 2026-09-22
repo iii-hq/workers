@@ -28,7 +28,13 @@ type Engine = Pick<ExtensionIii, 'trigger'>
 
 /** Every worker currently answering `judge-<provider>::evaluate`, one row per provider. */
 export async function listProviders(iii: Engine): Promise<RegisteredProvider[]> {
-  const reply = await iii.trigger<FunctionsList>('engine::functions::list', {}, { timeoutMs: 10_000 })
+  // Providers register their functions as internal (callers use the hub), so
+  // they only show up when internal registrations are included.
+  const reply = await iii.trigger<FunctionsList>(
+    'engine::functions::list',
+    { include_internal: true },
+    { timeoutMs: 10_000 },
+  )
   const seen = new Map<string, RegisteredProvider>()
   for (const fn of reply?.functions ?? []) {
     const provider = PROVIDER_FUNCTION.exec(fn.function_id)?.[1]
