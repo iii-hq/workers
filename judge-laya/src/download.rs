@@ -9,7 +9,7 @@ pub const LAYA_REPO: &str = "convaiinnovations/laya";
 const ENGLISH_TOKENIZER_REPO: &str = "answerdotai/ModernBERT-large";
 
 /// The checkpoints the `model` setting accepts.
-pub const MODELS: [&str; 2] = ["laya", "laya-multilingual"];
+pub const MODELS: [&str; 3] = ["laya", "laya-multilingual", "laya-typed-decisions"];
 
 #[derive(Clone, Debug)]
 pub struct Checkpoint {
@@ -21,12 +21,15 @@ pub struct Checkpoint {
     pub tokenizer: PathBuf,
 }
 
-/// `laya` (English, ModernBERT-large) or `laya-multilingual` (mmBERT-base). The
-/// English checkpoint ships no tokenizer; it uses ModernBERT-large's.
+/// `laya` (English, ModernBERT-large), `laya-multilingual` (mmBERT-base) or
+/// `laya-typed-decisions` (ModernBERT-large fine-tuned for laya's four
+/// workflows, 1024-token window). Only the English checkpoint ships no
+/// tokenizer; it uses ModernBERT-large's.
 pub fn fetch(model: &str, revision: Option<&str>) -> Result<Checkpoint> {
     let subdir = match model {
         "laya" => "",
         "laya-multilingual" => "multilingual/",
+        "laya-typed-decisions" => "typed-decisions/",
         other => {
             return Err(anyhow!(
                 "unknown laya model {other:?}; expected one of {MODELS:?}"

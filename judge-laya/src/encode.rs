@@ -157,21 +157,43 @@ pub struct Encoder {
 }
 
 impl Encoder {
+    /// Special tokens by role, as laya reads them from `tokenizer_config.json`:
+    /// ModernBERT spells them `[CLS]`/`[SEP]`/`[MASK]`/`[PAD]`, mmBERT
+    /// (`laya-multilingual`, Gemma tokenizer) `<bos>`/`<eos>`/`<mask>`/`<pad>`.
     pub fn new(tok: Tokenizer, max_len: usize, head_max_len: usize) -> Result<Self> {
-        let id = |t: &str| {
-            tok.token_to_id(t)
-                .ok_or_else(|| anyhow!("tokenizer lacks {t}"))
+        let role = |names: &[&str]| {
+            names
+                .iter()
+                .find_map(|name| tok.token_to_id(name).map(|id| (id, name.to_string())))
+                .ok_or_else(|| anyhow!("tokenizer lacks any of {names:?}"))
         };
+        let (mask, mask_text) = role(&["[MASK]", "<mask>"])?;
         Ok(Self {
-            cls: id("[CLS]")?,
-            sep: id("[SEP]")?,
-            mask: id("[MASK]")?,
-            pad: id("[PAD]")?,
-            mask_text: "[MASK]".into(),
+            cls: role(&["[CLS]", "<bos>", "<s>"])?.0,
+            sep: role(&["[SEP]", "<eos>", "</s>"])?.0,
+            mask,
+            pad: role(&["[PAD]", "<pad>"])?.0,
+            mask_text,
             tok,
             max_len,
             head_max_len,
         })
+    }
+
+    /// `[CLS] text [SEP]` capped at `max` tokens, like `tokenizer(text,
+    /// truncation=True, max_length=max)`.
+    pub fn encode_text(&self, text: &str, max: usize) -> Result<Vec<u32>> {
+        let mut ids = self
+            .tok
+            .encode(text, true)
+            .map_err(|e| anyhow!("tokenize: {e}"))?
+            .get_ids()
+            .to_vec();
+        if ids.len() > max.max(2) {
+            ids.truncate(max.max(2) - 1);
+            ids.push(self.sep);
+        }
+        Ok(ids)
     }
 
     fn encode(&self, text: &str) -> Result<Vec<u32>> {

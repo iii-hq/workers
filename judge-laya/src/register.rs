@@ -36,6 +36,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: LayaClient) {
                 client
                     .with_caller_id(caller.as_deref())
                     .with_limits(snapshot.limits())
+                    .with_routing(snapshot.routing())
                     .evaluate(request)
                     .await,
             )
@@ -74,7 +75,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: LayaClient) {
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(ModelsRequest))
         .expect("laya models request schema serializes");
-    iii.register_function(crate::MODELS_ID, registration.request_format(request_schema).description("Describe the loaded laya checkpoint (name, encoder, revision, device); performs no inference."));
+    iii.register_function(crate::MODELS_ID, registration.request_format(request_schema).description("Describe the loaded laya checkpoints (name, encoder, revision, context window); the first card is the default. Performs no inference."));
 
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let client = cancel_client.clone();

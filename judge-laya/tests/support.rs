@@ -9,6 +9,14 @@ pub fn tiny_dir() -> PathBuf {
 }
 
 pub fn tiny_client() -> LayaClient {
-    let checkpoint = download::local("laya", &tiny_dir()).expect("tiny fixture present");
-    LayaClient::load(&checkpoint, Device::Cpu).expect("tiny checkpoint loads")
+    tiny_client_named(&["laya"])
+}
+
+/// The tiny checkpoint loaded once per name (routing tests need several).
+pub fn tiny_client_named(names: &[&str]) -> LayaClient {
+    let checkpoints: Vec<_> = names
+        .iter()
+        .map(|name| download::local(name, &tiny_dir()).expect("tiny fixture present"))
+        .collect();
+    LayaClient::load(&checkpoints, Device::Cpu).expect("tiny checkpoint loads")
 }

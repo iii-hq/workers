@@ -9,6 +9,15 @@ import { LayaConfigForm, loadedModel } from './index'
 const changes = vi.hoisted(() => new Map<string, (value: string) => void>())
 
 vi.mock('@iii-dev/console-ui', () => ({
+  Checkbox: ({ id, name, label, checked, onChange }: { id?: string; name?: string; label?: ReactNode; checked?: boolean; onChange?: (event: { currentTarget: { checked: boolean } }) => void }) => {
+    changes.set(name!, (next) => onChange?.({ currentTarget: { checked: next === 'true' } }))
+    return (
+      <label>
+        <input id={id} name={name} type="checkbox" checked={!!checked} onChange={() => {}} />
+        {label}
+      </label>
+    )
+  },
   Chip: ({ tone, children }: { tone?: string; children: ReactNode }) => <span data-chip={tone}>{children}</span>,
   Input: ({ onChange, ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, 'onChange'> & { onChange: (value: string) => void }) => {
     changes.set(props.name!, onChange)
@@ -89,7 +98,14 @@ describe('LayaConfigForm', () => {
     const { container, iii } = await mount({ model: 'laya' })
     expect(iii.trigger).toHaveBeenCalledWith('judge-laya::models::list', { timeout_ms: 15_000 }, { timeoutMs: 20_000 })
     const select = container.querySelector<HTMLSelectElement>('select[name="model"]')!
-    expect([...select.options].map((o) => o.value)).toEqual(['', 'laya', 'laya-multilingual'])
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'laya', 'laya-multilingual', 'laya-typed-decisions'])
+    // The default checkpoint is never offered for preloading.
+    expect([...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')].map((box) => box.name)).toEqual([
+      'preload:laya-multilingual',
+      'preload:laya-typed-decisions',
+      'auto_route',
+      'auto_task_detection',
+    ])
     expect(container.querySelector('[data-chip="success"]')?.textContent).toBe('Running laya · 1c5edc1')
     expect(container.textContent).toContain('no API key')
   })
@@ -119,6 +135,23 @@ describe('LayaConfigForm', () => {
     expect(onChange).not.toHaveBeenCalled()
     await act(async () => changes.get('model')?.(''))
     expect(onChange).toHaveBeenLastCalledWith({ batch_questions: 8, future: { keep: true } })
+  })
+
+  it('edits preload, routing flags and the shortlist', async () => {
+    const value = Object.freeze({ model: 'laya', preload: ['laya-typed-decisions'] })
+    const { onChange } = await mount(value)
+    await act(async () => changes.get('preload:laya-multilingual')?.('true'))
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'laya', preload: ['laya-typed-decisions', 'laya-multilingual'] })
+    await act(async () => changes.get('preload:laya-typed-decisions')?.('false'))
+    expect(onChange).toHaveBeenLastCalledWith({ model: 'laya' })
+    await act(async () => changes.get('auto_route')?.('true'))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, auto_route: true })
+    await act(async () => changes.get('auto_task_detection')?.('false'))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value })
+    await act(async () => changes.get('shortlist_k')?.('20'))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value, shortlist_k: 20 })
+    await act(async () => changes.get('shortlist_k')?.(''))
+    expect(onChange).toHaveBeenLastCalledWith({ ...value })
   })
 
   it('maps field errors, shows the rest in a panel, and keeps opaque roots', async () => {

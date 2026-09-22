@@ -48,7 +48,11 @@ async fn main() -> anyhow::Result<()> {
     let initial = configuration::fetch_config(&iii)
         .await
         .map_err(anyhow::Error::msg)?;
-    let (model, revision) = (initial.model.clone(), initial.revision.clone());
+    let (model, revision, preload) = (
+        initial.model.clone(),
+        initial.revision.clone(),
+        initial.preload.clone(),
+    );
     // candle reads RAYON_NUM_THREADS per call; an operator export wins.
     if std::env::var_os("RAYON_NUM_THREADS").is_none() {
         std::env::set_var("RAYON_NUM_THREADS", initial.threads.to_string());
@@ -57,18 +61,30 @@ async fn main() -> anyhow::Result<()> {
     // Functions register only once the model answers: until then the hub
     // reports provider_unavailable, which is the honest state.
     let client = tokio::task::spawn_blocking(move || -> anyhow::Result<LayaClient> {
-        let checkpoint = match cli.checkpoint_dir {
-            Some(dir) => download::local(&model, &dir)?,
-            None => {
-                tracing::info!(model, "fetching laya checkpoint from the Hugging Face Hub");
-                download::fetch(&model, revision.as_deref())?
-            }
-        };
-        tracing::info!(
-            model = checkpoint.model,
-            revision = checkpoint.revision,
-            "loading laya checkpoint"
-        );
+        let mut checkpoints = Vec::new();
+        for (i, name) in std::iter::once(&model).chain(&preload).enumerate() {
+            let checkpoint = match &cli.checkpoint_dir {
+                Some(dir) if i == 0 => download::local(name, dir)?,
+                // A local directory holds one checkpoint; extra ones need the Hub.
+                Some(_) => {
+                    tracing::warn!(model = name, "preload is ignored with --checkpoint-dir");
+                    continue;
+                }
+                None => {
+                    tracing::info!(
+                        model = name,
+                        "fetching laya checkpoint from the Hugging Face Hub"
+                    );
+                    download::fetch(name, revision.as_deref())?
+                }
+            };
+            tracing::info!(
+                model = checkpoint.model,
+                revision = checkpoint.revision,
+                "loading laya checkpoint"
+            );
+            checkpoints.push(checkpoint);
+        }
         // Metal is compiled in on macOS only (Cargo target table); elsewhere
         // new_metal fails at runtime and the CPU path stays. CUDA is deliberately
         // out: candle's cuda feature breaks --all-features builds without a toolkit.
@@ -77,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
             device = if device.is_metal() { "metal" } else { "cpu" },
             "selected inference device"
         );
-        LayaClient::load(&checkpoint, device)
+        LayaClient::load(&checkpoints, device)
     })
     .await??;
     register(&iii, config.clone(), client);

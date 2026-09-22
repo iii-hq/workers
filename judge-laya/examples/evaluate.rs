@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
         checkpoint.revision,
         t0.elapsed().as_secs_f32()
     );
-    let client = LayaClient::load(&checkpoint, Device::Cpu)?;
+    let client = LayaClient::load(std::slice::from_ref(&checkpoint), Device::Cpu)?;
     eprintln!("loaded in {:.1}s", t0.elapsed().as_secs_f32());
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;

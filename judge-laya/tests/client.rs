@@ -3,7 +3,7 @@ mod support;
 
 use judge_contract::{Answer, EvaluateRequest, EvaluateResponse, ModelsRequest, ModelsResponse};
 use serde_json::{json, Value};
-use support::tiny_client;
+use support::{tiny_client, tiny_client_named};
 
 fn request(extra: Value) -> EvaluateRequest {
     let mut value = json!({
@@ -179,7 +179,139 @@ async fn model_listing_describes_the_loaded_checkpoint() {
     };
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].name, "laya");
-    assert!(models[0].description.contains("CPU"));
+    assert!(models[0].description.contains("in-process"));
     assert!(models[0].release_date.starts_with("local:"));
+    assert_eq!(models[0].context_window, Some(128));
     assert!(stats.usage_complete);
+}
+
+fn model_of(response: EvaluateResponse) -> String {
+    match ok(response) {
+        EvaluateResponse::Ok { model, .. } => model,
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test]
+async fn routing_follows_explicit_model_then_workflow_then_state_language() {
+    let client = tiny_client_named(&["laya", "laya-multilingual", "laya-typed-decisions"]);
+    let routed = client.with_routing(judge_laya::Routing {
+        auto_route: true,
+        auto_task_detection: true,
+        shortlist_k: None,
+    });
+    let noul = json!({"q": {"type": "noul", "instructions": "Refund?"}});
+    let portuguese = "O cliente diz que a fatura foi cobrada duas vezes e pede o reembolso até sexta, não dá para esperar.";
+    let english =
+        "The customer says the invoice was billed twice and asks for a refund before Friday.";
+    let evaluation = |id: &str, state: &str, questions: &Value| json!({"id": id, "state": state, "questions": questions});
+    let one = |state: &str, questions: &Value| {
+        request(json!({"evaluations": [evaluation("e", state, questions)]}))
+    };
+    assert_eq!(
+        model_of(routed.evaluate(one(portuguese, &noul)).await),
+        "laya-multilingual"
+    );
+    assert_eq!(model_of(routed.evaluate(one(english, &noul)).await), "laya");
+    assert_eq!(model_of(routed.evaluate(one("12345", &noul)).await), "laya");
+    // Routing off: everything answers on the default checkpoint.
+    assert_eq!(
+        model_of(client.evaluate(one(portuguese, &noul)).await),
+        "laya"
+    );
+    // An explicit model wins over detection.
+    let mut explicit = one(portuguese, &noul);
+    explicit.model = Some("laya-typed-decisions".into());
+    assert_eq!(
+        model_of(routed.evaluate(explicit).await),
+        "laya-typed-decisions"
+    );
+    // The customer-service signature routes to the fine-tuned checkpoint.
+    let workflow: Value = ["action", "category", "churn_risk", "needs_human", "urgency"]
+        .iter()
+        .map(|id| (id.to_string(), json!({"type": "noul", "instructions": id})))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    assert_eq!(
+        model_of(routed.evaluate(one(english, &workflow)).await),
+        "laya-typed-decisions"
+    );
+    // Mixed languages: each evaluation answers on its own checkpoint, the
+    // response names the default, and usage counts both evaluations.
+    let mixed = request(json!({"evaluations": [
+        evaluation("pt", portuguese, &noul),
+        evaluation("en", english, &noul)
+    ]}));
+    let EvaluateResponse::Ok {
+        model,
+        results,
+        stats,
+    } = ok(routed.evaluate(mixed).await)
+    else {
+        unreachable!()
+    };
+    assert_eq!(model, "laya");
+    assert_eq!(results.len(), 2);
+    assert_eq!((stats.attempts, stats.requests, stats.questions), (2, 2, 2));
+}
+
+#[tokio::test]
+async fn shortlist_keeps_k_options_and_answers_zero_for_the_rest() {
+    let labels = [
+        "billing",
+        "sales",
+        "technical",
+        "legal",
+        "shipping",
+        "returns",
+        "privacy",
+        "other",
+    ];
+    let criteria: serde_json::Map<String, Value> = labels
+        .iter()
+        .map(|label| (label.to_string(), json!(format!("questions about {label}"))))
+        .collect();
+    let question =
+        json!({"dept": {"type": "choice", "instructions": "Which team?", "criteria": criteria}});
+    let build = || {
+        request(
+            json!({"evaluations": [{"id": "t", "state": "Billed twice, refund now.", "questions": question}]}),
+        )
+    };
+    let shortlisted = tiny_client().with_routing(judge_laya::Routing {
+        shortlist_k: Some(3),
+        ..Default::default()
+    });
+    let EvaluateResponse::Ok { results, .. } = ok(shortlisted.evaluate(build()).await) else {
+        unreachable!()
+    };
+    let Answer::Choice {
+        choice,
+        probabilities,
+        ..
+    } = &results["t"].answers["dept"]
+    else {
+        panic!("choice answer")
+    };
+    assert_eq!(probabilities.len(), labels.len());
+    let kept: Vec<_> = probabilities
+        .iter()
+        .filter(|(_, p)| **p > 0.0)
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(kept.len(), 3, "{probabilities:?}");
+    assert!(kept.contains(&choice));
+    assert!((probabilities.values().sum::<f64>() - 1.0).abs() < 1e-6);
+    // k at or above the option count leaves the question untouched.
+    let relaxed = tiny_client().with_routing(judge_laya::Routing {
+        shortlist_k: Some(8),
+        ..Default::default()
+    });
+    let EvaluateResponse::Ok { results, .. } = ok(relaxed.evaluate(build()).await) else {
+        unreachable!()
+    };
+    let Answer::Choice { probabilities, .. } = &results["t"].answers["dept"] else {
+        panic!("choice answer")
+    };
+    assert!(probabilities.values().all(|p| *p > 0.0));
 }

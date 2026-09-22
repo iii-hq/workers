@@ -248,6 +248,32 @@ impl LayaModel {
         Ok(out)
     }
 
+    /// Mean-pooled encoder states per token row, laya's `embed_fn_from_agent`
+    /// (the shortlist's embedding when no separate bi-encoder is configured).
+    pub fn embed(&self, rows: &[Vec<u32>]) -> Result<Vec<Vec<f32>>> {
+        let b = rows.len();
+        let s = rows
+            .iter()
+            .map(Vec::len)
+            .max()
+            .ok_or_else(|| anyhow!("empty batch"))?;
+        let mut ids = vec![self.pad; b * s];
+        let mut mask = vec![0u8; b * s];
+        for (i, seq) in rows.iter().enumerate() {
+            ids[i * s..i * s + seq.len()].copy_from_slice(seq);
+            mask[i * s..i * s + seq.len()].fill(1);
+        }
+        let ids = Tensor::from_vec(ids, (b, s), &self.device)?;
+        let mask = Tensor::from_vec(mask, (b, s), &self.device)?;
+        let h = self.encoder.forward(&ids, &mask)?;
+        let weights = mask.to_dtype(DType::F32)?.unsqueeze(2)?;
+        let pooled = h
+            .broadcast_mul(&weights)?
+            .sum(1)?
+            .broadcast_div(&weights.sum(1)?.clamp(1f32, f32::MAX)?)?;
+        Ok(pooled.to_vec2::<f32>()?)
+    }
+
     /// laya's `temp_bucket` lookup, clamped to [0.5, 5] like `clamp_temperature`.
     pub fn temperature(&self, qtype: u32, k: usize) -> f64 {
         let size = match k {

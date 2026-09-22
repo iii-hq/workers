@@ -1,4 +1,5 @@
 import {
+  Checkbox,
   Chip,
   type ConfigFormProps,
   type ExtensionIii,
@@ -14,18 +15,24 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 const MODELS = [
   { value: 'laya', label: 'laya', description: 'English · ModernBERT-large · 421M · 512 tokens' },
   { value: 'laya-multilingual', label: 'laya-multilingual', description: '100+ languages · mmBERT-base · 322M · 1024 tokens' },
+  { value: 'laya-typed-decisions', label: 'laya-typed-decisions', description: 'Fine-tuned for laya’s four workflows · ModernBERT-large · 421M · 1024 tokens' },
+]
+const routingFlags = [
+  { field: 'auto_route', label: 'Route by state language', description: 'Evaluations without an explicit model go to laya-multilingual when the state is not English (script and stopword detection, like laya’s Router). Needs that checkpoint preloaded.' },
+  { field: 'auto_task_detection', label: 'Detect typed-decisions workflows', description: 'Evaluations whose question ids form one of laya’s four workflows go to laya-typed-decisions. Needs that checkpoint preloaded.' },
 ]
 const limitFields = [
   { field: 'batch_questions', label: 'Questions per batch', fallback: 16, description: 'Questions scored in one forward pass; cancellation and deadlines are checked between batches. Clear to use 16.' },
   { field: 'max_request_bytes', label: 'Maximum request bytes', fallback: 8388608, description: 'Maximum encoded request size. Clear to use 8388608 (8 MiB).' },
   { field: 'max_timeout_ms', label: 'Maximum timeout (ms)', fallback: 300000, description: 'Maximum caller timeout. Clear to use 300000 (5 minutes).' },
 ]
-const knownFields = ['model', 'revision', 'threads', ...limitFields.map(({ field }) => field)]
+const knownFields = ['model', 'revision', 'threads', 'preload', 'shortlist_k', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
 
 interface ModelCard {
   name: string
   description: string
   release_date: string
+  context_window?: number
 }
 type ModelsReply = { status: 'ok'; models: ModelCard[] } | { status: 'error'; code: string }
 type Engine = Pick<ExtensionIii, 'trigger'>
@@ -90,6 +97,21 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
       if (!Number.isSafeInteger(number) || number <= 0) return
       next[field] = number
     }
+    props.onChange(next)
+  }
+  const setBool = (field: string, on: boolean) => {
+    const next = { ...value }
+    if (on) next[field] = true
+    else delete next[field]
+    props.onChange(next)
+  }
+  const preload = Array.isArray(value.preload) ? value.preload.filter((entry): entry is string => typeof entry === 'string') : []
+  const setPreload = (model: string, on: boolean) => {
+    const next = { ...value }
+    const list = preload.filter((entry) => entry !== model)
+    if (on) list.push(model)
+    if (list.length === 0) delete next.preload
+    else next.preload = list
     props.onChange(next)
   }
   const unassociatedErrors = [...(props.errors?.entries() ?? [])].filter(
@@ -170,6 +192,70 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
                 placeholder="8"
                 value={typeof value.threads === 'number' ? String(value.threads) : ''}
                 onChange={(next) => setNumber('threads', next)}
+              />
+            )}
+          />
+        </SettingsList>
+      </SettingsSection>
+      <SettingsSection
+        title="Routing"
+        description="Extra checkpoints cost about 1.7 GB of RAM each and load at the next worker start; routing flags and the shortlist hot-reload for new calls."
+      >
+        <SettingsList>
+          <SettingsField
+            id="laya-cfg-preload"
+            field="preload"
+            label="Preload checkpoints"
+            description="Also load these at start; requests select them by model, and routing uses them."
+            error={props.errors?.get('/preload')}
+            renderControl={(controlProps) => (
+              <div id={controlProps.id} aria-describedby={controlProps['aria-describedby']}>
+                {MODELS.filter(({ value: model }) => model !== selectedModel).map(({ value: model, description }) => (
+                  <Checkbox
+                    key={model}
+                    name={`preload:${model}`}
+                    label={`${model} · ${description}`}
+                    checked={preload.includes(model)}
+                    onChange={(event) => setPreload(model, event.currentTarget.checked)}
+                  />
+                ))}
+              </div>
+            )}
+          />
+          {routingFlags.map(({ field, label, description }) => (
+            <SettingsField
+              key={field}
+              id={`laya-cfg-${field}`}
+              field={field}
+              label={label}
+              description={description}
+              error={props.errors?.get(`/${field}`)}
+              renderControl={(controlProps) => (
+                <Checkbox
+                  {...controlProps}
+                  aria-label={label}
+                  checked={value[field] === true}
+                  onChange={(event) => setBool(field, event.currentTarget.checked)}
+                />
+              )}
+            />
+          ))}
+          <SettingsField
+            id="laya-cfg-shortlist_k"
+            field="shortlist_k"
+            label="Choice shortlist (k)"
+            description="Choice questions with more options than k keep only the k options closest to the state by encoder embedding; the rest answer 0. Clear to disable."
+            error={props.errors?.get('/shortlist_k')}
+            renderControl={(controlProps) => (
+              <Input
+                {...controlProps}
+                type="number"
+                min={1}
+                step={1}
+                aria-label="Choice shortlist (k)"
+                placeholder="off"
+                value={typeof value.shortlist_k === 'number' ? String(value.shortlist_k) : ''}
+                onChange={(next) => setNumber('shortlist_k', next)}
               />
             )}
           />

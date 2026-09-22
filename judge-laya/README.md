@@ -66,7 +66,11 @@ Not yet measured on Apple hardware.
 
 | Field | Default | Applied |
 |---|---|---|
-| `model` | `laya` | next start (`laya-multilingual` for non-English) |
+| `model` | `laya` | next start (`laya-multilingual` for non-English, `laya-typed-decisions` for laya's four workflows) |
+| `preload` | `[]` | next start (extra checkpoints, ~1.7 GB of RAM each) |
+| `auto_route` | `false` | new calls |
+| `auto_task_detection` | `false` | new calls |
+| `shortlist_k` | off | new calls |
 | `revision` | `main` | next start |
 | `threads` | min(8, logical cores) | next start (`RAYON_NUM_THREADS` in the environment wins) |
 | `batch_questions` | 16 | new calls |
@@ -74,7 +78,28 @@ Not yet measured on Apple hardware.
 | `max_timeout_ms` | 300000 | new calls |
 
 The form shows which checkpoint the running worker actually loaded (through
-`judge-laya::models::list`) and warns when the selection needs a restart.
+`judge-laya::models::list`, one card per loaded checkpoint with its
+`context_window`) and warns when the selection needs a restart.
+
+## Routing and shortlist (laya 0.3.5 `Router` and `predict_shortlist`)
+
+A request naming `model` uses that checkpoint, which must be `model` or in
+`preload` (`invalid_request` otherwise). Without it, each evaluation picks its
+own checkpoint: with `auto_task_detection`, question ids that exactly form one
+of laya's four typed-decisions workflows (`agent_trace_observability`,
+`customer_service`, `invoice_processing`, `security_incidents`) go to
+`laya-typed-decisions`; with `auto_route`, the state's script and language
+(laya's dependency-free detector, ported with its fixtures) send non-English
+states to `laya-multilingual` and English ones to `laya`. A target that is not
+loaded falls back to the default. The response `model` is the checkpoint every
+evaluation used, or the default when they differ; one forward never mixes
+checkpoints.
+
+`shortlist_k` enables laya's opt-in embedding shortlist: a choice question with
+more options than `k` embeds `instructions + state` and every rendered option
+with the same encoder (mean-pooled states, cosine), keeps the `k` closest
+labels for the decision head and reports the others with probability 0. Kept
+options stay in the contract's key order, where laya reorders them by rank.
 
 ## Encoding notes
 
@@ -82,9 +107,11 @@ State and structured criteria are serialized exactly as laya's Python
 `json.dumps` (`", "` and `": "` separators), because the checkpoint was trained
 on that spelling. Choice options are encoded in the contract's key order.
 Sequences are capped at the checkpoint's window (512 tokens for `laya`, 1024
-for `laya-multilingual`; option text ≤48 tokens each, header ≤192): a request
+for `laya-multilingual` and `laya-typed-decisions`; option text ≤48 tokens
+each, header ≤192 or ≤256): a request
 whose options cannot all fit answers `payload_too_large`, longer states are
 truncated on the right (logged as `state truncated to the checkpoint window`;
-the model then answers without the dropped part). Requests naming another `model` answer `invalid_request`.
+the model then answers without the dropped part). Requests naming a `model`
+that is not loaded answer `invalid_request`.
 
 For the full API, read the hub's [reference](../judge/reference.md).
