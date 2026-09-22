@@ -181,8 +181,11 @@ export function SentinelConfigForm({
         title="Repositories"
         description="Where each worker's code lives. An investigation can read the checkout mapped to the failing worker, and nothing else on this machine."
         action={
+          // No `data-settings-deck-fallback` here: the skill puts it on the
+          // surviving overview action so focus lands somewhere when a
+          // removed row disappears, but `DirectoryPicker` does not forward
+          // unknown props, so the attribute never reached the DOM.
           <DirectoryPicker
-            data-settings-deck-fallback
             value={null}
             emptyLabel="Add a checkout"
             onChange={(directory) => onChange(addRepository(config, directory) as ConfigFormProps['value'])}

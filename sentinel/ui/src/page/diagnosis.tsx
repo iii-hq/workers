@@ -83,16 +83,15 @@ export function DiagnosisCard({
   return (
     <Card>
       <CardHeader>
+        {/* One eyebrow in this row. Two of them, separated by a chip, read
+            as one label: "CONFIDENCE CONVERSATION · 1D". The provenance
+            belongs with the model and the checkout, at the foot. */}
         <div className="sentinel-ui-diagnosis-head">
           <Badge variant={value.confidence === 'high' ? 'ok' : 'default'}>
             {value.confidence}
           </Badge>
-          <Chip tone="neutral">{value.category}</Chip>
           <Eyebrow>confidence</Eyebrow>
-          <Eyebrow>
-            {diagnosis.source === 'first_pass' ? 'first pass' : 'conversation'} ·{' '}
-            {formatRelative(diagnosis.created_ms)}
-          </Eyebrow>
+          <Chip tone="neutral">{value.category}</Chip>
         </div>
       </CardHeader>
       <CardBody>
@@ -161,6 +160,10 @@ export function DiagnosisCard({
 
         <MetaRow
           items={[
+            {
+              label: 'recorded',
+              value: `${diagnosis.source === 'first_pass' ? 'first pass' : 'conversation'} · ${formatRelative(diagnosis.created_ms)}`,
+            },
             { label: 'model', value: diagnosis.model },
             { label: 'investigation', value: diagnosis.investigation_id.slice(0, 12) },
             ...(investigation?.checkout_ref

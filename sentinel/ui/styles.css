@@ -213,6 +213,8 @@
   word-break: break-word;
 }
 
+/* A secondary card in the body, not a header or a tool card: one step
+   from the panel, which is what `surface` is for. */
 [data-iii-ui="sentinel"] .sentinel-ui-investigation {
   display: flex;
   flex-wrap: wrap;
@@ -220,7 +222,7 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: 6px;
-  background: var(--color-panel-raised);
+  background: var(--color-surface);
   font-size: 11px;
 }
 
