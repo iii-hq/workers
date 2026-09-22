@@ -69,7 +69,9 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 ## Providers
 
 **Settings → Workers → judge** selects the default provider from the workers
-registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`);
+registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`).
+Two ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV) and
+[`judge-laya`](../judge-laya/) (the open laya model running inside the worker);
 a request may name its own with a top-level `provider`. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
 `::cancel` with the [`judge-contract`](../crates/judge-contract/) types,

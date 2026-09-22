@@ -932,6 +932,38 @@ workers:
         outputs:
         - dist
     publish: true
+  judge-laya:
+    source:
+      path: judge-laya
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge-laya
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: judge-laya/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
   judge-typesafe:
     source:
       path: judge-typesafe

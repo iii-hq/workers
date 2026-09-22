@@ -41,5 +41,7 @@ run_suite judge-typesafe engine \
   cancellation_is_scoped_to_the_persistent_engine_caller
 run_suite judge-semif engine \
   tiny_gguf_answers_through_a_real_engine
+run_suite judge-laya engine \
+  tiny_checkpoint_answers_through_a_real_engine
 run_suite judge engine \
   hub_forwards_to_the_provider_and_scopes_cancellation_to_the_original_caller

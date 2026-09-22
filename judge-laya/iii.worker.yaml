@@ -1,0 +1,16 @@
+iii: v1
+name: judge-laya
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: judge-laya
+tags: [evaluation, judge, laya, noul, choice, score, local]
+description: laya provider for the judge hub (judge-laya::evaluate, judge-laya::models::list, judge-laya::cancel) — the ModernBERT typed-decision model downloaded from the Hugging Face Hub and run in-process, no API key or external service.
+config:
+  model: laya
+  batch_questions: 16
+  max_request_bytes: 8388608
+  max_timeout_ms: 300000
+dependencies:
+  configuration: "latest"
