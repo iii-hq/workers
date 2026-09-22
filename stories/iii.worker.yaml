@@ -29,5 +29,5 @@ config:
       path: .
 
 dependencies:
-  configuration: "0.x"
-  browser: "0.x"
+  configuration: "latest"
+  browser: "latest"
