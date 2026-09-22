@@ -529,10 +529,11 @@ Lexical/Hybrid ranking pipeline:
 
 Function relevance is judged by the [`judge`](../judge) worker
 (`judge::evaluate`), which forwards to its configured provider
-([`judge-typesafe`](../judge-typesafe) by default). Install both next to this
-worker (`iii.worker.yaml` declares them as dependencies; the dev compose file
-runs them) and configure the TypeSafe key and model in the **judge-typesafe**
-settings. This worker holds no credentials.
+([`judge-typesafe`](../judge-typesafe) by default). `iii.worker.yaml` declares
+both as dependencies; the Harness and dev-template stacks do not run them, so
+add them with `iii trigger compose::add worker=judge` (it pulls in
+`judge-typesafe`) and configure the TypeSafe key and model in the
+**judge-typesafe** settings. This worker holds no credentials.
 
 `judge` is the default mode and needs no setting. It is *effective* only while
 `judge::evaluate` is present in the live function catalog; when the judge
