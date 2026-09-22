@@ -8,7 +8,7 @@ license: Apache-2.0
 description: Manage expiring durable leases on authorized cloudflared Quick Tunnel child processes.
 tags: [cloudflare, quick-tunnel, webhooks, tunnel, leases]
 dependencies:
-  configuration: ">=0.0.0"
+  configuration: latest
 config:
   targets:
     webhooks: http://127.0.0.1:3112

@@ -175,13 +175,14 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
             assert isinstance(exception, str) and exception.strip(), f"{slug}: silent Windows omission"
             without_windows.add(slug)
     # Audited against the Registry: every other worker published msvc binaries
-    # before the cutover, so anything joining this set is a regression.
+    # before the cutover. New Unix-only workers must declare a reviewed exception.
     assert without_windows == {
         "acp",
         "compose-ui",
         "code-runner",
         "context-manager",
         "lsp",
+        "quick-tunnel",  # New Unix-only worker; child lifecycle is not supported on Windows.
         "sandbox-code-runner",
         "ide",
         "voice",

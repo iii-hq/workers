@@ -46,7 +46,7 @@ async fn main() -> Result<()> {
                 "description": env!("CARGO_PKG_DESCRIPTION"),
                 "default_config": Config::default(),
                 "prerequisites": ["operator-provided cloudflared with --output json support"],
-                "supported_targets": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-gnu", "armv7-unknown-linux-gnueabihf"]
+                "supported_targets": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-gnu", "armv7-unknown-linux-gnueabihf"]
             }))?
         );
         return Ok(());
