@@ -175,10 +175,12 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 | `console::workspace::list` | `{}` | `{ tabs: [{ id, name?, columns, screens, sizes, active }], active_tab_id }` |
 | `console::workspace::open` | `{ screen, session_id?, relative_to?, direction?, sizes?, activate? }` | `{ tab_id, column, placement, screens, sizes, activated }` |
 | `console::workspace::close` | `{ screen, session_id? }` | `{ tab_ids }` |
+| `console::workspace::get` (internal) | `{}` | `{ value, path }` — the raw layout document and the file it lives in |
+| `console::workspace::set` (internal) | `{ value }` | `{ ok }` — replaces the document wholesale (the SPA's read-modify-write path) |
 
-A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:ide`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is the `workspace` section of the `console` configuration entry, so every browser pointed at this engine picks the change up. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside an anchor column in the active tab (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). The anchor is `relative_to` — a screen in the same vocabulary, defaulting to `chat`, which matches whichever chat panel is mounted — and `direction` (`right`, the default, or `left`) picks the side of it. An anchor that is not mounted puts the column at the end. `sizes` sets the tab's column widths — one positive number per column of the tab AFTER the call, normalized by their sum — in the same write that places the screen, so no other writer can land between placement and sizing; `list` reports the current widths to compute them from, and a list that does not match the column count fails with `WORKSPACE_INVALID_SIZES` rather than being ignored. It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreachable configuration worker with `WORKSPACE_UNAVAILABLE`.
+A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:ide`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is stored by the console worker in `<data_dir>/workspace.json` (`data_dir` is a `console` configuration setting, default `data/ade`) and polled by every browser pointed at this engine, so each picks the change up; it is ephemeral per-instance state and is deliberately kept out of the committed configuration YAML. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside an anchor column in the active tab (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). The anchor is `relative_to` — a screen in the same vocabulary, defaulting to `chat`, which matches whichever chat panel is mounted — and `direction` (`right`, the default, or `left`) picks the side of it. An anchor that is not mounted puts the column at the end. `sizes` sets the tab's column widths — one positive number per column of the tab AFTER the call, normalized by their sum — in the same write that places the screen, so no other writer can land between placement and sizing; `list` reports the current widths to compute them from, and a list that does not match the column count fails with `WORKSPACE_INVALID_SIZES` rather than being ignored. It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreadable or unwritable `data_dir` with `WORKSPACE_UNAVAILABLE`.
 
-Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs).
+Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs); the file store is [`src/workspace_store.rs`](src/workspace_store.rs).
 
 ## Architecture
 
@@ -211,6 +213,7 @@ runs where the configuration worker is unavailable:
 http_host: 0.0.0.0    # HTTP bind address (default: all IPv4 interfaces)
 http_port: 3113       # initial port seed for the UI + /ws (default: 3113)
 injectable_ui: true   # kill switch for runtime-injected worker UI (default: true)
+data_dir: data/ade    # ephemeral per-instance state: the workspace layout (default: data/ade)
 ```
 
 | Key | Default | Description |
@@ -218,10 +221,20 @@ injectable_ui: true   # kill switch for runtime-injected worker UI (default: tru
 | `http_host` | `0.0.0.0` | HTTP bind address; set `127.0.0.1` for local access only. Applied at startup |
 | `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
 | `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
+| `data_dir` | `data/ade` | Initial seed for the directory holding ephemeral per-instance state — the workspace tabs/panes layout (`workspace.json`). Relative paths resolve against `III_COMPOSE_DIR` (or the process directory outside Compose); absolute and `~/` paths keep their meaning. The stored `console.data_dir` wins thereafter |
 
 The configuration entry also stores UI preferences and
-`injectableUi.disabledWorkers`. Port and per-worker UI changes apply without a
-Console restart; the local `injectable_ui` kill switch remains startup-only.
+`injectableUi.disabledWorkers`. Port, `data_dir` and per-worker UI changes apply
+without a Console restart; the local `injectable_ui` kill switch remains
+startup-only.
+
+The workspace layout itself (tabs, panes, active tab) is **not** part of the
+entry: it changes on every click, and the configuration YAML is meant to be
+committed. It lives in `<data_dir>/workspace.json` (atomic writes; a missing
+or unreadable file starts from the default chat + traces tab). Entries written
+by older Console versions still carry a `workspace` section — on boot the
+worker imports it into the file once (unless the file already exists) and
+removes it from the entry.
 
 ### CLI flags
 
