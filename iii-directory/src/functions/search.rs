@@ -2475,10 +2475,6 @@ mod tests {
         assert!(!excluded_from_search("state::set"));
         assert!(!excluded_from_search("state::claim"));
         assert!(!excluded_from_search("state::on-config"));
-        // Providers sit behind the judge hub; the hub itself stays searchable.
-        assert!(excluded_from_search("judge-typesafe::evaluate"));
-        assert!(excluded_from_search("judge-laya::models::list"));
-        assert!(!excluded_from_search("judge::evaluate"));
     }
 
     #[test]

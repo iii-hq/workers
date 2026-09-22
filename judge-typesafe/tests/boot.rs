@@ -168,14 +168,9 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                             "{id}.{field} must be typed"
                         );
                     }
-                    if matches!(
-                        id,
-                        "judge-typesafe::on-config-change"
-                            | "judge-typesafe::ui-content"
-                            | "judge-typesafe::configuration-id"
-                    ) {
-                        assert_eq!(value["metadata"]["internal"], true);
-                    }
+                    // Callers reach the provider through the judge hub: every
+                    // registration, the provider surface included, is internal.
+                    assert_eq!(value["metadata"]["internal"], true, "{id} must be internal");
                     functions.insert(id.to_owned());
                 }
                 "registertrigger" if value["trigger_type"] == "configuration" => {

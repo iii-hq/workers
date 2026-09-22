@@ -144,8 +144,10 @@ tests cannot run inadvertently.
 The public runtime functions remain `judge-typesafe::evaluate`, `judge-typesafe::models::list` and
 `judge-typesafe::cancel`. Their types live in
 [judge-contract](https://github.com/iii-hq/workers/tree/main/crates/judge-contract),
-and [src/register.rs](src/register.rs) publishes the bus schemas. Configuration
-reload and Console asset handlers are infrastructure, outside that public API.
+and [src/register.rs](src/register.rs) publishes the bus schemas. Every
+registration carries `metadata.internal: true`: callers reach the provider
+through the `judge` hub, and configuration reload and Console asset handlers
+are infrastructure.
 The hub's [worker skill](../judge/skills/SKILL.md) describes agent-facing invocation guidance.
 
 Follow the repository's [worker README guide](https://github.com/iii-hq/workers/blob/main/worker-readme.md),

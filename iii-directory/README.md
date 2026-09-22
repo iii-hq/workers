@@ -530,11 +530,12 @@ Lexical/Hybrid ranking pipeline:
 Function relevance is judged by the [`judge`](../judge) worker
 (`judge::evaluate`), which forwards to its configured provider
 ([`judge-typesafe`](../judge-typesafe) by default). Both are optional: this
-worker does not declare them as dependencies, so a judge that stops never
-stops the directory, and the Harness and dev-template stacks do not run them.
-Add the `judge` worker to the project (it brings `judge-typesafe`) and set
-the TypeSafe key and model in the **judge-typesafe** settings. This worker
-holds no credentials.
+worker does not declare them as dependencies, because Compose turns a
+dependency into a `start_after` edge and stops the directory whenever the
+judge exits. The Harness and dev-template stacks do not run them. Install the
+hub with `iii trigger compose::add worker=judge` (it brings `judge-typesafe`)
+and set the TypeSafe key and model in the **judge-typesafe** settings. This
+worker holds no credentials.
 
 `judge` is the default mode for new installs. It ranks through the judge
 only while `judge::evaluate` is in the live function catalog and answers.
@@ -582,8 +583,8 @@ the provider answers them together with one model, and cancels the rest when
 one fails. Requests carry normalized capabilities, function IDs, short
 descriptions and parameter names; no conversation history or argument values.
 Exact eligible IDs, internal-function exclusions, session deduplication and
-result limits stay local. The provider-direct `judge-<provider>::*` functions
-never appear in search results; agents call `judge::*`.
+result limits stay local. Providers register their `judge-<provider>::*`
+functions as internal, so search results show only the hub's `judge::*`.
 
 `function_search_model_path: null` is valid in judge mode and makes the Hybrid
 fallback BM25-only, without the local-model warning. With a configured path,

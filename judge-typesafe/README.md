@@ -3,8 +3,10 @@
 TypeSafe JEV provider for the [`judge`](../judge/) hub. It turns JSON state and
 Noul, Choice or Score questions into typed, validated answers, sharing TypeSafe
 credentials and HTTP capacity across callers, with model listing and
-caller-owned cancellation. Callers normally go through `judge::evaluate`; the
+caller-owned cancellation. Callers go through `judge::evaluate`; the
 `judge-typesafe::*` functions below are the same contract addressed directly.
+They are registered as internal, so default discovery
+(`engine::functions::list`, `directory::search_functions`) shows only the hub.
 
 ## Install
 

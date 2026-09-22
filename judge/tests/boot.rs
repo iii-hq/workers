@@ -167,12 +167,16 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                             "{id}.{field} must be typed"
                         );
                     }
-                    if matches!(
+                    // The hub's own surface is what callers discover; plumbing is internal.
+                    let internal = matches!(
                         id,
                         "judge::on-config-change" | "judge::ui-content" | "judge::configuration-id"
-                    ) {
-                        assert_eq!(value["metadata"]["internal"], true);
-                    }
+                    );
+                    assert_eq!(
+                        value["metadata"]["internal"].as_bool().unwrap_or(false),
+                        internal,
+                        "{id} internal flag"
+                    );
                     if id == "judge::evaluate" {
                         assert_eq!(
                             value["request_format"]["properties"]["provider"]["pattern"],

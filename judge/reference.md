@@ -21,7 +21,8 @@ builds, credentials and local tests live with each provider, for example
 The public functions are `judge::evaluate`, `judge::models::list` and `judge::cancel`.
 Each forwards to `judge-<provider>::evaluate`, `judge-<provider>::models::list`
 and `judge-<provider>::cancel`; provider workers register exactly those ids
-(`judge_contract::provider_function_id`).
+(`judge_contract::provider_function_id`) as internal functions, so
+`engine::functions::list` lists them only with `include_internal: true`.
 The [shared Rust contract](https://github.com/iii-hq/workers/blob/main/crates/judge-contract/src/lib.rs)
 defines their request and response types. The [worker skill](skills/SKILL.md)
 describes when an agent should invoke evaluation.
