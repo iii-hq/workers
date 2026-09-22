@@ -657,6 +657,10 @@ fn summary(row: &NamedRow, sessions_affected: u64, sparkline: Vec<u64>) -> Group
         ignore_rule: text(row, "ignore_rule")
             .and_then(|json| serde_json::from_str::<IgnoreRuleV1>(&json).ok()),
         regressed_at_ms: number(row, "regressed_at_ms"),
+        resolved_at_ms: number(row, "resolved_at_ms"),
+        resolved_version: text(row, "resolved_version"),
+        resolve_until_version_change: number(row, "resolve_until_version_change")
+            .is_some_and(|flag| flag != 0),
     }
 }
 

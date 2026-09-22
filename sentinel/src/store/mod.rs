@@ -687,7 +687,7 @@ impl<D: Db> Store<D> {
         let rows = self
             .db
             .query(
-                "SELECT status, COUNT(*) AS total FROM sentinel_groups \
+                "SELECT status, COUNT(*) AS total, MAX(last_seen_ms) AS last FROM sentinel_groups \
                  WHERE archived = 0 GROUP BY status",
                 vec![],
             )
@@ -695,6 +695,8 @@ impl<D: Db> Store<D> {
         let mut counts = GroupCountsV1::default();
         for row in rows {
             let total = row.get("total").and_then(Value::as_i64).unwrap_or(0) as u64;
+            let last = row.get("last").and_then(Value::as_i64);
+            counts.last_seen_ms = counts.last_seen_ms.max(last);
             match row.get("status").and_then(Value::as_str) {
                 Some("regressed") => {
                     counts.regressed += total;

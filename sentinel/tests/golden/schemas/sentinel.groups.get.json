@@ -392,6 +392,23 @@
               "null"
             ]
           },
+          "resolve_until_version_change": {
+            "type": "boolean"
+          },
+          "resolved_at_ms": {
+            "description": "When the group was last resolved and on which version — what a regression is measured against, so the page can say what came back.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "resolved_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "service_name": {
             "description": "The worker that owns the failing function.",
             "type": "string"

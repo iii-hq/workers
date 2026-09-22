@@ -35,6 +35,14 @@
             "minimum": 0.0,
             "type": "integer"
           },
+          "last_seen_ms": {
+            "description": "The newest occurrence across every group: when ingest last recorded something.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "open": {
             "format": "uint64",
             "minimum": 0.0,

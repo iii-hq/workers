@@ -152,6 +152,14 @@ pub struct GroupSummaryV1 {
     pub ignore_rule: Option<IgnoreRuleV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regressed_at_ms: Option<i64>,
+    /// When the group was last resolved and on which version — what a
+    /// regression is measured against, so the page can say what came back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_version: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resolve_until_version_change: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -457,6 +465,10 @@ pub struct GroupCountsV1 {
     pub regressed: u64,
     pub ignored: u64,
     pub resolved: u64,
+    /// The newest occurrence across every group: when ingest last recorded
+    /// something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

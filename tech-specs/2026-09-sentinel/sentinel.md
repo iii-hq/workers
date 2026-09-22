@@ -1373,7 +1373,9 @@ type GroupSummary = {
   status: GroupStatus; ignore_rule?: IgnoreRule;
   first_seen_ms: number; last_seen_ms: number; occurrence_count: number;
   sessions_affected: number;
-  first_version?: string; last_version?: string; resolved_version?: string;
+  first_version?: string; last_version?: string;
+  resolved_at_ms?: number; resolved_version?: string;
+  resolve_until_version_change?: boolean;   // ausente = false
   regressed_at_ms?: number;
   sparkline: number[];           // 24 buckets horários, mais antigo primeiro
   has_diagnosis: boolean; active_investigation_id?: string;
@@ -1557,7 +1559,8 @@ type StatusResponse = {
     dropped_failed: number;         // esgotaram os retries
     paused_until?: number;          // breaker aberto
   };
-  groups: { open: number; regressed: number; ignored: number; resolved: number };
+  groups: { open: number; regressed: number; ignored: number; resolved: number;
+            last_seen_ms?: number };  // a ocorrência mais recente de todos os grupos
   investigations: { running: number; open_sessions: number };
   decisions: {
     enabled: boolean;
