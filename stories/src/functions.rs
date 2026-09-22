@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::builder::{BuildStatus, Ctx, build_line, ensure_line, new_build_id, spec_label};
+use crate::builder::{BuildStatus, Ctx, build_line, ensure_line, new_build_id, now, spec_label};
 use crate::config::{Viewport, WorkspaceConfig};
 use crate::lines::{self, LineSpec};
 use crate::model::{
@@ -816,11 +816,19 @@ async fn builds_create(ctx: Arc<Ctx>, input: BuildCreateInput) -> Result<BuildSt
             task,
         )
         .await;
-    } else {
-        tokio::task::yield_now().await;
     }
-    ctx.build_status(&build_id)
-        .ok_or_else(|| handler("build was not registered"))
+    // The spawned task publishes `queued` on its first poll, which may not
+    // have happened yet when `wait` is false; answer with the same status.
+    Ok(ctx.build_status(&build_id).unwrap_or_else(|| BuildStatus {
+        build_id,
+        workspace: workspace.name.clone(),
+        line: spec_label(&spec),
+        status: "queued".into(),
+        message: None,
+        started_at: now(),
+        finished_at: None,
+        result: None,
+    }))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

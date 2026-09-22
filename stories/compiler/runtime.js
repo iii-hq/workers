@@ -251,7 +251,8 @@ export function freeze() {
           return target.call(thisArg, locales ?? 'en-US', { timeZone: 'UTC', ...(options ?? {}) })
         },
       })
-    globalThis.Intl = { ...RealIntl, DateTimeFormat: wrap(RealIntl.DateTimeFormat) }
+    // Patch in place: Intl's properties are non-enumerable, a spread would drop every other constructor.
+    RealIntl.DateTimeFormat = wrap(RealIntl.DateTimeFormat)
     RealDate.prototype.getTimezoneOffset = () => 0
   }
   if (typeof document !== 'undefined') {

@@ -19,6 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::builder::Ctx;
+use crate::store::safe_served_path;
 
 pub const PAGE_PATH: &str = "stories/page.js";
 pub const STYLES_PATH: &str = "stories/styles.css";
@@ -54,7 +55,7 @@ pub fn split_path(path: &str) -> Option<(&str, &str, &str)> {
     let workspace = parts.next()?;
     let line = parts.next()?;
     let rest = parts.next()?;
-    if workspace.is_empty() || line.is_empty() || rest.is_empty() {
+    if ![workspace, line, rest].iter().all(|s| safe_served_path(s)) {
         return None;
     }
     Some((workspace, line, rest))
@@ -129,6 +130,9 @@ mod tests {
             Some(("ws", "worktree", "app/node_modules/.stories/x.html"))
         );
         assert_eq!(split_path("ws/worktree"), None);
+        assert_eq!(split_path("../worktree/index.html"), None);
+        assert_eq!(split_path("ws/../index.html"), None);
+        assert_eq!(split_path("ws/worktree/../index.html"), None);
         assert_eq!(
             split_path("/ws/abc/assets/a.js"),
             Some(("ws", "abc", "assets/a.js"))

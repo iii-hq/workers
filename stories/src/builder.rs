@@ -130,11 +130,14 @@ pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+static BUILD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn new_build_id() -> String {
     format!(
-        "b-{}-{:04x}",
+        "b-{}-{:04x}-{:x}",
         chrono::Utc::now().format("%Y%m%d%H%M%S%3f"),
-        std::process::id() & 0xffff
+        std::process::id() & 0xffff,
+        BUILD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
 }
 
@@ -623,5 +626,16 @@ pub async fn build_loop(ctx: Arc<Ctx>, mut rx: mpsc::UnboundedReceiver<String>) 
             };
             let _ = build_line(&ctx, &workspace, &LineSpec::Worktree, &new_build_id()).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new_build_id;
+
+    #[test]
+    fn build_ids_are_unique_within_a_millisecond() {
+        let ids: std::collections::HashSet<String> = (0..64).map(|_| new_build_id()).collect();
+        assert_eq!(ids.len(), 64);
     }
 }
