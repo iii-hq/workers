@@ -40,6 +40,7 @@ packages:
   - compose-ui/ui
   - kanban/ui
   - onboarding/ui
+  - stories/ui
 
 # One pin per shared toolchain package; every worker UI and the shared
 # packages reference these as `"catalog:"` so a bump lands in one place.
