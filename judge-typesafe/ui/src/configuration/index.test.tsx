@@ -329,4 +329,13 @@ describe('JEV configuration deep links', () => {
     expect(control).not.toBeNull()
     expect(document.activeElement).toBe(control)
   })
+
+  it('survives the host swapping an opaque root for an object while mounted', async () => {
+    const { container, iii } = await mount(`\${JEV_CONFIGURATION}`)
+    expect(container.innerHTML).toContain('configuration is supplied as a single value')
+    await act(async () =>
+      root!.render(<JevConfigForm id="judge-typesafe" schema={{}} value={{ api_key: 'k' }} onChange={vi.fn()} iii={iii} />),
+    )
+    expect(container.querySelector('input[name="api_key"]')).not.toBeNull()
+  })
 })

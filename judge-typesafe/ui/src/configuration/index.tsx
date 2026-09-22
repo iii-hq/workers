@@ -87,7 +87,19 @@ export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine
     control?.focus()
   }, [focusField])
 
-  if (props.value !== null && (typeof props.value !== 'object' || Array.isArray(props.value))) {
+  // Hooks stay above the scalar bail-out: the host keeps this form mounted
+  // while the value flips between shapes, so the hook order must not change.
+  const raw = props.value
+  const isObject = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+  const value = isObject ? raw : {}
+  // The stored key never reaches the DOM: the field is a blank replacement, and
+  // `original` is the last key the host supplied that this form did not type.
+  const storedKey = typeof value.api_key === 'string' && value.api_key !== '' ? value.api_key : undefined
+  const [keyDraft, setKeyDraft] = useState('')
+  const original = useRef(storedKey)
+  if (storedKey !== (keyDraft === '' ? original.current : keyDraft)) original.current = storedKey
+
+  if (!isObject) {
     return (
       <StatusPanel
         variant="info"
@@ -96,13 +108,6 @@ export function JevConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engine
       />
     )
   }
-  const value = props.value ?? {}
-  // The stored key never reaches the DOM: the field is a blank replacement, and
-  // `original` is the last key the host supplied that this form did not type.
-  const storedKey = typeof value.api_key === 'string' && value.api_key !== '' ? value.api_key : undefined
-  const [keyDraft, setKeyDraft] = useState('')
-  const original = useRef(storedKey)
-  if (storedKey !== (keyDraft === '' ? original.current : keyDraft)) original.current = storedKey
   const setString = (field: string, raw: string | undefined) => {
     const next = { ...value }
     if (raw === undefined || raw === '') delete next[field]
