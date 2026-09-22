@@ -31,6 +31,7 @@ import {
   functionSearchModeWithDefault,
   semanticModeNeedsModel,
   withFunctionSearchMode,
+  withoutRetiredKeys,
 } from './model'
 
 type JsonObject = { [key: string]: JsonValue }
@@ -83,7 +84,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
     ([pointer]) => !INLINE_ERROR_POINTERS.has(pointer),
   )
 
-  const commit = (next: JsonObject) => props.onChange(next)
+  const commit = (next: JsonObject) => props.onChange(withoutRetiredKeys(next))
 
   const setString = (field: string, raw: string) => {
     const next = { ...value }

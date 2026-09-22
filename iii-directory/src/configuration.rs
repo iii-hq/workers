@@ -271,9 +271,11 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
         return;
     }
     let inject_hint = cfg.inject_hint;
+    let model_path = cfg.resolved_function_search_model_path();
     crate::config::warn_if_search_mode_lacks_model(
         cfg.function_search_mode,
-        cfg.resolved_function_search_model_path()
+        model_path.is_some(),
+        model_path
             .as_deref()
             .is_some_and(crate::functions::search_semantic::bundle_complete),
     );

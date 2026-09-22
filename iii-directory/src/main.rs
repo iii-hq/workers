@@ -175,6 +175,7 @@ async fn main() -> Result<()> {
     if minilm_supported && !download_bundle {
         iii_directory::config::warn_if_search_mode_lacks_model(
             cfg.function_search_mode,
+            function_search_model_path.is_some(),
             bundle_ready,
         );
     }

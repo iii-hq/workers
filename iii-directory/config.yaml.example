@@ -62,30 +62,33 @@ download_timeout_ms: 60000
 
 # --- Function search (tunable, hot-reload) ---
 
-# Search lane: judge (the default) ranks through the `judge` worker whenever
-# `judge::evaluate` is registered and otherwise behaves as hybrid (BM25 fused
-# with the local MiniLM model). Lexical is BM25 only. Hybrid serves BM25 until
-# the model bundle below is ready. Credentials and the model name live in the
-# judge-typesafe worker, not here.
+# Search lane: judge (the default) ranks through the optional `judge` worker
+# when `judge::evaluate` is registered and answers. Whenever the judge is
+# missing, has no provider or API key, or fails, it behaves as hybrid (BM25
+# fused with the local MiniLM model) and skips the judge for 30 s; a missed
+# deadline falls back for that lane only. Lexical is
+# BM25 only. Hybrid serves BM25 until the model bundle below is ready.
+# Credentials and the model name live in the judge-typesafe worker, not here.
 function_search_mode: judge
 
 # Judge options (hot-reloadable).
-# Integer 1..30000 ms for all judge calls in a public search, shared across batches.
-# Excludes Hybrid fallback and registry HTTP requests; total search time may exceed it.
+# Integer 1..30000 ms for all judge calls in a public search, shared across
+# batches. The registry judge call gets what the parallel registry lookup leaves;
+# Hybrid fallback runs outside the budget, so total search time may exceed it.
 function_search_judge_timeout_ms: 3000
 # Finite 0..1 inclusive; 0.5 is an initial calibration value.
 function_search_judge_min_relevance: 0.5
 # Finite 0..1 inclusive; floor for the installed-skills and registered-triggers sections.
 function_search_judge_side_lane_min_relevance: 0.3
-# A valid result with no relevant functions stays empty. A judge worker that is
-# not running, a provider without credentials, timeouts and protocol errors try
-# Hybrid for the affected batch or registry pool, then Lexical if the local model
-# is disabled, missing, unready or fails. Registry judge ranking evaluates only
-# the pool returned by upstream lexical search; it cannot recover workers that
-# the registry did not return.
+# A valid result with no relevant functions stays empty. The judge scores a
+# per-capability shortlist (BM25 fused with MiniLM, 16 deep) of functions,
+# registry contracts, skills and triggers; judge failures fall back to Hybrid,
+# then Lexical if the local model is disabled, missing, unready or fails.
+# Registry judge ranking evaluates only the pool returned by upstream lexical
+# search; it cannot recover workers that the registry did not return.
 
 # Local semantic model directory: the pinned MiniLM bundle. Changing it
-# requires restart; `null` disables Hybrid, including the judge's Hybrid fallback.
+# requires restart; `null` disables Hybrid, and makes the judge's fallback BM25-only.
 # function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf
 
 # With Judge or Hybrid and a missing/incomplete bundle at boot, download the

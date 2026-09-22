@@ -28,6 +28,12 @@ export function functionSearchModeWithDefault(value: unknown): FunctionSearchMod
   return typeof value === 'string' && FUNCTION_SEARCH_MODES.has(value) ? (value as FunctionSearchMode) : 'judge'
 }
 
+/** Keys the worker no longer reads. A stored config can still carry them,
+ * including the old TypeSafe key, so every save drops them. */
+export function withoutRetiredKeys<T extends Record<string, unknown>>(draft: T): T {
+  return Object.fromEntries(Object.entries(draft).filter(([key]) => !key.startsWith('function_search_jev_'))) as T
+}
+
 export function withFunctionSearchMode<T extends Record<string, unknown>>(
   draft: T,
   mode: FunctionSearchMode,

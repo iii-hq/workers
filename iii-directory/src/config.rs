@@ -132,19 +132,29 @@ pub enum FunctionSearchMode {
     Judge,
 }
 
-/// `hybrid` (and `judge`'s Hybrid fallback) needs a local semantic model;
-/// without a complete bundle at `function_search_model_path` every search
-/// silently runs BM25-only, which is easy to mistake for the model being
-/// active. Say so once, loudly. `model_ready` is "the path is set and the
-/// bundle verifies".
-pub fn warn_if_search_mode_lacks_model(mode: FunctionSearchMode, model_ready: bool) {
-    if mode != FunctionSearchMode::Lexical && !model_ready {
+/// `hybrid`, and the Hybrid fallback `judge` uses whenever the judge worker
+/// is unavailable, need a local semantic model; without a complete bundle at
+/// `function_search_model_path` they silently run BM25-only, which is easy to
+/// mistake for the model being active. Say so once, loudly. `judge` with the
+/// path set to `null` chose a BM25 fallback on purpose and stays quiet.
+/// `model_ready` is "the path is set and the bundle verifies".
+pub fn warn_if_search_mode_lacks_model(
+    mode: FunctionSearchMode,
+    model_configured: bool,
+    model_ready: bool,
+) {
+    let needs_model = match mode {
+        FunctionSearchMode::Lexical => false,
+        FunctionSearchMode::Hybrid => true,
+        FunctionSearchMode::Judge => model_configured,
+    };
+    if needs_model && !model_ready {
         tracing::warn!(
             ?mode,
             "function_search_mode needs a local semantic model but no complete bundle is \
              available at function_search_model_path (unset, missing, or failed \
-             verification/download); directory::search_functions runs BM25-only until the \
-             bundle is in place and iii-directory restarts"
+             verification/download); Hybrid ranking in directory::search_functions runs \
+             BM25-only until the bundle is in place and iii-directory restarts"
         );
     }
 }
@@ -320,16 +330,21 @@ pub struct SkillsConfig {
     pub registry_search: bool,
 
     /// Installed-function search lane. Judge (the default) ranks through the
-    /// `judge` worker whenever `judge::evaluate` is registered, otherwise it
-    /// behaves as Hybrid. Hybrid fuses BM25 with the local MiniLM model and
+    /// `judge` worker when `judge::evaluate` is registered and answers; when
+    /// the judge is missing, has no provider or API key, fails, or misses the
+    /// deadline, it behaves as Hybrid (and, except on a deadline, skips the
+    /// judge for 30 s). Hybrid fuses BM25 with the local MiniLM model and
     /// needs the bundle at `function_search_model_path` (downloaded on first
     /// run by default), serving BM25 until it is ready. Lexical is BM25 only.
     /// Mode changes apply without restart.
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
 
-    /// Total judge deadline per public search call, in milliseconds (1..=30000).
-    /// Excludes local Hybrid fallback and registry HTTP requests. Hot-reloadable.
+    /// Total judge deadline per public search call, in milliseconds (1..=30000),
+    /// shared by every judge call of the search. The registry lookup runs in
+    /// parallel with the installed-function judge call, and the registry judge
+    /// call gets what is left after it; local Hybrid fallback runs outside the
+    /// budget. Hot-reloadable.
     #[serde(
         default = "default_function_search_judge_timeout_ms",
         deserialize_with = "deserialize_judge_timeout_ms"
@@ -741,12 +756,15 @@ mod tests {
                 Ok(())
             }
         }
-        for (name, ready, should_warn) in [
-            ("lexical", false, false),
-            ("judge", false, true),
-            ("judge", true, false),
-            ("hybrid", false, true),
-            ("hybrid", true, false),
+        for (name, configured, ready, should_warn) in [
+            ("lexical", true, false, false),
+            ("judge", true, false, true),
+            ("judge", true, true, false),
+            // `null` path: judge chose a BM25 fallback on purpose.
+            ("judge", false, false, false),
+            ("hybrid", true, false, true),
+            ("hybrid", false, false, true),
+            ("hybrid", true, true, false),
         ] {
             let output = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
             let writer = output.clone();
@@ -758,13 +776,13 @@ mod tests {
                 .finish();
             let mode = serde_json::from_value(serde_json::json!(name)).unwrap();
             tracing::subscriber::with_default(subscriber, || {
-                warn_if_search_mode_lacks_model(mode, ready)
+                warn_if_search_mode_lacks_model(mode, configured, ready)
             });
             let message = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
             assert_eq!(
                 message.contains("needs a local semantic model"),
                 should_warn,
-                "{name}, model_ready={ready}: {message}"
+                "{name}, configured={configured}, model_ready={ready}: {message}"
             );
         }
     }

@@ -51,10 +51,15 @@ describe('parseDiscoverResponse', () => {
     expect(parseDiscoverResponse(empty)).toEqual({ ...empty, installable: [], skills: [], triggers: [] })
   })
 
-  it('parses the search mode when present and rejects an unknown one', () => {
+  it('parses the search mode when present and ignores an unknown one', () => {
     const parsed = parseDiscoverResponse({ ...response, search_mode: 'judge' })
     expect(parsed?.searchMode).toBe('judge')
-    expect(parseDiscoverResponse({ ...response, search_mode: 'quantum' })).toBeNull()
+    // Older transcripts carry `jev`: the card still renders, without a badge.
+    for (const mode of ['jev', 'quantum', 7]) {
+      const legacy = parseDiscoverResponse({ ...response, search_mode: mode })
+      expect(legacy).not.toBeNull()
+      expect('searchMode' in (legacy as object)).toBe(false)
+    }
     // Absent on legacy rows: the field is simply omitted.
     expect('searchMode' in (parseDiscoverResponse(response) as object)).toBe(false)
   })

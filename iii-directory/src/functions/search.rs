@@ -10,6 +10,7 @@ use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
+use tracing::Instrument;
 
 use crate::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
 use crate::functions::registry::{
@@ -19,7 +20,7 @@ use crate::functions::search_index::{
     canonical_tools, compact_query, excluded_from_search, tool_fingerprint, Bm25Index, ToolSchema,
 };
 use crate::functions::search_judge::{
-    JudgeCorpus, JudgeError, JudgeFailure, JudgeOptions, JudgeOutcome, JudgeSearch,
+    JudgeCorpus, JudgeFailure, JudgeOptions, JudgeOutcome, JudgeSearch, JUDGE_SHORTLIST,
 };
 use crate::functions::search_semantic::{weighted_rrf, SemanticSearch};
 use crate::surface::search_catalog as catalog;
@@ -105,6 +106,10 @@ const MAX_SEARCH_BATCHES: usize = 3;
 const SIDE_LANE_DOCS: usize = 6;
 /// Bytes of text one side-lane document contributes to the ranking payload.
 const SIDE_LANE_DOC_BYTES: usize = 300;
+/// Per-capability judge shortlist for side lanes: they surface at most
+/// `SIDE_LANE_DOCS` rows, so half an evaluation of candidates is plenty and
+/// keeps their calls light next to the function lane's.
+const SIDE_LANE_SHORTLIST: usize = JUDGE_SHORTLIST / 2;
 /// Console tabs register ephemeral `iii::*` listeners and `console:*` asset
 /// triggers; neither is a binding an agent can reuse.
 /// ponytail: prefix heuristic; switch to an engine-side ephemeral flag if
@@ -1180,25 +1185,36 @@ async fn installable_from_candidates(
             }
         }
     }
-    let judge_rankings = if let Some((judge, deadline)) = judge {
-        match rank_with_judge(judge, cfg, &pooled, search_queries, deadline).await {
-            Ok(outcome) => Some(outcome.rankings),
-            Err(error) => {
-                log_judge_failure(&error, "registry");
-                None
+    // Raw dense rankings seed the judge shortlist and the local fallback alike.
+    let dense = registry_dense_rankings(semantic, search_queries, &pooled, -1.0).await;
+    let judged = match judge {
+        Some((judge, deadline)) => {
+            let corpus = canonical_tools(&pooled);
+            match rank_with_judge(
+                judge,
+                cfg,
+                &corpus,
+                search_queries,
+                dense.as_deref(),
+                deadline,
+            )
+            .await
+            {
+                Ok(outcome) => Some(outcome.rankings),
+                Err(error) => {
+                    tracing::debug!(%error, "judge registry lane fell back to the local ranking");
+                    None
+                }
             }
         }
-    } else {
-        None
+        None => None,
     };
-    let ranked = if let Some(rankings) = judge_rankings {
-        round_robin_rankings(&rankings, MAX_INSTALLABLE_FUNCTIONS)
+    let ranked = match judged {
+        Some(rankings) => round_robin_rankings(&rankings, MAX_INSTALLABLE_FUNCTIONS)
             .into_iter()
             .filter_map(|id| pooled.iter().find(|tool| tool.name == id).cloned())
-            .collect()
-    } else {
-        let dense = registry_dense_rankings(semantic, search_queries, &pooled, -1.0).await;
-        rank_registry_contracts(search_queries, pooled, dense, MAX_INSTALLABLE_FUNCTIONS)
+            .collect(),
+        None => rank_registry_contracts(search_queries, pooled, dense, MAX_INSTALLABLE_FUNCTIONS),
     };
     assemble_installable(ranked, &owners)
 }
@@ -1310,9 +1326,7 @@ pub async fn search_functions(
     let started = Instant::now();
     let tools = deps.catalog.read().await.clone();
     let cfg = deps.config.load_full();
-    let judge_deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_millis(cfg.function_search_judge_timeout_ms);
-    let judge_ready = judge_lane(&cfg, &tools);
+    let judge = judge_deadline(&cfg, &tools, &deps.judge);
     let fingerprint = tool_fingerprint(&tools);
     let function_search = async {
         let mut selected: Vec<String> = Vec::new();
@@ -1321,9 +1335,29 @@ pub async fn search_functions(
         // ponytail: a multi-batch search that partly fell back reports the
         // best tier; split per batch only if that ambiguity ever bites.
         let mut effective_mode = FunctionSearchMode::Lexical;
-        for batch in request.capabilities.chunks(MAX_SEARCH_QUERIES) {
-            let outcome =
-                search_batch(deps, &cfg, &tools, &fingerprint, batch, judge_deadline).await;
+        // Batches run concurrently so later ones get their share of the
+        // shared judge deadline; results merge in request order.
+        let mut batches = tokio::task::JoinSet::new();
+        for (position, batch) in request.capabilities.chunks(MAX_SEARCH_QUERIES).enumerate() {
+            let (deps, cfg, tools, fingerprint) = (
+                deps.clone(),
+                cfg.clone(),
+                tools.clone(),
+                fingerprint.clone(),
+            );
+            let batch = batch.to_vec();
+            batches.spawn(
+                async move {
+                    let outcome =
+                        search_batch(&deps, &cfg, &tools, &fingerprint, &batch, judge).await;
+                    (position, outcome)
+                }
+                .in_current_span(),
+            );
+        }
+        let mut outcomes = batches.join_all().await;
+        outcomes.sort_by_key(|(position, _)| *position);
+        for (_, outcome) in outcomes {
             effective_mode = effective_mode.max(outcome.effective_mode);
             for function_id in outcome.selected {
                 if !selected.contains(&function_id) {
@@ -1335,15 +1369,16 @@ pub async fn search_functions(
         (selected, installable, effective_mode)
     };
     // Skills and triggers are ranked by the same mode as the functions:
-    // the judge worker judges the documents, lexical/hybrid rank them with
-    // BM25 (fused with the dense lane in hybrid). Both share the judge deadline.
+    // the judge worker judges each capability's local shortlist, and
+    // lexical/hybrid (also the judge's fallback) rank them with BM25 fused
+    // with the dense lane in hybrid. Both share the judge deadline.
     let skill_search = async {
         let docs = installed_skill_docs(deps, &cfg, &tools).await;
         side_lane(
             deps,
             &cfg,
             &request.capabilities,
-            judge_ready.then_some(judge_deadline),
+            judge,
             docs,
             JudgeCorpus::Skills,
         )
@@ -1355,17 +1390,18 @@ pub async fn search_functions(
             deps,
             &cfg,
             &request.capabilities,
-            judge_ready.then_some(judge_deadline),
+            judge,
             docs,
             JudgeCorpus::Triggers,
         )
         .await
     };
-    let ((mut selected, installable, search_mode), skills, triggers) =
-        tokio::join!(function_search, skill_search, trigger_search);
-    // Side lanes have no local fallback in judge mode, so a non-empty section
-    // was judge-ranked even when the function lane fell back.
-    let search_mode = if judge_ready && !(skills.is_empty() && triggers.is_empty()) {
+    let (
+        (mut selected, installable, search_mode),
+        (skills, skills_judged),
+        (triggers, triggers_judged),
+    ) = tokio::join!(function_search, skill_search, trigger_search);
+    let search_mode = if skills_judged || triggers_judged {
         FunctionSearchMode::Judge
     } else {
         search_mode
@@ -1547,12 +1583,11 @@ fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     text[..end].trim_end().to_string()
 }
 
-/// One side lane: rank `docs` by the effective mode — the judge worker judges
-/// them when `judge` carries its deadline, otherwise lexical/hybrid rank them
-/// locally with BM25 (fused with the dense lane in hybrid) — and return the
-/// rows of at most `SIDE_LANE_DOCS` ids, round-robin across capabilities. Any
-/// failure yields an empty section: the function search never fails over a
-/// side lane.
+/// One side lane: the judge worker judges each capability's shortlist of
+/// `docs` when `judge` carries its deadline; otherwise, or when the judge
+/// fails, lexical/hybrid rank them locally with BM25 fused with the dense lane
+/// in hybrid. Returns the rows of at most `SIDE_LANE_DOCS` ids round-robin
+/// across capabilities, and whether the judge ranked them. Never fails the search.
 async fn side_lane<C: Clone>(
     deps: &Deps,
     cfg: &SkillsConfig,
@@ -1560,21 +1595,57 @@ async fn side_lane<C: Clone>(
     judge: Option<tokio::time::Instant>,
     docs: Vec<(ToolSchema, C)>,
     corpus: JudgeCorpus,
-) -> Vec<C> {
+) -> (Vec<C>, bool) {
     let (documents, candidates): (Vec<ToolSchema>, Vec<C>) = docs.into_iter().unzip();
-    let ranked = if let Some(deadline) = judge {
-        judge_rank_documents(deps, cfg, capabilities, deadline, &documents, corpus).await
-    } else {
-        local_rank_documents(deps, cfg, capabilities, &documents).await
+    let queries = search_queries(capabilities);
+    let (ranked, judged) = match judge {
+        Some(deadline) if !queries.is_empty() && !documents.is_empty() => {
+            let dense = side_lane_dense(deps, cfg, &queries, &documents).await;
+            let options = JudgeOptions {
+                min_relevance: cfg.function_search_judge_side_lane_min_relevance,
+                corpus,
+            };
+            let lanes = judge_lanes(&queries, &documents, dense.as_deref(), SIDE_LANE_SHORTLIST);
+            match deps.judge.rank(&lanes, &options, deadline).await {
+                Ok(outcome) => (
+                    round_robin_rankings(&outcome.rankings, SIDE_LANE_DOCS),
+                    true,
+                ),
+                Err(error) => {
+                    tracing::debug!(%error, ?corpus, "judge side lane fell back to the local ranking");
+                    (rank_locally(&queries, &documents, dense), false)
+                }
+            }
+        }
+        _ => (
+            local_rank_documents(deps, cfg, capabilities, &documents).await,
+            false,
+        ),
     };
-    ranked
+    let rows = ranked
         .into_iter()
         .filter_map(|id| documents.iter().position(|document| document.name == id))
         .map(|position| candidates[position].clone())
-        .collect()
+        .collect();
+    (rows, judged)
 }
 
-/// Rank side-lane documents without the remote model: BM25 per capability
+/// Raw dense rankings of ad-hoc side-lane documents, when MiniLM serves this mode.
+async fn side_lane_dense(
+    deps: &Deps,
+    cfg: &SkillsConfig,
+    queries: &[String],
+    documents: &[ToolSchema],
+) -> Option<Vec<Vec<(String, f64)>>> {
+    if cfg.function_search_mode == FunctionSearchMode::Lexical
+        || !deps.semantic.is_production_minilm()
+    {
+        return None;
+    }
+    registry_dense_rankings(Some(&deps.semantic), queries, documents, -1.0).await
+}
+
+/// Rank side-lane documents without the judge: BM25 per capability
 /// (with the catalog's coverage pruning), fused with the dense lane for
 /// every capability MiniLM admits in Hybrid mode. Mirrors the registry
 /// section's ad-hoc document ranking. Returns at most `SIDE_LANE_DOCS` ids
@@ -1589,16 +1660,17 @@ async fn local_rank_documents(
     if queries.is_empty() || documents.is_empty() {
         return Vec::new();
     }
-    let corpus = canonical_tools(documents);
-    let index = Bm25Index::build(&corpus);
-    let dense = if cfg.function_search_mode != FunctionSearchMode::Lexical
-        && deps.semantic.is_production_minilm()
-    {
-        registry_dense_rankings(Some(&deps.semantic), &queries, documents, -1.0).await
-    } else {
-        None
-    };
-    let rankings = fuse_admitted(lexical_rankings(&index, &queries), dense);
+    let dense = side_lane_dense(deps, cfg, &queries, documents).await;
+    rank_locally(&queries, documents, dense)
+}
+
+fn rank_locally(
+    queries: &[String],
+    documents: &[ToolSchema],
+    dense: Option<Vec<Vec<(String, f64)>>>,
+) -> Vec<String> {
+    let index = Bm25Index::build(&canonical_tools(documents));
+    let rankings = fuse_admitted(lexical_rankings(&index, queries), dense);
     round_robin_rankings(&rankings, SIDE_LANE_DOCS)
 }
 
@@ -1692,71 +1764,64 @@ fn trigger_candidate(row: &Value) -> Option<TriggerCandidate> {
 /// The judge lane runs only when configured AND `judge::evaluate` is in the
 /// live catalog; the catalog refreshes on every registration push, so an
 /// absent judge worker costs no round trip.
-fn judge_lane(cfg: &SkillsConfig, catalog: &[ToolSchema]) -> bool {
-    cfg.function_search_mode == FunctionSearchMode::Judge
+/// The judge deadline for this search, or `None` when every lane should
+/// rank locally: another mode is configured, `judge::evaluate` is not in the
+/// live catalog (refreshed on every registration push, so an absent judge
+/// costs no round trip), or a recent failure paused the judge.
+fn judge_deadline(
+    cfg: &SkillsConfig,
+    catalog: &[ToolSchema],
+    judge: &JudgeSearch,
+) -> Option<tokio::time::Instant> {
+    (cfg.function_search_mode == FunctionSearchMode::Judge
+        && judge.available()
         && catalog
             .iter()
-            .any(|tool| tool.name == judge_contract::FUNCTION_ID)
+            .any(|tool| tool.name == judge_contract::FUNCTION_ID))
+    .then(|| {
+        tokio::time::Instant::now()
+            + std::time::Duration::from_millis(cfg.function_search_judge_timeout_ms)
+    })
 }
 
-/// An absent judge is the designed fallback (debug); anything else is worth
-/// a warning with the usage the failed stage still consumed.
-fn log_judge_failure(error: &JudgeFailure, lane: &str) {
-    if error.error == JudgeError::Unavailable {
-        tracing::debug!(%error, lane, "judge unavailable; using the local lanes");
-    } else {
-        tracing::warn!(%error, lane, requests = error.stats.requests,
-            questions = error.stats.questions, input_tokens = error.stats.input_tokens,
-            output_tokens = error.stats.output_tokens, elapsed_ms = error.stats.elapsed_ms,
-            "judge search failed; using the local lanes");
+/// Per capability, the documents the judge scores. A corpus of at most
+/// `depth` documents goes whole, so the judge keeps its recall on wording
+/// BM25 misses; a larger one is cut to raw BM25 fused with the raw dense
+/// ranking (when available), `depth` deep.
+fn judge_lanes(
+    queries: &[String],
+    corpus: &[ToolSchema],
+    dense: Option<&[Vec<(String, f64)>]>,
+    depth: usize,
+) -> Vec<(String, Vec<ToolSchema>)> {
+    if corpus.len() <= depth {
+        return queries
+            .iter()
+            .map(|query| (query.clone(), corpus.to_vec()))
+            .collect();
     }
-}
-
-/// Rank `documents` against the capabilities with the judge worker and
-/// return at most `SIDE_LANE_DOCS` document ids round-robin across
-/// capabilities. Any judge failure yields an empty list: the function search
-/// never fails over a side lane.
-async fn judge_rank_documents(
-    deps: &Deps,
-    cfg: &SkillsConfig,
-    capabilities: &[String],
-    deadline: tokio::time::Instant,
-    documents: &[ToolSchema],
-    corpus: JudgeCorpus,
-) -> Vec<String> {
-    let queries = search_queries(capabilities);
-    if queries.is_empty() || documents.is_empty() {
-        return Vec::new();
-    }
-    match deps
-        .judge
-        .rank(
-            &queries,
-            documents,
-            &JudgeOptions {
-                min_relevance: cfg.function_search_judge_side_lane_min_relevance,
-                corpus,
-            },
-            deadline,
-        )
-        .await
-    {
-        Ok(outcome) => {
-            tracing::debug!(
-                ?corpus,
-                requests = outcome.stats.requests,
-                questions = outcome.stats.questions,
-                elapsed_ms = outcome.stats.elapsed_ms,
-                documents = documents.len(),
-                "judge side-lane evaluation completed"
-            );
-            round_robin_rankings(&outcome.rankings, SIDE_LANE_DOCS)
-        }
-        Err(error) => {
-            log_judge_failure(&error, &format!("{corpus:?}"));
-            Vec::new()
-        }
-    }
+    let index = Bm25Index::build(corpus);
+    queries
+        .iter()
+        .enumerate()
+        .map(|(position, query)| {
+            let lexical: Vec<(String, f64)> = index
+                .rank_with_matches(query)
+                .into_iter()
+                .map(|(id, score, _)| (id, score))
+                .collect();
+            let fused = match dense.and_then(|dense| dense.get(position)) {
+                Some(dense) => weighted_rrf(&lexical, dense, PRODUCTION_RETRIEVAL_WEIGHT),
+                None => lexical,
+            };
+            let documents = fused
+                .iter()
+                .filter_map(|(id, _)| corpus.iter().find(|tool| &tool.name == id).cloned())
+                .take(depth)
+                .collect();
+            (query.clone(), documents)
+        })
+        .collect()
 }
 
 /// Fold one batch's installable workers into the merged section: a worker
@@ -1803,44 +1868,37 @@ struct BenchmarkOutcome {
     elapsed_ms: f64,
 }
 
-/// Resolve exact eligible IDs in code, and evaluate only the remaining lanes.
-/// The same policy is used for installed and registry function pools.
+/// Resolve exact eligible IDs in code, and judge each remaining capability
+/// against its local shortlist of `corpus` (canonical contracts). The same
+/// policy serves the installed catalog and registry pools; `dense` holds raw
+/// dense rankings aligned with `queries`, when MiniLM has them.
 async fn rank_with_judge(
     judge: &JudgeSearch,
     cfg: &SkillsConfig,
-    tools: &[ToolSchema],
+    corpus: &[ToolSchema],
     queries: &[String],
+    dense: Option<&[Vec<(String, f64)>]>,
     deadline: tokio::time::Instant,
 ) -> Result<JudgeOutcome, JudgeFailure> {
-    let corpus = canonical_tools(tools);
     let mut rankings: Vec<Vec<(String, f64)>> = queries
         .iter()
         .map(|query| {
-            exact_function_id(query, &corpus)
+            exact_function_id(query, corpus)
                 .map(|id| vec![(id, 1.0)])
                 .unwrap_or_default()
         })
         .collect();
-    let positions: Vec<usize> = rankings
-        .iter()
-        .enumerate()
-        .filter_map(|(position, lane)| lane.is_empty().then_some(position))
-        .collect();
-    let model_queries: Vec<String> = positions
-        .iter()
-        .map(|position| queries[*position].clone())
-        .collect();
-    let mut outcome = judge
-        .rank(
-            &model_queries,
-            &corpus,
-            &JudgeOptions {
-                min_relevance: cfg.function_search_judge_min_relevance,
-                corpus: JudgeCorpus::Functions,
-            },
-            deadline,
-        )
-        .await?;
+    let (positions, lanes): (Vec<usize>, Vec<_>) =
+        judge_lanes(queries, corpus, dense, JUDGE_SHORTLIST)
+            .into_iter()
+            .enumerate()
+            .filter(|(position, _)| rankings[*position].is_empty())
+            .unzip();
+    let options = JudgeOptions {
+        min_relevance: cfg.function_search_judge_min_relevance,
+        corpus: JudgeCorpus::Functions,
+    };
+    let mut outcome = judge.rank(&lanes, &options, deadline).await?;
     for (position, lane) in positions
         .into_iter()
         .zip(std::mem::take(&mut outcome.rankings))
@@ -1857,7 +1915,7 @@ async fn installed_search(
     tools: &[ToolSchema],
     fingerprint: &str,
     queries: &[String],
-    deadline: tokio::time::Instant,
+    judge: Option<tokio::time::Instant>,
 ) -> BenchmarkOutcome {
     let started = Instant::now();
     let corpus = canonical_tools(tools);
@@ -1868,8 +1926,23 @@ async fn installed_search(
         effective_mode: FunctionSearchMode::Lexical,
         ..BenchmarkOutcome::default()
     };
-    if judge_lane(cfg, tools) {
-        match rank_with_judge(&deps.judge, cfg, &corpus, queries, deadline).await {
+    if let Some(deadline) = judge {
+        // The dense lane only matters when the catalog needs a shortlist.
+        let dense = if corpus.len() > JUDGE_SHORTLIST && deps.semantic.is_production_minilm() {
+            deps.semantic.rank(fingerprint, queries, -1.0).await.ok()
+        } else {
+            None
+        };
+        match rank_with_judge(
+            &deps.judge,
+            cfg,
+            &corpus,
+            queries,
+            dense.as_deref(),
+            deadline,
+        )
+        .await
+        {
             Ok(outcome) => {
                 result.rankings = outcome.rankings;
                 result.judge_complete = true;
@@ -1879,7 +1952,9 @@ async fn installed_search(
                     output_tokens = outcome.stats.output_tokens, elapsed_ms = outcome.stats.elapsed_ms,
                     "judge function evaluation completed");
             }
-            Err(error) => log_judge_failure(&error, "functions"),
+            Err(error) => {
+                tracing::debug!(%error, "judge function lane fell back to Hybrid");
+            }
         }
     }
     if cfg.function_search_mode != FunctionSearchMode::Lexical && !result.judge_complete {
@@ -1915,17 +1990,21 @@ async fn installed_search(
     result
 }
 
+/// One batch of capabilities: the installed search and the registry lookup
+/// run concurrently, so the registry's HTTP overlaps the installed judge call.
 async fn search_batch(
     deps: &Deps,
     cfg: &SkillsConfig,
     tools: &[ToolSchema],
     fingerprint: &str,
     capabilities: &[String],
-    judge_deadline: tokio::time::Instant,
+    judge: Option<tokio::time::Instant>,
 ) -> BatchOutcome {
     let queries = search_queries(capabilities);
-    let installed = installed_search(deps, cfg, tools, fingerprint, &queries, judge_deadline).await;
-    let installable = if cfg.registry_search {
+    let registry = async {
+        if !cfg.registry_search {
+            return Vec::new();
+        }
         registry_installable(
             cfg,
             &deps.registry_cache,
@@ -1934,12 +2013,14 @@ async fn search_batch(
             .then_some(&deps.semantic),
             tools,
             &queries,
-            judge_lane(cfg, tools).then_some((&deps.judge, judge_deadline)),
+            judge.map(|deadline| (&deps.judge, deadline)),
         )
         .await
-    } else {
-        Vec::new()
     };
+    let (installed, installable) = tokio::join!(
+        installed_search(deps, cfg, tools, fingerprint, &queries, judge),
+        registry
+    );
     BatchOutcome {
         selected: installed.selected,
         installable,
@@ -1954,11 +2035,10 @@ async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkO
     let cfg = deps.config.load_full();
     let tools = deps.catalog.read().await.clone();
     let fingerprint = tool_fingerprint(&tools);
-    let deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_millis(cfg.function_search_judge_timeout_ms);
+    let judge = judge_deadline(&cfg, &tools, &deps.judge);
     let mut total = BenchmarkOutcome {
         hybrid_complete: cfg.function_search_mode != FunctionSearchMode::Lexical,
-        judge_complete: judge_lane(&cfg, &tools),
+        judge_complete: judge.is_some(),
         effective_mode: FunctionSearchMode::Lexical,
         ..BenchmarkOutcome::default()
     };
@@ -1967,7 +2047,7 @@ async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkO
         .take(MAX_SEARCH_BATCHES)
     {
         let queries = search_queries(batch);
-        let outcome = installed_search(deps, &cfg, &tools, &fingerprint, &queries, deadline).await;
+        let outcome = installed_search(deps, &cfg, &tools, &fingerprint, &queries, judge).await;
         total.hybrid_complete &= outcome.hybrid_complete;
         total.judge_complete &= outcome.judge_complete;
         total.effective_mode = total.effective_mode.max(outcome.effective_mode);
@@ -2395,6 +2475,55 @@ mod tests {
         assert!(!excluded_from_search("state::set"));
         assert!(!excluded_from_search("state::claim"));
         assert!(!excluded_from_search("state::on-config"));
+        // Providers sit behind the judge hub; the hub itself stays searchable.
+        assert!(excluded_from_search("judge-typesafe::evaluate"));
+        assert!(excluded_from_search("judge-laya::models::list"));
+        assert!(!excluded_from_search("judge::evaluate"));
+    }
+
+    #[test]
+    fn judge_lanes_send_small_corpora_whole_and_cut_large_ones_per_capability() {
+        let doc = |name: &str, description: &str| ToolSchema {
+            name: name.into(),
+            description: description.into(),
+            parameters: json!({}),
+        };
+        let small = vec![
+            doc("mail::send", "Send an email."),
+            doc("state::get", "Read a value."),
+        ];
+        let lanes = judge_lanes(
+            &["dispatch correspondence".into()],
+            &small,
+            None,
+            JUDGE_SHORTLIST,
+        );
+        assert_eq!(
+            lanes[0].1, small,
+            "a corpus that fits one evaluation goes whole"
+        );
+
+        let mut large: Vec<ToolSchema> = (0..40)
+            .map(|i| doc(&format!("noise{i:02}::act"), "Unrelated filler operation."))
+            .collect();
+        large.push(doc("mail::send", "Send an email message."));
+        let queries = vec![
+            "send an email message".to_string(),
+            "read a stored value".to_string(),
+        ];
+        let dense = vec![vec![], vec![("noise07::act".to_string(), 0.9)]];
+        let lanes = judge_lanes(&queries, &large, Some(&dense), JUDGE_SHORTLIST);
+        assert_eq!(lanes.len(), 2);
+        assert!(lanes.iter().all(|(_, docs)| docs.len() <= JUDGE_SHORTLIST));
+        assert_eq!(lanes[0].0, "send an email message");
+        assert_eq!(
+            lanes[0].1[0].name, "mail::send",
+            "BM25 leads the lexical lane"
+        );
+        assert_eq!(
+            lanes[1].1[0].name, "noise07::act",
+            "the dense lane seeds its lane"
+        );
     }
 
     #[test]

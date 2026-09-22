@@ -49,15 +49,15 @@ fn empty_skill_root() -> &'static std::path::Path {
 type Requests = Arc<Mutex<Vec<EvaluateRequest>>>;
 
 /// A judge hub double: records every `judge::evaluate` payload and answers
-/// through `reply` after `delay_ms`.
-fn mock_hub<F>(delay_ms: u64, reply: F) -> (JudgeSearch, Requests)
+/// through `reply`, which also picks that request's delay in milliseconds.
+fn staged_hub<F>(reply: F) -> (JudgeSearch, Requests)
 where
-    F: Fn(&EvaluateRequest) -> Result<Value, JudgeError> + Send + Sync + 'static,
+    F: Fn(&EvaluateRequest) -> (u64, Result<Value, JudgeError>) + Send + Sync + 'static,
 {
     let requests: Requests = Arc::default();
     let seen = requests.clone();
     let client = JudgeSearch::from_evaluator(move |request| {
-        let result = reply(&request);
+        let (delay_ms, result) = reply(&request);
         seen.lock().unwrap().push(request);
         async move {
             if delay_ms > 0 {
@@ -67,6 +67,14 @@ where
         }
     });
     (client, requests)
+}
+
+/// `staged_hub` with the same delay for every request.
+fn mock_hub<F>(delay_ms: u64, reply: F) -> (JudgeSearch, Requests)
+where
+    F: Fn(&EvaluateRequest) -> Result<Value, JudgeError> + Send + Sync + 'static,
+{
+    staged_hub(move |request| (delay_ms, reply(request)))
 }
 
 fn scoring(score: f64) -> (JudgeSearch, Requests) {
@@ -90,24 +98,26 @@ fn deps_with_skill_root(judge: JudgeSearch, root: &std::path::Path) -> Deps {
     }
 }
 
-/// Every question answered `score`, except rows about the judge itself,
-/// which the provider never finds relevant to a directory query.
+/// Every question of every evaluation answered `score`, except rows about the
+/// judge itself, which the provider never finds relevant to a directory query.
 fn reply(request: &EvaluateRequest, score: f64) -> Value {
-    let evaluation = &request.evaluations[0];
-    let answers: serde_json::Map<String, Value> = evaluation
-        .questions
-        .keys()
-        .map(|key| {
-            let (_, f) = key.split_once('_').unwrap();
-            let own =
-                evaluation.state["functions"][f]["function_id"] == judge_contract::FUNCTION_ID;
-            let noul = if own { 0.0 } else { score };
-            (key.clone(), json!({"type":"noul", "noul":noul}))
-        })
-        .collect();
-    let questions = answers.len();
     let mut results = serde_json::Map::new();
-    results.insert(evaluation.id.clone(), json!({"answers": answers}));
+    let mut questions = 0;
+    for evaluation in &request.evaluations {
+        let answers: serde_json::Map<String, Value> = evaluation
+            .questions
+            .keys()
+            .map(|key| {
+                let (_, f) = key.split_once('_').unwrap();
+                let own =
+                    evaluation.state["functions"][f]["function_id"] == judge_contract::FUNCTION_ID;
+                let noul = if own { 0.0 } else { score };
+                (key.clone(), json!({"type":"noul", "noul":noul}))
+            })
+            .collect();
+        questions += answers.len();
+        results.insert(evaluation.id.clone(), json!({ "answers": answers }));
+    }
     json!({
         "status":"ok", "model":"jev-1.13.0", "results": results,
         "stats":{"attempts":1,"requests":1,"questions":questions,
@@ -189,7 +199,11 @@ async fn failed_judge_uses_lexical_when_hybrid_is_unavailable() {
         assert!(!outcome.hybrid_complete);
         assert_eq!(outcome.selected, ["mail::send"]);
     }
-    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "the failure pauses the judge, so the second search sends nothing"
+    );
 }
 
 #[tokio::test]
@@ -223,9 +237,33 @@ async fn a_hub_without_a_provider_falls_back_like_an_absent_judge() {
         assert_ne!(response.search_mode, FunctionSearchMode::Judge);
         assert_eq!(requests.lock().unwrap().len(), 1);
     }
-    let (judge, _) = mock_hub(0, |_| Err(JudgeError::Unavailable));
+    let (judge, _) = mock_hub(0, |_| Err(JudgeError::Unavailable("not registered")));
     let response = ask(&deps(judge), &["send an email message"]).await;
     assert_eq!(ids(&response), ["mail::send"]);
+}
+
+#[tokio::test]
+async fn a_provider_without_an_api_key_means_hybrid_everywhere_and_no_retries() {
+    let (judge, requests) = mock_hub(0, |_| Ok(hub_error("missing_key")));
+    let root = skills_root(&[("skills/mail/compose.md", COMPOSE_SKILL)]);
+    let deps = deps_with_skill_root(judge, root.path());
+    for _ in 0..2 {
+        let response = ask(&deps, &["send an email message"]).await;
+        assert_eq!(ids(&response), ["mail::send"]);
+        let skill_ids: Vec<&str> = response.skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            skill_ids,
+            ["mail/compose"],
+            "skills fall back to local ranking"
+        );
+        assert_ne!(response.search_mode, FunctionSearchMode::Judge);
+    }
+    let sent = requests.lock().unwrap().len();
+    assert!(
+        (1..=2).contains(&sent),
+        "only the first search's lanes reach the hub, got {sent}"
+    );
+    assert!(!deps.judge.available());
 }
 
 #[cfg(minilm)]
@@ -329,7 +367,7 @@ async fn registry_judge_failure_uses_the_available_hybrid_ranking() {
     cfg.registry_url = registry.uri();
     deps.config.store(Arc::new(cfg.clone()));
     let fallback = ask(&deps, &["compose an email"]).await;
-    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert!(!requests.lock().unwrap().is_empty());
     assert!(ids(&fallback).contains(&"mail::send"));
     assert_eq!(fallback.installable.len(), 1);
     assert_eq!(fallback.installable[0].name, "courier");
@@ -397,9 +435,12 @@ async fn timeout_budget_is_shared_across_capability_batches() {
     let mut cfg = (**deps.config.load()).clone();
     cfg.function_search_judge_timeout_ms = 40;
     deps.config.store(Arc::new(cfg));
+    let started = std::time::Instant::now();
     let response = ask(&deps, &["send an email message"; 18]).await;
     assert_eq!(ids(&response), ["mail::send"]);
-    assert_eq!(requests.lock().unwrap().len(), 1);
+    // Three concurrent batches, one request each, all bounded by one deadline.
+    assert!(requests.lock().unwrap().len() <= 3);
+    assert!(started.elapsed() < std::time::Duration::from_millis(190));
 }
 
 #[tokio::test]
@@ -520,7 +561,7 @@ async fn registry_judge_failure_falls_back_to_its_lexical_pool() {
         response.installable[0].functions.len(),
         MAX_INSTALLABLE_FUNCTIONS
     );
-    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert!(!requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -806,22 +847,25 @@ async fn skills_below_the_relevance_threshold_are_omitted() {
 }
 
 #[tokio::test]
-async fn a_failed_skill_evaluation_keeps_the_function_results() {
-    let (judge, _) = mock_hub(0, |request| {
-        Ok(if is_skill_block(request) {
-            hub_error("http")
+async fn a_failed_skill_evaluation_keeps_the_function_results_and_ranks_skills_locally() {
+    // The skill failure lands after the function reply, so only the skills fall back.
+    let (judge, _) = staged_hub(|request| {
+        if is_skill_block(request) {
+            (50, Ok(hub_error("http")))
         } else {
-            reply(request, 0.9)
-        })
+            (0, Ok(reply(request, 0.9)))
+        }
     });
     let root = skills_root(&[("skills/mail/compose.md", COMPOSE_SKILL)]);
     let response = ask(
         &deps_with_skill_root(judge, root.path()),
-        &["dispatch correspondence"],
+        &["send an email message"],
     )
     .await;
     assert_eq!(ids(&response), ["mail::send", "state::get"]);
-    assert!(response.skills.is_empty());
+    assert_eq!(response.search_mode, FunctionSearchMode::Judge);
+    let skill_ids: Vec<&str> = response.skills.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(skill_ids, ["mail/compose"]);
 }
 
 #[tokio::test]
@@ -854,7 +898,7 @@ async fn judge_ranks_registered_triggers_through_the_triggers_corpus() {
           "worker_name": "harness", "config": { "expression": "0 0 0 * * *" } },
         { "id": "t-2", "trigger_type": "console:style", "function_id": "state::ui-content" },
     ] }));
-    let ranked = side_lane(
+    let (ranked, judged) = side_lane(
         &deps,
         &deps.config.load_full(),
         &["run a job every night".to_string()],
@@ -863,6 +907,7 @@ async fn judge_ranks_registered_triggers_through_the_triggers_corpus() {
         JudgeCorpus::Triggers,
     )
     .await;
+    assert!(judged);
     let ids: Vec<&str> = ranked.iter().map(|t| t.id.as_str()).collect();
     assert_eq!(ids, ["t-1"]);
     assert_eq!(ranked[0].function_id, "harness::sweep-pending");
@@ -883,12 +928,13 @@ async fn judge_ranks_registered_triggers_through_the_triggers_corpus() {
 
 #[tokio::test]
 async fn a_judge_ranked_side_lane_keeps_search_mode_at_judge_when_functions_fell_back() {
-    let (judge, _) = mock_hub(0, |request| {
-        Ok(if is_skill_block(request) {
-            reply(request, 0.9)
+    // The function failure lands after the skill reply, before the pause it starts.
+    let (judge, _) = staged_hub(|request| {
+        if is_skill_block(request) {
+            (0, Ok(reply(request, 0.9)))
         } else {
-            hub_error("http")
-        })
+            (50, Ok(hub_error("http")))
+        }
     });
     let root = skills_root(&[("skills/mail/compose.md", COMPOSE_SKILL)]);
     let response = ask(

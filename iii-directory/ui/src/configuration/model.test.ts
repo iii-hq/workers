@@ -4,6 +4,7 @@ import {
   functionSearchModeWithDefault,
   semanticModeNeedsModel,
   withFunctionSearchMode,
+  withoutRetiredKeys,
 } from './model'
 
 describe('booleanWithDefault', () => {
@@ -57,5 +58,18 @@ describe('function search configuration', () => {
     // Explicit null disables the semantic lane: that is the stranded case.
     expect(semanticModeNeedsModel('hybrid', null)).toBe(true)
     expect(semanticModeNeedsModel('hybrid', '/models/minilm')).toBe(false)
+  })
+})
+
+describe('withoutRetiredKeys', () => {
+  it('drops keys the worker no longer reads, including the old TypeSafe key', () => {
+    expect(
+      withoutRetiredKeys({
+        function_search_mode: 'judge',
+        function_search_jev_api_key: 'old-secret',
+        function_search_jev_model: 'jev-1.13.0',
+        function_search_judge_timeout_ms: 3000,
+      }),
+    ).toEqual({ function_search_mode: 'judge', function_search_judge_timeout_ms: 3000 })
   })
 })

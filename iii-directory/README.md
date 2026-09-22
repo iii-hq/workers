@@ -473,8 +473,8 @@ There is **no** `directory::skills::register` — see
 ## Function search & pre-generate hint
 
 One-shot function search over the live engine catalog. `judge` (the default)
-ranks through the `judge` worker whenever `judge::evaluate` is registered and
-otherwise behaves as `hybrid` (BM25 fused with the local MiniLM model,
+ranks through the optional `judge` worker when it is registered and answers,
+and otherwise behaves as `hybrid` (BM25 fused with the local MiniLM model,
 reranked); `lexical` is BM25 only. Absorbed from the former `discovery` worker,
 it returns only compact `{ function_id,
 description }` candidates, grouped by worker in rank order. The model chooses
@@ -529,19 +529,35 @@ Lexical/Hybrid ranking pipeline:
 
 Function relevance is judged by the [`judge`](../judge) worker
 (`judge::evaluate`), which forwards to its configured provider
-([`judge-typesafe`](../judge-typesafe) by default). `iii.worker.yaml` declares
-both as dependencies; the Harness and dev-template stacks do not run them, so
-add them with `iii trigger compose::add worker=judge` (it pulls in
-`judge-typesafe`) and configure the TypeSafe key and model in the
-**judge-typesafe** settings. This worker holds no credentials.
+([`judge-typesafe`](../judge-typesafe) by default). Both are optional: this
+worker does not declare them as dependencies, so a judge that stops never
+stops the directory, and the Harness and dev-template stacks do not run them.
+Add the `judge` worker to the project (it brings `judge-typesafe`) and set
+the TypeSafe key and model in the **judge-typesafe** settings. This worker
+holds no credentials.
 
-`judge` is the default mode and needs no setting. It is *effective* only while
-`judge::evaluate` is present in the live function catalog; when the judge
-worker is not running the search behaves exactly as Hybrid, then Lexical if
-the local model is unavailable, without a warning. A hub that has no provider
-(`provider_unavailable`) is treated the same way. Any other judge failure
-(missing provider key, timeout, protocol error) is logged as a warning and
-uses the same fallback.
+`judge` is the default mode for new installs. It ranks through the judge
+only while `judge::evaluate` is in the live function catalog and answers.
+**Whenever the judge is unavailable the search uses Hybrid** (then Lexical if
+the local model is not ready), for functions, installable workers, skills and
+triggers alike:
+
+- `judge::evaluate` is not registered: no call is made at all.
+- the hub has no provider (`provider_unavailable`), or the provider has no
+  API key (`missing_key`): logged once at info.
+- a provider error, transport failure or invalid reply: logged once as a
+  warning.
+- the judge deadline runs out: that lane alone uses Hybrid.
+
+After an unavailable or failing judge (the second and third cases), every
+search skips it for 30 seconds and uses Hybrid, so a missing key costs one
+fast round trip per 30 s rather than one per search. A key added to
+judge-typesafe, or a judge that comes back, is used within 30 seconds. A
+missed deadline does not pause the judge.
+
+An install that already stored `function_search_mode: hybrid` keeps it: the
+stored configuration wins over the new default. Set `judge` with
+`configuration::set` (or the console form) to opt in.
 
 ```yaml
 function_search_mode: judge
@@ -552,31 +568,39 @@ function_search_judge_side_lane_min_relevance: 0.3
 
 These fields apply without a restart. The timeout is an integer from 1 to
 30000 ms and relevance a finite number from 0 to 1 inclusive. YAML seeds and
-JSON configuration updates use the same validation. The relevance default is a
-starting point for calibration, not a measured quality guarantee.
+JSON configuration updates use the same validation. The relevance floors were
+calibrated against `jev-1.13.0`; judge-typesafe defaults to the `jev-latest`
+alias, so pin its model if you rely on the floors.
 
-The judge evaluates eligible installed functions across the catalog, without
-a BM25 shortlist or a MiniLM dependency. Each block sends normalized
-capabilities, function IDs, short descriptions and parameter names through
-the hub; it does not send conversation history or function argument values.
+The judge scores a shortlist per capability, not the whole catalog. A corpus
+of at most 16 documents goes whole, so the judge still finds functions whose
+wording shares nothing with the capability. A larger one is cut to the top 16
+of raw BM25 fused with the raw MiniLM ranking (when the index is ready). Each
+capability is one evaluation, and all capabilities of a lane (functions,
+registry pool, skills or triggers) travel in one `judge::evaluate` call, so
+the provider answers them together with one model, and cancels the rest when
+one fails. Requests carry normalized capabilities, function IDs, short
+descriptions and parameter names; no conversation history or argument values.
 Exact eligible IDs, internal-function exclusions, session deduplication and
-result limits remain enforced locally. `function_search_model_path: null` is
-valid in judge mode and disables the Hybrid fallback. With a configured path,
-the worker keeps an installed MiniLM bundle and its catalog index current in
-the background so Hybrid can take over on failure, and downloads a missing
-bundle at boot like Hybrid does.
+result limits stay local. The provider-direct `judge-<provider>::*` functions
+never appear in search results; agents call `judge::*`.
+
+`function_search_model_path: null` is valid in judge mode and makes the Hybrid
+fallback BM25-only, without the local-model warning. With a configured path,
+the worker keeps an installed MiniLM bundle and its catalog index current,
+downloads a missing bundle at boot like Hybrid does, and uses the index both
+for the shortlist and for the fallback.
 
 Registry discovery still starts with the registry API's lexical search. The
-judge evaluates the returned contract pool and **cannot recover workers that
-upstream search did not return**. Installable results remain suggestions until
-installation.
+judge evaluates a shortlist of the returned contract pool and **cannot recover
+workers that upstream search did not return**. Installable results remain
+suggestions until installation.
 
 Every response carries `search_mode` — the mode that actually ranked the
 results (`judge`, `hybrid` or `lexical`), which can be lower than the
-configured mode when the judge worker was absent, a batch fell back on a judge
-failure, or the local model is not loaded yet. The console's search card shows
-it as the card's badge. A multi-batch search that partly fell back reports the
-highest tier any batch reached.
+configured mode when the judge was unavailable or paused, or the local model
+is not loaded yet. The console's search card shows it as the card's badge. A
+search whose lanes partly fell back reports the highest tier any lane reached.
 
 Every mode also ranks the installed skill documents (the rows
 `directory::skills::list` serves, minus `disable_model_invocation` ones) against
@@ -585,42 +609,44 @@ the same capabilities and lists the matches under `skills` as
 capabilities, with a guidance note to read them through
 `directory::skills::get { id }`. Each skill's id and a trimmed
 `title: description` (300 bytes) form the document. The judge judges them with
-a how-to question under the same deadline as the function batches; Lexical
-ranks them with BM25 and Hybrid fuses in the dense lane, the same ad-hoc
-document ranking the `installable` section uses. Any failure only omits the
-section. "Installed" is read off the live function catalog: a worker with no
-registered functions contributes no skills. The registered-trigger section
+a how-to question under the same deadline as the functions; Lexical ranks them
+with BM25 and Hybrid fuses in the dense lane, the same ad-hoc document ranking
+the `installable` section uses, and that local ranking also serves whenever the
+judge fails. "Installed" is read off the live function catalog: a worker with
+no registered functions contributes no skills. The registered-trigger section
 (under `triggers`) is ranked the same way in every mode.
 
 A valid response with no functions at or above the relevance threshold stays
-empty. Judge failures instead trigger **Judge → Hybrid → Lexical** fallback
-for the affected batch or registry pool. Hybrid uses the existing local
-ranking policy; if the model is disabled, missing, not yet indexed for the
-current catalog, or fails, Lexical serves the results. A registry HTTP failure
-still omits the installable section.
+empty. Judge failures instead trigger **Judge → Hybrid → Lexical** fallback.
+Hybrid uses the existing local ranking policy; if the model is disabled,
+missing, not yet indexed for the current catalog, or fails, Lexical serves the
+results. A registry HTTP failure still omits the installable section.
 
-The judge deadline is shared across all batches in one public search,
-including waiting for a request slot and reading responses. Local Hybrid
-fallback and registry HTTP requests run outside this budget, so total search
-latency may exceed it. Requests use up to 16 functions × 6 capabilities per
-block and at most four concurrent `judge::evaluate` calls per worker;
-payloads are split at the local byte limits (48 KiB per evaluation and 16 KiB
-for state plus the largest question). These byte guards are not token counts.
-Cost and latency grow with catalog size and capability count; the hub's
-returned usage (`stats`) is logged per block.
+The judge deadline is shared by every judge call of one public search.
+Capability batches run concurrently, and each batch's registry lookup runs in
+parallel with its installed-function judge call; the registry judge call then
+gets what is left of the deadline and, if nothing is, the pool is ranked
+locally. Local Hybrid fallback runs outside the budget. Evaluations are split
+at local byte limits (48 KiB per evaluation, 16 KiB for state plus the largest
+question); these guards are not token counts. Retries are the provider's
+policy (judge-typesafe retries 408/429/5xx within the deadline); the 30-second
+pause keeps a failing provider from being retried on every search. The hub's
+returned usage (`stats`) is logged per lane at debug level.
 
 Switch to `lexical` at any time to use BM25 only. Switching from `lexical` to
 `hybrid` or `judge` prepares the local index from the current catalog. If the
 MiniLM bundle is missing, both use lexical fallback; the boot-time download and
-changes to the local model path require a worker restart. Judge and Hybrid
-both show the local-model warning.
+changes to the local model path require a worker restart.
 
 **Upgrading from the in-worker `jev` mode:** the stored value
-`function_search_mode: jev` no longer parses and the worker refuses to boot on
-it. Set the mode to `judge` (or remove the key) with `configuration::set` before
-upgrading. The removed keys `function_search_jev_api_key` and
-`function_search_jev_model` are ignored; the remaining `function_search_jev_*`
-keys are read under their `function_search_judge_*` names only.
+`function_search_mode: jev` no longer parses, and the worker refuses to boot on
+it. While the old worker still runs, its schema only accepts
+`lexical`/`hybrid`/`jev`, so before upgrading set the mode to `hybrid` (or
+remove the key) with `configuration::set`, then set `judge` once the new worker
+is up. The removed keys `function_search_jev_api_key` and
+`function_search_jev_model` are ignored, and the console form drops every
+`function_search_jev_*` key on its next save; the remaining settings are read
+under their `function_search_judge_*` names only.
 
 ### Pre-generate hint
 

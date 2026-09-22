@@ -10,5 +10,3 @@ description: Engine introspection, workers registry proxy, filesystem-backed ski
 
 dependencies:
   configuration: "latest"
-  judge: "latest"
-  judge-typesafe: "latest"
