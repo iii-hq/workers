@@ -1,0 +1,43 @@
+[workspace]
+
+[package]
+name = "judge-typesafe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Generic typed JEV evaluations over arbitrary JSON state."
+
+[features]
+default = ["console-ui"]
+console-ui = ["dep:iii-console-ui"]
+
+[dependencies]
+judge-contract = { path = "../crates/judge-contract" }
+iii-sdk = "=0.23.0"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "net", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+httpdate = "1"
+rand = "0.9"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+anyhow = "1"
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+tokio-tungstenite = "0.28"
+wiremock = "0.6"
+
+# Prioritize release binary size; retain the default feature set.
+[profile.release]
+opt-level = "z"
+strip = true
+lto = "fat"
+codegen-units = 1

@@ -1,0 +1,14 @@
+iii: v1
+name: judge
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: judge
+tags: [evaluation, judge, noul, choice, score, relevance]
+description: Provider-neutral evaluation hub (judge::evaluate, judge::models::list, judge::cancel) that forwards typed Noul, Choice and Score questions to the selected judge-<provider> worker; the default provider is a Console setting seeded from JUDGE_PROVIDER (typesafe).
+config:
+  provider: typesafe
+dependencies:
+  configuration: "latest"
+  judge-typesafe: "latest"

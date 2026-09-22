@@ -7,6 +7,8 @@
 # directory here only when it participates in the shared console-UI surface.
 packages:
   - iii-directory/ui
+  - judge/ui
+  - judge-typesafe/ui
   - packages/*
   - ade/web
   - ade/ui

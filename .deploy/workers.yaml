@@ -850,6 +850,70 @@ workers:
       binary: image-resize
       targets: *id001
     publish: true
+  judge:
+    source:
+      path: judge
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: judge/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  judge-typesafe:
+    source:
+      path: judge-typesafe
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: judge-typesafe
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: judge-typesafe/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
   kanban:
     source:
       path: kanban
