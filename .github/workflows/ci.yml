@@ -249,6 +249,12 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
+      # judge-semif compiles llama.cpp (cmake) and its bindings (bindgen needs
+      # libclang); --all-features adds the Vulkan backend (loader + glslc).
+      - name: Provision llama.cpp build tools (judge-semif)
+        if: matrix.worker == 'judge-semif'
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc
+
       - name: Run clippy
         if: matrix.worker != 'browser'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings

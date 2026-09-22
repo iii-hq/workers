@@ -8,6 +8,7 @@
 packages:
   - iii-directory/ui
   - judge/ui
+  - judge-semif/ui
   - judge-typesafe/ui
   - packages/*
   - ade/web

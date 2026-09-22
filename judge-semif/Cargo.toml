@@ -1,0 +1,44 @@
+[workspace]
+
+[package]
+name = "judge-semif"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "SemIf provider for the judge hub: option-letter logits from a frozen GGUF LLM run in-process through llama.cpp."
+
+[features]
+default = ["console-ui"]
+console-ui = ["dep:iii-console-ui"]
+# GPU offload through llama.cpp's Vulkan backend (needs the Vulkan loader and glslc to build).
+vulkan = ["llama-cpp-2/vulkan"]
+
+[dependencies]
+judge-contract = { path = "../crates/judge-contract" }
+iii-sdk = "=0.23.0"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui", optional = true }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+llama-cpp-2 = { version = "0.1.156", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tracing = "0.1"
+
+# macOS: Metal GPU offload is always compiled in.
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["metal"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+tokio-tungstenite = "0.28"
+
+# The model runs here: keep full optimization, no size-first profile.
+[profile.release]
+opt-level = 3
