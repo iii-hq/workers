@@ -6,6 +6,7 @@
 //! ingest uses, so "only a human resolves" holds even when an occurrence
 //! lands in the same instant.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -111,10 +112,23 @@ impl<D: Db> Service<D> {
             )
             .await?;
 
-        let mut groups = Vec::with_capacity(rows.len());
-        for row in &rows {
-            groups.push(self.summary(row).await?);
-        }
+        // Two queries for the page, not two per row: a list of fifty cost a
+        // hundred round trips through the database worker, which is what
+        // made the page time out at ten seconds.
+        let ids: Vec<String> = rows.iter().filter_map(|row| text(row, "id")).collect();
+        let sessions = self.sessions_by_group(&ids).await?;
+        let sparklines = self.sparklines_by_group(&ids).await?;
+        let groups = rows
+            .iter()
+            .map(|row| {
+                let id = text(row, "id").unwrap_or_default();
+                summary(
+                    row,
+                    sessions.get(&id).copied().unwrap_or(0),
+                    sparklines.get(&id).cloned().unwrap_or_else(empty_sparkline),
+                )
+            })
+            .collect();
         Ok(GroupsListResponseV1 { groups, total })
     }
 
@@ -123,7 +137,11 @@ impl<D: Db> Service<D> {
         request: GroupGetRequestV1,
     ) -> Result<GroupGetResponseV1, SentinelError> {
         let row = self.group_row(&request.group_id).await?;
-        let group = self.summary(&row).await?;
+        let group = summary(
+            &row,
+            self.sessions_affected(&request.group_id).await?,
+            self.sparkline(&request.group_id).await?,
+        );
         let latest = self.latest_occurrence(&request.group_id).await?;
         let trace_available = match latest.as_ref().and_then(|o| o.trace_id.as_deref()) {
             Some(trace_id) => self.traces.trace_exists(trace_id).await,
@@ -436,30 +454,72 @@ impl<D: Db> Service<D> {
             .ok_or_else(|| SentinelError::NotFound(format!("group {group_id}")))
     }
 
-    async fn summary(&self, row: &NamedRow) -> Result<GroupSummaryV1, SentinelError> {
-        let id = text(row, "id").unwrap_or_default();
-        Ok(GroupSummaryV1 {
-            sessions_affected: self.sessions_affected(&id).await?,
-            sparkline: self.sparkline(&id).await?,
-            id,
-            fingerprint: text(row, "fingerprint").unwrap_or_default(),
-            source: source_of(text(row, "source").as_deref()),
-            namespace: text(row, "namespace").unwrap_or_default(),
-            service_name: text(row, "service_name").unwrap_or_default(),
-            function_id: text(row, "function_id"),
-            exception_type: text(row, "exception_type"),
-            title: text(row, "title").unwrap_or_default(),
-            status: status_of(text(row, "status").as_deref()),
-            occurrence_count: number(row, "occurrence_count").unwrap_or_default() as u64,
-            first_seen_ms: number(row, "first_seen_ms").unwrap_or_default(),
-            last_seen_ms: number(row, "last_seen_ms").unwrap_or_default(),
-            first_version: text(row, "first_version"),
-            last_version: text(row, "last_version"),
-            has_diagnosis: text(row, "diagnosis_id").is_some(),
-            ignore_rule: text(row, "ignore_rule")
-                .and_then(|json| serde_json::from_str::<IgnoreRuleV1>(&json).ok()),
-            regressed_at_ms: number(row, "regressed_at_ms"),
-        })
+    /// Session counts for a page of groups, in one query.
+    async fn sessions_by_group(
+        &self,
+        ids: &[String],
+    ) -> Result<HashMap<String, u64>, SentinelError> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let slots = vec!["?"; ids.len()].join(", ");
+        Ok(self
+            .store
+            .db()
+            .query(
+                &format!(
+                    "SELECT group_id, COUNT(*) AS total FROM sentinel_group_sessions \
+                     WHERE group_id IN ({slots}) GROUP BY group_id"
+                ),
+                ids.iter().map(|id| json!(id)).collect(),
+            )
+            .await?
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    text(row, "group_id")?,
+                    number(row, "total").unwrap_or_default().max(0) as u64,
+                ))
+            })
+            .collect())
+    }
+
+    /// The last day of buckets for a page of groups, in one query.
+    async fn sparklines_by_group(
+        &self,
+        ids: &[String],
+    ) -> Result<HashMap<String, Vec<u64>>, SentinelError> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let from = ids::hour_bucket_ms(ids::now_ms()) - (SPARKLINE_HOURS - 1) * HOUR_MS;
+        let slots = vec!["?"; ids.len()].join(", ");
+        let mut params: Vec<Value> = ids.iter().map(|id| json!(id)).collect();
+        params.push(json!(from));
+        let mut bars: HashMap<String, Vec<u64>> = HashMap::new();
+        for row in self
+            .store
+            .db()
+            .query(
+                &format!(
+                    "SELECT group_id, hour_ms, count FROM sentinel_buckets \
+                     WHERE group_id IN ({slots}) AND hour_ms >= ?"
+                ),
+                params,
+            )
+            .await?
+        {
+            let (Some(group_id), Some(hour)) = (text(&row, "group_id"), number(&row, "hour_ms"))
+            else {
+                continue;
+            };
+            let index = ((hour - from) / HOUR_MS) as usize;
+            let entry = bars.entry(group_id).or_insert_with(empty_sparkline);
+            if index < entry.len() {
+                entry[index] = number(&row, "count").unwrap_or_default().max(0) as u64;
+            }
+        }
+        Ok(bars)
     }
 
     async fn sessions_affected(&self, group_id: &str) -> Result<u64, SentinelError> {
@@ -568,6 +628,35 @@ fn source_of(value: Option<&str>) -> ErrorSourceV1 {
         Some("harness-turn") => ErrorSourceV1::HarnessTurn,
         Some("report") => ErrorSourceV1::Report,
         _ => ErrorSourceV1::Trace,
+    }
+}
+
+fn empty_sparkline() -> Vec<u64> {
+    vec![0; SPARKLINE_HOURS as usize]
+}
+
+fn summary(row: &NamedRow, sessions_affected: u64, sparkline: Vec<u64>) -> GroupSummaryV1 {
+    GroupSummaryV1 {
+        id: text(row, "id").unwrap_or_default(),
+        sessions_affected,
+        sparkline,
+        fingerprint: text(row, "fingerprint").unwrap_or_default(),
+        source: source_of(text(row, "source").as_deref()),
+        namespace: text(row, "namespace").unwrap_or_default(),
+        service_name: text(row, "service_name").unwrap_or_default(),
+        function_id: text(row, "function_id"),
+        exception_type: text(row, "exception_type"),
+        title: text(row, "title").unwrap_or_default(),
+        status: status_of(text(row, "status").as_deref()),
+        occurrence_count: number(row, "occurrence_count").unwrap_or_default().max(0) as u64,
+        first_seen_ms: number(row, "first_seen_ms").unwrap_or_default(),
+        last_seen_ms: number(row, "last_seen_ms").unwrap_or_default(),
+        first_version: text(row, "first_version"),
+        last_version: text(row, "last_version"),
+        has_diagnosis: text(row, "diagnosis_id").is_some(),
+        ignore_rule: text(row, "ignore_rule")
+            .and_then(|json| serde_json::from_str::<IgnoreRuleV1>(&json).ok()),
+        regressed_at_ms: number(row, "regressed_at_ms"),
     }
 }
 
