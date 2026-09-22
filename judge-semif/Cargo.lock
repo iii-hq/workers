@@ -1019,6 +1019,7 @@ dependencies = [
  "iii-sdk",
  "judge-contract",
  "llama-cpp-2",
+ "llama-cpp-sys-2",
  "schemars",
  "serde",
  "serde_json",

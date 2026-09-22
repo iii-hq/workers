@@ -243,11 +243,11 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # judge-semif compiles llama.cpp with cmake and generates its bindings with
-      # bindgen (libclang). Release builds use default features: CPU on Linux,
-      # Metal on macOS (Xcode ships libclang); Vulkan stays a source build.
+      # bindgen (libclang). Linux x86_64 also builds the runtime-loaded Vulkan
+      # backend module (headers + glslc); macOS links Metal (Xcode ships libclang).
       - name: Provision llama.cpp build tools (judge-semif, Linux)
         if: inputs.kind == 'rust-binary' && inputs.worker == 'judge-semif' && runner.os == 'Linux'
-        run: sudo apt-get install -y cmake libclang-dev
+        run: sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc
 
       - name: Build immutable artifact
         env:

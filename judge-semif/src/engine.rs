@@ -87,10 +87,40 @@ pub struct Engine {
 fn backend() -> Result<&'static LlamaBackend> {
     static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
     BACKEND
-        .get_or_init(|| LlamaBackend::init().map_err(|e| e.to_string()))
+        .get_or_init(|| {
+            load_backend_modules();
+            LlamaBackend::init().map_err(|e| e.to_string())
+        })
         .as_ref()
         .map_err(|e| anyhow!("llama.cpp init: {e}"))
 }
+
+/// Linux x86_64 and Windows ship llama.cpp's backends as modules (Cargo.toml):
+/// load them from the executable's directory (the published layout), else from
+/// the build's own output (tests). A module whose system library is missing,
+/// such as the Vulkan loader, is skipped, and the CPU module runs the model.
+#[cfg(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+))]
+fn load_backend_modules() {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+    {
+        llama_cpp_2::llama_backend::load_backends_from_path(&dir);
+    }
+    if llama_cpp_2::list_llama_ggml_backend_devices().is_empty() {
+        llama_cpp_2::llama_backend::load_backends();
+    }
+}
+
+/// Elsewhere the backends are linked in (Metal on macOS, CPU otherwise).
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    target_os = "windows"
+)))]
+fn load_backend_modules() {}
 
 impl Engine {
     /// Load the GGUF on a new thread and return once it answers (or failed).
