@@ -4,3 +4,10 @@ http_port: 3113
 # Interface the listener binds. All IPv4 interfaces by default; set 127.0.0.1
 # to limit the console and its engine WebSocket proxy to local access. Boot-time only.
 http_host: 0.0.0.0
+# Directory for ephemeral per-instance state — the workspace tabs/panes layout
+# (`workspace.json`). It changes on every click, so it is kept out of the
+# committed configuration YAML. Relative paths resolve against the Compose
+# project directory (III_COMPOSE_DIR); absolute and `~/` paths keep their
+# meaning. First-registration seed; the stored `console.data_dir` wins and
+# applies live thereafter.
+data_dir: data/ade

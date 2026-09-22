@@ -10,6 +10,11 @@
 //! - `injectable_ui` — kill switch for runtime-injected worker UI
 //!   (`console:script` / `console:style` / `console:assets` trigger types,
 //!   the `/ui` + `/vendor` routes, and the SPA loader). Defaults to `true`.
+//! - `data_dir` — first-registration seed/fallback for the directory holding
+//!   ephemeral per-instance state (the workspace tabs/panes layout). Defaults
+//!   to `data/ade`, resolved against `III_COMPOSE_DIR` like every other
+//!   worker's data directory; after registration the central
+//!   `console.data_dir` value is authoritative and hot-reloads.
 //!
 //! The iii engine WebSocket URL is set via the CLI (`--url`); see
 //! [`DEFAULT_ENGINE_URL`] for the default.
@@ -31,6 +36,10 @@ pub struct ConsoleConfig {
     pub http_port: u16,
     #[serde(default = "default_injectable_ui")]
     pub injectable_ui: bool,
+    /// Directory for ephemeral per-instance state (`workspace.json`).
+    /// Relative paths resolve against the Compose project directory.
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
 }
 
 fn default_http_host() -> String {
@@ -45,12 +54,17 @@ fn default_injectable_ui() -> bool {
     true
 }
 
+fn default_data_dir() -> String {
+    crate::workspace_store::default_data_dir()
+}
+
 impl Default for ConsoleConfig {
     fn default() -> Self {
         Self {
             http_host: default_http_host(),
             http_port: default_http_port(),
             injectable_ui: default_injectable_ui(),
+            data_dir: default_data_dir(),
         }
     }
 }
@@ -71,6 +85,13 @@ mod tests {
         assert_eq!(cfg.http_host, "0.0.0.0");
         assert_eq!(cfg.http_port, 3113);
         assert!(cfg.injectable_ui);
+        assert_eq!(cfg.data_dir, "data/ade");
+    }
+
+    #[test]
+    fn custom_yaml_overrides_data_dir() {
+        let cfg: ConsoleConfig = serde_yaml::from_str("data_dir: /var/lib/iii/ade\n").unwrap();
+        assert_eq!(cfg.data_dir, "/var/lib/iii/ade");
     }
 
     #[test]
@@ -97,6 +118,7 @@ mod tests {
         let from_default = ConsoleConfig::default();
         assert_eq!(from_empty.http_host, from_default.http_host);
         assert_eq!(from_empty.http_port, from_default.http_port);
+        assert_eq!(from_empty.data_dir, from_default.data_dir);
     }
 
     #[test]

@@ -8,6 +8,10 @@
  * read-modify-write; concurrent tabs are last-write-wins (acceptable for a
  * single-operator dev tool).
  *
+ * Only committed-worthy settings live here (port, `data_dir`, traces
+ * preferences, injectable-UI toggles). The workspace tab/pane layout is
+ * ephemeral and goes through `lib/workspace-layout.ts` instead.
+ *
  * When the `configuration` worker is disabled or the entry was never
  * registered, reads resolve to `null` and the UI degrades to in-browser
  * defaults (saved views hidden).

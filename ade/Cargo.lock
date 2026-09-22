@@ -14,6 +14,7 @@ dependencies = [
  "futures-util",
  "iii-console-ui",
  "iii-sdk",
+ "iii-worker-paths",
  "mime_guess",
  "reqwest",
  "rust-embed",
@@ -862,6 +863,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
 
 [[package]]
 name = "indexmap"

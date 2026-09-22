@@ -17,6 +17,10 @@
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+[data-iii-ui="console"] .console-ui-path-input {
+  width: min(100%, 320px);
+  font-family: var(--font-mono);
+}
 [data-iii-ui="console"] .console-ui-select-control {
   width: min(100%, 280px);
 }

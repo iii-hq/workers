@@ -74,6 +74,14 @@ function httpPortOf(value: JsonValue): string {
   return typeof port === 'number' || typeof port === 'string' ? String(port) : '3113'
 }
 
+/** Mirrors the worker's `data_dir` default (`ade/src/workspace_store.rs`). */
+export const DEFAULT_DATA_DIR = 'data/ade'
+
+export function dataDirOf(value: JsonValue): string {
+  const dir = asObject(value).data_dir
+  return typeof dir === 'string' ? dir : ''
+}
+
 function viewOptions(value: JsonValue): SelectOption[] {
   const views = traceViews(value)
   const active = activeTraceViewId(value)
@@ -237,6 +245,23 @@ export function InjectableUiConfigForm(props: ConfigFormProps & { host: Host }) 
                   })
                 }
                 aria-label="HTTP port"
+              />
+            }
+          />
+          <SettingsRow
+            data-field="data_dir"
+            label="Data directory"
+            description="Where this ADE keeps ephemeral per-instance state: the workspace tabs and panes layout (workspace.json). It changes on every click, so it stays out of the committed configuration."
+            meta={`Relative paths resolve against the Compose project directory. Default: ${DEFAULT_DATA_DIR}. Changes apply without restarting; a new location starts from the default layout.`}
+            control={
+              <Input
+                id="console-data-dir"
+                className="console-ui-path-input"
+                type="text"
+                value={dataDirOf(props.value)}
+                placeholder={DEFAULT_DATA_DIR}
+                onChange={(next) => props.onChange({ ...value, data_dir: next })}
+                aria-label="Data directory"
               />
             }
           />

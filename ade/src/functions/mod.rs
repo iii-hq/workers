@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::configuration::PortCell;
 use crate::ui_assets::{ManifestAsset, ManifestWorker, UiRegistry};
+use crate::workspace_store::WorkspaceStore;
 use status::{StatusInput, StatusOutput};
 
 /// Register every `console::*` function. Called once from `main` after
@@ -31,6 +32,7 @@ pub fn register_all(
     port: PortCell,
     engine_url: &str,
     ui: Option<Arc<UiRegistry>>,
+    workspace: Arc<WorkspaceStore>,
 ) {
     register_status(iii, port, engine_url);
     register_ui_manifest(iii, ui);
@@ -38,9 +40,9 @@ pub fn register_all(
     if let Err(error) = working_directory::bind(iii) {
         tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
     }
-    workspace::register(iii);
+    workspace::register(iii, workspace);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{list,open,close}}"
+        "registered console::status, console::ui-manifest, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}"
     );
 }
 
