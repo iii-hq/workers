@@ -14,9 +14,9 @@ export const FUNCTION_SEARCH_MODE_OPTIONS = [
     description: 'Fuse BM25 with the configured local semantic model.',
   },
   {
-    value: 'jev',
-    label: 'Jev',
-    description: 'Use TypeSafe Jev to evaluate function relevance remotely.',
+    value: 'judge',
+    label: 'Judge',
+    description: 'Rank with the judge worker; falls back to Hybrid while it is not running.',
   },
 ] as const
 
@@ -25,7 +25,7 @@ export type FunctionSearchMode = (typeof FUNCTION_SEARCH_MODE_OPTIONS)[number]['
 const FUNCTION_SEARCH_MODES = new Set<string>(FUNCTION_SEARCH_MODE_OPTIONS.map((option) => option.value))
 
 export function functionSearchModeWithDefault(value: unknown): FunctionSearchMode {
-  return typeof value === 'string' && FUNCTION_SEARCH_MODES.has(value) ? (value as FunctionSearchMode) : 'hybrid'
+  return typeof value === 'string' && FUNCTION_SEARCH_MODES.has(value) ? (value as FunctionSearchMode) : 'judge'
 }
 
 export function withFunctionSearchMode<T extends Record<string, unknown>>(

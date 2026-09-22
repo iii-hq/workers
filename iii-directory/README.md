@@ -153,12 +153,10 @@ filter_unregistered: true                    # hide skills whose namespace isn't
 inject_hint: false                           # bind the directory::pre-generate search-hint hook (off: the harness identity prompt already teaches directory-first discovery)
 hint_min_workers: 2                          # minimum surface width before the hint fires (0 = always)
 registry_search: true                        # include installable registry workers in every search
-function_search_mode: hybrid                 # lexical | hybrid (default) | jev
-function_search_jev_api_key: null             # optional override; null/blank uses TYPESAFE_API_KEY
-function_search_jev_model: jev-1.13.0          # non-empty TypeSafe model name
-function_search_jev_timeout_ms: 3000          # integer 1..30000; shared Jev deadline per public search
-function_search_jev_min_relevance: 0.5        # finite 0..1 inclusive; initial calibration value
-function_search_jev_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; floor for the skills and triggers sections
+function_search_mode: judge                  # lexical | hybrid | judge (default)
+function_search_judge_timeout_ms: 3000        # integer 1..30000; shared judge deadline per public search
+function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; initial calibration value
+function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; floor for the skills and triggers sections
 ```
 
 The writable `skills_folder` and `agents_folder` roots are created when needed.
@@ -184,12 +182,9 @@ immediately. Topology changes (`skills_folder` / `local_skills_folder` /
 `function_search_model_path` / `function_search_model_download`) are refused with a "restart
 required" log; the previous configuration is kept until the worker restarts.
 
-`function_search_mode` and all `function_search_jev_*` options hot-reload,
-including `function_search_jev_api_key`. A configured key takes precedence over
-`TYPESAFE_API_KEY` captured from the **iii-directory worker process environment
-at boot**. Missing, null or blank keys restore that environment fallback.
-Changes apply to new searches; searches in progress keep their original key.
-Changing the environment variable itself still requires restarting the worker.
+`function_search_mode` and all `function_search_judge_*` options hot-reload.
+Judge credentials and the model name are the `judge-typesafe` worker's
+settings, not this worker's.
 
 The writable `skills_folder`, `local_skills_folder`, and `agents_folder` are
 watch roots, and the watcher creates each one at boot if it is missing.
@@ -477,10 +472,10 @@ There is **no** `directory::skills::register` — see
 
 ## Function search & pre-generate hint
 
-One-shot function search over the live engine catalog (hybrid by default:
-BM25 fused with the local MiniLM model, reranked). Set `function_search_mode:
-lexical` for BM25 only, or `jev` for remote relevance evaluation through
-TypeSafe with Hybrid, then Lexical fallback. Absorbed from the former `discovery` worker,
+One-shot function search over the live engine catalog. `judge` (the default)
+ranks through the `judge` worker whenever `judge::evaluate` is registered and
+otherwise behaves as `hybrid` (BM25 fused with the local MiniLM model,
+reranked); `lexical` is BM25 only. Absorbed from the former `discovery` worker,
 it returns only compact `{ function_id,
 description }` candidates, grouped by worker in rank order. The model chooses
 the candidates it needs, then fetches their contracts in one
@@ -530,56 +525,57 @@ Lexical/Hybrid ranking pipeline:
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.
 
-### Jev mode
+### Judge mode
 
-Enter your TypeSafe key in **Jev API key** in the console's Function search
-settings, or set `function_search_jev_api_key` in the `iii-directory`
-configuration. The console masks this field; its value is persisted by the
-configuration service and omitted from the worker's configuration debug output.
+Function relevance is judged by the [`judge`](../judge) worker
+(`judge::evaluate`), which forwards to its configured provider
+([`judge-typesafe`](../judge-typesafe) by default). Install both next to this
+worker (`iii.worker.yaml` declares them as dependencies; the dev compose file
+runs them) and configure the TypeSafe key and model in the **judge-typesafe**
+settings. This worker holds no credentials.
 
-Alternatively, leave the field unset and provide `TYPESAFE_API_KEY` through the
-worker service or container environment before starting `iii-directory`.
-The configured key takes precedence. Clearing it (or setting null/blank) restores
-the environment key without a restart. If neither is available, search falls back
-to Hybrid, then Lexical if the local model is unavailable. A rejected configured
-key uses the same fallback chain; it does not retry with the environment credential.
-
-Select **Jev** in the console's Function search settings, or set:
+`judge` is the default mode and needs no setting. It is *effective* only while
+`judge::evaluate` is present in the live function catalog; when the judge
+worker is not running the search behaves exactly as Hybrid, then Lexical if
+the local model is unavailable, without a warning. A hub that has no provider
+(`provider_unavailable`) is treated the same way. Any other judge failure
+(missing provider key, timeout, protocol error) is logged as a warning and
+uses the same fallback.
 
 ```yaml
-function_search_mode: jev
-function_search_jev_api_key: null # set your key here or in the masked console field
-function_search_jev_model: jev-1.13.0
-function_search_jev_timeout_ms: 3000
-function_search_jev_min_relevance: 0.5
+function_search_mode: judge
+function_search_judge_timeout_ms: 3000
+function_search_judge_min_relevance: 0.5
+function_search_judge_side_lane_min_relevance: 0.3
 ```
 
-These fields apply without a restart. The model must be a non-empty string,
-the timeout an integer from 1 to 30000 ms, and relevance a finite number from 0
-to 1 inclusive. YAML seeds and JSON configuration updates use the same validation.
-The relevance default is a starting point for calibration, not a measured quality
-guarantee.
+These fields apply without a restart. The timeout is an integer from 1 to
+30000 ms and relevance a finite number from 0 to 1 inclusive. YAML seeds and
+JSON configuration updates use the same validation. The relevance default is a
+starting point for calibration, not a measured quality guarantee.
 
-Jev evaluates eligible installed functions across the catalog, without a BM25
-shortlist or a MiniLM dependency. It sends normalized capabilities, function IDs,
-short descriptions and parameter names to TypeSafe; it does not send conversation
-history or function argument values. Exact eligible IDs, internal-function
-exclusions, session deduplication and result limits remain enforced locally.
-`function_search_model_path: null` is valid in Jev mode and disables the Hybrid
-fallback. With a configured path, Jev prepares an installed MiniLM bundle and
-keeps its catalog index current in the background so Hybrid can take over on
-failure. Successful Jev responses do not run local query inference. Jev does not
-download a missing bundle; automatic boot-time downloads remain tied to Hybrid mode.
+The judge evaluates eligible installed functions across the catalog, without
+a BM25 shortlist or a MiniLM dependency. Each block sends normalized
+capabilities, function IDs, short descriptions and parameter names through
+the hub; it does not send conversation history or function argument values.
+Exact eligible IDs, internal-function exclusions, session deduplication and
+result limits remain enforced locally. `function_search_model_path: null` is
+valid in judge mode and disables the Hybrid fallback. With a configured path,
+the worker keeps an installed MiniLM bundle and its catalog index current in
+the background so Hybrid can take over on failure, and downloads a missing
+bundle at boot like Hybrid does.
 
-Registry discovery still starts with the registry API's lexical search. Jev
-evaluates the returned contract pool and **cannot recover workers that upstream
-search did not return**. Installable results remain suggestions until installation.
+Registry discovery still starts with the registry API's lexical search. The
+judge evaluates the returned contract pool and **cannot recover workers that
+upstream search did not return**. Installable results remain suggestions until
+installation.
 
-Every response carries `search_mode` — the mode that actually ranked the results
-(`jev`, `hybrid` or `lexical`), which can be lower than the configured mode when a
-batch fell back on a missing key, a remote failure, or a local model that is not
-loaded yet. The console's search card shows it as the card's badge. A multi-batch
-search that partly fell back reports the highest tier any batch reached.
+Every response carries `search_mode` — the mode that actually ranked the
+results (`judge`, `hybrid` or `lexical`), which can be lower than the
+configured mode when the judge worker was absent, a batch fell back on a judge
+failure, or the local model is not loaded yet. The console's search card shows
+it as the card's badge. A multi-batch search that partly fell back reports the
+highest tier any batch reached.
 
 Every mode also ranks the installed skill documents (the rows
 `directory::skills::list` serves, minus `disable_model_invocation` ones) against
@@ -587,37 +583,43 @@ the same capabilities and lists the matches under `skills` as
 `{ id, title, description }`, at most six per call round-robin across the
 capabilities, with a guidance note to read them through
 `directory::skills::get { id }`. Each skill's id and a trimmed
-`title: description` (300 bytes) form the document. Jev judges them with a
-how-to question under the same deadline as the function batches; Lexical ranks
-them with BM25 and Hybrid fuses in the dense lane, the same ad-hoc document
-ranking the `installable` section uses. Any failure only omits the section.
-"Installed" is read off the live function catalog: a worker with no registered
-functions contributes no skills. The registered-trigger section (under
-`triggers`) is ranked the same way in every mode.
+`title: description` (300 bytes) form the document. The judge judges them with
+a how-to question under the same deadline as the function batches; Lexical
+ranks them with BM25 and Hybrid fuses in the dense lane, the same ad-hoc
+document ranking the `installable` section uses. Any failure only omits the
+section. "Installed" is read off the live function catalog: a worker with no
+registered functions contributes no skills. The registered-trigger section
+(under `triggers`) is ranked the same way in every mode.
 
 A valid response with no functions at or above the relevance threshold stays
-empty. Missing credentials, timeouts, HTTP failures and invalid/incomplete service
-responses instead trigger **Jev → Hybrid → Lexical** fallback for the affected
-batch or registry pool. Hybrid uses the existing local ranking policy; if the
-model is disabled, missing, not yet indexed for the current catalog, or fails,
-Lexical serves the results. A registry HTTP failure still omits the installable section.
+empty. Judge failures instead trigger **Judge → Hybrid → Lexical** fallback
+for the affected batch or registry pool. Hybrid uses the existing local
+ranking policy; if the model is disabled, missing, not yet indexed for the
+current catalog, or fails, Lexical serves the results. A registry HTTP failure
+still omits the installable section.
 
-The Jev deadline is shared across all batches in one public search, including
-waiting for a request slot and reading responses. Local Hybrid fallback and
-registry HTTP requests run outside this budget, so total search latency may
-exceed the Jev deadline. Requests use up to
-16 functions × 6 capabilities per block and at most four concurrent requests per
-client; payloads are split at the local byte limits (48 KiB total JSON and 16 KiB
+The judge deadline is shared across all batches in one public search,
+including waiting for a request slot and reading responses. Local Hybrid
+fallback and registry HTTP requests run outside this budget, so total search
+latency may exceed it. Requests use up to 16 functions × 6 capabilities per
+block and at most four concurrent `judge::evaluate` calls per worker;
+payloads are split at the local byte limits (48 KiB per evaluation and 16 KiB
 for state plus the largest question). These byte guards are not token counts.
-Cost and latency grow with catalog size and capability count. Use the
-[opt-in benchmark](examples/benchmark_jev_search.rs) and returned token-usage
-telemetry to measure your workload; this
-configuration change supplies no measured remote quality, latency or cost result.
+Cost and latency grow with catalog size and capability count; the hub's
+returned usage (`stats`) is logged per block.
 
-Switch back to `lexical` at any time to use BM25 only. Switching from `lexical`
-to `hybrid` or `jev` prepares the local index from the current catalog. If the MiniLM bundle is
-missing, Hybrid uses lexical fallback; its boot-time download and changes to the
-local model path require a worker restart. Only Hybrid shows the local-model warning.
+Switch to `lexical` at any time to use BM25 only. Switching from `lexical` to
+`hybrid` or `judge` prepares the local index from the current catalog. If the
+MiniLM bundle is missing, both use lexical fallback; the boot-time download and
+changes to the local model path require a worker restart. Judge and Hybrid
+both show the local-model warning.
+
+**Upgrading from the in-worker `jev` mode:** the stored value
+`function_search_mode: jev` no longer parses and the worker refuses to boot on
+it. Set the mode to `judge` (or remove the key) with `configuration::set` before
+upgrading. The removed keys `function_search_jev_api_key` and
+`function_search_jev_model` are ignored; the remaining `function_search_jev_*`
+keys are read under their `function_search_judge_*` names only.
 
 ### Pre-generate hint
 

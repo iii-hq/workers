@@ -6,7 +6,9 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: iii-directory
 tags: [introspect, registry, skills, directory, search, functions, agents]
-description: Engine introspection, workers registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus lexical function search with a conditional pre-generate hint.
+description: Engine introspection, workers registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus function search ranked by the judge worker (falling back to local hybrid/lexical) with a conditional pre-generate hint.
 
 dependencies:
   configuration: "latest"
+  judge: "latest"
+  judge-typesafe: "latest"

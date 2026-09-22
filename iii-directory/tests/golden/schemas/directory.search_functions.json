@@ -44,7 +44,7 @@
         "enum": [
           "lexical",
           "hybrid",
-          "jev"
+          "judge"
         ],
         "type": "string"
       },
@@ -192,7 +192,7 @@
             "$ref": "#/definitions/FunctionSearchMode"
           }
         ],
-        "description": "The search mode that actually produced these results: `jev`, `hybrid` or `lexical`. It can be lower than the configured mode when a batch fell back (missing key, remote failure, or no local model)."
+        "description": "The search mode that actually produced these results: `judge`, `hybrid` or `lexical`. It can be lower than the configured mode when a batch fell back (judge worker absent or failing, or no local model)."
       },
       "skills": {
         "description": "Installed skill documents matching the capabilities. Read one with `directory::skills::get { id }` before acting on it.",

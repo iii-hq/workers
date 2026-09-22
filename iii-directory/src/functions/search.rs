@@ -1,4 +1,4 @@
-//! `directory::search_functions` — lexical, local hybrid, or remote Jev
+//! `directory::search_functions` — lexical, local hybrid, or judge-worker
 //! function discovery, with shared catalog, registry and session policies.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -18,13 +18,15 @@ use crate::functions::registry::{
 use crate::functions::search_index::{
     canonical_tools, compact_query, excluded_from_search, tool_fingerprint, Bm25Index, ToolSchema,
 };
-use crate::functions::search_jev::{JevCorpus, JevFailure, JevOptions, JevOutcome, JevSearch};
+use crate::functions::search_judge::{
+    JudgeCorpus, JudgeError, JudgeFailure, JudgeOptions, JudgeOutcome, JudgeSearch,
+};
 use crate::functions::search_semantic::{weighted_rrf, SemanticSearch};
 use crate::surface::search_catalog as catalog;
 
 #[cfg(test)]
-#[path = "search_jev_integration.rs"]
-mod jev_tests;
+#[path = "search_judge_integration.rs"]
+mod judge_tests;
 
 /// Timeout for one engine catalog call during a refresh.
 const CATALOG_TIMEOUT_MS: u64 = 5_000;
@@ -142,9 +144,9 @@ pub struct Deps {
     pub sessions: Arc<std::sync::Mutex<SessionRegistry>>,
     pub registry_cache: RegistryCache,
     pub semantic: SemanticSearch,
-    pub jev: JevSearch,
+    pub judge: JudgeSearch,
     /// Registered-workers cache shared with `directory::skills::*`, so the
-    /// Jev skill search sees exactly the set `directory::skills::list`
+    /// skill search sees exactly the set `directory::skills::list`
     /// serves. `None` (tests, benchmarks) falls back to the live function
     /// catalog's namespaces.
     pub registered_workers: Option<Arc<crate::functions::skills::RegisteredWorkersCache>>,
@@ -500,9 +502,9 @@ pub struct SearchFunctionsResponse {
     /// fires, schedules, or hooks a function for them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerCandidate>,
-    /// The search mode that actually produced these results: `jev`, `hybrid`
+    /// The search mode that actually produced these results: `judge`, `hybrid`
     /// or `lexical`. It can be lower than the configured mode when a batch
-    /// fell back (missing key, remote failure, or no local model).
+    /// fell back (judge worker absent or failing, or no local model).
     pub search_mode: FunctionSearchMode,
     pub latency_ms: f64,
 }
@@ -1133,7 +1135,7 @@ async fn installable_from_candidates(
     installed: &[ToolSchema],
     search_queries: &[String],
     candidates: &[RegistryCandidate],
-    jev: Option<(&JevSearch, tokio::time::Instant)>,
+    judge: Option<(&JudgeSearch, tokio::time::Instant)>,
 ) -> Vec<InstallableWorker> {
     // Info round trips concurrently; pooling stays in candidate order
     // so first-seen contract dedupe is deterministic.
@@ -1178,19 +1180,18 @@ async fn installable_from_candidates(
             }
         }
     }
-    let jev_rankings = if let Some((jev, deadline)) = jev {
-        match rank_with_jev(jev, cfg, &pooled, search_queries, deadline).await {
+    let judge_rankings = if let Some((judge, deadline)) = judge {
+        match rank_with_judge(judge, cfg, &pooled, search_queries, deadline).await {
             Ok(outcome) => Some(outcome.rankings),
             Err(error) => {
-                tracing::warn!(%error, requested_mode = "jev",
-                    "registry Jev search failed; trying Hybrid with lexical fallback");
+                log_judge_failure(&error, "registry");
                 None
             }
         }
     } else {
         None
     };
-    let ranked = if let Some(rankings) = jev_rankings {
+    let ranked = if let Some(rankings) = judge_rankings {
         round_robin_rankings(&rankings, MAX_INSTALLABLE_FUNCTIONS)
             .into_iter()
             .filter_map(|id| pooled.iter().find(|tool| tool.name == id).cloned())
@@ -1213,7 +1214,7 @@ async fn registry_installable(
     semantic: Option<&SemanticSearch>,
     installed: &[ToolSchema],
     search_queries: &[String],
-    jev: Option<(&JevSearch, tokio::time::Instant)>,
+    judge: Option<(&JudgeSearch, tokio::time::Instant)>,
 ) -> Vec<InstallableWorker> {
     if search_queries.is_empty() {
         return Vec::new();
@@ -1276,7 +1277,7 @@ async fn registry_installable(
         installed,
         search_queries,
         &candidates,
-        jev,
+        judge,
     )
     .await
 }
@@ -1309,8 +1310,9 @@ pub async fn search_functions(
     let started = Instant::now();
     let tools = deps.catalog.read().await.clone();
     let cfg = deps.config.load_full();
-    let jev_deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_millis(cfg.function_search_jev_timeout_ms);
+    let judge_deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(cfg.function_search_judge_timeout_ms);
+    let judge_ready = judge_lane(&cfg, &tools);
     let fingerprint = tool_fingerprint(&tools);
     let function_search = async {
         let mut selected: Vec<String> = Vec::new();
@@ -1320,7 +1322,8 @@ pub async fn search_functions(
         // best tier; split per batch only if that ambiguity ever bites.
         let mut effective_mode = FunctionSearchMode::Lexical;
         for batch in request.capabilities.chunks(MAX_SEARCH_QUERIES) {
-            let outcome = search_batch(deps, &cfg, &tools, &fingerprint, batch, jev_deadline).await;
+            let outcome =
+                search_batch(deps, &cfg, &tools, &fingerprint, batch, judge_deadline).await;
             effective_mode = effective_mode.max(outcome.effective_mode);
             for function_id in outcome.selected {
                 if !selected.contains(&function_id) {
@@ -1332,17 +1335,17 @@ pub async fn search_functions(
         (selected, installable, effective_mode)
     };
     // Skills and triggers are ranked by the same mode as the functions:
-    // Jev judges the documents, lexical/hybrid rank them with BM25 (fused
-    // with the dense lane in hybrid). Both share the Jev deadline.
+    // the judge worker judges the documents, lexical/hybrid rank them with
+    // BM25 (fused with the dense lane in hybrid). Both share the judge deadline.
     let skill_search = async {
         let docs = installed_skill_docs(deps, &cfg, &tools).await;
         side_lane(
             deps,
             &cfg,
             &request.capabilities,
-            jev_deadline,
+            judge_ready.then_some(judge_deadline),
             docs,
-            JevCorpus::Skills,
+            JudgeCorpus::Skills,
         )
         .await
     };
@@ -1352,20 +1355,18 @@ pub async fn search_functions(
             deps,
             &cfg,
             &request.capabilities,
-            jev_deadline,
+            judge_ready.then_some(judge_deadline),
             docs,
-            JevCorpus::Triggers,
+            JudgeCorpus::Triggers,
         )
         .await
     };
     let ((mut selected, installable, search_mode), skills, triggers) =
         tokio::join!(function_search, skill_search, trigger_search);
-    // Side lanes have no local fallback in Jev mode, so a non-empty section
-    // was Jev-ranked even when the function lane fell back.
-    let search_mode = if cfg.function_search_mode == FunctionSearchMode::Jev
-        && !(skills.is_empty() && triggers.is_empty())
-    {
-        FunctionSearchMode::Jev
+    // Side lanes have no local fallback in judge mode, so a non-empty section
+    // was judge-ranked even when the function lane fell back.
+    let search_mode = if judge_ready && !(skills.is_empty() && triggers.is_empty()) {
+        FunctionSearchMode::Judge
     } else {
         search_mode
     };
@@ -1467,13 +1468,13 @@ search again for: {}.",
     })
 }
 
-/// The installed skill documents a search may recommend, as the Jev
+/// The installed skill documents a search may recommend, as the judge
 /// carrier (`name` = skill id, `description` = trimmed `title: body`) plus
 /// the response row. Visibility follows `directory::skills::list`: the
 /// registered-workers set (cached `compose::status`) plus, as a floor, the
 /// namespaces of the live function catalog. Skills flagged
 /// `disable_model_invocation` are never candidates.
-// ponytail: rescans the skill folders on every Jev search; cache behind
+// ponytail: rescans the skill folders on every search; cache behind
 // the skills watcher if the scan ever shows up in search latency.
 async fn installed_skill_docs(
     deps: &Deps,
@@ -1546,22 +1547,23 @@ fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     text[..end].trim_end().to_string()
 }
 
-/// One side lane: rank `docs` by the configured mode — Jev judges them,
-/// lexical/hybrid rank them locally with BM25 (fused with the dense lane in
-/// hybrid) — and return the rows of at most `SIDE_LANE_DOCS` ids, round-robin
-/// across capabilities. Any failure yields an empty section: the function
-/// search never fails over a side lane.
+/// One side lane: rank `docs` by the effective mode — the judge worker judges
+/// them when `judge` carries its deadline, otherwise lexical/hybrid rank them
+/// locally with BM25 (fused with the dense lane in hybrid) — and return the
+/// rows of at most `SIDE_LANE_DOCS` ids, round-robin across capabilities. Any
+/// failure yields an empty section: the function search never fails over a
+/// side lane.
 async fn side_lane<C: Clone>(
     deps: &Deps,
     cfg: &SkillsConfig,
     capabilities: &[String],
-    deadline: tokio::time::Instant,
+    judge: Option<tokio::time::Instant>,
     docs: Vec<(ToolSchema, C)>,
-    corpus: JevCorpus,
+    corpus: JudgeCorpus,
 ) -> Vec<C> {
     let (documents, candidates): (Vec<ToolSchema>, Vec<C>) = docs.into_iter().unzip();
-    let ranked = if cfg.function_search_mode == FunctionSearchMode::Jev {
-        jev_rank_documents(deps, cfg, capabilities, deadline, &documents, corpus).await
+    let ranked = if let Some(deadline) = judge {
+        judge_rank_documents(deps, cfg, capabilities, deadline, &documents, corpus).await
     } else {
         local_rank_documents(deps, cfg, capabilities, &documents).await
     };
@@ -1687,34 +1689,52 @@ fn trigger_candidate(row: &Value) -> Option<TriggerCandidate> {
     })
 }
 
-/// Rank `documents` against the capabilities with Jev and return at most
-/// `SIDE_LANE_DOCS` document ids round-robin across capabilities. Any Jev
-/// failure yields an empty list: the function search never fails over a
-/// side lane.
-async fn jev_rank_documents(
+/// The judge lane runs only when configured AND `judge::evaluate` is in the
+/// live catalog; the catalog refreshes on every registration push, so an
+/// absent judge worker costs no round trip.
+fn judge_lane(cfg: &SkillsConfig, catalog: &[ToolSchema]) -> bool {
+    cfg.function_search_mode == FunctionSearchMode::Judge
+        && catalog
+            .iter()
+            .any(|tool| tool.name == judge_contract::FUNCTION_ID)
+}
+
+/// An absent judge is the designed fallback (debug); anything else is worth
+/// a warning with the usage the failed stage still consumed.
+fn log_judge_failure(error: &JudgeFailure, lane: &str) {
+    if error.error == JudgeError::Unavailable {
+        tracing::debug!(%error, lane, "judge unavailable; using the local lanes");
+    } else {
+        tracing::warn!(%error, lane, requests = error.stats.requests,
+            questions = error.stats.questions, input_tokens = error.stats.input_tokens,
+            output_tokens = error.stats.output_tokens, elapsed_ms = error.stats.elapsed_ms,
+            "judge search failed; using the local lanes");
+    }
+}
+
+/// Rank `documents` against the capabilities with the judge worker and
+/// return at most `SIDE_LANE_DOCS` document ids round-robin across
+/// capabilities. Any judge failure yields an empty list: the function search
+/// never fails over a side lane.
+async fn judge_rank_documents(
     deps: &Deps,
     cfg: &SkillsConfig,
     capabilities: &[String],
     deadline: tokio::time::Instant,
     documents: &[ToolSchema],
-    corpus: JevCorpus,
+    corpus: JudgeCorpus,
 ) -> Vec<String> {
     let queries = search_queries(capabilities);
     if queries.is_empty() || documents.is_empty() {
         return Vec::new();
     }
-    let jev = deps.jev.with_api_key(
-        cfg.function_search_jev_api_key
-            .as_ref()
-            .map(|key| key.expose()),
-    );
-    match jev
+    match deps
+        .judge
         .rank(
             &queries,
             documents,
-            &JevOptions {
-                model: cfg.function_search_jev_model.clone(),
-                min_relevance: cfg.function_search_jev_side_lane_min_relevance,
+            &JudgeOptions {
+                min_relevance: cfg.function_search_judge_side_lane_min_relevance,
                 corpus,
             },
             deadline,
@@ -1728,13 +1748,12 @@ async fn jev_rank_documents(
                 questions = outcome.stats.questions,
                 elapsed_ms = outcome.stats.elapsed_ms,
                 documents = documents.len(),
-                "Jev side-lane evaluation completed"
+                "judge side-lane evaluation completed"
             );
             round_robin_rankings(&outcome.rankings, SIDE_LANE_DOCS)
         }
         Err(error) => {
-            tracing::warn!(%error, ?corpus, requests = error.stats.requests,
-                "Jev side-lane search failed; omitting the section");
+            log_judge_failure(&error, &format!("{corpus:?}"));
             Vec::new()
         }
     }
@@ -1781,29 +1800,24 @@ pub struct BenchmarkOutcome {
     pub effective_mode: FunctionSearchMode,
     pub rankings: Vec<Vec<(String, f64)>>,
     pub hybrid_complete: bool,
-    pub jev_complete: bool,
-    pub jev_requests: usize,
-    pub jev_questions: usize,
+    pub judge_complete: bool,
+    pub judge_requests: usize,
+    pub judge_questions: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub jev_elapsed_ms: u64,
+    pub judge_elapsed_ms: u64,
     pub elapsed_ms: f64,
 }
 
 /// Resolve exact eligible IDs in code, and evaluate only the remaining lanes.
 /// The same policy is used for installed and registry function pools.
-async fn rank_with_jev(
-    jev: &JevSearch,
+async fn rank_with_judge(
+    judge: &JudgeSearch,
     cfg: &SkillsConfig,
     tools: &[ToolSchema],
     queries: &[String],
     deadline: tokio::time::Instant,
-) -> Result<JevOutcome, JevFailure> {
-    let jev = jev.with_api_key(
-        cfg.function_search_jev_api_key
-            .as_ref()
-            .map(|key| key.expose()),
-    );
+) -> Result<JudgeOutcome, JudgeFailure> {
     let corpus = canonical_tools(tools);
     let mut rankings: Vec<Vec<(String, f64)>> = queries
         .iter()
@@ -1822,14 +1836,13 @@ async fn rank_with_jev(
         .iter()
         .map(|position| queries[*position].clone())
         .collect();
-    let mut outcome = jev
+    let mut outcome = judge
         .rank(
             &model_queries,
             &corpus,
-            &JevOptions {
-                model: cfg.function_search_jev_model.clone(),
-                min_relevance: cfg.function_search_jev_min_relevance,
-                corpus: JevCorpus::Functions,
+            &JudgeOptions {
+                min_relevance: cfg.function_search_judge_min_relevance,
+                corpus: JudgeCorpus::Functions,
             },
             deadline,
         )
@@ -1861,34 +1874,30 @@ async fn installed_search(
         effective_mode: FunctionSearchMode::Lexical,
         ..BenchmarkOutcome::default()
     };
-    if cfg.function_search_mode == FunctionSearchMode::Jev {
-        let stats = match rank_with_jev(&deps.jev, cfg, &corpus, queries, deadline).await {
+    if judge_lane(cfg, tools) {
+        let stats = match rank_with_judge(&deps.judge, cfg, &corpus, queries, deadline).await {
             Ok(outcome) => {
                 result.rankings = outcome.rankings;
-                result.jev_complete = true;
-                result.effective_mode = FunctionSearchMode::Jev;
+                result.judge_complete = true;
+                result.effective_mode = FunctionSearchMode::Judge;
                 tracing::debug!(model = %outcome.model, requests = outcome.stats.requests,
                     questions = outcome.stats.questions, input_tokens = outcome.stats.input_tokens,
                     output_tokens = outcome.stats.output_tokens, elapsed_ms = outcome.stats.elapsed_ms,
-                    "Jev function evaluation completed");
+                    "judge function evaluation completed");
                 outcome.stats
             }
             Err(error) => {
-                tracing::warn!(%error, requested_mode = "jev",
-                    requests = error.stats.requests, questions = error.stats.questions,
-                    input_tokens = error.stats.input_tokens, output_tokens = error.stats.output_tokens,
-                    elapsed_ms = error.stats.elapsed_ms,
-                    "Jev function search failed; trying Hybrid with lexical fallback");
+                log_judge_failure(&error, "functions");
                 error.stats
             }
         };
-        result.jev_requests = stats.requests;
-        result.jev_questions = stats.questions;
+        result.judge_requests = stats.requests;
+        result.judge_questions = stats.questions;
         result.input_tokens = stats.input_tokens;
         result.output_tokens = stats.output_tokens;
-        result.jev_elapsed_ms = stats.elapsed_ms;
+        result.judge_elapsed_ms = stats.elapsed_ms;
     }
-    if cfg.function_search_mode != FunctionSearchMode::Lexical && !result.jev_complete {
+    if cfg.function_search_mode != FunctionSearchMode::Lexical && !result.judge_complete {
         if deps.semantic.is_production_minilm() {
             if let Some(outcome) =
                 production_minilm_rankings(&deps.semantic, fingerprint, tools, queries, &lexical)
@@ -1906,8 +1915,7 @@ async fn installed_search(
             reranker_revision = deps.semantic.reranker_revision(),
             "production MiniLM retrieval and reranking completed");
     }
-    result.selected = if cfg.function_search_mode == FunctionSearchMode::Jev && result.jev_complete
-    {
+    result.selected = if result.judge_complete {
         limit_search_workers(
             round_robin_rankings(&result.rankings, MAX_SEARCH_FUNCTIONS),
             MAX_SEARCH_WORKERS.max(2 * queries.len()),
@@ -1917,7 +1925,7 @@ async fn installed_search(
     };
     result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     tracing::debug!(mode = ?cfg.function_search_mode, effective_mode = ?result.effective_mode, elapsed_ms = result.elapsed_ms,
-        hybrid_complete = result.hybrid_complete, jev_complete = result.jev_complete,
+        hybrid_complete = result.hybrid_complete, judge_complete = result.judge_complete,
         "installed function search completed");
     result
 }
@@ -1928,10 +1936,10 @@ async fn search_batch(
     tools: &[ToolSchema],
     fingerprint: &str,
     capabilities: &[String],
-    jev_deadline: tokio::time::Instant,
+    judge_deadline: tokio::time::Instant,
 ) -> BatchOutcome {
     let queries = search_queries(capabilities);
-    let installed = installed_search(deps, cfg, tools, fingerprint, &queries, jev_deadline).await;
+    let installed = installed_search(deps, cfg, tools, fingerprint, &queries, judge_deadline).await;
     let installable = if cfg.registry_search {
         registry_installable(
             cfg,
@@ -1941,8 +1949,7 @@ async fn search_batch(
             .then_some(&deps.semantic),
             tools,
             &queries,
-            (cfg.function_search_mode == FunctionSearchMode::Jev)
-                .then_some((&deps.jev, jev_deadline)),
+            judge_lane(cfg, tools).then_some((&deps.judge, judge_deadline)),
         )
         .await
     } else {
@@ -1963,10 +1970,10 @@ pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> Benchm
     let tools = deps.catalog.read().await.clone();
     let fingerprint = tool_fingerprint(&tools);
     let deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_millis(cfg.function_search_jev_timeout_ms);
+        + std::time::Duration::from_millis(cfg.function_search_judge_timeout_ms);
     let mut total = BenchmarkOutcome {
         hybrid_complete: cfg.function_search_mode != FunctionSearchMode::Lexical,
-        jev_complete: cfg.function_search_mode == FunctionSearchMode::Jev,
+        judge_complete: judge_lane(&cfg, &tools),
         effective_mode: FunctionSearchMode::Lexical,
         ..BenchmarkOutcome::default()
     };
@@ -1977,11 +1984,13 @@ pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> Benchm
         let queries = search_queries(batch);
         let outcome = installed_search(deps, &cfg, &tools, &fingerprint, &queries, deadline).await;
         total.hybrid_complete &= outcome.hybrid_complete;
-        total.jev_complete &= outcome.jev_complete;
+        total.judge_complete &= outcome.judge_complete;
         total.effective_mode = total.effective_mode.max(outcome.effective_mode);
-        total.jev_requests += outcome.jev_requests;
-        total.jev_questions += outcome.jev_questions;
-        total.jev_elapsed_ms = total.jev_elapsed_ms.saturating_add(outcome.jev_elapsed_ms);
+        total.judge_requests += outcome.judge_requests;
+        total.judge_questions += outcome.judge_questions;
+        total.judge_elapsed_ms = total
+            .judge_elapsed_ms
+            .saturating_add(outcome.judge_elapsed_ms);
         total.input_tokens = total.input_tokens.saturating_add(outcome.input_tokens);
         total.output_tokens = total.output_tokens.saturating_add(outcome.output_tokens);
         for id in outcome.selected {
@@ -2004,7 +2013,7 @@ pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> Benchm
     total
 }
 
-/// Raw BM25 shortlist for the benchmark's retrieval-limited Jev comparison.
+/// Raw BM25 shortlist for a retrieval-limited judge comparison.
 #[doc(hidden)]
 pub fn lexical_candidate_ids(
     tools: &[ToolSchema],
@@ -2380,7 +2389,7 @@ mod tests {
         // The model loads on the first rebuild, not on construction.
         deps.semantic.rebuild(Arc::new(Vec::new()));
         let cfg = deps.config.load_full();
-        assert_eq!(cfg.function_search_mode, FunctionSearchMode::Hybrid);
+        assert_ne!(cfg.function_search_mode, FunctionSearchMode::Lexical);
         let documents = vec![
             ToolSchema {
                 name: "cron".into(),
@@ -2462,7 +2471,7 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
-            jev: JevSearch::default(),
+            judge: JudgeSearch::default(),
             registered_workers: None,
             iii: None,
         }
@@ -3021,7 +3030,7 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
-            jev: JevSearch::default(),
+            judge: JudgeSearch::default(),
             registered_workers: None,
             iii: None,
         };
@@ -3216,7 +3225,7 @@ mod tests {
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
             semantic: SemanticSearch::default(),
-            jev: JevSearch::default(),
+            judge: JudgeSearch::default(),
             registered_workers: None,
             iii: None,
         };

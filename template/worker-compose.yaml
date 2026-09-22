@@ -96,6 +96,29 @@ containers:
     scripts:
       run: cargo run --bin context-manager
 
+  judge-typesafe:
+    worker: path://../judge-typesafe
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+    scripts:
+      run: cargo run --bin judge-typesafe
+
+  judge:
+    worker: path://../judge
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin judge
+
+  # No start_after on judge: compose stops dependants when a dependency dies,
+  # and the directory is designed to keep serving (hybrid/lexical) without it.
   iii-directory:
     worker: path://../iii-directory
     env_file:
@@ -104,7 +127,6 @@ containers:
       RUST_LOG: info
       CI: "true"
       ORT_PREFER_DYNAMIC_LINK: "0"
-      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
     scripts:
       # Compose supplies III_COMPOSE_DIR even though Cargo runs in ../iii-directory.
       run: cargo run --bin iii-directory -- --config "$III_COMPOSE_DIR/config/iii-directory.yaml"

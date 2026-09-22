@@ -158,7 +158,7 @@ describe('search trigger renderer', () => {
       output: {
         guidance: 'g',
         workers: [{ namespace: 'browser', functions: [{ function_id: 'browser::fetch', description: 'Fetch.' }] }],
-        search_mode: 'jev',
+        search_mode: 'judge',
         latency_ms: 10,
       },
     } as FunctionTriggerMessage) as {
@@ -166,7 +166,7 @@ describe('search trigger renderer', () => {
       props: Record<string, unknown>
     }
     const serialized = JSON.stringify(rendered.type(rendered.props))
-    expect(serialized).toContain('jev')
+    expect(serialized).toContain('judge')
     expect(serialized).not.toContain('>search<')
   })
 })

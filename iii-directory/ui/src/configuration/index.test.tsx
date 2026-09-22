@@ -14,6 +14,12 @@ const controlChanges = vi.hoisted(() => new Map<string, (value: string) => void>
 // the documented rendering contract needed by this form.
 vi.mock('@iii-dev/console-ui', () => ({
   Chip: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  StatusPanel: ({ headline, detail }: { headline?: ReactNode; detail?: ReactNode }) => (
+    <div>
+      {headline}
+      {detail}
+    </div>
+  ),
   Input: ({ onChange, ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, 'onChange'> & {
     name: string
     onChange: (value: string) => void
@@ -98,10 +104,17 @@ function renderConfiguration(
 describe('DirectoryConfigForm function search settings', () => {
   beforeEach(() => controlChanges.clear())
 
-  it('renders hybrid as the default without a model notice', () => {
+  it('renders judge as the default without a model notice', () => {
     const html = renderConfiguration({})
 
     expect(html).toContain('Function search mode')
+    expect(html).toContain('<option value="judge" selected="">')
+    expect(html).not.toContain('requires a local semantic model')
+  })
+
+  it('renders hybrid without a model notice while the default bundle path applies', () => {
+    const html = renderConfiguration({ function_search_mode: 'hybrid' })
+
     expect(html).toContain('<option value="hybrid" selected="">')
     expect(html).not.toContain('requires a local semantic model')
   })
@@ -115,31 +128,27 @@ describe('DirectoryConfigForm function search settings', () => {
     expect(html).toContain('Restart required')
   })
 
-  it('renders Jev without a MiniLM notice and explains key precedence and the fallback chain', () => {
-    const html = renderConfiguration({ function_search_mode: 'jev', function_search_model_path: null })
+  it('renders Judge without a MiniLM notice, without credentials, and explains the fallback chain', () => {
+    const html = renderConfiguration({ function_search_mode: 'judge', function_search_model_path: null })
 
-    expect(html).toContain('<option value="jev" selected="">')
+    expect(html).toContain('<option value="judge" selected="">')
     expect(html).not.toContain('requires a local semantic model')
-    expect(html).toContain('TypeSafe')
-    expect(html).toContain('TYPESAFE_API_KEY')
-    expect(html).toContain('worker process')
-    expect(html).toContain('takes precedence')
-    expect(html).toContain('try Hybrid, then Lexical if unavailable')
+    expect(html).toContain('judge-typesafe')
+    expect(html).toContain('tries Hybrid, then Lexical if unavailable')
     expect(html).toContain('valid empty result')
-    const input = html.match(/<input[^>]*name="function_search_jev_api_key"[^>]*>/)?.[0]
-    expect(input).toContain('type="password"')
-    expect(input).toContain('autoComplete="new-password"')
-    expect(input).toContain('spellCheck="false"')
+    expect(html).not.toContain('TYPESAFE_API_KEY')
+    expect(html).not.toContain('type="password"')
+    expect(html).not.toContain('function_search_jev')
   })
 
-  it('renders Jev controls with defaults, numeric bounds and hot-reload guidance', () => {
+  it('renders judge controls with defaults, numeric bounds and hot-reload guidance', () => {
     const html = renderConfiguration({})
 
-    expect(html).toContain('Jev options apply without restarting')
+    expect(html).toContain('judge options apply without restarting')
     for (const [field, placeholder, bounds] of [
-      ['function_search_jev_model', 'jev-1.13.0', []],
-      ['function_search_jev_timeout_ms', '3000', ['min="1"', 'max="30000"', 'step="1"']],
-      ['function_search_jev_min_relevance', '0.5', ['min="0"', 'max="1"', 'step="any"', 'inputMode="decimal"']],
+      ['function_search_judge_timeout_ms', '3000', ['min="1"', 'max="30000"', 'step="1"']],
+      ['function_search_judge_min_relevance', '0.5', ['min="0"', 'max="1"', 'step="any"', 'inputMode="decimal"']],
+      ['function_search_judge_side_lane_min_relevance', '0.3', ['max="1"', 'step="any"', 'inputMode="decimal"']],
     ] as const) {
       const input = html.match(new RegExp(`<input[^>]*name="${field}"[^>]*>`))?.[0]
       expect(input).toBeDefined()
@@ -152,16 +161,14 @@ describe('DirectoryConfigForm function search settings', () => {
   })
 
   it.each([
-    ['function_search_mode', 'jev', 'jev'],
-    ['function_search_jev_api_key', 'configured-test-key', 'configured-test-key'],
-    ['function_search_jev_model', 'jev-custom', 'jev-custom'],
+    ['function_search_mode', 'judge', 'judge'],
+    ['function_search_mode', 'lexical', 'lexical'],
   ])('edits %s while preserving the rest of the draft and host errors', (field, raw, expected) => {
     const draft = Object.freeze({
       function_search_mode: 'hybrid',
       function_search_model_path: null,
-      function_search_jev_model: 'jev-1.13.0',
-      function_search_jev_timeout_ms: 3000,
-      function_search_jev_min_relevance: 0.5,
+      function_search_judge_timeout_ms: 3000,
+      function_search_judge_min_relevance: 0.5,
       registry_search: false,
       future_setting: { keep: true },
     })
@@ -176,43 +183,16 @@ describe('DirectoryConfigForm function search settings', () => {
     expect(errors).toEqual(new Map([['/future_setting', 'Keep this host error']]))
   })
 
-  it('clears the Jev model to restore its worker default', () => {
-    const field = 'function_search_jev_model'
-    const onChange = vi.fn()
-    renderConfiguration({ [field]: 'jev-custom', registry_search: false }, new Map(), onChange)
-
-    expect(controlChanges.has(field)).toBe(true)
-    controlChanges.get(field)?.('')
-
-    expect(onChange).toHaveBeenCalledExactlyOnceWith({ registry_search: false })
-  })
-
-  it('masks a configured key and clearing it removes only the override', () => {
-    const field = 'function_search_jev_api_key'
-    const onChange = vi.fn()
-    const html = renderConfiguration({ [field]: 'configured-test-key', registry_search: false }, new Map(), onChange)
-    const input = html.match(new RegExp(`<input[^>]*name="${field}"[^>]*>`))?.[0]
-    expect(input).toContain('type="password"')
-    expect(input).toContain('value="configured-test-key"')
-    const label = html.match(new RegExp(`<label[^>]*for="dir-cfg-${field}"[^>]*>(.*?)</label>`))?.[1]
-    expect(label).toBeDefined()
-    expect(label).not.toContain('Restart required')
-    expect(controlChanges.has(field)).toBe(true)
-    controlChanges.get(field)?.('')
-    expect(onChange).toHaveBeenCalledExactlyOnceWith({ registry_search: false })
-  })
-
-  it('associates Jev errors with their controls while retaining unknown host errors', () => {
+  it('associates judge errors with their controls while retaining unknown host errors', () => {
     const errors = new Map([
-      ['/function_search_jev_api_key', 'Enter a string or clear the override'],
-      ['/function_search_jev_model', 'Enter a non-empty model'],
-      ['/function_search_jev_timeout_ms', 'Use 1 to 30000 ms'],
-      ['/function_search_jev_min_relevance', 'Use a finite value from 0 to 1'],
+      ['/function_search_judge_timeout_ms', 'Use 1 to 30000 ms'],
+      ['/function_search_judge_min_relevance', 'Use a finite value from 0 to 1'],
+      ['/function_search_judge_side_lane_min_relevance', 'Use a finite value from 0 to 1'],
       ['/future_setting', 'Unknown setting error'],
     ])
     const html = renderConfiguration({ function_search_mode: 'lexical' }, errors)
 
-    for (const [pointer, message] of [...errors].slice(0, 4)) {
+    for (const [pointer, message] of [...errors].slice(0, 3)) {
       const field = pointer.slice(1)
       const input = html.match(new RegExp(`<input[^>]*name="${field}"[^>]*>`))?.[0]
       expect(input).toContain('aria-invalid="true"')
@@ -221,7 +201,7 @@ describe('DirectoryConfigForm function search settings', () => {
       expect(html).not.toContain(`${pointer}: ${message}`)
     }
     expect(html).toContain('/future_setting: Unknown setting error')
-    expect(html).toContain('There are 5 configuration errors')
+    expect(html).toContain('There are 4 configuration errors')
   })
 })
 
@@ -267,9 +247,9 @@ describe('DirectoryConfigForm numeric editing', () => {
   }
 
   it('keeps the zero while typing 0.105 and saves the exact number on blur', async () => {
-    const initial = { function_search_jev_min_relevance: 0.5, registry_search: false }
+    const initial = { function_search_judge_min_relevance: 0.5, registry_search: false }
     const form = await mountConfiguration(initial)
-    const input = form.input('function_search_jev_min_relevance')
+    const input = form.input('function_search_judge_min_relevance')
     await act(async () => input.focus())
     await type(input, '0.1')
     await type(input, `${input.value}0`)
@@ -278,13 +258,13 @@ describe('DirectoryConfigForm numeric editing', () => {
     expect(input.value).toBe('0.105')
     expect(form.saved).not.toHaveBeenCalled()
     await act(async () => input.blur())
-    expect(form.saved).toHaveBeenCalledExactlyOnceWith({ ...initial, function_search_jev_min_relevance: 0.105 })
+    expect(form.saved).toHaveBeenCalledExactlyOnceWith({ ...initial, function_search_judge_min_relevance: 0.105 })
   })
 
   it.each([
-    ['function_search_jev_timeout_ms', '4500', 4500],
-    ['function_search_jev_min_relevance', '0', 0],
-    ['function_search_jev_min_relevance', '0.725', 0.725],
+    ['function_search_judge_timeout_ms', '4500', 4500],
+    ['function_search_judge_min_relevance', '0', 0],
+    ['function_search_judge_min_relevance', '0.725', 0.725],
   ])('commits %s on Enter, preserving other fields and host errors', async (field, raw, expected) => {
     const initial = { registry_search: false, future_setting: { keep: true } }
     const errors = new Map([['/future_setting', 'Keep this host error']])
@@ -301,7 +281,7 @@ describe('DirectoryConfigForm numeric editing', () => {
     expect(container.textContent).toContain('Keep this host error')
   })
 
-  it.each(['function_search_jev_timeout_ms', 'function_search_jev_min_relevance'])(
+  it.each(['function_search_judge_timeout_ms', 'function_search_judge_min_relevance'])(
     'clears %s on blur to restore its worker default', async (field) => {
       const form = await mountConfiguration({ [field]: 1, registry_search: false })
       const input = form.input(field)
@@ -313,11 +293,11 @@ describe('DirectoryConfigForm numeric editing', () => {
   )
 
   it('discards pending input when the host replaces the configured value', async () => {
-    const form = await mountConfiguration({ function_search_jev_min_relevance: 0.5 })
-    const input = form.input('function_search_jev_min_relevance')
+    const form = await mountConfiguration({ function_search_judge_min_relevance: 0.5 })
+    const input = form.input('function_search_judge_min_relevance')
     await act(async () => input.focus())
     await type(input, '0.10')
-    await form.replaceValue({ function_search_jev_min_relevance: 0.75 })
+    await form.replaceValue({ function_search_judge_min_relevance: 0.75 })
     expect(input.value).toBe('0.75')
     await act(async () => input.blur())
     expect(form.saved).not.toHaveBeenCalled()

@@ -45,6 +45,7 @@ iii-console-ui = { path = "../crates/console-ui" }
 # Hook-binding reconcile (BindingSlot/try_bind) for the pre-generate hint —
 # the configuration register/fetch here stays hand-rolled on purpose.
 iii-config-client = { path = "../crates/config-client" }
+judge-contract = { path = "../crates/judge-contract" }
 # Caller-supplied session id from OTel baggage keys the search's per-session
 # resend-avoidance memory. Never a security boundary.
 opentelemetry = { version = "0.31", default-features = false }
@@ -56,7 +57,7 @@ sha2 = "0.10"
 # ships a pinned, SHA-256-verified static ONNX Runtime (its dist.tsv): Linux
 # glibc x86_64/aarch64, Apple Silicon macOS, Windows MSVC x86_64/aarch64. Keep
 # this cfg in sync with MINILM_TARGETS in build.rs. Other targets (musl, armv7,
-# Intel macOS) build without local MiniLM; lexical and Jev remain available.
+# Intel macOS) build without local MiniLM; lexical and judge remain available.
 # `download-binaries` lets ort-sys
 # fetch that runtime at build time; ORT_LIB_PATH (scripts/provision-onnxruntime.sh)
 # overrides it for offline or cached builds. No NLI, GGUF or llama.cpp here.

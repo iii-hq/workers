@@ -110,9 +110,9 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
         "description": "Skills and agent-skills folders, workers-registry URL, download timeouts, \
                         skill-visibility filters, and the function-search knobs \
                         (inject_hint, hint_min_workers, registry_search, function_search_mode, \
-                        function_search_model_path, function_search_jev_api_key, function_search_jev_model, \
-                        function_search_jev_timeout_ms, function_search_jev_min_relevance, \
-                        function_search_jev_side_lane_min_relevance) for the \
+                        function_search_model_path, function_search_judge_timeout_ms, \
+                        function_search_judge_min_relevance, \
+                        function_search_judge_side_lane_min_relevance) for the \
                         iii-directory worker.",
         "schema": SkillsConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn candidate_initial_value_is_seed_else_default() {
         let seed = SkillsConfig {
-            function_search_mode: FunctionSearchMode::Jev,
+            function_search_mode: FunctionSearchMode::Lexical,
             ..SkillsConfig::default()
         };
         // The candidate is always the seed (else the built-in default); the

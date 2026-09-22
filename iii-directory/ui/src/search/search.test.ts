@@ -52,8 +52,8 @@ describe('parseDiscoverResponse', () => {
   })
 
   it('parses the search mode when present and rejects an unknown one', () => {
-    const parsed = parseDiscoverResponse({ ...response, search_mode: 'jev' })
-    expect(parsed?.searchMode).toBe('jev')
+    const parsed = parseDiscoverResponse({ ...response, search_mode: 'judge' })
+    expect(parsed?.searchMode).toBe('judge')
     expect(parseDiscoverResponse({ ...response, search_mode: 'quantum' })).toBeNull()
     // Absent on legacy rows: the field is simply omitted.
     expect('searchMode' in (parseDiscoverResponse(response) as object)).toBe(false)
