@@ -206,7 +206,6 @@ async fn an_unregistered_judge_worker_uses_the_local_lanes_without_a_call() {
     assert_ne!(response.search_mode, FunctionSearchMode::Judge);
     let outcome = benchmark_installed(&deps, &["send an email message".into()]).await;
     assert!(!outcome.judge_complete);
-    assert_eq!(outcome.judge_requests, 0);
     assert!(requests.lock().unwrap().is_empty());
 }
 
@@ -706,45 +705,7 @@ async fn benchmark_keeps_intrinsic_and_exact_lanes_aligned() {
     assert!(result.rankings[0].is_empty());
     assert_eq!(result.rankings[1][0].0, "mail::send");
     assert_eq!(result.selected, ["mail::send"]);
-    assert_eq!(result.judge_requests, 0);
     assert!(requests.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn benchmark_preserves_known_usage_and_stage_time_after_a_later_block_fails() {
-    let (judge, requests) = mock_hub(30, |request| {
-        let functions = request.evaluations[0].state["functions"]
-            .as_object()
-            .unwrap();
-        Ok(if functions.len() == 16 {
-            reply(request, 0.9)
-        } else {
-            hub_error("http")
-        })
-    });
-    let deps = deps(judge);
-    *deps.catalog.write().await = Arc::new(
-        (0..17)
-            .map(|i| ToolSchema {
-                name: format!("mail::send{i:02}"),
-                description: "Send an email message.".into(),
-                parameters: json!({"type":"object"}),
-            })
-            .chain(tools().into_iter().skip(4))
-            .collect(),
-    );
-    let result = benchmark_installed(&deps, &["send an email message".into()]).await;
-    assert!(!result.judge_complete);
-    assert_eq!(requests.lock().unwrap().len(), 2);
-    assert_eq!(result.judge_requests, 1);
-    assert_eq!(result.judge_questions, 16);
-    assert_eq!(result.input_tokens, 100);
-    assert_eq!(result.output_tokens, 10);
-    assert!(result.judge_elapsed_ms >= 30);
-    assert!(
-        !result.selected.is_empty(),
-        "lexical fallback still returns candidates"
-    );
 }
 
 fn skills_root(files: &[(&str, &str)]) -> tempfile::TempDir {

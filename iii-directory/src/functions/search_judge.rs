@@ -26,9 +26,6 @@ use tokio::{
     time::{timeout_at, Instant},
 };
 
-pub type Rankings = Vec<Vec<(String, f64)>>;
-pub use judge_contract::Stats as JudgeStats;
-
 /// The hub forwards with this much slack over the request's own budget.
 const HUB_SLACK_MS: u64 = 5_000;
 const MAX_BODY_BYTES: usize = 48 * 1024;
@@ -58,9 +55,9 @@ pub enum JudgeCorpus {
 
 #[derive(Debug)]
 pub struct JudgeOutcome {
-    pub rankings: Rankings,
+    pub rankings: Vec<Vec<(String, f64)>>,
     pub model: String,
-    pub stats: JudgeStats,
+    pub stats: Stats,
 }
 
 /// An atomic ranking failure with known usage, never partial rankings.
@@ -69,7 +66,7 @@ pub struct JudgeOutcome {
 pub struct JudgeFailure {
     #[source]
     pub error: JudgeError,
-    pub stats: JudgeStats,
+    pub stats: Stats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -170,7 +167,6 @@ struct Block {
     evaluation: Evaluation,
     /// Document id behind question column `f{i}`. Local bookkeeping, never sent.
     ids: Vec<String>,
-    capabilities: usize,
     query_start: usize,
 }
 
@@ -211,9 +207,9 @@ impl JudgeSearch {
         let mut outcome = JudgeOutcome {
             rankings: vec![Vec::new(); queries.len()],
             model: String::new(),
-            stats: JudgeStats {
+            stats: Stats {
                 usage_complete: true,
-                ..JudgeStats::default()
+                ..Stats::default()
             },
         };
         let result = timeout_at(
@@ -369,7 +365,6 @@ fn split_evaluations(
         blocks.push(Block {
             evaluation,
             ids,
-            capabilities: queries.len(),
             query_start,
         });
         return Ok(());
@@ -414,13 +409,11 @@ fn merge_response(
     {
         return Err(JudgeError::InvalidResponse);
     }
-    for c in 0..block.capabilities {
+    // Questions are capabilities × ids by construction, and the key sets match.
+    for c in 0..block.evaluation.questions.len() / block.ids.len() {
         for f in 0..block.ids.len() {
             let key = format!("c{c}_f{f}");
-            let answer = result
-                .answers
-                .get(&key)
-                .ok_or(JudgeError::InvalidResponse)?;
+            let answer = &result.answers[&key];
             validate_answer(&block.evaluation.questions[&key], answer)
                 .map_err(|_| JudgeError::InvalidResponse)?;
             let noul = answer.as_noul().ok_or(JudgeError::InvalidResponse)?;
@@ -659,7 +652,7 @@ mod tests {
         (client, requests)
     }
 
-    fn counts(stats: &JudgeStats) -> (usize, usize, u64, u64) {
+    fn counts(stats: &Stats) -> (usize, usize, u64, u64) {
         (
             stats.requests,
             stats.questions,
@@ -1183,10 +1176,10 @@ mod tests {
         assert!(failure.stats.elapsed_ms >= 35);
         assert_eq!(
             failure.stats,
-            JudgeStats {
+            Stats {
                 elapsed_ms: failure.stats.elapsed_ms,
                 usage_complete: false,
-                ..JudgeStats::default()
+                ..Stats::default()
             }
         );
         calls.shutdown().await;

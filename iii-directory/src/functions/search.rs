@@ -1791,22 +1791,16 @@ struct BatchOutcome {
     effective_mode: FunctionSearchMode,
 }
 
-/// Diagnostic result for the opt-in benchmark. Not part of the search wire schema.
-#[doc(hidden)]
-#[derive(Debug, Default, serde::Serialize)]
-pub struct BenchmarkOutcome {
-    pub selected: Vec<String>,
+/// Installed-lane selection with diagnostics. Not part of the search wire schema.
+#[derive(Debug, Default)]
+struct BenchmarkOutcome {
+    selected: Vec<String>,
     /// The mode that actually ranked the installed candidates.
-    pub effective_mode: FunctionSearchMode,
-    pub rankings: Vec<Vec<(String, f64)>>,
-    pub hybrid_complete: bool,
-    pub judge_complete: bool,
-    pub judge_requests: usize,
-    pub judge_questions: usize,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub judge_elapsed_ms: u64,
-    pub elapsed_ms: f64,
+    effective_mode: FunctionSearchMode,
+    rankings: Vec<Vec<(String, f64)>>,
+    hybrid_complete: bool,
+    judge_complete: bool,
+    elapsed_ms: f64,
 }
 
 /// Resolve exact eligible IDs in code, and evaluate only the remaining lanes.
@@ -1875,7 +1869,7 @@ async fn installed_search(
         ..BenchmarkOutcome::default()
     };
     if judge_lane(cfg, tools) {
-        let stats = match rank_with_judge(&deps.judge, cfg, &corpus, queries, deadline).await {
+        match rank_with_judge(&deps.judge, cfg, &corpus, queries, deadline).await {
             Ok(outcome) => {
                 result.rankings = outcome.rankings;
                 result.judge_complete = true;
@@ -1884,18 +1878,9 @@ async fn installed_search(
                     questions = outcome.stats.questions, input_tokens = outcome.stats.input_tokens,
                     output_tokens = outcome.stats.output_tokens, elapsed_ms = outcome.stats.elapsed_ms,
                     "judge function evaluation completed");
-                outcome.stats
             }
-            Err(error) => {
-                log_judge_failure(&error, "functions");
-                error.stats
-            }
-        };
-        result.judge_requests = stats.requests;
-        result.judge_questions = stats.questions;
-        result.input_tokens = stats.input_tokens;
-        result.output_tokens = stats.output_tokens;
-        result.judge_elapsed_ms = stats.elapsed_ms;
+            Err(error) => log_judge_failure(&error, "functions"),
+        }
     }
     if cfg.function_search_mode != FunctionSearchMode::Lexical && !result.judge_complete {
         if deps.semantic.is_production_minilm() {
@@ -1963,8 +1948,8 @@ async fn search_batch(
 }
 
 /// Run production installed selection with diagnostics, without registry or session suppression.
-#[doc(hidden)]
-pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkOutcome {
+#[cfg(test)]
+async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> BenchmarkOutcome {
     let started = Instant::now();
     let cfg = deps.config.load_full();
     let tools = deps.catalog.read().await.clone();
@@ -1986,13 +1971,6 @@ pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> Benchm
         total.hybrid_complete &= outcome.hybrid_complete;
         total.judge_complete &= outcome.judge_complete;
         total.effective_mode = total.effective_mode.max(outcome.effective_mode);
-        total.judge_requests += outcome.judge_requests;
-        total.judge_questions += outcome.judge_questions;
-        total.judge_elapsed_ms = total
-            .judge_elapsed_ms
-            .saturating_add(outcome.judge_elapsed_ms);
-        total.input_tokens = total.input_tokens.saturating_add(outcome.input_tokens);
-        total.output_tokens = total.output_tokens.saturating_add(outcome.output_tokens);
         for id in outcome.selected {
             if !total.selected.contains(&id) {
                 total.selected.push(id);
@@ -2011,26 +1989,6 @@ pub async fn benchmark_installed(deps: &Deps, capabilities: &[String]) -> Benchm
     }
     total.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     total
-}
-
-/// Raw BM25 shortlist for a retrieval-limited judge comparison.
-#[doc(hidden)]
-pub fn lexical_candidate_ids(
-    tools: &[ToolSchema],
-    capabilities: &[String],
-    depth: usize,
-) -> Vec<String> {
-    let corpus = canonical_tools(tools);
-    let index = Bm25Index::build(&corpus);
-    let mut ids = Vec::new();
-    for query in search_queries(capabilities) {
-        for (id, _, _) in index.rank_with_matches(&query).into_iter().take(depth) {
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
-        }
-    }
-    ids
 }
 
 fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
