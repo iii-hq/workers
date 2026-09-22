@@ -2547,8 +2547,13 @@ export function ChatView({
             {/* Header read-outs share ONE surface. This system draws no
                 lines (index.css:44-52 — rule/rule-2 are transparent in both
                 themes), so a group is a fill, not a run of dividers. It also
-                keeps the related session metadata visually together. */}
-            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5 @max-2xl:hidden">
+                keeps the related session metadata visually together.
+                The group stays at every pane width; each read-out owns its
+                narrow form under a 30rem pane (`@container`, the design
+                system's narrow-container threshold): the context meter —
+                built-in or the harness chip — drops to its `used/usable`
+                counts, the sandbox chip is already `⬚ N`. */}
+            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5">
               {sessionChips}
               {hasInjectedContextChip ? null : (
                 <ContextUsage
