@@ -36,6 +36,9 @@ export interface GroupSummary {
   has_diagnosis: boolean
   ignore_rule?: IgnoreRule
   regressed_at_ms?: number
+  resolved_at_ms?: number
+  resolved_version?: string
+  resolve_until_version_change?: boolean
 }
 
 export interface OccurrenceSummary {
@@ -176,7 +179,7 @@ export interface StatusResponse {
   engine: { trace_store: 'memory' | 'disabled' | 'unknown'; logs: boolean }
   sources: { trace: boolean; log: boolean }
   ingest: Record<string, number | undefined>
-  groups: { open: number; regressed: number; ignored: number; resolved: number }
+  groups: { open: number; regressed: number; ignored: number; resolved: number; last_seen_ms?: number }
   investigations: { running: number; open_sessions: number }
   repositories: { id: string; path: string; exists: boolean; workers: string[] }[]
   config_error?: string

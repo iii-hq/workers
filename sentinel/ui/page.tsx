@@ -7,7 +7,7 @@ import { CONFIGURATION_ID, PAGE_ID } from './src/shared'
 export default function setup(host: Host) {
   host.pages.register({
     id: PAGE_ID,
-    title: 'errors',
+    title: 'Sentinel',
     configurationId: CONFIGURATION_ID,
     render: (props) => <SentinelPage host={host} {...props} />,
   })

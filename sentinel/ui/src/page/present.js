@@ -6,7 +6,7 @@
 
 /** @typedef {'new'|'investigating'|'diagnosed'|'resolved'|'regressed'|'ignored'} GroupStatus */
 
-/** The states the list shows when nobody has narrowed it. */
+/** The states the list shows when nobody has narrowed it. @type {GroupStatus[]} */
 export const OPEN_STATES = ['new', 'investigating', 'diagnosed', 'regressed']
 
 /** @type {Record<GroupStatus, { label: string, tone: 'neutral'|'accent'|'success'|'warning'|'danger' }>} */
@@ -38,7 +38,9 @@ export function availableActions(status) {
       // the group underneath it.
       return ['stop']
     case 'resolved':
-      return ['investigate', 'reopen']
+      // The lifecycle refuses to investigate a closed group; reopening is
+      // the way back to everything else.
+      return ['reopen']
     case 'ignored':
       return ['unignore']
     default:
@@ -62,12 +64,26 @@ export function sinceMs(id, now) {
  * is the difference between "quiet" and "none".
  * @param {number[]} counts
  */
-export function sparklineBars(counts) {
+export function sparklineBars(counts, hotFrom = counts.length) {
   const peak = Math.max(0, ...counts)
-  return counts.map((count) => ({
+  return counts.map((count, index) => ({
     count,
     height: count === 0 ? 0 : Math.max(8, Math.round((count / peak) * 100)),
+    hot: index >= hotFrom && count > 0,
   }))
+}
+
+/**
+ * The first sparkline bar that belongs to a regression — the hours since
+ * the fix stopped holding. The line has no hot bars for any other state.
+ * @param {{ status: string, regressed_at_ms?: number }} group
+ * @param {number} bars
+ * @param {number} now
+ */
+export function hotFrom(group, bars, now) {
+  if (group.status !== 'regressed' || !group.regressed_at_ms) return bars
+  const hours = Math.floor(now / 3_600_000) - Math.floor(group.regressed_at_ms / 3_600_000)
+  return Math.max(0, bars - 1 - hours)
 }
 
 /**
@@ -162,4 +178,158 @@ export function bulkOutcome(action, done, failures) {
   if (failures.length === 0) return `${done} ${verb}.`
   const refused = failures.length === 1 ? '1 refused' : `${failures.length} refused`
   return `${done} ${verb}, ${refused}: ${failures[0]}`
+}
+
+/** The list's scopes, as the design names them. */
+export const SCOPES = [
+  { value: 'open', label: 'Open' },
+  { value: 'regressed', label: 'Regressed' },
+  { value: 'ignored', label: 'Ignored' },
+  { value: 'resolved', label: 'Resolved' },
+]
+
+/** @type {Record<string, GroupStatus[]>} */
+export const SCOPE_STATES = {
+  open: OPEN_STATES,
+  regressed: ['regressed'],
+  ignored: ['ignored'],
+  resolved: ['resolved'],
+}
+
+/** @param {GroupStatus[]} statuses */
+export function scopeOf(statuses) {
+  for (const [scope, states] of Object.entries(SCOPE_STATES)) {
+    if (states.length === statuses.length && states.every((state) => statuses.includes(state))) {
+      return scope
+    }
+  }
+  return 'open'
+}
+
+export const WINDOWS = [
+  { value: '24h', label: '24 h' },
+  { value: '7d', label: '7 d' },
+  { value: '30d', label: '30 d' },
+  { value: 'all', label: 'All' },
+]
+
+/** `1 284`: thousands set apart with a space, the way the design counts. @param {number} count */
+export function spaced(count) {
+  return Math.round(count).toLocaleString('en-US').replace(/,/g, ' ')
+}
+
+/**
+ * How long ago, in the units a person reads at a glance.
+ * @param {number} at_ms
+ * @param {number} now
+ */
+export function ago(at_ms, now) {
+  const seconds = Math.max(0, Math.round((now - at_ms) / 1000))
+  if (seconds < 5) return 'just now'
+  if (seconds < 60) return `${seconds} s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} h ago`
+  return `${Math.floor(hours / 24)} d ago`
+}
+
+/** The absolute half of a fact, on the reader's own clock. @param {number} at_ms */
+export function stamp(at_ms) {
+  const at = new Date(at_ms)
+  const two = (/** @type {number} */ value) => String(value).padStart(2, '0')
+  return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`
+}
+
+/** @param {string|undefined} first @param {string|undefined} last */
+export function versionRange(first, last) {
+  if (!first && !last) return 'unknown version'
+  if (!first || !last || first === last) return last ?? first ?? ''
+  return `${first} → ${last}`
+}
+
+/**
+ * The exception type, set apart from the message it prefixes, so a row can
+ * lead with it in bold. A title without one stays whole.
+ * @param {string} title
+ * @param {string|undefined} exceptionType
+ */
+export function splitTitle(title, exceptionType) {
+  const prefix = exceptionType ? `${exceptionType}: ` : ''
+  if (prefix && title.startsWith(prefix)) return { type: exceptionType, rest: title.slice(prefix.length) }
+  return { type: null, rest: title }
+}
+
+/**
+ * How a state is drawn: the badge tone, the glyph beside the word, and the
+ * dot that leads a row.
+ * @param {GroupStatus} status
+ */
+export function statusLook(status) {
+  switch (status) {
+    case 'regressed':
+      return { badge: 'alert', glyph: 'alert', dot: 'alert' }
+    case 'investigating':
+      return { badge: 'accent', glyph: 'live', dot: 'accent' }
+    case 'diagnosed':
+      return { badge: 'default', glyph: 'file', dot: 'ok' }
+    case 'resolved':
+      return { badge: 'ok', glyph: 'check', dot: 'ok' }
+    case 'ignored':
+      return { badge: 'default', glyph: 'ban', dot: 'ghost' }
+    default:
+      return { badge: 'default', glyph: null, dot: 'ghost' }
+  }
+}
+
+/**
+ * The line under a regressed group: what was resolved, and what brought it
+ * back.
+ * @param {{ service_name: string, last_version?: string, regressed_at_ms?: number, resolved_at_ms?: number, resolved_version?: string, resolve_until_version_change?: boolean }} group
+ * @param {number} now
+ */
+export function regressedNote(group, now) {
+  const back = group.regressed_at_ms ? ` ${ago(group.regressed_at_ms, now)}` : ''
+  const on = group.last_version ? ` on ${group.last_version}` : ''
+  if (!group.resolved_at_ms) return `It was resolved, and an occurrence${on} reopened it${back}.`
+  const where = group.resolved_version ? ` in ${group.service_name} ${group.resolved_version}` : ''
+  const scope = group.resolve_until_version_change ? ' with until version change' : ''
+  const kept =
+    group.resolve_until_version_change && group.resolved_version
+      ? ` Occurrences on ${group.resolved_version} kept counting without reopening.`
+      : ''
+  return `Resolved ${ago(group.resolved_at_ms, now)}${where}${scope}; the first occurrence${on} reopened it${back}.${kept}`
+}
+
+/**
+ * The line under an ignored group.
+ * @param {{ service_name: string, last_version?: string, ignore_rule?: { kind: string, count?: number } }} group
+ */
+export function ignoreNote(group) {
+  const rule = group.ignore_rule
+  if (rule?.kind === 'version_change') {
+    const baseline = group.last_version ? ` (baseline ${group.last_version})` : ''
+    return `Ignored until the ${group.service_name} version changes${baseline}. Occurrences still count.`
+  }
+  if (rule?.kind === 'occurrences') {
+    return `Ignored until ${rule.count ?? 0} more occurrences. Occurrences still count.`
+  }
+  return 'Ignored forever. Occurrences still count; nothing surfaces in the open list.'
+}
+
+/**
+ * One row of the history: the state it moved to, in a word, and why.
+ * @param {{ from_status?: GroupStatus, to_status: GroupStatus, reason?: string, actor: string }} row
+ */
+export function transitionLook(row) {
+  if (!row.from_status) return { what: 'First seen', note: '', dot: 'ghost' }
+  const what =
+    row.reason === 'reopened'
+      ? 'Reopened'
+      : { new: 'Back to new', investigating: 'Investigating', diagnosed: 'Diagnosed', resolved: 'Resolved', regressed: 'Regressed', ignored: 'Ignored' }[row.to_status] ?? row.to_status
+  const why = transitionSentence(row)
+  const who = { console: 'by a person', agent: 'by the agent', investigation: 'by the investigation' }[row.actor]
+  // The sentence for a plain pair of states repeats the word on the left.
+  const note = [why.includes('→') ? null : why, who].filter(Boolean).join(' · ')
+  return { what, note, dot: statusLook(row.to_status).dot }
 }

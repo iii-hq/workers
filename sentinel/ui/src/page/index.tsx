@@ -1,6 +1,6 @@
 import {
   Button,
-  EmptyState,
+  IconButton,
   LiveRegion,
   PageHeader,
   PageMain,
@@ -15,14 +15,14 @@ import {
   useWorkerLive,
 } from '@iii-dev/console-ui/hooks'
 import type { Host, PageRenderProps } from '@iii-dev/console-ui'
-import { ShieldAlert } from 'lucide-react'
+import { Activity, ArrowLeft, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { client } from '../api'
-import type { GroupStatus, StatusResponse } from '../api'
+import type { GroupStatus, GroupSummary, StatusResponse } from '../api'
 import { EVENT, PAGE_ID } from '../shared'
 import { GroupDetailView } from './detail'
 import { GroupsListView } from './list'
-import { OPEN_STATES, bulkOutcome, sinceMs } from './present.js'
+import { OPEN_STATES, ago, bulkOutcome, sinceMs } from './present.js'
 
 type Props = { host: Host } & PageRenderProps
 
@@ -49,7 +49,6 @@ export function SentinelPage({
   onRequestClose,
   paneId,
   panelContext,
-  panelSide,
   tabId,
 }: Props) {
   const api = useMemo(() => client(host.iii), [host.iii])
@@ -67,10 +66,18 @@ export function SentinelPage({
     text: string
     urgency: 'polite' | 'assertive'
   } | null>(null)
+  // Said to a screen reader only: the page's own state already shows it.
   const announce = useCallback((text: string) => {
-    setNotice(text)
     setAnnouncement((previous) => ({ seq: (previous?.seq ?? 0) + 1, text, urgency: 'polite' }))
   }, [])
+  // Said and shown: a batch outcome has nothing else on screen to say it.
+  const notify = useCallback(
+    (text: string) => {
+      setNotice(text)
+      announce(text)
+    },
+    [announce],
+  )
 
   // A sibling page can open this one on a group (`panels.open`).
   const contextGroup =
@@ -111,7 +118,31 @@ export function SentinelPage({
     refresh.current()
   }, [statuses, filters.service, filters.window, search])
 
-  const bulk = useBulkActions(api, () => groups.refresh(), announce)
+  // Every worker the list has shown, so narrowing to one does not make the
+  // others vanish from the menu that would widen it again.
+  const [workers, setWorkers] = useState<string[]>([])
+  useEffect(() => {
+    const seen = groups.data?.groups.map((group) => group.service_name) ?? []
+    setWorkers((previous) => {
+      const next = [...new Set([...previous, ...seen])].sort()
+      return next.length === previous.length ? previous : next
+    })
+  }, [groups.data])
+
+  // "12 s ago" has to keep moving between refreshes.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const tick = window.setInterval(() => setNow(Date.now()), 15_000)
+    return () => window.clearInterval(tick)
+  }, [])
+  useEffect(() => setNow(Date.now()), [groups.data])
+
+  const [opened, setOpened] = useState<GroupSummary | null>(null)
+  useEffect(() => {
+    if (!selected) setOpened(null)
+  }, [selected])
+
+  const bulk = useBulkActions(api, () => groups.refresh(), notify)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   useEffect(() => {
     let live = true
@@ -129,12 +160,12 @@ export function SentinelPage({
     return commands.register([
       {
         id: 'refresh',
-        title: 'Refresh errors',
+        title: 'Refresh error groups',
         run: () => groups.refresh(),
       },
       {
         id: 'back',
-        title: 'Back to the error list',
+        title: 'Back to the groups',
         enabled: () => selected !== null,
         run: () => setSelected(null),
       },
@@ -144,55 +175,78 @@ export function SentinelPage({
   return (
     <PageShell ref={ref} data-narrow={narrow}>
       <PageHeader
-        icon={<ShieldAlert size={16} />}
-        title="errors"
-        description={describe(status)}
+        icon={<Activity size={16} />}
+        title="Sentinel"
+        description={
+          selected
+            ? opened
+              ? [opened.service_name, opened.function_id].filter(Boolean).join(' · ')
+              : undefined
+            : describe(status)
+        }
         onClose={onRequestClose}
         actions={
-          <Button variant="ghost" size="sm" onClick={() => groups.refresh()}>
-            Refresh
-          </Button>
+          <>
+            {!selected && status?.groups.last_seen_ms ? (
+              <span className="sentinel-ui-ingested">
+                ingested {ago(status.groups.last_seen_ms, now)}
+              </span>
+            ) : null}
+            <IconButton label="Refresh" onClick={() => groups.refresh()}>
+              <RefreshCw size={16} />
+            </IconButton>
+          </>
         }
-      />
+      >
+        {selected ? (
+          <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
+            <ArrowLeft size={16} />
+            Groups
+          </Button>
+        ) : null}
+      </PageHeader>
       <PageMain>
         <LiveRegion announcement={announcement} />
-        {status?.config_error ? (
-          <StatusPanel
-            variant="alert"
-            headline="The stored configuration was refused"
-            detail={`${status.config_error} — the worker is running on defaults and is not ingesting.`}
-          />
-        ) : null}
-        {status && !status.enabled && !status.config_error ? (
-          <StatusPanel
-            variant="warn"
-            headline="Ingest is not open yet"
-            detail="The worker is up but its store or queue has not answered. Nothing is being recorded."
-          />
-        ) : null}
-        {notice ? (
-          <StatusPanel
-            variant="info"
-            headline={notice}
-            action={
-              <Button size="sm" variant="ghost" onClick={() => setNotice(null)}>
-                Dismiss
-              </Button>
-            }
-          />
-        ) : null}
-        {groups.error ? (
-          <StatusPanel
-            variant="alert"
-            headline="Could not read the error groups"
-            detail={groups.error}
-            action={
-              <Button size="sm" onClick={() => groups.refresh()}>
-                Retry
-              </Button>
-            }
-          />
-        ) : null}
+        {/* Page-wide news sits in the same column as the content under it. */}
+        <div className={selected ? 'sentinel-ui-banners sentinel-ui-banners--column' : 'sentinel-ui-banners'}>
+          {status?.config_error ? (
+            <StatusPanel
+              variant="alert"
+              headline="The stored configuration was refused"
+              detail={`${status.config_error} — the worker is running on defaults and is not ingesting.`}
+            />
+          ) : null}
+          {status && !status.enabled && !status.config_error ? (
+            <StatusPanel
+              variant="warn"
+              headline="Nothing is being recorded"
+              detail="Either the configuration switches ingest off, or the worker's store or queue has not answered yet."
+            />
+          ) : null}
+          {notice ? (
+            <StatusPanel
+              variant="info"
+              headline={notice}
+              action={
+                <Button size="sm" variant="ghost" onClick={() => setNotice(null)}>
+                  Dismiss
+                </Button>
+              }
+            />
+          ) : null}
+          {groups.error ? (
+            <StatusPanel
+              variant="alert"
+              headline="Could not read the error groups"
+              detail={groups.error}
+              action={
+                <Button size="sm" onClick={() => groups.refresh()}>
+                  Retry
+                </Button>
+              }
+            />
+          ) : null}
+        </div>
 
         {selected ? (
           <GroupDetailView
@@ -202,33 +256,26 @@ export function SentinelPage({
             conversationId={conversationId ?? null}
             narrow={narrow}
             repositories={status?.repositories ?? []}
+            now={now}
             onBack={() => setSelected(null)}
             onChanged={() => groups.refresh()}
-          />
-        ) : groups.data && groups.data.groups.length === 0 && !groups.loading ? (
-          <EmptyState
-            icon={ShieldAlert}
-            title="Nothing has failed here"
-            description={
-              filters.search || filters.service
-                ? 'No group matches this filter. Widen the window or clear the search.'
-                : 'When a worker fails, the group appears here with the evidence already frozen.'
-            }
+            onLoaded={setOpened}
+            announce={announce}
           />
         ) : (
           <GroupsListView
             busy={bulk.busy}
             onBulk={bulk.run}
-            counts={status?.groups}
+            status={status}
             filters={filters}
             groups={groups.data?.groups ?? []}
-            live={groups.live}
-            loading={groups.loading}
+            loading={groups.loading || !groups.data}
             narrow={narrow}
+            now={now}
             onFilters={setFilters}
             onOpen={setSelected}
-            panelSide={panelSide}
             total={groups.data?.total ?? 0}
+            workers={workers}
           />
         )}
       </PageMain>
@@ -238,15 +285,9 @@ export function SentinelPage({
 
 /** The one-line descriptor in the page header: what the worker is watching. */
 function describe(status: StatusResponse | null): string {
-  if (!status) return 'sentinel'
-  const sources = [
-    status.sources.trace ? 'traces' : null,
-    status.sources.log ? 'logs' : null,
-  ].filter(Boolean)
-  if (!status.enabled) return 'not ingesting'
-  const where = sources.length ? sources.join(' and ') : 'nothing'
-  const blind = status.engine.trace_store === 'disabled' ? ' · span store off' : ''
-  return `watching ${where}${blind}`
+  if (status && !status.enabled) return 'not ingesting'
+  if (status && !status.sources.trace && !status.sources.log) return 'every source is switched off'
+  return 'errors across every worker on this engine'
 }
 
 /**

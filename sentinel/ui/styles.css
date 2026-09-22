@@ -1,156 +1,195 @@
 /* sentinel console page. Every selector is scoped to the host wrapper, and
    every colour, radius and duration comes from a token — the page has to sit
-   inside the console without announcing that it came from somewhere else. */
+   inside the console without announcing that it came from somewhere else.
+   Measures follow the prototype in tech-specs/2026-09-sentinel/design/mock. */
 
 [data-iii-ui="sentinel"] .sentinel-ui-list,
 [data-iii-ui="sentinel"] .sentinel-ui-detail {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px;
   color: var(--color-ink);
   font-family: var(--font-sans);
 }
 
-/* Each section is worth its own height. Without this the column shrinks the
-   short ones — the facts card collapsed to two pixels behind a long span
-   tree — because a flex child shrinks before its sibling overflows. */
+[data-iii-ui="sentinel"] .sentinel-ui-list {
+  gap: 14px;
+  padding: 16px 24px 40px;
+}
+
+/* A reading column, not a full-bleed sheet. */
+[data-iii-ui="sentinel"] .sentinel-ui-detail {
+  gap: 18px;
+  width: min(100%, 1080px);
+  margin: 0 auto;
+  padding: 22px 24px 56px;
+}
+
+/* Each section is worth its own height: a flex child shrinks before its
+   sibling overflows, which once collapsed a card to two pixels. */
 [data-iii-ui="sentinel"] .sentinel-ui-list > *,
-[data-iii-ui="sentinel"] .sentinel-ui-detail > * {
+[data-iii-ui="sentinel"] .sentinel-ui-detail > *,
+[data-iii-ui="sentinel"] .sentinel-ui-stack > * {
   flex: 0 0 auto;
 }
 
-/* Every column shrinks to its content except the title, which takes the
-   slack. `width: 1%` is the shrink-to-fit idiom for an auto-layout table;
-   `table-layout: fixed` is not — it ignores content entirely and collapses
-   the trailing columns into each other. */
-[data-iii-ui="sentinel"] .sentinel-ui-list table {
-  width: 100%;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-list th,
-[data-iii-ui="sentinel"] .sentinel-ui-list td {
-  width: 1%;
-  white-space: nowrap;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-list th.sentinel-ui-grow,
-[data-iii-ui="sentinel"] .sentinel-ui-list td.sentinel-ui-grow {
-  width: 100%;
+[data-iii-ui="sentinel"] .sentinel-ui-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   min-width: 0;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-search {
-  flex: 1 1 200px;
-  min-width: 140px;
+[data-iii-ui="sentinel"] .sentinel-ui-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 24px 0;
 }
 
-/* A filter whose label is squeezed to one letter is not a filter. */
-[data-iii-ui="sentinel"] .sentinel-ui-filter {
-  flex: 0 1 auto;
-  min-width: 96px;
+[data-iii-ui="sentinel"] .sentinel-ui-banners--column {
+  width: min(100%, 1080px);
+  margin: 0 auto;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-liveness {
+[data-iii-ui="sentinel"] .sentinel-ui-banners:empty { display: none; }
+
+/* ── shared marks ─────────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-dot {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-ink-ghost);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dot[data-tone="alert"] { background: var(--color-alert); }
+[data-iii-ui="sentinel"] .sentinel-ui-dot[data-tone="accent"] { background: var(--color-accent); }
+[data-iii-ui="sentinel"] .sentinel-ui-dot[data-tone="ok"] { background: var(--color-ok); }
+[data-iii-ui="sentinel"] .sentinel-ui-dot[data-tone="current"] { background: currentColor; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-dot[data-pulse="true"] {
+  box-shadow: 0 0 0 2px var(--color-accent-muted);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-mono,
+[data-iii-ui="sentinel"] .sentinel-ui-number,
+[data-iii-ui="sentinel"] .sentinel-ui-when,
+[data-iii-ui="sentinel"] .sentinel-ui-quiet-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-quiet { color: var(--color-ink-faint); }
+[data-iii-ui="sentinel"] .sentinel-ui-accent { color: var(--color-accent); }
+[data-iii-ui="sentinel"] .sentinel-ui-alert { color: var(--color-alert); }
+
+[data-iii-ui="sentinel"] .sentinel-ui-quiet-mono {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   color: var(--color-ink-ghost);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-link:hover { text-decoration: underline; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-link:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-ingested {
+  margin-right: 6px;
+  color: var(--color-ink-ghost);
   font-family: var(--font-mono);
   font-size: 11px;
   white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-menu-hint {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 /* ── the list ─────────────────────────────────────────────────────────── */
 
-[data-iii-ui="sentinel"] .sentinel-ui-row-title {
+[data-iii-ui="sentinel"] .sentinel-ui-filters {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-title {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-row-detail {
-  max-width: 100%;
-  margin-top: 2px;
-  overflow: hidden;
-  color: var(--color-ink-ghost);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A regression is the one row that says somebody's fix did not hold. The
-   mark rides the row in both shapes: the wide table and the narrow list. */
-[data-iii-ui="sentinel"] tr[data-regressed="true"],
-[data-iii-ui="sentinel"] [data-regressed="true"].iii-ui-list-item {
-  box-shadow: inset 2px 0 0 0 var(--color-alert);
-}
-
-/* The narrow row's trailing pair: how many, and how long ago. */
-[data-iii-ui="sentinel"] .sentinel-ui-row-trailing {
-  display: inline-flex;
-  align-items: baseline;
   gap: 10px;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-worker,
-[data-iii-ui="sentinel"] .sentinel-ui-count,
-[data-iii-ui="sentinel"] .sentinel-ui-when {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+[data-iii-ui="sentinel"] .sentinel-ui-worker { width: 180px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-search {
+  flex: 0 1 300px;
+  min-width: 180px;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-version {
-  display: block;
+/* A filter whose label is squeezed to one letter is not a filter. */
+[data-iii-ui="sentinel"] .sentinel-ui-filter {
+  flex: 1 1 120px;
+  min-width: 96px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 56px 24px;
   color: var(--color-ink-ghost);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
-/* Twenty-four bars of CSS rather than an inline chart: the design system
-   asks for no inline SVG, and this needs none. */
-[data-iii-ui="sentinel"] .sentinel-ui-sparkline {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 1px;
-  width: 72px;
-  height: 18px;
+[data-iii-ui="sentinel"] .sentinel-ui-empty strong {
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 500;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-sparkline > span {
-  flex: 1 1 0;
-  min-height: 1px;
-  border-radius: 0;
-  background: var(--color-accent);
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-sparkline > span[data-empty="true"] {
-  height: 1px !important;
-  background: var(--color-edge);
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-more {
-  color: var(--color-ink-ghost);
-}
-
-/* The selection column stays exactly as wide as the box in it. */
-[data-iii-ui="sentinel"] .sentinel-ui-pick {
-  width: 1%;
-  padding-inline-end: 0;
-  white-space: nowrap;
+[data-iii-ui="sentinel"] .sentinel-ui-empty p {
+  max-width: 46ch;
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-bulk {
@@ -160,233 +199,626 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: 6px;
-  background: var(--color-panel-raised);
-  font-size: 11px;
+  background: var(--color-surface);
+  font-size: 13px;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-bulk-none {
+/* Every column shrinks to its content except the issue, which takes the
+   slack: `width: 1%` is the shrink-to-fit idiom for an auto-layout table. */
+[data-iii-ui="sentinel"] .sentinel-ui-groups th,
+[data-iii-ui="sentinel"] .sentinel-ui-groups td,
+[data-iii-ui="sentinel"] .sentinel-ui-occurrences th,
+[data-iii-ui="sentinel"] .sentinel-ui-occurrences td {
+  width: 1%;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-groups .sentinel-ui-grow,
+[data-iii-ui="sentinel"] .sentinel-ui-occurrences .sentinel-ui-grow {
+  width: 100%;
+  max-width: 0;
+  white-space: normal;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-groups td {
+  vertical-align: top;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-pick { padding-right: 4px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-chevron {
+  color: var(--color-ink-ghost);
+  text-align: right;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-groups .sentinel-ui-when {
+  font-size: 12px;
+}
+
+/* A regression is the one row that says somebody's fix did not hold; it
+   keeps its wash on hover, in both the wide table and the narrow list. */
+[data-iii-ui="sentinel"] tr[data-regressed="true"],
+[data-iii-ui="sentinel"] tr[data-regressed="true"]:hover,
+[data-iii-ui="sentinel"] [data-regressed="true"].iii-ui-list-item {
+  background: var(--color-alert-muted);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue > .sentinel-ui-dot { margin-top: 7px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-title b { font-weight: 600; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-source {
+  margin-left: 4px;
+  vertical-align: 1px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-issue-where {
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-row-trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+/* Twenty-four bars of CSS rather than an inline chart. */
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 1px;
+  width: 72px;
+  height: 18px;
+  vertical-align: middle;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline > i {
+  flex: 1 1 0;
+  min-height: 1px;
+  border-radius: 0;
+  background: var(--color-ink-ghost);
+}
+
+/* A quiet hour is the baseline, not a bar. */
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline > i[data-empty="true"] {
+  background: var(--color-edge);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-sparkline > i[data-hot="true"] {
+  background: var(--color-alert);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-foot > .sentinel-ui-quiet {
+  margin-left: auto;
   color: var(--color-ink-ghost);
 }
 
 /* ── the detail ───────────────────────────────────────────────────────── */
 
-[data-iii-ui="sentinel"] .sentinel-ui-detail-head {
+[data-iii-ui="sentinel"] .sentinel-ui-dhead {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-detail-actions {
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-title {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-inline-start: auto;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-detail-title {
-  display: flex;
-  align-items: center;
+  flex: 1 1 480px;
+  align-items: flex-start;
   gap: 8px;
   min-width: 0;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-detail-title h2 {
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-title > .sentinel-ui-dot { margin-top: 12px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-copy { min-width: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead h2 {
+  max-width: 760px;
   margin: 0;
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 500;
-  text-overflow: ellipsis;
+  color: var(--color-ink);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-message {
-  margin: 8px 0 0;
-  padding: 8px;
+[data-iii-ui="sentinel"] .sentinel-ui-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 7px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kicker code {
+  color: var(--color-ink-ghost);
+  font: inherit;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-tools {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-badges,
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-dhead-actions button { white-space: nowrap; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts > div:last-child { border-right: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts dd {
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-facts dd b {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-tab-count {
+  margin-left: 6px;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 14px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-viewing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+}
+
+/* The detail beside an open session, or in a narrow pane: the header
+   stacks and the facts fold to two columns. */
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] {
+  gap: 14px;
+  padding: 18px 16px 40px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead {
+  flex-direction: column;
+  gap: 10px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead-title { flex: 1 1 auto; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead-tools {
+  align-items: stretch;
+  width: 100%;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead-badges,
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-dhead-actions {
+  justify-content: flex-start;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] h2 { font-size: 20px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-facts > div:nth-child(-n + 2) {
+  border-bottom: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-facts > div:nth-child(2n) {
+  border-right: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-origin,
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-fix {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ── cards of the tabs ────────────────────────────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-note {
+  color: var(--color-ink-ghost);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-note.sentinel-ui-mono { font-size: 11px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-end { margin-left: auto; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-foot,
+[data-iii-ui="sentinel"] .sentinel-ui-foot-note {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-card-foot { margin-top: 10px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-origin {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px 24px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-origin > pre,
+[data-iii-ui="sentinel"] .sentinel-ui-origin > .sentinel-ui-attributes,
+[data-iii-ui="sentinel"] .sentinel-ui-origin > .sentinel-ui-card-foot {
+  grid-column: 1 / -1;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kv {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kv dt,
+[data-iii-ui="sentinel"] .sentinel-ui-kv-key {
+  margin: 0;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-kv dd {
+  margin: 0;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-exception {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 16px;
+  margin: 0;
+  padding: 10px 12px;
   overflow-x: auto;
   border-radius: 6px;
   background: var(--color-surface);
   color: var(--color-ink);
   font-family: var(--font-code);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* A secondary card in the body, not a header or a tool card: one step
-   from the panel, which is what `surface` is for. */
-[data-iii-ui="sentinel"] .sentinel-ui-investigation {
+[data-iii-ui="sentinel"] .sentinel-ui-exception-key { color: var(--color-ink-ghost); }
+
+[data-iii-ui="sentinel"] .sentinel-ui-attributes {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: var(--color-surface);
-  font-size: 11px;
+  gap: 6px;
 }
 
-/* ── evidence ─────────────────────────────────────────────────────────── */
-
-[data-iii-ui="sentinel"] .sentinel-ui-evidence {
+[data-iii-ui="sentinel"] .sentinel-ui-spans,
+[data-iii-ui="sentinel"] .sentinel-ui-logs,
+[data-iii-ui="sentinel"] .sentinel-ui-history,
+[data-iii-ui="sentinel"] .sentinel-ui-versions {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-top: 8px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-evidence-head,
-[data-iii-ui="sentinel"] .sentinel-ui-diagnosis-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-event {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-attribute-key {
-  color: var(--color-ink-ghost);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-spans {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-/* The tree is drawn with indentation and a rule, not with box glyphs: a
-   span name is already dense enough to read. */
-/* The one hairline that survives: depth is what this list is about, and
-   the guide is what makes a nested span readable. */
+[data-iii-ui="sentinel"] .sentinel-ui-spans { gap: 2px; }
+
 [data-iii-ui="sentinel"] .sentinel-ui-span {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 6px;
-  border-inline-start: 1px solid var(--color-edge);
-  border-radius: 0 6px 6px 0;
+  min-height: 28px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: var(--color-ink-faint);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-span[data-origin="true"] {
-  background: var(--color-surface-selected);
+  background: var(--color-alert-muted);
   color: var(--color-ink);
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-span-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-span-service { color: var(--color-ink-ghost); }
+
+[data-iii-ui="sentinel"] .sentinel-ui-span-duration {
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-logs {
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-logs li {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
   white-space: nowrap;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-span-service,
-[data-iii-ui="sentinel"] .sentinel-ui-repo,
-[data-iii-ui="sentinel"] .sentinel-ui-note {
-  color: var(--color-ink-ghost);
-  font-size: 11px;
-}
+[data-iii-ui="sentinel"] .sentinel-ui-log-level { width: 44px; flex: 0 0 auto; }
 
-[data-iii-ui="sentinel"] .sentinel-ui-attributes {
-  display: grid;
-  grid-template-columns: minmax(120px, auto) 1fr;
-  gap: 2px 10px;
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-attributes dt {
-  color: var(--color-ink-ghost);
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-attributes dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-occurrence-message {
-  display: block;
-  max-width: 48ch;
+[data-iii-ui="sentinel"] .sentinel-ui-log-body {
+  min-width: 0;
   overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: 11px;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-disclosure-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-disclosure-chevron {
+  margin-left: auto;
+  color: var(--color-ink-faint);
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-disclosure[data-state="open"] .sentinel-ui-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-payloads {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
 }
 
 /* ── diagnosis ────────────────────────────────────────────────────────── */
 
-[data-iii-ui="sentinel"] .sentinel-ui-evidence-list,
-[data-iii-ui="sentinel"] .sentinel-ui-steps {
+[data-iii-ui="sentinel"] .sentinel-ui-provenance {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 12px 14px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-provenance-copy {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin: 8px 0;
-  padding-inline-start: 16px;
+  gap: 4px;
+  min-width: 0;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-evidence-list {
-  padding-inline-start: 0;
-  list-style: none;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-evidence-why {
-  margin-bottom: 4px;
-  font-size: 11px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-timeline ol {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-timeline li {
+[data-iii-ui="sentinel"] .sentinel-ui-provenance-line {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  padding: 4px 8px;
-  font-size: 11px;
+  gap: 8px;
+  font-size: 13px;
 }
 
-/* The pipeline's own moves read quieter than the decisions people made. */
-[data-iii-ui="sentinel"] .sentinel-ui-timeline li[data-actor="ingest"] {
-  color: var(--color-ink-ghost);
+[data-iii-ui="sentinel"] .sentinel-ui-provenance-line b { font-weight: 600; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-provenance-line.sentinel-ui-quiet { font-size: 12px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-prose {
+  max-width: 76ch;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-timeline-when {
-  min-width: 7ch;
-  color: var(--color-ink-ghost);
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+/* The console's Markdown is set for the transcript, in mono. A finding on
+   this page reads as prose, the way the design sets it. */
+[data-iii-ui="sentinel"] .sentinel-ui-prose p,
+[data-iii-ui="sentinel"] .sentinel-ui-prose ul,
+[data-iii-ui="sentinel"] .sentinel-ui-prose ol,
+[data-iii-ui="sentinel"] .sentinel-ui-prose li {
+  margin: 0 0 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-timeline-move {
-  flex: 0 1 auto;
+[data-iii-ui="sentinel"] .sentinel-ui-prose > :last-child,
+[data-iii-ui="sentinel"] .sentinel-ui-prose p:last-child { margin-bottom: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-prose ol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding-left: 18px;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-session {
-  font-family: var(--font-mono);
-  font-size: 11px;
+[data-iii-ui="sentinel"] .sentinel-ui-cited {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 4px 12px;
+  padding: 10px 12px;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-session-none {
-  color: var(--color-ink-ghost);
+[data-iii-ui="sentinel"] .sentinel-ui-cited-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-cited-body p { margin: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-missing {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--color-warn-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-missing ul { margin: 6px 0 0; padding-left: 18px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-missing p { margin: 6px 0 0; font-size: 12px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-fix {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 16px 24px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-fix-files {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions,
+[data-iii-ui="sentinel"] .sentinel-ui-history {
+  gap: 8px;
+  font-size: 13px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions li,
+[data-iii-ui="sentinel"] .sentinel-ui-history li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions-when { width: 96px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-history-when { width: 110px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-history b { font-weight: 500; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-history .sentinel-ui-quiet { font-size: 12px; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions-note {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-versions-tag {
+  margin-left: auto;
+  font-size: 12px;
+}
+
+/* ── the transcript renderer and the dialogs ─────────────────────────── */
+
+[data-iii-ui="sentinel"] .sentinel-ui-record {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-record-summary {
+  margin: 0;
+  font-size: 12px;
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-dialog {
@@ -400,42 +832,6 @@
   margin-top: 12px;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-history {
-  margin-top: 12px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-history-list > li {
-  padding-inline-start: 2px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-history-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-record {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-record-summary {
-  margin: 0;
-  font-size: 11px;
-}
-
 /* ── configuration ────────────────────────────────────────────────────── */
 
 [data-iii-ui="sentinel"] .sentinel-ui-config {
@@ -444,14 +840,32 @@
   gap: 16px;
 }
 
-/* Narrow panes drop the columns that only repeat what the title already
-   says, rather than shrinking everything until nothing is legible. */
+/* Narrow panes: the list's summary chips go under the filters. */
 @container (max-width: 760px) {
-  [data-iii-ui="sentinel"] .sentinel-ui-sparkline {
-    width: 56px;
-  }
+  [data-iii-ui="sentinel"] .sentinel-ui-list { padding: 12px 16px 32px; }
 
-  [data-iii-ui="sentinel"] .sentinel-ui-detail-actions {
-    margin-inline-start: 0;
-  }
+  [data-iii-ui="sentinel"] .sentinel-ui-summary { margin-left: 0; }
+
+  [data-iii-ui="sentinel"] .sentinel-ui-search { flex: 1 1 100%; }
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-repo-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-repo-path {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-repo-workers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }

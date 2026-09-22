@@ -51,7 +51,8 @@ export function InvestigateWith({ host, onCancel, onInvestigate, open }: Props) 
       >
         <DialogTitle>Investigate with…</DialogTitle>
         <DialogDescription>
-          For this investigation only. The configured default is unchanged.
+          For this investigation only. The configured default is unchanged — set one in the
+          configuration and Investigate stops asking.
         </DialogDescription>
         <Selector
           aria-label="Model for this investigation"

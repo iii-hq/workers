@@ -1,21 +1,18 @@
 import {
-  Badge,
   Button,
   Checkbox,
   Chip,
-  Eyebrow,
-  List,
-  ListItem,
-  SearchField,
-  SegmentedControl,
-  Select,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  List,
+  ListItem,
+  Panel,
+  SearchField,
+  SegmentedControl,
+  Select,
   Skeleton,
-  StatusBar,
-  StatusDot,
   Table,
   TableBody,
   TableCell,
@@ -24,78 +21,66 @@ import {
   TableHeader,
   TableRow,
   TableViewport,
-  Toolbar,
 } from '@iii-dev/console-ui'
-import { formatRelative } from '@iii-dev/console-ui/format'
+import { ChevronRight, Inbox } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { GroupStatus, GroupSummary, StatusResponse } from '../api'
+import type { GroupSummary, StatusResponse } from '../api'
 import type { Filters } from './index'
+import { Dot, Sparkline, StatusBadge } from './marks'
 import {
-  OPEN_STATES,
-  STATUS_PRESENTATION,
+  SCOPES,
+  SCOPE_STATES,
+  WINDOWS,
+  ago,
   bulkActions,
-  ignoreSummary,
-  sparklineBars,
+  scopeOf,
+  spaced,
+  splitTitle,
+  statusLook,
+  versionRange,
 } from './present.js'
-
-// `icon: false` throughout: these are words, and the control's inferred
-// glyphs would be decoration that means nothing here.
-const WINDOWS = [
-  { value: '1h', label: '1h', icon: false as const },
-  { value: '24h', label: '24h', icon: false as const },
-  { value: '7d', label: '7d', icon: false as const },
-  { value: '30d', label: '30d', icon: false as const },
-  { value: 'all', label: 'all', icon: false as const },
-]
-
-const SCOPES = [
-  { value: 'open', label: 'open', icon: false as const },
-  { value: 'resolved', label: 'resolved', icon: false as const },
-  { value: 'ignored', label: 'ignored', icon: false as const },
-  { value: 'everything', label: 'everything', icon: false as const },
-]
-
-const SCOPE_STATES: Record<string, GroupStatus[]> = {
-  open: OPEN_STATES as GroupStatus[],
-  resolved: ['resolved'],
-  ignored: ['ignored'],
-  everything: [],
-}
 
 interface Props {
   busy: boolean
   onBulk: (action: string, groupIds: string[]) => void
-  counts?: StatusResponse['groups']
+  status: StatusResponse | null
   filters: Filters
   groups: GroupSummary[]
-  live: boolean
   loading: boolean
   narrow: boolean
+  now: number
   onFilters: (next: Filters) => void
   onOpen: (groupId: string) => void
-  panelSide: 'left' | 'right'
   total: number
+  workers: string[]
+}
+
+const WINDOW_WORDS: Record<string, string> = {
+  '24h': 'in the last 24 h',
+  '7d': 'in the last 7 d',
+  '30d': 'in the last 30 d',
 }
 
 export function GroupsListView({
   busy,
   onBulk,
-  counts,
+  status,
   filters,
   groups,
-  live,
   loading,
   narrow,
+  now,
   onFilters,
   onOpen,
   total,
+  workers,
 }: Props) {
   const scope = scopeOf(filters.statuses)
-  const services = [...new Set(groups.map((group) => group.service_name))].sort()
+  const counts = status?.groups
   const [picked, setPicked] = useState<string[]>([])
 
-  // A row that scrolled out of the filter is no longer selectable: keeping it
-  // would apply an action to something the person cannot see.
+  // A row that left the filter is no longer selectable: keeping it would
+  // apply an action to something the person cannot see.
   const visible = new Set(groups.map((group) => group.id))
   const selection = picked.filter((id) => visible.has(id))
   const actions = bulkActions(
@@ -109,170 +94,135 @@ export function GroupsListView({
     setPicked((previous) =>
       previous.includes(id) ? previous.filter((other) => other !== id) : [...previous, id],
     )
+  const apply = (action: string) => {
+    onBulk(action, selection)
+    setPicked([])
+  }
+
+  const setScope = (next: string) => onFilters({ ...filters, statuses: SCOPE_STATES[next] ?? [] })
+  const setWindow = (next: string) => onFilters({ ...filters, window: next })
+  const setWorker = (next: string) => onFilters({ ...filters, service: next })
+  const setSearch = (next: string) => onFilters({ ...filters, search: next })
+  // "All workers" is the Select's own empty option: an option whose value is
+  // an empty string is not allowed.
+  const worker = {
+    value: filters.service || undefined,
+    placeholder: 'All workers',
+    allowEmpty: true,
+    emptyLabel: 'All workers',
+    onClear: () => setWorker(''),
+    onChange: setWorker,
+    options: workers.map((name) => ({ value: name, label: name })),
+  }
+  const search = (
+    <SearchField
+      aria-label="Search groups"
+      className="sentinel-ui-search"
+      placeholder="Search title, message or function"
+      value={filters.search}
+      onChange={setSearch}
+    />
+  )
+
+  const within = WINDOW_WORDS[filters.window]
+  const shown = `${groups.length} ${groups.length === 1 ? 'group' : 'groups'}${within ? ` ${within}` : ''}`
+  const hidden =
+    scope === 'open' && counts && counts.resolved + counts.ignored > 0
+      ? `${counts.resolved} resolved · ${counts.ignored} ignored hidden by this filter`
+      : null
 
   return (
     <div className="sentinel-ui-list">
-      {/* Narrow panes get two strips: filters on one, search on the next.
-          One strip cannot hold both without squeezing the filter labels
-          down to a letter and an ellipsis. */}
-      <Toolbar aria-label="error filters">
+      <div className="sentinel-ui-filters" role="toolbar" aria-label="Filter groups">
         {narrow ? (
           <>
             <Select
-              aria-label="which groups"
+              aria-label="Which groups"
               sheetTitle="Which groups"
               className="sentinel-ui-filter"
               value={scope}
-              onChange={(next) => onFilters({ ...filters, statuses: SCOPE_STATES[next] ?? [] })}
-              options={SCOPES.map(({ value, label }) => ({ value, label }))}
+              onChange={setScope}
+              options={SCOPES}
             />
             <Select
-              aria-label="time window"
+              aria-label="Time window"
               sheetTitle="Time window"
               className="sentinel-ui-filter"
               value={filters.window}
-              onChange={(next) => onFilters({ ...filters, window: next })}
-              options={WINDOWS.map(({ value, label }) => ({ value, label }))}
+              onChange={setWindow}
+              options={WINDOWS}
             />
+            <Select aria-label="Worker" sheetTitle="Worker" className="sentinel-ui-filter" {...worker} />
+            {search}
           </>
         ) : (
           <>
             <SegmentedControl
-              aria-label="which groups"
+              variant="radio"
+              aria-label="Which groups"
               value={scope}
-              onChange={(next) => onFilters({ ...filters, statuses: SCOPE_STATES[next] ?? [] })}
-              options={SCOPES}
+              onChange={setScope}
+              options={SCOPES.map((option) => ({ ...option, icon: false as const }))}
             />
+            <Select aria-label="Worker" className="sentinel-ui-worker" {...worker} />
             <SegmentedControl
-              aria-label="time window"
+              variant="radio"
+              aria-label="Time window"
               value={filters.window}
-              onChange={(next) => onFilters({ ...filters, window: next })}
-              options={WINDOWS}
+              onChange={setWindow}
+              options={WINDOWS.map((option) => ({ ...option, icon: false as const }))}
             />
-            <Select
-              aria-label="worker"
-              value={filters.service || undefined}
-              placeholder="every worker"
-              allowEmpty
-              emptyLabel="every worker"
-              onClear={() => onFilters({ ...filters, service: '' })}
-              options={services.map((service) => ({ value: service, label: service }))}
-              onChange={(next) => onFilters({ ...filters, service: next })}
-            />
-            <SearchField
-              aria-label="search errors"
-              className="sentinel-ui-search"
-              placeholder="title, message or function"
-              value={filters.search}
-              onChange={(next) => onFilters({ ...filters, search: next })}
-            />
+            {search}
           </>
         )}
-      </Toolbar>
-      {narrow ? (
-        <Toolbar aria-label="search errors">
-          <SearchField
-            aria-label="search errors"
-            className="sentinel-ui-search"
-            placeholder="title, message or function"
-            value={filters.search}
-            onChange={(next) => onFilters({ ...filters, search: next })}
-          />
-        </Toolbar>
-      ) : null}
-
-      <StatusBar
-        aria-label="error counts"
-        end={
-          <span className="sentinel-ui-liveness">
-            <StatusDot tone={live ? 'ok' : 'ink'} />
-            <span>{live ? 'live' : 'polling'}</span>
-          </span>
-        }
-      >
-        {counts ? (
-          <>
-            <Chip tone={counts.regressed > 0 ? 'danger' : 'neutral'}>
-              {counts.regressed} regressed
+        <div className="sentinel-ui-summary">
+          {counts && counts.regressed > 0 ? (
+            <Chip tone="danger">
+              {counts.regressed} {counts.regressed === 1 ? 'regression' : 'regressions'}
             </Chip>
-            <Chip tone="neutral">{counts.open} open</Chip>
-            <Chip tone="neutral">{counts.resolved} resolved</Chip>
-            <Chip tone="neutral">{counts.ignored} ignored</Chip>
-          </>
-        ) : null}
-      </StatusBar>
+          ) : null}
+          {counts ? <Chip>{spaced(counts.open)} open groups</Chip> : null}
+          {status && status.engine.trace_store !== 'unknown' ? (
+            <Chip tone={status.engine.trace_store === 'disabled' ? 'warning' : 'neutral'}>
+              trace store: {status.engine.trace_store === 'disabled' ? 'off' : status.engine.trace_store}
+            </Chip>
+          ) : null}
+        </div>
+      </div>
 
       {selection.length > 0 ? (
-        <div className="sentinel-ui-bulk" role="region" aria-label="selected groups">
+        <div className="sentinel-ui-bulk" role="region" aria-label="Selected groups">
           <span>{selection.length} selected</span>
           {actions.length === 0 ? (
-            <span className="sentinel-ui-bulk-none">
-              nothing applies to all of them — narrow the selection
-            </span>
+            <span className="sentinel-ui-quiet">nothing applies to all of them — narrow the selection</span>
           ) : null}
           {actions.includes('resolve') ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={() => {
-                onBulk('resolve', selection)
-                setPicked([])
-              }}
-            >
+            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('resolve')}>
               Resolve
             </Button>
           ) : null}
           {actions.includes('ignore') ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="ghost" disabled={busy}>
+                <Button size="sm" variant="pill" disabled={busy}>
                   Ignore
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    onBulk('ignore', selection)
-                    setPicked([])
-                  }}
-                >
-                  Forever
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    onBulk('ignore-version', selection)
-                    setPicked([])
-                  }}
-                >
+                <DropdownMenuItem onSelect={() => apply('ignore')}>Forever</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => apply('ignore-version')}>
                   Until the worker version changes
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           ) : null}
           {actions.includes('unignore') ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={() => {
-                onBulk('unignore', selection)
-                setPicked([])
-              }}
-            >
-              Stop ignoring
+            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('unignore')}>
+              Unignore
             </Button>
           ) : null}
           {actions.includes('reopen') ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={() => {
-                onBulk('reopen', selection)
-                setPicked([])
-              }}
-            >
+            <Button size="sm" variant="pill" disabled={busy} onClick={() => apply('reopen')}>
               Reopen
             </Button>
           ) : null}
@@ -282,103 +232,132 @@ export function GroupsListView({
         </div>
       ) : null}
 
-      {narrow ? (
-        <List aria-label="error groups">
+      {!loading && groups.length === 0 ? (
+        <Panel className="sentinel-ui-empty">
+          <Inbox size={16} aria-hidden="true" />
+          <strong>Nothing here</strong>
+          <p>
+            No group matches this filter. Sentinel keeps counting every occurrence either way — resolved
+            and ignored groups are one click away.
+          </p>
+        </Panel>
+      ) : narrow ? (
+        <List aria-label="Error groups">
           {loading && groups.length === 0
             ? Array.from({ length: 5 }, (_, index) => (
                 <ListItem key={index} as="div" label={<Skeleton />} description={<Skeleton />} />
               ))
             : groups.map((group) => (
-                <GroupRowNarrow key={group.id} group={group} onOpen={onOpen} />
+                <GroupRowNarrow key={group.id} group={group} now={now} onOpen={onOpen} />
               ))}
         </List>
       ) : (
-      <TableViewport>
-        <TableFrame>
-          <Table density="compact">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="sentinel-ui-pick">
-                  <Checkbox
-                    aria-label="Select every group shown"
-                    checked={selection.length > 0 && selection.length === groups.length}
-                    indeterminate={selection.length > 0 && selection.length < groups.length}
-                    onChange={(event) =>
-                      setPicked(event.target.checked ? groups.map((group) => group.id) : [])
-                    }
-                  />
-                </TableHead>
-                <TableHead className="sentinel-ui-grow">error</TableHead>
-                {narrow ? null : <TableHead>worker</TableHead>}
-                <TableHead>last 24h</TableHead>
-                <TableHead align="right">count</TableHead>
-                <TableHead align="right">last seen</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading && groups.length === 0
-                ? Array.from({ length: 5 }, (_, index) => (
-                    <TableRow key={index}>
-                      <TableCell className="sentinel-ui-pick">
-                        <Skeleton />
-                      </TableCell>
-                      <TableCell className="sentinel-ui-grow">
-                        <Skeleton />
-                      </TableCell>
-                      {narrow ? null : (
-                        <TableCell>
-                          <Skeleton />
-                        </TableCell>
-                      )}
-                      <TableCell>
-                        <Skeleton />
-                      </TableCell>
-                      <TableCell>
-                        <Skeleton />
-                      </TableCell>
-                      <TableCell>
-                        <Skeleton />
-                      </TableCell>
-                    </TableRow>
-                  ))
-                : groups.map((group) => (
-                    <GroupRow
-                      key={group.id}
-                      group={group}
-                      narrow={narrow}
-                      onOpen={onOpen}
-                      picked={selection.includes(group.id)}
-                      onPick={() => toggle(group.id)}
+        <TableViewport>
+          <TableFrame>
+            <Table className="sentinel-ui-groups">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="sentinel-ui-pick">
+                    <Checkbox
+                      aria-label="Select every group shown"
+                      checked={selection.length > 0 && selection.length === groups.length}
+                      indeterminate={selection.length > 0 && selection.length < groups.length}
+                      onChange={(event) =>
+                        setPicked(event.target.checked ? groups.map((group) => group.id) : [])
+                      }
                     />
-                  ))}
-            </TableBody>
-          </Table>
-        </TableFrame>
-      </TableViewport>
+                  </TableHead>
+                  <TableHead className="sentinel-ui-grow">Issue</TableHead>
+                  <TableHead align="right">Count</TableHead>
+                  <TableHead align="right">Sessions</TableHead>
+                  <TableHead>First seen</TableHead>
+                  <TableHead>Last seen</TableHead>
+                  <TableHead>24 h</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="sentinel-ui-chevron">
+                    <span className="sentinel-ui-visually-hidden">Open</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading && groups.length === 0
+                  ? Array.from({ length: 5 }, (_, index) => (
+                      <TableRow key={index}>
+                        {Array.from({ length: 9 }, (_, cell) => (
+                          <TableCell key={cell}>
+                            <Skeleton />
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))
+                  : groups.map((group) => (
+                      <GroupRow
+                        key={group.id}
+                        group={group}
+                        now={now}
+                        onOpen={onOpen}
+                        picked={selection.includes(group.id)}
+                        onPick={() => toggle(group.id)}
+                      />
+                    ))}
+              </TableBody>
+            </Table>
+          </TableFrame>
+        </TableViewport>
       )}
-      {total > groups.length ? (
-        <Eyebrow className="sentinel-ui-more">
-          showing {groups.length} of {total}
-        </Eyebrow>
+
+      {groups.length > 0 ? (
+        <div className="sentinel-ui-foot">
+          <span>
+            {shown}
+            {total > groups.length ? ` · showing ${groups.length} of ${spaced(total)}` : ''} · sorted
+            by priority (regressions first, then last seen)
+          </span>
+          {hidden ? <span className="sentinel-ui-quiet">{hidden}</span> : null}
+        </div>
       ) : null}
+    </div>
+  )
+}
+
+/** The issue cell: the exception type in bold, the message after it, and
+    where it failed on the line below. */
+function Issue({ group }: { group: GroupSummary }) {
+  const { type, rest } = splitTitle(group.title, group.exception_type)
+  const where = [
+    group.service_name,
+    group.function_id,
+    versionRange(group.first_version, group.last_version),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <div className="sentinel-ui-issue">
+      <Dot tone={statusLook(group.status).dot} pulse={group.status === 'investigating'} />
+      <div className="sentinel-ui-issue-copy">
+        <span className="sentinel-ui-issue-title">
+          {type ? <b>{type}</b> : null} {rest}
+          {group.source === 'log' ? <Chip className="sentinel-ui-source">log</Chip> : null}
+        </span>
+        <span className="sentinel-ui-issue-where">{where}</span>
+      </div>
     </div>
   )
 }
 
 function GroupRow({
   group,
-  narrow,
+  now,
   onOpen,
   onPick,
   picked,
 }: {
   group: GroupSummary
-  narrow: boolean
+  now: number
   onOpen: (groupId: string) => void
   onPick: () => void
   picked: boolean
 }) {
-  const presentation = STATUS_PRESENTATION[group.status]
   return (
     <TableRow
       interactive
@@ -394,44 +373,27 @@ function GroupRow({
         // opens.
         onClick={(event) => event.stopPropagation()}
       >
-        <Checkbox
-          aria-label={`Select ${group.title}`}
-          checked={picked}
-          onChange={onPick}
-        />
+        <Checkbox aria-label={`Select ${group.title}`} checked={picked} onChange={onPick} />
       </TableCell>
       <TableCell className="sentinel-ui-grow">
-        <div className="sentinel-ui-row-title">
-          <Badge variant={presentation.tone === 'danger' ? 'alert' : 'default'}>
-            {presentation.label}
-          </Badge>
-          <span className="sentinel-ui-title">{group.title}</span>
-          {group.has_diagnosis && group.status !== 'diagnosed' ? (
-            <Chip tone="accent">diagnosed</Chip>
-          ) : null}
-        </div>
-        <div className="sentinel-ui-row-detail">
-          {group.function_id ?? group.service_name}
-          {group.status === 'ignored' ? ` · ${ignoreSummary(group.ignore_rule)}` : ''}
-          {group.sessions_affected > 0 ? ` · ${group.sessions_affected} sessions` : ''}
-        </div>
+        <Issue group={group} />
       </TableCell>
-      {narrow ? null : (
-        <TableCell>
-          <span className="sentinel-ui-worker">{group.service_name}</span>
-          {group.last_version ? (
-            <span className="sentinel-ui-version">{group.last_version}</span>
-          ) : null}
-        </TableCell>
-      )}
+      <TableCell align="right" className="sentinel-ui-number">
+        {spaced(group.occurrence_count)}
+      </TableCell>
+      <TableCell align="right" className="sentinel-ui-number">
+        {group.sessions_affected > 0 ? spaced(group.sessions_affected) : '—'}
+      </TableCell>
+      <TableCell className="sentinel-ui-when sentinel-ui-quiet">{ago(group.first_seen_ms, now)}</TableCell>
+      <TableCell className="sentinel-ui-when">{ago(group.last_seen_ms, now)}</TableCell>
       <TableCell>
-        <Sparkline counts={group.sparkline} />
+        <Sparkline group={group} now={now} />
       </TableCell>
-      <TableCell align="right">
-        <span className="sentinel-ui-count">{group.occurrence_count}</span>
+      <TableCell>
+        <StatusBadge status={group.status} />
       </TableCell>
-      <TableCell align="right">
-        <span className="sentinel-ui-when">{formatRelative(group.last_seen_ms)}</span>
+      <TableCell className="sentinel-ui-chevron">
+        <ChevronRight size={16} aria-hidden="true" />
       </TableCell>
     </TableRow>
   )
@@ -439,62 +401,25 @@ function GroupRow({
 
 function GroupRowNarrow({
   group,
+  now,
   onOpen,
 }: {
   group: GroupSummary
+  now: number
   onOpen: (groupId: string) => void
 }) {
-  const presentation = STATUS_PRESENTATION[group.status]
   return (
     <ListItem
       onClick={() => onOpen(group.id)}
       data-regressed={group.status === 'regressed' ? 'true' : undefined}
-      leading={
-        <Badge variant={presentation.tone === 'danger' ? 'alert' : 'default'}>
-          {presentation.label}
-        </Badge>
-      }
-      label={<span className="sentinel-ui-title">{group.title}</span>}
-      description={
-        <span className="sentinel-ui-row-detail">
-          {group.function_id ?? group.service_name}
-          {group.last_version ? ` · ${group.last_version}` : ''}
-          {group.status === 'ignored' ? ` · ${ignoreSummary(group.ignore_rule)}` : ''}
-        </span>
-      }
+      label={<Issue group={group} />}
       trailing={
         <span className="sentinel-ui-row-trailing">
-          <span className="sentinel-ui-count">{group.occurrence_count}</span>
-          <span className="sentinel-ui-when">{formatRelative(group.last_seen_ms)}</span>
+          <StatusBadge status={group.status} />
+          <span className="sentinel-ui-number">{spaced(group.occurrence_count)}</span>
+          <span className="sentinel-ui-when">{ago(group.last_seen_ms, now)}</span>
         </span>
       }
     />
   )
-}
-
-/** Twenty-four bars of CSS, oldest first. No SVG: the design system asks
-    for none, and a bar chart this small does not need one. */
-function Sparkline({ counts }: { counts: number[] }) {
-  const bars = sparklineBars(counts)
-  const total = counts.reduce((sum, count) => sum + count, 0)
-  return (
-    <span
-      className="sentinel-ui-sparkline"
-      role="img"
-      aria-label={`${total} in the last ${counts.length} hours`}
-    >
-      {bars.map((bar, index) => (
-        <span key={index} style={{ height: `${bar.height}%` }} data-empty={bar.count === 0} />
-      ))}
-    </span>
-  )
-}
-
-function scopeOf(statuses: GroupStatus[]): string {
-  for (const [scope, states] of Object.entries(SCOPE_STATES)) {
-    if (states.length === statuses.length && states.every((state) => statuses.includes(state))) {
-      return scope
-    }
-  }
-  return 'everything'
 }

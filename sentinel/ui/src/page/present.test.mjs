@@ -23,7 +23,7 @@ test('only a human decision is offered on an open group', () => {
 })
 
 test('a closed group offers only the way back', () => {
-  assert.deepEqual(availableActions('resolved'), ['investigate', 'reopen'])
+  assert.deepEqual(availableActions('resolved'), ['reopen'])
   assert.deepEqual(availableActions('ignored'), ['unignore'])
 })
 
@@ -44,8 +44,8 @@ test('an empty window draws no bars rather than dividing by zero', () => {
   assert.deepEqual(
     sparklineBars([0, 0]),
     [
-      { count: 0, height: 0 },
-      { count: 0, height: 0 },
+      { count: 0, height: 0, hot: false },
+      { count: 0, height: 0, hot: false },
     ],
   )
 })
@@ -119,4 +119,110 @@ test('the outcome names what was refused rather than just counting', () => {
     '2 resolved, 1 refused: a group cannot move from ignored to resolved',
   )
   assert.equal(bulkOutcome('ignore', 0, ['x', 'y']), '0 ignored, 2 refused: x')
+})
+
+import {
+  ago,
+  hotFrom,
+  ignoreNote,
+  regressedNote,
+  scopeOf,
+  spaced,
+  splitTitle,
+  statusLook,
+  transitionLook,
+  versionRange,
+} from './present.js'
+
+test('a resolved group is only offered the way back', () => {
+  assert.deepEqual(availableActions('resolved'), ['reopen'])
+})
+
+test('counts set their thousands apart with a space', () => {
+  assert.equal(spaced(1284), '1 284')
+  assert.equal(spaced(8), '8')
+})
+
+test('ago reads in the units a person glances at', () => {
+  const now = 1_790_000_000_000
+  assert.equal(ago(now - 2_000, now), 'just now')
+  assert.equal(ago(now - 12_000, now), '12 s ago')
+  assert.equal(ago(now - 6 * 60_000, now), '6 min ago')
+  assert.equal(ago(now - 3 * 3_600_000, now), '3 h ago')
+  assert.equal(ago(now - 14 * 86_400_000, now), '14 d ago')
+})
+
+test('a version range collapses when nothing changed', () => {
+  assert.equal(versionRange('0.22.0', '0.23.0'), '0.22.0 → 0.23.0')
+  assert.equal(versionRange('0.23.0', '0.23.0'), '0.23.0')
+  assert.equal(versionRange(undefined, undefined), 'unknown version')
+})
+
+test('the exception type leads a title only when it prefixes it', () => {
+  assert.deepEqual(splitTitle('CasMismatch: expected <n>', 'CasMismatch'), {
+    type: 'CasMismatch',
+    rest: 'expected <n>',
+  })
+  assert.deepEqual(splitTitle('Function not found', undefined), { type: null, rest: 'Function not found' })
+})
+
+test('only a regression paints its hours hot, from the hour it came back', () => {
+  const now = 10 * 3_600_000 + 1
+  assert.equal(hotFrom({ status: 'new' }, 24, now), 24)
+  assert.equal(hotFrom({ status: 'regressed', regressed_at_ms: now - 2 * 3_600_000 }, 24, now), 21)
+  const bars = sparklineBars([1, 0, 2], 1)
+  assert.deepEqual(bars.map((bar) => bar.hot), [false, false, true], 'an empty hour is never hot')
+})
+
+test('the list scope round-trips through its statuses', () => {
+  assert.equal(scopeOf(['new', 'investigating', 'diagnosed', 'regressed']), 'open')
+  assert.equal(scopeOf(['regressed']), 'regressed')
+  assert.equal(scopeOf(['resolved']), 'resolved')
+})
+
+test('each state has its own look, and only regressions are alarming', () => {
+  assert.equal(statusLook('regressed').badge, 'alert')
+  assert.equal(statusLook('new').badge, 'default')
+  assert.equal(statusLook('investigating').glyph, 'live')
+})
+
+test('a regression says what was resolved and what brought it back', () => {
+  const now = 1_790_000_000_000
+  assert.equal(
+    regressedNote(
+      {
+        service_name: 'state',
+        last_version: '0.23.0',
+        regressed_at_ms: now - 12_000,
+        resolved_at_ms: now - 3 * 86_400_000,
+        resolved_version: '0.22.1',
+        resolve_until_version_change: true,
+      },
+      now,
+    ),
+    'Resolved 3 d ago in state 0.22.1 with until version change; the first occurrence on 0.23.0 reopened it 12 s ago. Occurrences on 0.22.1 kept counting without reopening.',
+  )
+  assert.equal(
+    regressedNote({ service_name: 'state' }, now),
+    'It was resolved, and an occurrence reopened it.',
+  )
+})
+
+test('an ignore rule becomes the note under the group', () => {
+  assert.match(ignoreNote({ service_name: 'x', ignore_rule: { kind: 'forever' } }), /^Ignored forever/)
+  assert.match(
+    ignoreNote({ service_name: 'x', last_version: '1.0', ignore_rule: { kind: 'version_change' } }),
+    /until the x version changes \(baseline 1\.0\)/,
+  )
+})
+
+test('a history row names the state and who moved it', () => {
+  assert.deepEqual(transitionLook({ to_status: 'new', actor: 'ingest' }), {
+    what: 'First seen',
+    note: '',
+    dot: 'ghost',
+  })
+  const resolved = transitionLook({ from_status: 'new', to_status: 'resolved', reason: 'resolved', actor: 'console' })
+  assert.equal(resolved.what, 'Resolved')
+  assert.equal(resolved.note, 'marked resolved · by a person')
 })

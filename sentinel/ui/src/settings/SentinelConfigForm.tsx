@@ -13,11 +13,41 @@ import {
   Switch,
 } from '@iii-dev/console-ui'
 import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
-import { Trash2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Folder, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { client } from '../api'
 import { catalogKey, modelGroups, splitKey } from './catalog.js'
 import { addRepository, normalize, problems, setPath } from './form-model.js'
 import { useModelCatalog } from './useModelCatalog'
+
+/** Worker names shown on a repository row before the rest fold into a count. */
+const SHOWN_WORKERS = 8
+const WEEK_MS = 7 * 24 * 3_600_000
+
+/**
+ * The workers that failed this week and have no checkout: the ones an
+ * investigation could only read from the trace. Read once per form mount;
+ * the list is advice, so a failed read shows nothing rather than an error.
+ */
+function useUnmappedWorkers(host: Host, repositories: { workers: string[] }[]): string[] {
+  const [seen, setSeen] = useState<string[]>([])
+  useEffect(() => {
+    let live = true
+    client(host.iii)
+      .groups({
+        status: ['new', 'investigating', 'diagnosed', 'regressed', 'resolved', 'ignored'],
+        since_ms: Date.now() - WEEK_MS,
+        limit: 200,
+      })
+      .then((response) => live && setSeen([...new Set(response.groups.map((group) => group.service_name))]))
+      .catch(() => live && setSeen([]))
+    return () => {
+      live = false
+    }
+  }, [host])
+  const mapped = repositories.flatMap((repository) => repository.workers)
+  return useMemo(() => seen.filter((worker) => !mapped.includes(worker)).sort(), [seen, mapped.join(',')])
+}
 
 /**
  * The worker's own settings form.
@@ -58,6 +88,10 @@ export function SentinelConfigForm({
   const repositories = Array.isArray(config.repositories)
     ? (config.repositories as { id: string; path: string; workers: string[] }[])
     : []
+  const ignored = Array.isArray(config.ignore_services) ? (config.ignore_services as string[]) : []
+  const joinSeconds =
+    ((config.sources as { log?: { join_window_ms?: number } }).log?.join_window_ms ?? 2000) / 1000
+  const unmapped = useUnmappedWorkers(host, repositories)
   const selected = repositories.find((repository) => repository.id === openRepository)
 
   // A host deep link names a field by its dotted path. Open the deck level
@@ -96,51 +130,8 @@ export function SentinelConfigForm({
       ) : null}
 
       <SettingsSection
-        title="Watching"
-        description="Which of the engine's signals become error groups."
-      >
-        <SettingsList>
-          <SettingsRow
-            label="Enabled"
-            description="Off stops ingest entirely; nothing already recorded is lost."
-            control={
-              <Switch
-                aria-label="Enabled"
-                checked={Boolean(config.enabled)}
-                onChange={(event) => update('enabled', event.target.checked)}
-              />
-            }
-          />
-          <SettingsRow
-            label="Error spans"
-            description="Every span the engine marks failed."
-            control={
-              <Switch
-                aria-label="Error spans"
-                checked={Boolean(
-                  (config.sources as { trace?: { enabled?: boolean } }).trace?.enabled,
-                )}
-                onChange={(event) => update('sources.trace.enabled', event.target.checked)}
-              />
-            }
-          />
-          <SettingsRow
-            label="Error logs"
-            description="ERROR records, joined to the span of their trace when there is one."
-            control={
-              <Switch
-                aria-label="Error logs"
-                checked={Boolean((config.sources as { log?: { enabled?: boolean } }).log?.enabled)}
-                onChange={(event) => update('sources.log.enabled', event.target.checked)}
-              />
-            }
-          />
-        </SettingsList>
-      </SettingsSection>
-
-      <SettingsSection
         title="Investigation"
-        description="The model an investigation opens with. There are no turn, token or cost ceilings: the session runs beside the page and Stop is one click away."
+        description="The model every investigation starts with. Each run can pick another. There are no turn, token or cost caps — the session runs beside the group, you watch it, and Stop is one click away."
       >
         <SettingsList>
           <SettingsField
@@ -179,18 +170,7 @@ export function SentinelConfigForm({
 
       <SettingsSection
         title="Repositories"
-        description="Where each worker's code lives. An investigation can read the checkout mapped to the failing worker, and nothing else on this machine."
-        action={
-          // No `data-settings-deck-fallback` here: the skill puts it on the
-          // surviving overview action so focus lands somewhere when a
-          // removed row disappears, but `DirectoryPicker` does not forward
-          // unknown props, so the attribute never reached the DOM.
-          <DirectoryPicker
-            value={null}
-            emptyLabel="Add a checkout"
-            onChange={(directory) => onChange(addRepository(config, directory) as ConfigFormProps['value'])}
-          />
-        }
+        description="Where each worker's source lives on this machine. A worker with no repository is still grouped and investigated from the trace alone."
       >
         <SettingsDeck
           open={Boolean(selected)}
@@ -208,13 +188,27 @@ export function SentinelConfigForm({
                 repositories.map((repository) => (
                   <SettingsRow
                     key={repository.id}
-                    label={repository.id}
-                    description={repository.path}
-                    meta={
+                    label={
+                      <span className="sentinel-ui-repo-label">
+                        <Folder size={16} aria-hidden="true" />
+                        {repository.id}
+                        <span className="sentinel-ui-repo-path">{repository.path}</span>
+                      </span>
+                    }
+                    description={
                       repository.workers.length > 0 ? (
-                        <Chip tone="neutral">{repository.workers.length} workers</Chip>
+                        <span className="sentinel-ui-repo-workers">
+                          {repository.workers.slice(0, SHOWN_WORKERS).map((worker) => (
+                            <Chip key={worker} className="sentinel-ui-mono">
+                              {worker}
+                            </Chip>
+                          ))}
+                          {repository.workers.length > SHOWN_WORKERS ? (
+                            <Chip>+ {repository.workers.length - SHOWN_WORKERS} more</Chip>
+                          ) : null}
+                        </span>
                       ) : (
-                        <Chip tone="warning">no workers</Chip>
+                        <Chip tone="warning">no workers mapped to it</Chip>
                       )
                     }
                     control={
@@ -225,6 +219,27 @@ export function SentinelConfigForm({
                   />
                 ))
               )}
+              <SettingsRow
+                label={
+                  unmapped.length > 0 ? (
+                    <span className="sentinel-ui-quiet">
+                      Unmapped workers seen in the last 7 days:{' '}
+                      <span className="sentinel-ui-mono">{unmapped.join(', ')}</span>
+                    </span>
+                  ) : (
+                    <span className="sentinel-ui-quiet">Every worker seen in the last 7 days has a repository.</span>
+                  )
+                }
+                control={
+                  // No `data-settings-deck-fallback`: `DirectoryPicker` does
+                  // not forward unknown props, so it would never reach the DOM.
+                  <DirectoryPicker
+                    value={null}
+                    emptyLabel="Add repository"
+                    onChange={(directory) => onChange(addRepository(config, directory) as ConfigFormProps['value'])}
+                  />
+                }
+              />
             </SettingsList>
           }
           detail={
@@ -284,13 +299,78 @@ export function SentinelConfigForm({
       </SettingsSection>
 
       <SettingsSection
+        title="Sources"
+        description="What counts as an error. Both come from the engine's observability worker; nothing is installed in other workers."
+      >
+        <SettingsList>
+          <SettingsRow
+            label="Error spans"
+            description="Leaf spans with status error, via the trace trigger filtered to errors."
+            control={
+              <Switch
+                aria-label="Error spans"
+                checked={Boolean(
+                  (config.sources as { trace?: { enabled?: boolean } }).trace?.enabled,
+                )}
+                onChange={(event) => update('sources.trace.enabled', event.target.checked)}
+              />
+            }
+          />
+          <SettingsRow
+            label="Error logs"
+            description={`OTel ERROR records. Joined to a span occurrence when they share a trace within ${joinSeconds} s; otherwise their own group.`}
+            control={
+              <Switch
+                aria-label="Error logs"
+                checked={Boolean((config.sources as { log?: { enabled?: boolean } }).log?.enabled)}
+                onChange={(event) => update('sources.log.enabled', event.target.checked)}
+              />
+            }
+          />
+          <SettingsField
+            field="ignore_services"
+            label="Ignored workers"
+            description="Never ingested. Sentinel itself and its investigation sessions are always excluded."
+            renderControl={(props) => (
+              <Input
+                {...props}
+                placeholder="e.g. harness-e2e"
+                value={ignored.join(', ')}
+                onChange={(next) =>
+                  update(
+                    'ignore_services',
+                    next
+                      .split(',')
+                      .map((name: string) => name.trim())
+                      .filter(Boolean),
+                  )
+                }
+              />
+            )}
+          />
+          <SettingsRow
+            label="Ingest"
+            description="Off stops recording entirely; nothing already recorded is lost."
+            control={
+              <Switch
+                aria-label="Ingest"
+                checked={Boolean(config.enabled)}
+                onChange={(event) => update('enabled', event.target.checked)}
+              />
+            }
+          />
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
         title="Retention"
-        description="Counters never shrink. What is let go is the frozen evidence behind them: the first occurrence, the most recent ones and one per worker version always stay."
+        description="Evidence is captured at ingest because the engine keeps only its last spans in memory. Counters are never dropped."
       >
         <SettingsList>
           <SettingsField
             field="retention.evidence_per_group"
-            label="Bundles kept per group"
+            label="Full evidence per group"
+            description="The first occurrence plus the most recent ones keep their span tree and logs — and one per worker version."
             renderControl={(props) => (
               <Input
                 {...props}
@@ -304,6 +384,7 @@ export function SentinelConfigForm({
           <SettingsField
             field="retention.occurrences_per_group"
             label="Occurrence rows per group"
+            description="Beyond this the oldest rows go; the hourly counters stay."
             renderControl={(props) => (
               <Input
                 {...props}

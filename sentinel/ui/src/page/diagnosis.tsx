@@ -1,5 +1,4 @@
 import {
-  Badge,
   Button,
   Card,
   CardBody,
@@ -7,219 +6,312 @@ import {
   Chip,
   CodeHighlight,
   EmptyState,
-  Eyebrow,
   Markdown,
-  MetaRow,
+  Panel,
+  StatusPanel,
+  uiClasses,
 } from '@iii-dev/console-ui'
-import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
-import type { Host } from '@iii-dev/console-ui'
-import { FileCode } from 'lucide-react'
+import type { ChipTone, Host } from '@iii-dev/console-ui'
+import { MessageSquare, ScanSearch } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { Client, DiagnosisRecord, Investigation } from '../api'
-import { PreviousDiagnoses } from './history'
-import { codeLocation } from './present.js'
+import type { Diagnosis, DiagnosisRecord, GroupSummary, Investigation } from '../api'
+import { Dot } from './marks'
+import { ago, codeLocation, versionRange } from './present.js'
 
 interface Props {
-  api: Client
-  diagnosis?: DiagnosisRecord
-  groupId: string
+  group: GroupSummary
   host: Host
+  now: number
+  /** Every recording, newest first. */
+  records: DiagnosisRecord[]
   investigation?: Investigation
-  onAsk: () => void
+  running: boolean
+  sessionInView: boolean
+  onAsk?: () => void
+  onOpenSession?: () => void
   repositoryPath: string | null
+}
+
+const CONFIDENCE_TONE: Record<Diagnosis['confidence'], ChipTone> = {
+  high: 'success',
+  medium: 'warning',
+  low: 'neutral',
+}
+
+function categoryTone(category: Diagnosis['category']): ChipTone {
+  if (category === 'bug') return 'danger'
+  if (category === 'unknown') return 'neutral'
+  return 'warning'
 }
 
 /**
  * What the investigation concluded. The record is the agent's own words, so
- * it is shown as written — this page adds provenance and a way to open the
- * code it points at, and nothing else.
+ * it is shown as written — this page adds provenance, the versions that came
+ * before, and a way to open the code it points at.
  */
-export function DiagnosisCard({
-  api,
-  diagnosis,
-  groupId,
+export function DiagnosisTab({
+  group,
   host,
+  now,
+  records,
   investigation,
+  running,
+  sessionInView,
   onAsk,
+  onOpenSession,
   repositoryPath,
 }: Props) {
-  const history = useHistory(api, groupId, diagnosis?.id)
-
-  if (!diagnosis) {
-    return (
-      <EmptyState
-        compact
-        title="Nothing recorded yet"
-        description={
-          investigation
-            ? 'The investigation is open. Ask it to write down what it has, or keep watching.'
-            : 'Investigate this group and the agent records what it finds here.'
-        }
-        action={investigation ? { label: 'Ask for a diagnosis', onClick: onAsk } : undefined}
-      />
-    )
-  }
-
-  if (!diagnosis.valid) {
-    return (
-      <Card>
-        <CardHeader>
-          <Eyebrow>recorded, unparsable</Eyebrow>
-        </CardHeader>
-        <CardBody>
-          <p>
-            The stored payload no longer matches the diagnosis shape. It is kept verbatim rather
-            than discarded.
-          </p>
-          <CodeHighlight code={diagnosis.raw_result ?? ''} language="json" wrap />
-        </CardBody>
-      </Card>
-    )
-  }
-
-  const value = diagnosis.diagnosis
-  if (!value) return null
+  const [shownId, setShownId] = useState<string | null>(null)
+  useEffect(() => setShownId(null), [records[0]?.id])
+  const shownIndex = Math.max(0, records.findIndex((record) => record.id === shownId))
+  const shown = records[shownIndex]
+  const version = (index: number) => records.length - index
 
   return (
-    <Card>
-      <CardHeader>
-        {/* One eyebrow in this row. Two of them, separated by a chip, read
-            as one label: "CONFIDENCE CONVERSATION · 1D". The provenance
-            belongs with the model and the checkout, at the foot. */}
-        <div className="sentinel-ui-diagnosis-head">
-          <Badge variant={value.confidence === 'high' ? 'ok' : 'default'}>
-            {value.confidence}
-          </Badge>
-          <Eyebrow>confidence</Eyebrow>
-          <Chip tone="neutral">{value.category}</Chip>
-        </div>
-      </CardHeader>
-      <CardBody>
-        <Markdown>{value.summary}</Markdown>
+    <div className="sentinel-ui-stack">
+      {running && investigation ? (
+        <StatusPanel
+          variant="info"
+          icon={<Dot tone="accent" pulse />}
+          headline={`First pass running ${sessionInView ? 'in the session beside' : 'in the background — the session column is closed'}`}
+          detail={`${investigation.model} · started ${ago(investigation.created_ms, now)}. When the agent has a probable cause it records it with sentinel::diagnosis::record — the cards appear here the moment it does. Type in the session at any time to steer it.`}
+          action={
+            !sessionInView && onOpenSession ? (
+              <Button size="sm" variant="pill" onClick={onOpenSession}>
+                <MessageSquare size={16} />
+                Open session
+              </Button>
+            ) : undefined
+          }
+        />
+      ) : null}
 
-        <Eyebrow size="lg">root cause</Eyebrow>
-        <Markdown>{value.root_cause.description}</Markdown>
-        <ul className="sentinel-ui-evidence-list">
-          {value.root_cause.evidence.map((item, index) => {
-            const location = codeLocation(item, repositoryPath)
-            return (
-              <li key={index}>
-                <div className="sentinel-ui-evidence-why">{item.why}</div>
-                <CodeHighlight code={item.excerpt} language="text" wrap />
-                {location ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() =>
-                      host.panels?.open({
-                        pageId: 'ide',
-                        context: { type: 'file', path: location.path, line: location.line },
-                      })
-                    }
-                  >
-                    <FileCode size={16} />
-                    <span>
-                      {item.path}:{item.line ?? 1}
-                    </span>
-                  </Button>
-                ) : item.span_id ? (
-                  <Eyebrow>span {item.span_id.slice(0, 10)}</Eyebrow>
+      {!shown && !running ? (
+        <EmptyState
+          icon={ScanSearch}
+          title="No diagnosis yet"
+          description="Investigate opens a harness session beside this page with the frozen evidence and read-only access to the mapped repository. You watch it work and can steer it; when it has a probable cause it records it with sentinel::diagnosis::record, and the cards land here."
+          action={onAsk ? { label: 'Ask for a diagnosis', onClick: onAsk } : undefined}
+        />
+      ) : null}
+
+      {shown ? (
+        <>
+          <Panel className="sentinel-ui-provenance">
+            <div className="sentinel-ui-provenance-copy">
+              <div className="sentinel-ui-provenance-line">
+                <Dot tone={shownIndex === 0 ? 'ok' : 'ghost'} />
+                <b>
+                  Diagnosis v{version(shownIndex)} · recorded by the agent {ago(shown.created_ms, now)}
+                  {shown.source === 'first_pass' ? ', first pass' : ' in the conversation'}
+                </b>
+                <span className="sentinel-ui-quiet-mono">{shown.model}</span>
+              </div>
+              <div className="sentinel-ui-provenance-line sentinel-ui-quiet">
+                {onOpenSession ? (
+                  <button type="button" className="sentinel-ui-link" onClick={onOpenSession}>
+                    <MessageSquare size={16} aria-hidden="true" />
+                    Sentinel: {group.exception_type ?? group.service_name}
+                  </button>
                 ) : null}
-              </li>
-            )
-          })}
-        </ul>
-
-        {value.proposed_fix ? (
-          <>
-            <Eyebrow size="lg">proposed fix · {value.proposed_fix.risk} risk</Eyebrow>
-            <Markdown>{value.proposed_fix.description}</Markdown>
-            <ol className="sentinel-ui-steps">
-              {value.proposed_fix.steps.map((step, index) => (
-                <li key={index}>{step}</li>
-              ))}
-            </ol>
-            {value.proposed_fix.files.length > 0 ? (
-              <MetaRow items={[{ label: 'files', value: value.proposed_fix.files.join(', ') }]} />
+                <span className="sentinel-ui-mono">
+                  investigated {investigation?.investigated_version ?? versionRange(group.first_version, group.last_version)}
+                </span>
+                <span className="sentinel-ui-mono">
+                  {investigation?.checkout_ref ? `checkout ${investigation.checkout_ref}` : 'no checkout — evidence only'}
+                </span>
+                <span className="sentinel-ui-mono sentinel-ui-accent">via sentinel::diagnosis::record</span>
+              </div>
+            </div>
+            {onAsk ? (
+              <Button size="sm" variant="pill" onClick={onAsk}>
+                <MessageSquare size={16} />
+                Ask for a diagnosis
+              </Button>
             ) : null}
-          </>
-        ) : null}
+          </Panel>
 
-        {value.missing_evidence && value.missing_evidence.length > 0 ? (
-          <>
-            <Eyebrow size="lg">what was missing</Eyebrow>
-            <ul className="sentinel-ui-steps">
-              {value.missing_evidence.map((item, index) => (
-                <li key={index}>{item}</li>
-              ))}
-            </ul>
-          </>
-        ) : null}
+          {shown.valid && shown.diagnosis ? (
+            <Reading diagnosis={shown.diagnosis} host={host} repositoryPath={repositoryPath} />
+          ) : (
+            <Card>
+              <CardHeader>Recorded, unparsable</CardHeader>
+              <CardBody>
+                <p className="sentinel-ui-prose">
+                  The stored payload no longer matches the diagnosis shape. It is kept verbatim rather than
+                  discarded.
+                </p>
+                <CodeHighlight code={shown.raw_result ?? ''} language="json" wrap />
+              </CardBody>
+            </Card>
+          )}
 
-        {value.version_note ? <p className="sentinel-ui-note">{value.version_note}</p> : null}
-
-        <MetaRow
-          items={[
-            {
-              label: 'recorded',
-              value: `${diagnosis.source === 'first_pass' ? 'first pass' : 'conversation'} · ${formatRelative(diagnosis.created_ms)}`,
-            },
-            { label: 'model', value: diagnosis.model },
-            { label: 'investigation', value: diagnosis.investigation_id.slice(0, 12) },
-            ...(investigation?.checkout_ref
-              ? [{ label: 'checkout', value: investigation.checkout_ref }]
-              : []),
-          ]}
-        >
-          <Button size="sm" variant="ghost" onClick={onAsk}>
-            Ask for a new diagnosis
-          </Button>
-        </MetaRow>
-
-        <PreviousDiagnoses records={history.records} total={history.total} />
-      </CardBody>
-    </Card>
+          <Card>
+            <CardHeader>
+              <span>Diagnoses</span>
+              <span className="sentinel-ui-card-note">every recording is a version; none are overwritten</span>
+            </CardHeader>
+            <CardBody>
+              <ol className="sentinel-ui-versions">
+                {records.map((record, index) => (
+                  <li key={record.id}>
+                    <Dot tone={index === 0 ? 'ok' : 'ghost'} />
+                    <span className="sentinel-ui-quiet-mono sentinel-ui-versions-when">{ago(record.created_ms, now)}</span>
+                    <span>
+                      v{version(index)} · {record.source === 'first_pass' ? 'first pass' : 'conversation'}
+                    </span>
+                    {record.diagnosis ? (
+                      <Chip tone={CONFIDENCE_TONE[record.diagnosis.confidence]}>
+                        confidence {record.diagnosis.confidence}
+                      </Chip>
+                    ) : (
+                      <Chip>unparsable</Chip>
+                    )}
+                    <span className="sentinel-ui-quiet sentinel-ui-versions-note">
+                      {record.diagnosis?.missing_evidence?.[0] ?? 'no open questions'}
+                    </span>
+                    {record.id === shown.id ? (
+                      <span className="sentinel-ui-accent sentinel-ui-versions-tag">
+                        {index === 0 ? 'current' : 'shown'}
+                      </span>
+                    ) : (
+                      <button type="button" className="sentinel-ui-link sentinel-ui-versions-tag" onClick={() => setShownId(record.id)}>
+                        view
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </CardBody>
+          </Card>
+        </>
+      ) : null}
+    </div>
   )
 }
 
-/**
- * Every reading of this group except the one on screen. Re-read whenever the
- * current one changes, which is how a new recording appears here without a
- * reload.
- */
-function useHistory(api: Client, groupId: string, currentId: string | undefined) {
-  const [state, setState] = useState<{ records: DiagnosisRecord[]; total: number }>({
-    records: [],
-    total: 0,
-  })
+function Reading({
+  diagnosis,
+  host,
+  repositoryPath,
+}: {
+  diagnosis: Diagnosis
+  host: Host
+  repositoryPath: string | null
+}) {
+  const fix = diagnosis.proposed_fix
+  const missing = diagnosis.missing_evidence ?? []
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <span>Summary</span>
+          <Chip tone={categoryTone(diagnosis.category)} className="sentinel-ui-card-end">
+            {diagnosis.category}
+          </Chip>
+          <Chip tone={CONFIDENCE_TONE[diagnosis.confidence]}>confidence {diagnosis.confidence}</Chip>
+        </CardHeader>
+        <CardBody className="sentinel-ui-prose">
+          <Markdown>{diagnosis.summary}</Markdown>
+        </CardBody>
+      </Card>
 
-  useEffect(() => {
-    let live = true
-    if (!currentId) {
-      setState({ records: [], total: 0 })
-      return
-    }
-    api
-      .diagnoses(groupId)
-      .then((response) => {
-        if (!live) return
-        setState({
-          records: response.diagnoses.filter((record) => record.id !== currentId),
-          total: response.total,
-        })
-      })
-      .catch((cause) => {
-        // The history is context, not the answer: losing it must not take the
-        // diagnosis down with it.
-        if (live) {
-          setState({ records: [], total: 0 })
-          console.warn('sentinel: could not read the diagnosis history', errorMessage(cause))
-        }
-      })
-    return () => {
-      live = false
-    }
-  }, [api, groupId, currentId])
+      <Card>
+        <CardHeader>
+          <span>Root cause</span>
+          <span className="sentinel-ui-card-note">evidence the agent cited</span>
+        </CardHeader>
+        <CardBody className="sentinel-ui-stack">
+          <div className="sentinel-ui-prose">
+            <Markdown>{diagnosis.root_cause.description}</Markdown>
+          </div>
+          {diagnosis.root_cause.evidence.map((item, index) => {
+            const location = codeLocation(item, repositoryPath)
+            return (
+              <Panel key={index} className="sentinel-ui-cited">
+                <Chip>{item.kind}</Chip>
+                <div className="sentinel-ui-cited-body">
+                  {location ? (
+                    <button
+                      type="button"
+                      className="sentinel-ui-link sentinel-ui-mono"
+                      onClick={() =>
+                        host.panels?.open({
+                          pageId: 'ide',
+                          context: { type: 'file', path: location.path, line: location.line },
+                        })
+                      }
+                    >
+                      {item.path}:{item.line ?? 1}
+                    </button>
+                  ) : item.path ? (
+                    <span className="sentinel-ui-mono">
+                      {item.path}
+                      {item.line ? `:${item.line}` : ''}
+                    </span>
+                  ) : item.span_id ? (
+                    <span className="sentinel-ui-mono">span {item.span_id}</span>
+                  ) : null}
+                  {item.excerpt ? <CodeHighlight code={item.excerpt} language="text" wrap /> : null}
+                  <p className="sentinel-ui-quiet">{item.why}</p>
+                </div>
+              </Panel>
+            )
+          })}
+          {missing.length > 0 ? (
+            <div className="sentinel-ui-missing">
+              <span className={uiClasses.eyebrow}>What is missing</span>
+              <ul>
+                {missing.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ul>
+              <p className="sentinel-ui-quiet">
+                Tell the agent in the session what it could not see, then ask for the diagnosis again.
+              </p>
+            </div>
+          ) : null}
+        </CardBody>
+      </Card>
 
-  return state
+      {fix ? (
+        <Card>
+          <CardHeader>
+            <span>Proposed fix</span>
+            <Chip tone={fix.risk === 'low' ? 'success' : fix.risk === 'medium' ? 'warning' : 'danger'} className="sentinel-ui-card-end">
+              risk {fix.risk}
+            </Chip>
+          </CardHeader>
+          <CardBody className="sentinel-ui-fix">
+            <div className="sentinel-ui-prose">
+              <Markdown>{fix.description}</Markdown>
+              {fix.steps.length > 0 ? (
+                <ol>
+                  {fix.steps.map((step, index) => (
+                    <li key={index}>{step}</li>
+                  ))}
+                </ol>
+              ) : null}
+              <p className="sentinel-ui-quiet">
+                Want the patch? Continue in the session — it keeps the transcript, and the read-only policy
+                until you widen it.
+              </p>
+            </div>
+            {fix.files.length > 0 ? (
+              <div className="sentinel-ui-fix-files">
+                <span className={uiClasses.eyebrow}>Files</span>
+                {fix.files.map((file) => (
+                  <Chip key={file} className="sentinel-ui-mono">
+                    {file}
+                  </Chip>
+                ))}
+              </div>
+            ) : null}
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {diagnosis.version_note ? <p className="sentinel-ui-foot-note">{diagnosis.version_note}</p> : null}
+    </>
+  )
 }

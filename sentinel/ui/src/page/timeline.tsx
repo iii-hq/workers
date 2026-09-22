@@ -1,18 +1,19 @@
-import { Chip, EmptyState, Eyebrow, Skeleton } from '@iii-dev/console-ui'
-import { errorMessage, formatRelative } from '@iii-dev/console-ui/format'
+import { Card, CardBody, CardHeader, EmptyState, Skeleton } from '@iii-dev/console-ui'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useState } from 'react'
-import type { Client, GroupTransition } from '../api'
-import { transitionSentence } from './present.js'
+import type { Client, GroupSummary, GroupTransition } from '../api'
+import { Dot } from './marks'
+import { ago, stamp, transitionLook } from './present.js'
 
 /**
- * How the group got where it is.
+ * How the group got where it is, newest first.
  *
  * Every row was written inside the transaction that made the move, so this
- * cannot disagree with the status above it. What it adds over those fields is
- * the part they cannot hold: the order, and who decided — the pipeline, the
- * agent, or a person.
+ * cannot disagree with the status above it. A group older than the history
+ * table still has its birth: the first-seen fields say when, and the row is
+ * drawn from them.
  */
-export function GroupTimeline({ api, groupId }: { api: Client; groupId: string }) {
+export function GroupTimeline({ api, group, now }: { api: Client; group: GroupSummary; now: number }) {
   const [rows, setRows] = useState<GroupTransition[] | null>(null)
   const [total, setTotal] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -21,7 +22,7 @@ export function GroupTimeline({ api, groupId }: { api: Client; groupId: string }
     let live = true
     setRows(null)
     api
-      .history(groupId)
+      .history(group.id)
       .then((response) => {
         if (!live) return
         setRows(response.transitions)
@@ -31,39 +32,58 @@ export function GroupTimeline({ api, groupId }: { api: Client; groupId: string }
     return () => {
       live = false
     }
-  }, [api, groupId])
+  }, [api, group.id, group.status])
 
   if (error) return <EmptyState compact title="Could not read the history" description={error} />
   if (!rows) return <Skeleton />
-  if (rows.length === 0) {
-    return (
-      <EmptyState
-        compact
-        title="No moves recorded"
-        description="This group predates the history, or it has not changed state since it was created."
-      />
-    )
-  }
+
+  const born = rows.some((row) => !row.from_status)
+  const entries = [
+    ...rows.map((row) => ({ key: row.id, at_ms: row.at_ms, ...transitionLook(row) })),
+    ...(born || total > rows.length
+      ? []
+      : [
+          {
+            key: 'first-seen',
+            at_ms: group.first_seen_ms,
+            what: 'First seen',
+            note: [group.service_name, group.first_version].filter(Boolean).join(' '),
+            dot: 'ghost',
+          },
+        ]),
+  ]
 
   return (
-    <div className="sentinel-ui-timeline">
-      <ol>
-        {rows.map((row) => (
-          <li key={row.id} data-actor={row.actor}>
-            <span className="sentinel-ui-timeline-when">{formatRelative(row.at_ms)}</span>
-            <span className="sentinel-ui-timeline-move">{transitionSentence(row)}</span>
-            {/* Neutral on purpose: the actor is who, not how bad. Colouring
-                it by the state it moved to made every reopen look like an
-                error. */}
-            <Chip tone="neutral">{row.actor}</Chip>
-          </li>
-        ))}
-      </ol>
-      {total > rows.length ? (
-        <Eyebrow className="sentinel-ui-more">
-          showing {rows.length} of {total}
-        </Eyebrow>
-      ) : null}
+    <div className="sentinel-ui-stack">
+      <Card>
+        <CardHeader>
+          <span>History</span>
+          <span className="sentinel-ui-card-note">state transitions, newest first</span>
+        </CardHeader>
+        <CardBody>
+          <ol className="sentinel-ui-history">
+            {entries.map((entry) => (
+              <li key={entry.key}>
+                <Dot tone={entry.dot} />
+                <span className="sentinel-ui-quiet-mono sentinel-ui-history-when" title={stamp(entry.at_ms)}>
+                  {ago(entry.at_ms, now)}
+                </span>
+                <b>{entry.what}</b>
+                {entry.note ? <span className="sentinel-ui-quiet">{entry.note}</span> : null}
+              </li>
+            ))}
+          </ol>
+          {total > rows.length ? (
+            <p className="sentinel-ui-card-foot">
+              showing the latest {rows.length} of {total}
+            </p>
+          ) : null}
+        </CardBody>
+      </Card>
+      <p className="sentinel-ui-foot-note">
+        Every transition is a row Sentinel wrote — the fingerprint is stable, so a group survives a rename
+        of the message it started from.
+      </p>
     </div>
   )
 }
