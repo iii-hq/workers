@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 
+from ruamel.yaml import YAML
+
 TEMPLATE = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("sync_template", TEMPLATE / "scripts/sync_template.py")
 SYNC = importlib.util.module_from_spec(SPEC)
@@ -105,6 +107,130 @@ class SyncTests(unittest.TestCase):
     def files(self):
         """Capture launcher state for non-destructive assertions."""
         return self.inventory(self.launcher)
+
+    def local_worker(self, name, manifest=None):
+        """Create a sibling source worker, as in the workers repository."""
+        source = self.launcher.parent / name
+        source.mkdir()
+        (source / "iii.worker.yaml").write_text(
+            manifest or f"name: {name}\nlanguage: rust\nbin: {name}\n",
+        )
+        (source / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion = "0.1.0"\n')
+        return source
+
+    def test_compose_uses_local_sources_and_preserves_template_settings(self):
+        """Resolve by package name, preserve hooks, comments and remote workers."""
+        self.local_worker("harness")
+        self.local_worker("queue", "name: queue\nlanguage: rust\nbin: queue-server\n")
+        # A directory alone is not a local worker.
+        (self.root / "external").mkdir()
+        self.write("worker-compose.yaml", """\
+namespace: demo
+engine: {url: 'ws://127.0.0.1:49134'}
+containers:
+  jobs:
+    worker: package://queue # local queue
+    version: "latest"
+    scripts:
+      pre_run: echo ready
+    config_override: {worker: package://queue}
+  agent:
+    worker: 'package://harness'
+    version: "1.2.3"
+    start_after: [jobs]
+    env_file: [./.env]
+    environment: {EXAMPLE: '${EXAMPLE:-}'}
+  # Optional providers stay available for manual configuration.
+  # optional:
+  #   worker: package://queue
+  external: {worker: package://external, version: latest}
+  custom: {worker: path://./custom, scripts: {run: ./start}}
+""")
+        self.commit()
+        result = self.run_sync()
+        compose = self.destination / "worker-compose.yaml"
+        text = compose.read_text()
+        document = YAML().load(text)
+        containers = document["containers"]
+        self.assertEqual(containers["jobs"]["worker"], "path://../../queue")
+        self.assertEqual(containers["jobs"]["scripts"], {
+            "pre_run": "echo ready", "run": "cargo run --bin queue-server",
+        })
+        self.assertEqual(containers["jobs"]["config_override"]["worker"], "package://queue")
+        self.assertEqual(containers["agent"]["worker"], "path://../../harness")
+        self.assertEqual(containers["agent"]["scripts"]["run"], "cargo run --bin harness")
+        self.assertEqual(containers["agent"]["start_after"], ["jobs"])
+        self.assertEqual(containers["agent"]["env_file"], ["./.env"])
+        self.assertEqual(containers["agent"]["environment"], {"EXAMPLE": "${EXAMPLE:-}"})
+        self.assertEqual(containers["external"], {"worker": "package://external", "version": "latest"})
+        self.assertEqual(containers["custom"], {"worker": "path://./custom", "scripts": {"run": "./start"}})
+        self.assertIn("# local queue", text)
+        self.assertIn("#   worker: package://queue", text)
+        self.assertEqual(document["namespace"], "demo")
+        self.assertIn("Using local worker agent: path://../../harness", result.stdout)
+        for path in (self.upstream / "iii/harness").rglob("*"):
+            if path.is_file() and path.name != "worker-compose.yaml":
+                self.assertEqual((self.destination / path.relative_to(self.upstream / "iii/harness")).read_bytes(), path.read_bytes())
+        self.run_sync(input_text="yes\n")
+        self.assertEqual(compose.read_text(), text)
+
+    def test_local_workers_support_inline_compose_and_existing_start_commands(self):
+        """Preserve explicit run commands and use non-Rust manifest defaults."""
+        self.local_worker("harness")
+        self.local_worker("node-worker", "language: typescript\nscripts: {start: 'node index.js'}\n")
+        self.local_worker("no-start", "language: typescript\n")
+        self.write("worker-compose.yaml", """\
+containers:
+  agent: {worker: 'package://harness', scripts: {run: 'cargo run --release'}}
+  node: {worker: package://node-worker}
+  missing: {worker: package://no-start}
+  registry: {worker: 'package://example.com/harness'}
+""", template="harness-kanban")
+        self.commit()
+        self.run_sync("--template", "harness-kanban")
+        containers = YAML().load(self.launcher / "harness-kanban/worker-compose.yaml")["containers"]
+        self.assertEqual(containers["agent"]["worker"], "path://../../harness")
+        self.assertEqual(containers["agent"]["scripts"], {"run": "cargo run --release"})
+        self.assertEqual(containers["node"], {"worker": "path://../../node-worker"})
+        self.assertEqual(containers["missing"]["worker"], "package://no-start")
+        self.assertEqual(containers["registry"]["worker"], "package://example.com/harness")
+
+    def test_local_worker_preview_and_cancellation_do_not_change_destination(self):
+        """Preview reports local paths before any download is installed."""
+        self.local_worker("harness")
+        before = self.files()
+        result = self.run_sync("--dry-run")
+        self.assertIn("Would use local worker harness: path://../../harness", result.stdout)
+        self.assertEqual(self.files(), before)
+        self.run_sync()
+        before = self.files()
+        self.run_sync(input_text="no\n", success=False)
+        self.assertEqual(self.files(), before)
+
+    def test_compose_symlink_is_not_read_or_rewritten(self):
+        """Local adaptation must not read or modify an upstream symlink target."""
+        self.local_worker("harness")
+        outside = self.root / "outside-compose.yaml"
+        content = "containers: {harness: {worker: package://harness}}\n"
+        outside.write_text(content)
+        compose = self.upstream / "iii/harness/worker-compose.yaml"
+        compose.unlink()
+        compose.symlink_to(outside)
+        self.commit()
+        self.run_sync()
+        self.assertTrue((self.destination / "worker-compose.yaml").is_symlink())
+        self.assertEqual(outside.read_text(), content)
+
+    def test_invalid_compose_fails_before_install_without_printing_values(self):
+        """Do not replace a project with partially adapted or invalid YAML."""
+        self.local_worker("harness")
+        self.write("worker-compose.yaml", "containers: [\nFAKE_PRIVATE_VALUE: [\n")
+        self.commit()
+        before = self.files()
+        result = self.run_sync(success=False)
+        self.assertIn("invalid YAML", result.stderr)
+        self.assertNotIn("FAKE_PRIVATE_VALUE", result.stdout + result.stderr)
+        self.assertEqual(self.files(), before)
 
     def test_default_download_is_verbatim_and_repeatable(self):
         """Download every byte and executable bit, not generated local substitutes."""
@@ -462,6 +588,8 @@ class SyncTests(unittest.TestCase):
                 probe = "import sys; sys.version_info = (3, 10); exec(sys.argv[1])"
                 code += f'exec {shlex.quote(sys.executable)} -c {shlex.quote(probe)} "$2"\n'
             else:
+                if behavior == "missing-yaml":
+                    code += '[ "$1" = -c ] && [ "$2" = "import ruamel.yaml" ] && exit 1\n'
                 code += f'exec {shlex.quote(sys.executable)} "$@"\n'
             script.write_text(code)
             script.chmod(0o755)
@@ -500,6 +628,36 @@ class SyncTests(unittest.TestCase):
                 self.assertIn("Python 3.11+ is required", result.stderr)
                 self.assertIn("Neither python3 nor python", result.stderr)
                 self.assertEqual(self.files(), before)
+
+    def test_missing_yaml_and_uv_fails_before_fetch(self):
+        """A missing parser must give a usable next step without a system install."""
+        before = self.files()
+        env, _ = self.python_environment({"python3": "missing-yaml"})
+        result = self.run_sync("--repo", str(self.root / "missing-repo"), env=env, success=False)
+        self.assertIn("ruamel.yaml is required", result.stderr)
+        self.assertIn("container workflow", result.stderr)
+        self.assertEqual(self.files(), before)
+
+    def test_missing_yaml_uses_uv_with_the_selected_python(self):
+        """Use script metadata for isolated dependencies, retaining path quoting."""
+        self.local_worker("harness")
+        env, _ = self.python_environment({"python3": "missing-yaml"})
+        uv = Path(env["PATH"]) / "uv"
+        arguments = uv.with_suffix(".args")
+        uv.write_text(
+            "#!/bin/sh\n"
+            f'printf \'%s\\n\' "$@" > {shlex.quote(str(arguments))}\n'
+            "shift 5\n"
+            f'exec {shlex.quote(sys.executable)} "$@"\n',
+        )
+        uv.chmod(0o755)
+        self.run_sync(env=env)
+        self.assertEqual(arguments.read_text().splitlines()[:6], [
+            "run", "--quiet", "--python", "python3", "--script",
+            str(self.launcher / "scripts/sync_template.py"),
+        ])
+        containers = YAML().load(self.destination / "worker-compose.yaml")["containers"]
+        self.assertEqual(containers["harness"]["worker"], "path://../../harness")
 
     def test_missing_importer_reports_checkout_problem_before_fetch(self):
         """Do not mistake a missing Python source file for a missing interpreter."""
