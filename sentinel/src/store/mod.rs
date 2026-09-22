@@ -191,6 +191,12 @@ pub struct Store<D: Db> {
 /// on a single group.
 pub(crate) const CAS_ATTEMPTS: usize = 5;
 
+/// How long a parked log is left alone once the sweeper has handed it to the
+/// queue. Long enough that a row which cannot be promoted costs one job every
+/// half minute rather than two a second, short enough that a job lost to a
+/// restart is picked up again quickly.
+const JOIN_RETRY_MS: i64 = 30_000;
+
 impl<D: Db> Store<D> {
     pub fn new(db: D) -> Self {
         Self { db }
@@ -572,7 +578,29 @@ impl<D: Db> Store<D> {
                 vec![json!(now_ms), json!(limit as i64)],
             )
             .await?;
-        Ok(rows.iter().map(pending_log).collect())
+        let due: Vec<PendingLog> = rows.iter().map(pending_log).collect();
+        // Claiming is part of reading. The sweeper runs twice a second, and a
+        // row it cannot promote — the span never came, the write failed —
+        // stays due, so without this the same handful of rows is queued
+        // thousands of times a minute and the queue grows faster than it
+        // drains. Pushing the wait forward makes a stuck row retry on a
+        // backoff instead, and the deadline lives in the store, so a restart
+        // does not start the flood again.
+        if !due.is_empty() {
+            let mut params = vec![json!(now_ms + JOIN_RETRY_MS)];
+            params.extend(due.iter().map(|pending| json!(pending.id)));
+            let holes = vec!["?"; due.len()].join(", ");
+            self.db
+                .execute(
+                    &format!(
+                        "UPDATE sentinel_occurrences SET join_deadline_ms = ? \
+                         WHERE pending_join = 1 AND id IN ({holes})"
+                    ),
+                    params,
+                )
+                .await?;
+        }
+        Ok(due)
     }
 
     /// How many logs are holding right now — a gauge for `sentinel::status`.

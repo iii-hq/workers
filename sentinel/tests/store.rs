@@ -555,3 +555,47 @@ async fn a_store_already_at_v1_takes_the_upgrade() {
         sentinel::store::schema::SCHEMA_VERSION
     );
 }
+
+#[tokio::test]
+async fn the_sweeper_cannot_hand_the_same_parked_log_over_twice_a_second() {
+    let store = store().await;
+    store
+        .insert_pending_log(&sentinel::store::PendingLogWrite {
+            dedupe_key: "log:-:-:1:abc".into(),
+            at_ms: NOW,
+            trace_id: None,
+            span_id: None,
+            session_id: None,
+            worker_version: None,
+            message: "Function not found".into(),
+            evidence: None,
+            join_deadline_ms: NOW,
+            session_unknown: true,
+        })
+        .await
+        .expect("park the log");
+
+    let first = store
+        .due_pending_logs(NOW + 1, 100)
+        .await
+        .expect("the wait has expired");
+    assert_eq!(first.len(), 1, "the row is due");
+
+    // The span never came and the promotion did not clear it. Half a second
+    // later the sweeper must not queue it again.
+    let second = store
+        .due_pending_logs(NOW + 501, 100)
+        .await
+        .expect("read again");
+    assert!(
+        second.is_empty(),
+        "a row already handed to the queue was handed over again"
+    );
+
+    // It does come back, once the retry window has passed.
+    let later = store
+        .due_pending_logs(NOW + 60_000, 100)
+        .await
+        .expect("read after the backoff");
+    assert_eq!(later.len(), 1, "a stuck row is retried, not abandoned");
+}

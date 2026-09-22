@@ -74,6 +74,11 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Before anything registers: the SDK hands every invocation to the
+    // single-threaded runtime on its connection thread, and the ingest
+    // pipeline is heavy enough to starve the socket its own calls answer on.
+    sentinel::offload::install(tokio::runtime::Handle::current());
+
     let iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {

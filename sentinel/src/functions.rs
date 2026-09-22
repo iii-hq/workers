@@ -451,7 +451,9 @@ pub fn register_all<E: EngineRegistry + 'static>(iii: &IIIClient, deps: &Arc<Dep
         INGEST_ID,
         RegisterFunction::new_async(move |job: IngestJob| {
             let deps = current.clone();
-            async move { ingest(&deps, job).await.map_err(Into::into) }
+            // Off the connection thread: the pipeline's own calls come back
+            // over the socket it would otherwise be holding. See `offload`.
+            crate::offload::offload(async move { ingest(&deps, job).await.map_err(Into::into) })
         })
         .description(INGEST_DESC)
         .metadata(json!({ "internal": true, "trace_hidden": true })),

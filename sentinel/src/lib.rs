@@ -30,6 +30,7 @@ pub mod investigation;
 pub mod lifecycle;
 pub mod manifest;
 pub mod normalize;
+pub mod offload;
 pub mod redact;
 pub mod registry;
 pub mod retention;
