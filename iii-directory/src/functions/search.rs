@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 use tracing::Instrument;
 
-use crate::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
+use crate::config::{FunctionSearchJudgeQuestion, FunctionSearchMode, SharedConfig, SkillsConfig};
 use crate::functions::registry::{
     self, RegistryCache, Worker, WorkerInfoInput, WorkerInfoOutput, WorkerListInput,
 };
@@ -1601,10 +1601,11 @@ async fn side_lane<C: Clone>(
     let (ranked, judged) = match judge {
         Some(deadline) if !queries.is_empty() && !documents.is_empty() => {
             let dense = side_lane_dense(deps, cfg, &queries, &documents).await;
-            let options = JudgeOptions {
-                min_relevance: cfg.function_search_judge_side_lane_min_relevance,
+            let options = judge_options(
+                cfg,
                 corpus,
-            };
+                cfg.function_search_judge_side_lane_min_relevance,
+            );
             let lanes = judge_lanes(&queries, &documents, dense.as_deref(), SIDE_LANE_SHORTLIST);
             match deps.judge.rank(&lanes, &options, deadline).await {
                 Ok(outcome) => (
@@ -1872,6 +1873,20 @@ struct BenchmarkOutcome {
 /// against its local shortlist of `corpus` (canonical contracts). The same
 /// policy serves the installed catalog and registry pools; `dense` holds raw
 /// dense rankings aligned with `queries`, when MiniLM has them.
+/// The question shape from config; `noul_threshold` applies to Noul only,
+/// Choice admits by `function_search_judge_choice_min_probability`.
+fn judge_options(cfg: &SkillsConfig, corpus: JudgeCorpus, noul_threshold: f64) -> JudgeOptions {
+    let question = cfg.function_search_judge_question;
+    JudgeOptions {
+        min_relevance: match question {
+            FunctionSearchJudgeQuestion::Noul => noul_threshold,
+            FunctionSearchJudgeQuestion::Choice => cfg.function_search_judge_choice_min_probability,
+        },
+        question,
+        corpus,
+    }
+}
+
 async fn rank_with_judge(
     judge: &JudgeSearch,
     cfg: &SkillsConfig,
@@ -1894,10 +1909,11 @@ async fn rank_with_judge(
             .enumerate()
             .filter(|(position, _)| rankings[*position].is_empty())
             .unzip();
-    let options = JudgeOptions {
-        min_relevance: cfg.function_search_judge_min_relevance,
-        corpus: JudgeCorpus::Functions,
-    };
+    let options = judge_options(
+        cfg,
+        JudgeCorpus::Functions,
+        cfg.function_search_judge_min_relevance,
+    );
     let mut outcome = judge.rank(&lanes, &options, deadline).await?;
     for (position, lane) in positions
         .into_iter()

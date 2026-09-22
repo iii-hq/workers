@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   booleanWithDefault,
   functionSearchModeWithDefault,
+  judgeQuestionWithDefault,
   semanticModeNeedsModel,
   withFunctionSearchMode,
   withoutRetiredKeys,
@@ -20,6 +21,12 @@ describe('booleanWithDefault', () => {
 })
 
 describe('function search configuration', () => {
+  it('defaults the judge question to noul unless choice is stored', () => {
+    expect(judgeQuestionWithDefault(undefined)).toBe('noul')
+    expect(judgeQuestionWithDefault('yes_no')).toBe('noul')
+    expect(judgeQuestionWithDefault('choice')).toBe('choice')
+  })
+
   it('uses judge when a migrated value omits or corrupts the mode', () => {
     expect(functionSearchModeWithDefault(undefined)).toBe('judge')
     expect(functionSearchModeWithDefault('remote')).toBe('judge')

@@ -149,6 +149,7 @@ describe('DirectoryConfigForm function search settings', () => {
       ['function_search_judge_timeout_ms', '3000', ['min="1"', 'max="30000"', 'step="1"']],
       ['function_search_judge_min_relevance', '0.5', ['min="0"', 'max="1"', 'step="any"', 'inputMode="decimal"']],
       ['function_search_judge_side_lane_min_relevance', '0.3', ['max="1"', 'step="any"', 'inputMode="decimal"']],
+      ['function_search_judge_choice_min_probability', '0.1', ['max="1"', 'step="any"', 'inputMode="decimal"']],
     ] as const) {
       const input = html.match(new RegExp(`<input[^>]*name="${field}"[^>]*>`))?.[0]
       expect(input).toBeDefined()
@@ -160,9 +161,18 @@ describe('DirectoryConfigForm function search settings', () => {
     }
   })
 
+  it('renders the judge question as one yes/no per function by default', () => {
+    const html = renderConfiguration({})
+
+    expect(html).toContain('Judge question')
+    expect(html).toContain('<option value="noul" selected="">')
+    expect(html).toContain('<option value="choice">')
+  })
+
   it.each([
     ['function_search_mode', 'judge', 'judge'],
     ['function_search_mode', 'lexical', 'lexical'],
+    ['function_search_judge_question', 'choice', 'choice'],
   ])('edits %s while preserving the rest of the draft and host errors', (field, raw, expected) => {
     const draft = Object.freeze({
       function_search_mode: 'hybrid',
