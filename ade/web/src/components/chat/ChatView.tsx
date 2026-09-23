@@ -227,6 +227,7 @@ interface ChatViewProps {
   onCompactConversation: (id: string, marker: Message) => void
 }
 
+/** Coordinate a conversation's composer, transcript and file navigation using its own workspace. */
 export function ChatView({
   conversation,
   backend,

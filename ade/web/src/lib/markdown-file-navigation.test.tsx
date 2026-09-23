@@ -34,16 +34,19 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
+/** Commit a test tree and flush React updates before inspecting its references. */
 async function render(children: ReactNode) {
   await act(() => root.render(children))
 }
 
+/** Activate a rendered reference and flush asynchronous navigation or error feedback. */
 async function click(selector = 'button') {
   const button = container.querySelector<HTMLButtonElement>(selector)
   expect(button).not.toBeNull()
   await act(async () => { button?.click() })
 }
 
+/** Assert that the last IDE request contains the intended absolute file and coordinates. */
 function expectFile(path: string, line?: number, endLine?: number) {
   expect(opened).toHaveBeenLastCalledWith(
     expect.objectContaining({

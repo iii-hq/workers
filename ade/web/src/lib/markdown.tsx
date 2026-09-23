@@ -58,10 +58,12 @@ const MENTION_RE = new RegExp(
    actual pill rendering happens in the `span` component override below.
    Code / pre subtrees stay verbatim; anchors are skipped to avoid nesting
    interactive mentions inside links. */
+/** Transform prose mentions into pills while leaving literal code and link labels intact. */
 function rehypeFnMention() {
   return (tree: Root) => walk(tree)
 }
 
+/** Rewrite mention text without creating nested interactive elements or modifying code blocks. */
 function walk(node: Root | Element): void {
   if (
     node.type === 'element' &&
@@ -423,6 +425,7 @@ const components: Components = {
   ),
 }
 
+/** Render sanitized Markdown, routing local references through the enclosing chat when available. */
 export function Markdown({
   children,
   className,

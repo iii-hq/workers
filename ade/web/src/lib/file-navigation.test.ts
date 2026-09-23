@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { Message } from '@/types/chat'
 import { messageFileDirectories, resolveChatFile } from './file-navigation'
 
+/** Create a reference-bearing message with no implicit folder provenance. */
 const message = (id: string): Message => ({
   id, role: 'assistant', content: 'reference', createdAt: 0,
 })
+/** Create a durable folder-change marker, including the prior scope for paged history. */
 const scope = (id: string, path: string | null, previousPath?: string | null): Message => ({
   id, role: 'system', kind: 'working-dir', createdAt: 0, content: '',
   scope: { path, previousPath, cause: 'selected' },

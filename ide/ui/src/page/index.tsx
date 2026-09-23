@@ -312,6 +312,7 @@ export function ShellExplorerPage({
     seq: number
   } | null>(null)
   const revealSeqRef = useRef(0)
+  /** Clear only the acknowledged request; a newer navigation must remain pending. */
   const onRevealHandled = useCallback((path: string, seq: number) => {
     setRevealLineRequest((pending) =>
       pending?.path === path && pending.seq === seq ? null : pending,
