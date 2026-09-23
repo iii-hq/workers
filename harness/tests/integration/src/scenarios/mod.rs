@@ -5,6 +5,7 @@ mod agent_identity;
 mod agent_preloaded_functions;
 mod agent_preloaded_skills;
 mod agent_shared_prompt_prefix;
+mod call_argument_diagnosis;
 mod call_argument_reconciliation;
 mod child_discovery_granted;
 mod condition_failure_notice;
@@ -69,6 +70,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         multi_turn_traces::scenario(),
         oversized_function_result::scenario(),
         call_argument_reconciliation::scenario(),
+        call_argument_diagnosis::scenario(),
         provider_startup_timeout::scenario(),
         standing_wake_delivery::scenario(),
         state_worker_sidecar::scenario(),
@@ -94,7 +96,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 35);
+        assert_eq!(fixtures.len(), 36);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
