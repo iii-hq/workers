@@ -79,9 +79,11 @@ pub fn milestone(turns: u64) -> Option<u64> {
 }
 
 /// Whether this turn belongs to a root session. A sub-agent turn reports
-/// nothing of its own.
+/// nothing of its own, and neither does a turn a reaction delivered into a
+/// session on a parent's behalf: it has no `parent` link, but its
+/// `display_parent_session_id` says whose tree it belongs to.
 fn is_root(record: &TurnRecord) -> bool {
-    record.depth == 0 && record.parent.is_none()
+    record.depth == 0 && record.parent.is_none() && record.display_parent_session_id.is_none()
 }
 
 /// Report one finished root turn: the milestone if it reached one, and the
@@ -267,6 +269,20 @@ mod tests {
         for turns in [0, 3, 4, 9, 26, 51, 1_000] {
             assert_eq!(milestone(turns), None, "turn {turns} must not report");
         }
+    }
+
+    #[test]
+    fn only_a_turn_with_no_parent_of_either_kind_is_root() {
+        let root = crate::types::turn::tests::record();
+        assert!(is_root(&root));
+
+        let mut displayed = root.clone();
+        displayed.display_parent_session_id = Some("s_parent".into());
+        assert!(!is_root(&displayed));
+
+        let mut deep = root.clone();
+        deep.depth = 1;
+        assert!(!is_root(&deep));
     }
 
     #[test]

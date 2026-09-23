@@ -19,9 +19,10 @@ const SUBSCRIBE_TIMEOUT_MS = 20_000
 /**
  * Asks once for an email address, after thirty minutes of console use.
  *
- * The address goes to the onboarding worker, which adds it to the product
- * update list and announces it for the engine to write to this machine's
- * person. Nothing about it is sent from the browser.
+ * The browser sends the address to `onboarding::subscribe` over the engine
+ * WebSocket and nowhere else. That worker adds it to the product update list
+ * and announces it for the engine to write to this machine's person; the
+ * browser never talks to the list or to the analytics vendor.
  */
 export function EmailPrompt() {
   const { open, onSnooze, onDismiss, onSubscribed } = useEmailPrompt()
