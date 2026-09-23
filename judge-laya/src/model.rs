@@ -196,6 +196,13 @@ impl LayaModel {
 
     /// Raw option logits per row (before temperature), one Vec per sequence.
     pub fn logits(&self, rows: &[(Vec<u32>, Vec<usize>, u32)]) -> Result<Vec<Vec<f32>>> {
+        let (ids, mask, mask_t) = self.pad(rows)?;
+        let h = self.encoder_states(&ids, &mask_t)?;
+        self.logits_from_states(&h, &mask, rows)
+    }
+
+    /// Right-padded token ids (b, s), the flat 0/1 mask and its tensor (b, s).
+    pub fn pad(&self, rows: &[(Vec<u32>, Vec<usize>, u32)]) -> Result<(Tensor, Vec<u8>, Tensor)> {
         let b = rows.len();
         let s = rows
             .iter()
@@ -210,13 +217,31 @@ impl LayaModel {
         }
         let ids = Tensor::from_vec(ids, (b, s), &self.device)?;
         let mask_t = Tensor::from_vec(mask.clone(), (b, s), &self.device)?;
-        let mut h = self.encoder.forward(&ids, &mask_t)?;
+        Ok((ids, mask, mask_t))
+    }
+
+    /// Final encoder states (b, s, d) for padded `ids` under `mask`.
+    pub fn encoder_states(&self, ids: &Tensor, mask: &Tensor) -> Result<Tensor> {
+        Ok(self.encoder.forward(ids, mask)?)
+    }
+
+    /// Type embedding, head layers and scorer over encoder states `h` (b, s, d);
+    /// `mask` is the flat 0/1 key mask of `pad`.
+    pub fn logits_from_states(
+        &self,
+        h: &Tensor,
+        mask: &[u8],
+        rows: &[(Vec<u32>, Vec<usize>, u32)],
+    ) -> Result<Vec<Vec<f32>>> {
+        let (b, s, _) = h.dims3()?;
         let qtypes = Tensor::from_vec(
             rows.iter().map(|r| r.2).collect::<Vec<_>>(),
             b,
             &self.device,
         )?;
-        h = h.broadcast_add(&self.type_emb.forward(&qtypes)?.unsqueeze(1)?)?;
+        let mut h = h
+            .to_device(&self.device)?
+            .broadcast_add(&self.type_emb.forward(&qtypes)?.unsqueeze(1)?)?;
         // Key padding: -inf on padded keys, shape (b, 1, 1, s).
         let bias: Vec<f32> = mask
             .iter()

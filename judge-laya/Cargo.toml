@@ -38,6 +38,8 @@ candle-nn = { version = "0.11", features = ["metal", "accelerate"] }
 candle-transformers = { version = "0.11", features = ["metal", "accelerate"] }
 
 [dev-dependencies]
+# Spike only: laya's encoder through llama.cpp (examples/llama_parity.rs).
+llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["vulkan"] }
 futures-util = "0.3"
 tempfile = "3"
 tokio-tungstenite = "0.28"
