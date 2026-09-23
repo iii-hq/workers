@@ -1,0 +1,18 @@
+iii: v1
+name: judge-semif
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: judge-semif
+tags: [evaluation, judge, semif, llama.cpp, noul, choice, score, local, gpu]
+description: SemIf provider for the judge hub (judge-semif::evaluate, judge-semif::models::list, judge-semif::cancel) — a frozen open LLM (Qwen3.5-4B GGUF) downloaded from the Hugging Face Hub and run in-process through llama.cpp, answering from the next-token logits of the option letters; picks Metal (macOS), Vulkan (Linux, when a driver is present) or the CPU automatically; no API key or external service.
+config:
+  model: qwen3.5-4b
+  threads: 8
+  context_tokens: 16384
+  parallel_questions: 8
+  max_request_bytes: 8388608
+  max_timeout_ms: 300000
+dependencies:
+  configuration: "latest"

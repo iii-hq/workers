@@ -146,3 +146,19 @@ def test_binary_catalog_restores_intel_macos_except_the_microvm_sandbox():
         assert {unit["target"] for unit in descriptor["build_units"]} == set(targets), worker
         checked.add(worker)
     assert {"state", "http", "queue", "pubsub", "cron", "ide", "code-runner", "sandbox-code-runner"} <= checked
+
+
+def test_rust_companions_are_validated_and_reach_the_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(
+        (ROOT / ".github" / "contracts" / "deployment-descriptor.schema.json").read_text(encoding="utf-8")
+    )
+    catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
+    compiled = deployment_compiler.compile_worker(ROOT, "judge-semif", catalog["judge-semif"], "a" * 40, "b" * 64)
+    assert "libggml-vulkan.so" in compiled["artifact"]["companions"]
+    jsonschema.Draft202012Validator(schema).validate(compiled)
+    for broken in (["../escape.so"], ["lib/x.so"], [], [""], "libggml.so.0"):
+        entry = json.loads(json.dumps(catalog["judge-semif"]))
+        entry["artifact"]["companions"] = broken
+        with pytest.raises(ValueError, match="companions"):
+            deployment_compiler.compile_worker(ROOT, "judge-semif", entry, "a" * 40, "b" * 64)
