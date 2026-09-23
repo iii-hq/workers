@@ -14,13 +14,33 @@ use crate::fs_source::{self, FsAgent};
 const RAW: &[(&str, &str)] = &[("iii-minimal", include_str!("../prompts/iii-minimal.md"))];
 
 /// Bundled agent profiles — the base identities other profiles build on
-/// with `extends: <id>`. `iii` is the harness default prompt, verbatim;
-/// `iii-minimal` is the minimal directory-first identity (the same file
-/// that ships as the bundled system prompt of that name).
+/// with `extends: <id>`.
+///
+/// * `default` — the minimal directory-first identity, shown in the chat
+///   gallery as "Default". Its body is the bundled `iii-minimal` system
+///   prompt's body, byte for byte (a test pins it).
+/// * `iii` — the harness default prompt, verbatim; `hidden: true` keeps it
+///   out of the new-session gallery while it stays a valid parent and is
+///   still runnable by id.
+/// * `iii-minimal` — the previous id of `default`, now a hidden alias
+///   ([`III_MINIMAL_ALIAS`]) so existing `extends: iii-minimal` chains,
+///   saved sessions, and explicit invocations keep resolving.
 const AGENTS_RAW: &[(&str, &str)] = &[
+    ("default", include_str!("../prompts/default.md")),
     ("iii", include_str!("../prompts/iii.md")),
-    ("iii-minimal", include_str!("../prompts/iii-minimal.md")),
+    ("iii-minimal", III_MINIMAL_ALIAS),
 ];
+
+/// `iii-minimal` as a compatibility alias: no body of its own, so it
+/// resolves to `default`'s prompt, skills, functions, and model through the
+/// ordinary `extends` chain. A local `agents/iii-minimal.md` still shadows
+/// it like any bundled profile.
+const III_MINIMAL_ALIAS: &str = "---\n\
+name: iii-minimal\n\
+description: \"Deprecated alias of the bundled `default` profile. Use extends: default.\"\n\
+extends: default\n\
+hidden: true\n\
+---\n";
 
 /// One bundled prompt, split the way the read paths serve it.
 pub struct BundledPrompt {
@@ -112,7 +132,7 @@ mod tests {
         }
         let minimal = bundled_system_prompt("iii-minimal").unwrap();
         assert!(minimal.body.starts_with("You are an iii agent."));
-        for id in ["iii", "iii-minimal"] {
+        for id in ["iii", "default"] {
             let (_, body) = fs_source::split_frontmatter(bundled_agent_raw(id).unwrap());
             let body = body.replace('\n', " ");
             assert!(
@@ -141,18 +161,66 @@ mod tests {
         for agent in &agents {
             assert!(agent.builtin, "{}", agent.name);
             assert!(agent.abs_path.as_os_str().is_empty(), "{}", agent.name);
-            assert!(
-                agent.extends.is_none(),
-                "{}: a bundled base extends nothing",
-                agent.name
-            );
             assert!(!agent.description.is_empty(), "{}", agent.name);
             crate::functions::prompts::validate_name(&agent.name).unwrap();
         }
-        assert!(bundled_agent_raw("iii").is_some());
-        let (_, minimal) = fs_source::split_frontmatter(bundled_agent_raw("iii-minimal").unwrap());
-        assert!(minimal.starts_with("You are an iii agent."));
+        let by_id = |id: &str| agents.iter().find(|a| a.name == id).unwrap();
+        // The two real bases extend nothing.
+        for id in ["default", "iii"] {
+            assert!(
+                by_id(id).extends.is_none(),
+                "{id}: a bundled base extends nothing"
+            );
+        }
+        let (_, default_body) = fs_source::split_frontmatter(bundled_agent_raw("default").unwrap());
+        assert!(default_body.starts_with("You are an iii agent."));
         assert!(bundled_agent_raw("nope").is_none());
+    }
+
+    /// The gallery presentation the first-run experience relies on:
+    /// `default` is visible as "Default" with its own composer example,
+    /// `iii` is hidden but still a base.
+    #[test]
+    fn bundled_gallery_presentation() {
+        let agents = bundled_agents();
+        let by_id = |id: &str| agents.iter().find(|a| a.name == id).unwrap();
+        let default = by_id("default");
+        assert_eq!(default.display_name, "Default");
+        assert!(!default.hidden);
+        assert_eq!(
+            default.composer_placeholder.as_deref(),
+            Some("Example: Explain this project and help me decide what to work on next.")
+        );
+        assert!(
+            by_id("iii").hidden,
+            "`iii` stays bundled but out of the gallery"
+        );
+    }
+
+    /// `iii-minimal` is a hidden, body-less alias of `default`: every
+    /// `extends: iii-minimal` chain resolves to the same identity as before.
+    #[test]
+    fn bundled_iii_minimal_is_a_hidden_alias_of_default() {
+        let agents = bundled_agents();
+        let alias = agents.iter().find(|a| a.name == "iii-minimal").unwrap();
+        assert!(alias.hidden);
+        assert_eq!(alias.extends.as_deref(), Some("default"));
+        assert!(alias.composer_placeholder.is_none());
+        let (_, body) = fs_source::split_frontmatter(bundled_agent_raw("iii-minimal").unwrap());
+        assert!(
+            body.trim().is_empty(),
+            "the alias carries no prompt of its own"
+        );
+    }
+
+    /// The `default` profile and the `iii-minimal` system prompt ship the
+    /// same identity from two files; they cannot drift without this failing.
+    #[test]
+    fn bundled_default_agent_body_is_the_iii_minimal_system_prompt() {
+        let (_, agent_body) = fs_source::split_frontmatter(bundled_agent_raw("default").unwrap());
+        let (_, prompt_body) =
+            fs_source::split_frontmatter(bundled_system_prompt("iii-minimal").unwrap().raw);
+        assert_eq!(agent_body, prompt_body);
     }
 
     /// The bundled `iii` body IS the harness default identity, byte for byte.

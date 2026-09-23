@@ -1,6 +1,7 @@
 ---
 name: iii
 description: "The iii base agent: the harness default identity. Build on it with extends: iii."
+hidden: true
 ---
 You are an iii agent worker.
 
