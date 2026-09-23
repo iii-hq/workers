@@ -548,10 +548,19 @@ async fn generate_step(
         registry_notice(record.functions_generation, current_generation).map(notice_message);
     // Preloaded contracts that drifted from the live registry: named per id,
     // every step while the drift lasts (the frozen block is never rewritten).
-    let preloaded_stale_message = preloaded_stale_notice(
+    let preloaded_stale_message = confirmed_preloaded_stale_notice(
         record.options.preloaded_contracts.as_ref(),
         &functions.functions,
+        |ids| async move {
+            let engine = deps.engine().await;
+            let mut live = Vec::with_capacity(ids.len());
+            for chunk in ids.chunks(crate::discovery::INFO_BATCH_MAX) {
+                live.extend(engine.functions_info_batch(chunk).await?);
+            }
+            Some(live)
+        },
     )
+    .await
     .map(notice_message);
     record.functions_generation = Some(current_generation);
 
@@ -3306,6 +3315,30 @@ pub(crate) fn preloaded_stale_notice(
     ))
 }
 
+/// [`preloaded_stale_notice`] against the cached registry snapshot, confirmed
+/// by a fresh read before it reaches the model. The snapshot is event-driven
+/// and lags the engine — a registration that lands before the change trigger
+/// is bound, or while a reload is in flight, is missing from it — while the
+/// frozen block may have been resolved from a fresh `engine::functions::info`
+/// read. A snapshot miss alone would then name a registered function "no
+/// longer registered" (INT-027). So any drift the snapshot suggests is
+/// re-judged against `fetch`'s fresh descriptors for every preloaded id; when
+/// that read fails the drift is unknown, not confirmed, and the next step
+/// asks again. The steady state (snapshot agrees) costs no call.
+async fn confirmed_preloaded_stale_notice<F, Fut>(
+    frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
+    snapshot: &[crate::clients::FunctionDescriptor],
+    fetch: F,
+) -> Option<String>
+where
+    F: FnOnce(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Option<Vec<crate::clients::FunctionDescriptor>>>,
+{
+    preloaded_stale_notice(frozen, snapshot)?;
+    let live = fetch(frozen?.keys().cloned().collect()).await?;
+    preloaded_stale_notice(frozen, &live)
+}
+
 /// The concrete tool schemas this turn's dispatch policy allows: one per
 /// allowed registry function, plus the harness-intercepted subscription
 /// controls (virtual functions the engine's public registry intentionally
@@ -3801,6 +3834,69 @@ mod tests {
             digest("same::fn", "unchanged"),
         )]);
         assert!(super::preloaded_stale_notice(Some(&steady), &live).is_none());
+    }
+
+    /// INT-027: the registry snapshot was seeded before `state::*` registered
+    /// and never saw the change event, while the frozen block resolved them
+    /// from a fresh info read. A snapshot miss must not reach the model as
+    /// "no longer registered" unless the engine confirms it.
+    #[tokio::test]
+    async fn preloaded_stale_notice_confirms_a_snapshot_miss_against_the_engine() {
+        use crate::clients::FunctionDescriptor;
+        let schema = serde_json::json!({ "type": "object" });
+        let registered = |id: &str| FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("kv".into()),
+            parameters: Some(schema.clone()),
+        };
+        let digest = |id: &str| {
+            Some(crate::agents::contract_digest(
+                id,
+                Some("kv"),
+                Some(schema.clone()),
+            ))
+        };
+        let frozen = std::collections::BTreeMap::from([
+            ("state::get".to_string(), digest("state::get")),
+            ("state::set".to_string(), digest("state::set")),
+            ("nope::missing".to_string(), None),
+        ]);
+        let stale_snapshot = vec![registered("unrelated::fn")];
+        let notice = |fresh: Option<Vec<FunctionDescriptor>>| {
+            let frozen = frozen.clone();
+            let stale_snapshot = stale_snapshot.clone();
+            async move {
+                super::confirmed_preloaded_stale_notice(Some(&frozen), &stale_snapshot, |ids| {
+                    assert_eq!(ids, ["nope::missing", "state::get", "state::set"]);
+                    async move { fresh }
+                })
+                .await
+            }
+        };
+
+        // The engine still serves both: no notice.
+        assert!(notice(Some(vec![
+            registered("state::get"),
+            registered("state::set")
+        ]))
+        .await
+        .is_none());
+        // The fresh read failed: drift is unknown, not confirmed.
+        assert!(notice(None).await.is_none());
+        // The engine confirms one is gone: only that one is named.
+        assert!(notice(Some(vec![registered("state::get")]))
+            .await
+            .unwrap()
+            .contains("no longer registered: `state::set`."));
+        // A snapshot that agrees with the frozen block never pays for a read.
+        let current = vec![registered("state::get"), registered("state::set")];
+        assert!(
+            super::confirmed_preloaded_stale_notice(Some(&frozen), &current, |_| async {
+                unreachable!("no drift, no fresh read")
+            })
+            .await
+            .is_none()
+        );
     }
 
     #[test]

@@ -151,10 +151,10 @@ impl EngineClient {
 
     /// Read several descriptors in ONE `engine::functions::info` call
     /// (`function_ids` batch). `None` when the engine predates batch support
-    /// (the caller falls back to per-id [`Self::functions_info`]); unknown ids
-    /// come back as marker entries and are simply skipped by `descriptor_of`
-    /// parsing (no `request_schema`/`parameters` on them is fine — hydration
-    /// keeps such descriptors schema-less).
+    /// (the caller falls back to per-id [`Self::functions_info`]); ids the
+    /// engine does not serve come back as `{ function_id, error }` markers and
+    /// are dropped, so an id absent from the result is one the engine does not
+    /// know right now.
     pub async fn functions_info_batch(
         &self,
         function_ids: &[String],
@@ -169,8 +169,7 @@ impl EngineClient {
             })
             .await
             .ok()?;
-        let items = resp.get("functions").and_then(Value::as_array)?;
-        Some(items.iter().filter_map(descriptor_of).collect())
+        parse_info_batch(&resp)
     }
 }
 
@@ -406,6 +405,19 @@ fn parse_descriptor_list(v: &Value) -> Vec<FunctionDescriptor> {
     items.iter().filter_map(|d| descriptor_of(d)).collect()
 }
 
+/// The descriptors of a `function_ids` batch envelope, `{ function_id, error }`
+/// markers dropped. `None` when the response is not a batch envelope.
+fn parse_info_batch(v: &Value) -> Option<Vec<FunctionDescriptor>> {
+    let items = v.get("functions").and_then(Value::as_array)?;
+    Some(
+        items
+            .iter()
+            .filter(|item| item.get("error").is_none())
+            .filter_map(descriptor_of)
+            .collect(),
+    )
+}
+
 /// Extract id + description + parameters schema from a descriptor in the
 /// shapes engines return (`function_id` or `id`; parameters at the top level,
 /// under `request_format`, or `request_schema`).
@@ -448,6 +460,24 @@ mod tests {
         });
         assert_eq!(parse_engine_epoch(&response), Some(20));
         assert_eq!(parse_engine_epoch(&json!({ "workers": [] })), None);
+    }
+
+    #[test]
+    fn info_batch_drops_unavailable_markers() {
+        let response = json!({
+            "functions": [
+                { "function_id": "state::get", "request_schema": { "type": "object" } },
+                { "function_id": "gone::fn", "error": "not_found" },
+                { "function_id": "hidden::fn", "error": "forbidden" }
+            ]
+        });
+        let ids: Vec<_> = parse_info_batch(&response)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.function_id)
+            .collect();
+        assert_eq!(ids, ["state::get"]);
+        assert!(parse_info_batch(&json!({ "function_id": "state::get" })).is_none());
     }
 
     #[test]
