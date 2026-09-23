@@ -72,9 +72,9 @@ export function EmailPrompt() {
       <DialogContent className="max-w-md">
         <DialogTitle className="pr-8 text-[14px]">Product updates</DialogTitle>
         <DialogDescription className="mt-2 text-[13px] leading-relaxed">
-          iii moves quickly. Put your email in for the roadmap and the product
-          updates: what is being built, and what shipped. We use it to send
-          those updates and to understand how iii is used. No one else gets it.
+          iii moves quickly. If you&apos;d like to stay up to date on our work
+          please enter your email for roadmap, product, and educational
+          updates. We won&apos;t share your email with anyone else.
         </DialogDescription>
         <form
           className="mt-4 flex flex-col gap-3"
