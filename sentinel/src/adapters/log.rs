@@ -94,9 +94,15 @@ impl LogRecord {
     }
 
     /// Where the log was written from — a log's stand-in for a function id.
+    ///
+    /// `function_id` comes before the scope: the engine's own ERROR logs
+    /// ("Function not found", …) name the function they are about there and
+    /// share one scope, so without it every one of them folded into a single
+    /// group that could not say which function it meant.
     pub fn call_site(&self) -> Option<String> {
         self.attribute("code.function")
             .or_else(|| self.attribute("target"))
+            .or_else(|| self.attribute("function_id"))
             .or_else(|| self.instrumentation_scope_name.clone())
     }
 
@@ -237,6 +243,21 @@ mod tests {
 
         log.attributes.remove("target");
         assert_eq!(log.call_site().as_deref(), Some("queue::delivery"));
+    }
+
+    #[test]
+    fn an_engine_log_about_a_function_is_grouped_by_that_function() {
+        let mut log = LogRecord::from_payload(&payload()).unwrap();
+        log.attributes.remove("code.function");
+        log.attributes.insert(
+            "function_id".into(),
+            "provider::claude-code::count_tokens".into(),
+        );
+        assert_eq!(
+            log.call_site().as_deref(),
+            Some("provider::claude-code::count_tokens"),
+            "the function it names, not the scope every engine log shares"
+        );
     }
 
     #[test]

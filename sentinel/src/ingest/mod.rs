@@ -336,6 +336,8 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
                 log.attributes
                     .get("code.function")
                     .or_else(|| log.attributes.get("target"))
+                    // The same order as `LogRecord::call_site`.
+                    .or_else(|| log.attributes.get("function_id"))
                     .cloned()
             });
 
