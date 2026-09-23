@@ -17,7 +17,7 @@ const numberFields = [
   { field: 'gpu_layers', section: 'model', label: 'GPU layers', placeholder: 'all', allowZero: true, description: 'Layers offloaded to the GPU in Vulkan or Metal builds, applied at the next start. Clear to offload every layer when a GPU is present; 0 keeps the model on the CPU.' },
   { field: 'context_tokens', section: 'model', label: 'Context window (tokens)', placeholder: '16384', description: 'Longest prompt (state, question and options) accepted, applied at the next start. Longer prompts answer payload_too_large: SemIf never truncates evidence.' },
   { field: 'parallel_questions', section: 'model', label: 'Parallel questions', placeholder: '8', description: 'Questions about one state decoded together in a batch, applied at the next start. Pays off on a GPU; 1 decodes them one at a time.' },
-  { field: 'max_request_bytes', section: 'limits', label: 'Maximum request bytes', placeholder: '8388608', description: 'Maximum encoded request size. Clear to use 8388608 (8 MiB).' },
+  { field: 'max_request_bytes', section: 'limits', label: 'Maximum request bytes', placeholder: '8388608', description: 'Maximum encoded JSON bytes per evaluation. Clear to use 8388608 (8 MiB).' },
   { field: 'max_timeout_ms', section: 'limits', label: 'Maximum timeout (ms)', placeholder: '300000', description: 'Maximum caller timeout. Clear to use 300000 (5 minutes).' },
 ]
 const knownFields = ['model', ...numberFields.map(({ field }) => field)]

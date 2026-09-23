@@ -173,10 +173,13 @@ fn llama_runtime() {
     }
     if linux {
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-        let libraries = backends
-            .parent()
-            .expect("backends has a parent")
-            .join("lib");
+        // CMake's GNUInstallDirs picks lib64 on some distributions (Fedora).
+        let root = backends.parent().expect("backends has a parent");
+        let libraries = ["lib", "lib64"]
+            .map(|dir| root.join(dir))
+            .into_iter()
+            .find(|dir| dir.is_dir())
+            .expect("llama.cpp installs its libraries under lib or lib64");
         for library in files(&libraries) {
             let name = library
                 .file_name()

@@ -7,7 +7,10 @@
 //! the sequence (`state_seq_get`; Qwen3.5's hybrid memory cannot copy
 //! sequences), restores it into up to `parallel` sequences and decodes their
 //! question suffixes together in one batch (SemIf's parallel suffixes).
-use crate::{download::Checkpoint, prompt::LETTERS};
+use crate::{
+    download::Checkpoint,
+    prompt::{self, LETTERS},
+};
 use anyhow::{anyhow, bail, Result};
 use llama_cpp_2::{
     context::{params::LlamaContextParams, session::LlamaStateSeqFlags, LlamaContext},
@@ -41,10 +44,10 @@ pub struct Options {
     pub parallel: usize,
 }
 
-/// One evaluation: one prompt (and option count) per question, all about
-/// the same state.
+/// One evaluation: questions (criterion, option descriptions) about one state.
 pub struct Evaluation {
-    pub prompts: Vec<(String, usize)>,
+    pub state: serde_json::Value,
+    pub questions: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -271,35 +274,45 @@ impl Scorer {
                     .str_to_token(text, AddBos::Never)
                     .map_err(|_| Stop::Failed)
             };
-            let prompts = evaluation
-                .prompts
-                .iter()
-                .map(|(text, options)| Ok((tokenize(text)?, *options)))
-                .collect::<Result<Vec<_>, Stop>>()?;
-            if prompts.iter().any(|(ids, _)| ids.len() > n_ctx) {
-                return Err(Stop::TooLong);
-            }
-            // The shared prefix is the longest common run of prompt tokens, not
-            // a re-tokenized text prefix: the state's closing bytes can merge
-            // with what follows it (`{}}` vs `{}`) more than one token back.
-            let common = prompts.iter().skip(1).fold(
-                prompts.first().map_or(0, |(ids, _)| ids.len()),
-                |n, (ids, _)| {
-                    prompts[0].0[..n]
+            // Render and tokenize one question at a time, keeping the first
+            // prompt whole and, of the others, only what follows their common
+            // run with it: memory grows with the questions, not with copies of
+            // the state. Question `i` is `first[..lcp_i]` then `tails[i]`.
+            let mut first = Vec::new();
+            let mut common = 0;
+            let (mut shortest, mut longest) = (usize::MAX, 1);
+            let mut tails: Vec<(usize, Vec<LlamaToken>, usize)> =
+                Vec::with_capacity(evaluation.questions.len());
+            for (criterion, options) in &evaluation.questions {
+                check()?;
+                let ids = tokenize(&prompt::render(&evaluation.state, criterion, options))?;
+                if ids.len() > n_ctx {
+                    return Err(Stop::TooLong);
+                }
+                (shortest, longest) = (shortest.min(ids.len()), longest.max(ids.len()));
+                // The shared prefix is the longest common run of prompt tokens,
+                // not a re-tokenized text prefix: the state's closing bytes can
+                // merge with what follows it (`{}}` vs `{}`) more than one token back.
+                if tails.is_empty() {
+                    common = ids.len();
+                    tails.push((common, Vec::new(), options.len()));
+                    first = ids;
+                } else {
+                    // At most `common`, so `common` stays the running minimum.
+                    common = first[..common]
                         .iter()
-                        .zip(ids)
+                        .zip(&ids)
                         .take_while(|(a, b)| a == b)
-                        .count()
-                },
-            );
+                        .count();
+                    tails.push((common, ids[common..].to_vec(), options.len()));
+                }
+            }
             // Every question keeps at least its last token to decode.
-            let common =
-                common.min(prompts.iter().map(|(ids, _)| ids.len()).min().unwrap_or(1) - 1);
-            let prefix = prompts.first().map_or(&[][..], |(ids, _)| &ids[..common]);
-            // Reuse pays off from the second question on.
-            let shared = prompts.len() > 1 && !prefix.is_empty();
+            let common = common.min(shortest.saturating_sub(1));
+            let prefix = &first[..common];
+            let shared = tails.len() > 1 && !prefix.is_empty();
             let mut tokens = 0u64;
-            let mut scores = Vec::with_capacity(prompts.len());
+            let mut scores = Vec::with_capacity(tails.len());
             let saved = if shared {
                 self.ctx.clear_kv_cache();
                 self.decode(&[(prefix, 0, None)], &check)?;
@@ -315,9 +328,8 @@ impl Scorer {
             let skip = if saved.is_some() { prefix.len() } else { 0 };
             // The unified KV pool holds every branch of a group: the prefix
             // once per sequence plus the suffixes.
-            let longest = prompts.iter().map(|(ids, _)| ids.len()).max().unwrap_or(1);
             let group = self.parallel.min((n_ctx / longest).max(1));
-            for chunk in prompts.chunks(group) {
+            for chunk in tails.chunks(group) {
                 check()?;
                 self.ctx.clear_kv_cache();
                 if let Some(state) = &saved {
@@ -327,9 +339,16 @@ impl Scorer {
                             .map_err(|_| Stop::Failed)?;
                     }
                 }
-                let spans: Vec<(&[LlamaToken], usize, Option<usize>)> = chunk
+                let suffixes: Vec<(Vec<LlamaToken>, usize)> = chunk
                     .iter()
-                    .map(|(ids, options)| (&ids[skip..], skip, Some(*options)))
+                    .map(|(lcp, tail, options)| {
+                        let ids = first[skip..*lcp].iter().chain(tail).copied().collect();
+                        (ids, *options)
+                    })
+                    .collect();
+                let spans: Vec<(&[LlamaToken], usize, Option<usize>)> = suffixes
+                    .iter()
+                    .map(|(ids, options)| (&ids[..], skip, Some(*options)))
                     .collect();
                 tokens += spans.iter().map(|s| s.0.len() as u64).sum::<u64>();
                 for z in self.decode(&spans, &check)? {

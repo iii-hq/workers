@@ -156,6 +156,15 @@ async fn deadlines_model_names_and_oversized_prompts_fail_typed() {
         code(client.evaluate(long).await),
         judge_contract::ErrorCode::PayloadTooLarge
     );
+    // max_request_bytes bounds each evaluation like a provider request body.
+    let small = client.with_limits(judge_semif::Limits {
+        max_request_bytes: 64,
+        ..Default::default()
+    });
+    assert_eq!(
+        code(small.evaluate(request(json!({}))).await),
+        judge_contract::ErrorCode::PayloadTooLarge
+    );
     let many: serde_json::Map<String, Value> =
         (0..17).map(|i| (format!("o{i:02}"), Value::Null)).collect();
     let wide = request(

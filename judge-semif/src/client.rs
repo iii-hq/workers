@@ -9,15 +9,18 @@ use crate::{
 };
 use anyhow::Result;
 use judge_contract::{
-    validate_answer, validate_request_with_limits, Answer, CancelRequest, CancelResponse, Content,
-    ErrorCode, EvaluateRequest, EvaluateResponse, EvaluationResult, ModelCard, ModelsRequest,
-    ModelsResponse, Question, ScoreLevel, Stats, Usage, DEFAULT_MAX_REQUEST_BYTES,
-    DEFAULT_MAX_TIMEOUT_MS,
+    encode_evaluation_with_limits, validate_answer, validate_request_with_limits, Answer,
+    CancelRequest, CancelResponse, Content, ErrorCode, EvaluateRequest, EvaluateResponse,
+    EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage,
+    DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::time::{timeout_at, Instant};
@@ -57,6 +60,14 @@ pub struct SemifClient {
     limits: Limits,
     calls: Arc<CancellationRegistry>,
     caller_id: Option<Arc<str>>,
+}
+
+/// Cancels the engine job when the evaluation ends or is dropped.
+struct CancelOnDrop(Arc<AtomicBool>);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// How one contract question maps onto SemIf's lettered options.
@@ -145,36 +156,46 @@ impl SemifClient {
         {
             return failure(ErrorCode::InvalidRequest, stats);
         }
+        let max_bytes = self.limits.max_request_bytes;
         if let Err(code) = self
             .limits
             .validate()
-            .and_then(|_| validate_request_with_limits(&request, self.limits.max_request_bytes))
+            .and_then(|_| validate_request_with_limits(&request, max_bytes))
+            // Each evaluation is bounded like a provider request body.
+            .and_then(|_| {
+                request.evaluations.iter().try_for_each(|evaluation| {
+                    encode_evaluation_with_limits(&self.name, evaluation, max_bytes).map(|_| ())
+                })
+            })
         {
             return failure(code, stats);
         }
         let mut jobs = Vec::with_capacity(request.evaluations.len());
         let mut plans = Vec::with_capacity(request.evaluations.len());
         for evaluation in &request.evaluations {
-            let mut prompts = Vec::with_capacity(evaluation.questions.len());
+            let mut questions = Vec::with_capacity(evaluation.questions.len());
             let mut evaluation_plans = Vec::with_capacity(evaluation.questions.len());
             for (qid, question) in &evaluation.questions {
                 let (criterion, options, plan) = match plan(question) {
                     Ok(planned) => planned,
                     Err(code) => return failure(code, stats),
                 };
-                prompts.push((
-                    prompt::render(&evaluation.state, &criterion, &options),
-                    options.len(),
-                ));
+                questions.push((criterion, options));
                 evaluation_plans.push((qid.clone(), plan));
             }
-            jobs.push(engine::Evaluation { prompts });
+            // The engine renders each prompt as it tokenizes it: one copy of
+            // the state per evaluation, not one per question.
+            jobs.push(engine::Evaluation {
+                state: evaluation.state.clone(),
+                questions,
+            });
             plans.push(evaluation_plans);
         }
         let cancel = Arc::new(AtomicBool::new(false));
-        let reply = self
-            .engine
-            .submit(jobs, deadline.into_std(), cancel.clone());
+        // Stops the engine between chunks rather than finishing unwanted work,
+        // including when the caller drops this future mid-evaluation.
+        let _stop = CancelOnDrop(cancel.clone());
+        let reply = self.engine.submit(jobs, deadline.into_std(), cancel);
         stats.attempts = 1;
         let outcome = tokio::select! {
             biased;
@@ -185,8 +206,6 @@ impl SemifClient {
                 Ok(Ok(result)) => result,
             },
         };
-        // Stop the engine between chunks rather than finishing unwanted work.
-        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         stats.elapsed_ms = started.elapsed().as_millis() as u64;
         let outcome = match outcome {
             Ok(outcome) => outcome,

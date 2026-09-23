@@ -29,7 +29,7 @@ pub struct SemifConfig {
     /// prompts share the context window, so long states run fewer at once.
     #[schemars(range(min = 1, max = 64))]
     pub parallel_questions: usize,
-    /// Maximum encoded request bytes.
+    /// Maximum encoded JSON bytes per evaluation.
     #[schemars(range(min = 1))]
     pub max_request_bytes: usize,
     /// Maximum relative deadline for evaluations and model listing.
