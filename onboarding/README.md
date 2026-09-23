@@ -130,17 +130,17 @@ different things, and one click could only say the first.
 
 ```sh
 pnpm install          # worker deps (iii-sdk)
-pnpm --dir ui install # UI deps, from the shared console-UI workspace
 pnpm build            # ui/dist assets, then dist/bundle
 pnpm test
 ```
 
-`pnpm build:assets` writes `ui/dist/{page.js,styles.css}` with esbuild alone —
-no pnpm workspace and no `tsc` — which is what `scripts.install` runs inside
-the worker's VM. `pnpm build:bundle` writes the publishable shape:
-`dist/bundle/index.mjs` with the worker and its dependencies inlined, and the
-two page assets beside it. `onboarding::ui-content` reads whichever layout has
-the page — beside the bundle, or `ui/dist` in a checkout.
+`pnpm build` (= `build:bundle`, what the release runs) first runs `build:ui`:
+from the repo root it installs `ui`'s slice of the shared console-UI workspace
+and builds `ui/dist` with the same builder every worker UI uses. It then
+writes the publishable shape: `dist/bundle/index.mjs` with the worker and its
+dependencies inlined, and the two page assets beside it.
+`onboarding::ui-content` reads whichever layout has the page — beside the
+bundle, or `ui/dist` in a checkout.
 
 `III_ONBOARDING_UI_WATCH=1` re-registers a changed asset, which hot-swaps the
 page in every open console tab. `III_ONBOARDING_UI_DIR` overrides where the
