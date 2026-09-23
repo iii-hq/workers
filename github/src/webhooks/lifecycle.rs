@@ -857,7 +857,7 @@ fn delivery_page(output: &str, base: &str) -> Result<(Value, Option<String>)> {
                     repository_id.bytes().all(|b| b.is_ascii_digit())
                         && repository_id.parse::<u64>().is_ok_and(|id| id > 0)
                         && base
-                            .split_once("/hooks/")
+                            .rsplit_once("/hooks/")
                             .is_some_and(|(_, hook)| suffix == format!("hooks/{hook}"))
                 });
             if (path != base && !canonical_path)
@@ -965,6 +965,19 @@ mod delivery_tests {
                 Some(format!(
                     "{BASE}?per_page=100&cursor=v1_3844358593348378624%3D"
                 ))
+            )
+        );
+    }
+
+    #[test]
+    fn canonical_repository_link_accepts_a_repository_named_hooks() {
+        let base = "repos/github/hooks/hooks/42/deliveries";
+        let response = "HTTP/2.0 200 OK\nLink: <https://api.github.com/repositories/123/hooks/42/deliveries?per_page=100&cursor=opaque%3D>; rel=\"next\"\n\n[]";
+        assert_eq!(
+            delivery_page(response, base).unwrap(),
+            (
+                json!([]),
+                Some(format!("{base}?per_page=100&cursor=opaque%3D"))
             )
         );
     }

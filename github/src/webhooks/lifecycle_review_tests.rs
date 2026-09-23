@@ -44,6 +44,29 @@ fn crash_intent(s: &Service) {
         .unwrap();
 }
 
+/// Reclaim the temporary installation after forked test children have exec'd.
+async fn reopen_store(s: &mut Service, dir: &Path) {
+    s.store = None;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match Store::open(&dir.join("store.sqlite3")) {
+            Ok(store) => {
+                s.store = Some(store);
+                return;
+            }
+            // Parallel gh tests can inherit flock until exec closes their copy.
+            // Retry only that transient ownership error; never ignore corruption.
+            Err(Failure::Invalid(message))
+                if message == "another process owns this webhook installation"
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("failed to reopen temporary webhook store: {error}"),
+        }
+    }
+}
+
 /// Model a rejected PATCH or an applied PATCH whose response was lost.
 async fn interrupted_rotation(s: &Service, dir: &Path, applied: bool) {
     s.ensure_hook("owner/repo", "https://one.example", "one")
@@ -87,8 +110,7 @@ async fn lost_patch_response_recovers_after_restart_and_another_url_change() {
         let mut s = service(dir.path()).await;
         tests::seed(&s);
         interrupted_rotation(&s, dir.path(), applied).await;
-        s.store = None;
-        s.store = Some(Store::open(&dir.path().join("store.sqlite3")).unwrap());
+        reopen_store(&mut s, dir.path()).await;
         configure_gh(dir.path(), json!({"fail_patch":false}));
         s.apply_tunnel(&tunnel("ready", Some("https://three.example"), "three"))
             .await
@@ -125,8 +147,7 @@ async fn lost_patch_response_allows_cleanup_after_restart_without_releasing_fore
         let mut s = service(dir.path()).await;
         tests::seed(&s);
         interrupted_rotation(&s, dir.path(), applied).await;
-        s.store = None;
-        s.store = Some(Store::open(&dir.path().join("store.sqlite3")).unwrap());
+        reopen_store(&mut s, dir.path()).await;
         stop_watches(&s);
         let bus = s.bus.as_ref().unwrap();
         for _ in 0..2 {
@@ -274,8 +295,7 @@ async fn failed_listing_keeps_durable_url_and_recover_finds_applied_post_without
     );
     assert!(data.repos["owner/repo"].hook_id.is_none());
     // Reopen only this temporary store to model process loss of in-memory state.
-    s.store = None;
-    s.store = Some(Store::open(&dir.path().join("store.sqlite3")).unwrap());
+    reopen_store(&mut s, dir.path()).await;
     let persisted = s.store().unwrap().read().unwrap();
     assert_eq!(
         persisted.repos["owner/repo"].url,
