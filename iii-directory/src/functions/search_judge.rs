@@ -414,13 +414,19 @@ fn parse_reply(
                         .ok_or_else(|| invalid("choice probability missing"))?;
                     scored.push((id.clone(), p));
                 }
-                rankings[block.lane].extend(admit_choice(scored, options.min_relevance));
+                rankings[block.lane].extend(scored);
             }
         }
     }
     for ranking in &mut rankings {
-        // Blocks were admitted on their own; order the lane best first.
-        *ranking = admit(std::mem::take(ranking), 0.0);
+        let ranked = std::mem::take(ranking);
+        *ranking = match options.question {
+            // Noul blocks were admitted on their own; order the lane best first.
+            JudgeQuestion::Noul => admit(ranked, 0.0),
+            // One capability may span several Choice blocks (a split
+            // shortlist): admit once, so it keeps a single best document.
+            JudgeQuestion::Choice => admit_choice(ranked, options.min_relevance),
+        };
     }
     Ok(JudgeOutcome {
         rankings,
@@ -1026,6 +1032,29 @@ mod tests {
                 vec![("state::set".into(), 0.34)],
             ]
         );
+    }
+
+    #[test]
+    fn choice_keeps_one_best_document_across_split_blocks() {
+        let block = |id: &str, ids: [&str; 2]| Block {
+            id: id.into(),
+            lane: 0,
+            ids: ids.map(String::from).to_vec(),
+        };
+        let answer = |p: [f64; 2]| {
+            json!({"answers":{"c0":{"type":"choice","choice":"f0",
+                "probabilities":{"f0":p[0],"f1":p[1]},"confidence":0.1}}})
+        };
+        let reply = json!({"status":"ok","model":"qwen3.5-4b","stats":stats(),
+            "results":{"e0":answer([0.45, 0.55]),"e1":answer([0.6, 0.4])}});
+        let strict = JudgeOptions {
+            min_relevance: 0.7,
+            ..choice()
+        };
+        let blocks = [block("e0", ["a", "b"]), block("e1", ["c", "d"])];
+        let outcome = parse_reply(&reply, &blocks, 1, &strict).unwrap();
+        // Nothing clears 0.7: one document stays, not one per block.
+        assert_eq!(outcome.rankings, vec![vec![("c".into(), 0.6)]]);
     }
 
     #[tokio::test]
