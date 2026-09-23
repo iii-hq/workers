@@ -96,7 +96,7 @@ jobs:
       # judge-semif compiles llama.cpp (cmake), its bindings (bindgen: libclang)
       # and the runtime-loaded Vulkan backend module (headers + glslc).
       - name: Provision llama.cpp build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
 
       - name: Install pinned iii engine
         env:

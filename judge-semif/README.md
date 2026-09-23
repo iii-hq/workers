@@ -123,7 +123,8 @@ llama.cpp is compiled from source: `cmake`, a C++ compiler and `libclang`
 (for bindgen) are required; if libclang lives outside the default search path
 set `LIBCLANG_PATH` (and `BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its
 builtin headers are not found). Linux x86_64 builds also need the Vulkan
-loader headers and `glslc` to compile the Vulkan module (only the module links
+loader headers, the SPIR-V headers and `glslc` (Ubuntu: `libvulkan-dev
+spirv-headers glslc`) to compile the Vulkan module (only the module links
 `libvulkan`, the binary does not). The build copies the modules and libraries
 beside the binary, so `target/release` has the published layout; the release
 catalog ships them as the artifact's `companions`. Windows is not published

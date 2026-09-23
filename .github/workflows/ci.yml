@@ -250,10 +250,11 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # judge-semif compiles llama.cpp (cmake) and its bindings (bindgen needs
-      # libclang); --all-features adds the Vulkan backend (loader + glslc).
+      # libclang); Linux x86_64 always builds the Vulkan module (loader
+      # headers, SPIR-V headers, glslc).
       - name: Provision llama.cpp build tools (judge-semif)
         if: matrix.worker == 'judge-semif'
-        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
 
       - name: Run clippy
         if: matrix.worker != 'browser'
@@ -705,6 +706,10 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
+      - name: Provision llama.cpp build tools (judge-semif)
+        if: steps.optout.outputs.skip != 'true' && matrix.worker == 'judge-semif'
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (the release build uses default features).
       - name: Build worker binary
@@ -782,6 +787,11 @@ jobs:
           if [[ -f "$WORKER/config.collect.yaml" ]]; then
             echo "Using interface-collection config: $WORKER/config.collect.yaml"
             collect_args+=(--config ./config.collect.yaml)
+          fi
+          # judge-semif registers its functions only once a GGUF loads: boot it
+          # on the committed tiny fixture instead of downloading 3 GB.
+          if [[ "$WORKER" == judge-semif ]]; then
+            export III_SEMIF_GGUF="$PWD/judge-semif/tests/fixtures/tiny-qwen3.gguf"
           fi
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean
