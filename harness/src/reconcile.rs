@@ -1038,6 +1038,89 @@ mod tests {
     }
 
     #[test]
+    fn an_enum_question_lists_the_allowed_values_and_a_rename_never_clobbers_a_present_key() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "op": { "enum": ["insert", "replace"] }, "function_id": { "type": "string" } },
+            "required": ["function_id"]
+        });
+        let arguments = json!({ "op": "insrt", "function_ids": "a", "function_id": "b" });
+        let asked = questions(&compile(&schema), &schema, &arguments);
+        let rendered =
+            evaluation("f", Some("edit"), &arguments, &schema, &asked).expect("questions");
+        let enum_question = rendered["questions"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|q| {
+                q["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("allowed values")
+            })
+            .expect("enum question rendered");
+        assert_eq!(enum_question["criteria"]["o1"], "\"replace\"");
+
+        // A rename whose target key is already present is refused rather
+        // than overwriting it (defensive: the pipeline only offers missing
+        // keys as candidates).
+        let clobber = [Question::Rename {
+            object: String::new(),
+            from: "function_ids".into(),
+            candidates: vec!["function_id".into()],
+        }];
+        let present = json!({ "function_ids": "a", "function_id": "b" });
+        let answers =
+            json!({ "q0": { "choice": "o0", "probabilities": { "o0": 0.99, "none": 0.01 } } });
+        assert_eq!(apply_answers(&present, &clobber, &answers, 0.8), None);
+    }
+
+    #[test]
+    fn note_result_annotates_the_origin_and_spares_contract_lookups() {
+        use crate::trigger::ResultData;
+        let changes = [Change {
+            path: "/regex".into(),
+            kind: ChangeKind::Parsed,
+            from: json!("true"),
+            to: json!(true),
+        }];
+        let mut data = ResultData {
+            content: vec![ContentBlock::text("ok".to_string())],
+            is_error: false,
+            details: Value::Null,
+        };
+        let mut annotations = Map::new();
+
+        note_result(&mut data, &mut annotations, &changes, "coder::search");
+        assert_eq!(data.content.len(), 2);
+        assert!(annotations["reconciled"][0]["path"] == "/regex");
+
+        let mut info = ResultData {
+            content: vec![ContentBlock::text("{}".to_string())],
+            is_error: false,
+            details: Value::Null,
+        };
+        note_result(
+            &mut info,
+            &mut Map::new(),
+            &changes,
+            "engine::functions::info",
+        );
+        assert_eq!(info.content.len(), 1);
+    }
+
+    #[test]
+    fn bounded_cuts_long_strings_anywhere_and_keeps_the_rest() {
+        let long = "z".repeat(MAX_JUDGE_STRING_CHARS + 10);
+        let value = json!({ "files": [{ "path": "a", "contents": long }], "limit": 5, "ok": true });
+        let out = bounded(&value);
+        assert!(out["files"][0]["contents"].as_str().unwrap().ends_with('…'));
+        assert_eq!(out["files"][0]["path"], "a");
+        assert_eq!(out["limit"], 5);
+        assert_eq!(out["ok"], true);
+    }
+
+    #[test]
     fn an_enum_wider_than_a_choice_question_is_not_asked() {
         let options: Vec<Value> = (0..300).map(|i| json!(format!("v{i}"))).collect();
         let schema = json!({ "type": "object", "properties": { "op": { "enum": options } } });
