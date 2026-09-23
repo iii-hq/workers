@@ -749,7 +749,10 @@ type SendRequest = {
   options?: {
     system_prompt?: string;
     max_turns?: number;           // default 16
-    thinking_level?: ThinkingLevel;
+    thinking_level?: ThinkingLevel; // existing session: omitting it AND provider_options
+                                  // inherits the prior turn's pair
+    provider_options?: Record<string, unknown>; // provider-native, keyed by provider id;
+                                  // `{}` resets reasoning to the provider default
     output?: OutputContract;      // the turn's deliverable; default { type: "text" } (see Output contract)
     functions?: {
       allow?: string[];           // function_id globs the agent may dispatch to (e.g. "shell::*")

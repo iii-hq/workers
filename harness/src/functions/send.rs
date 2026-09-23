@@ -85,6 +85,9 @@ pub struct SendOptions {
     /// Every model used by the tree must advertise catalog pricing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_usd: Option<f64>,
+    /// Omitting both reasoning fields on an existing session inherits the
+    /// prior turn's; naming either resolves fresh (`provider_options: {}`
+    /// resets to the provider default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     /// Provider-native per-call options, namespaced by provider id.
@@ -305,6 +308,12 @@ async fn start_with_delivery_lock(
     );
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
+    }
+    if let (true, Some(prev)) = (
+        reasoning_fields_omitted(req.options.as_ref()),
+        prev.as_ref(),
+    ) {
+        inherit_prior_reasoning(&mut options, &prev.options);
     }
     // A profile's skills are PRELOADED into its prompt (agents.rs), never a
     // filter: only an explicit `options.skills` narrows the skills index.
@@ -860,7 +869,8 @@ fn build_options(
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     let mut thinking_level = opts.thinking_level;
-    let mut provider_options = opts.provider_options;
+    // `{}` is the explicit reset; it reaches the router as no options at all.
+    let mut provider_options = opts.provider_options.filter(|map| !map.is_empty());
     if let Some(agent) = agent {
         agent.apply_reasoning(
             provider.as_deref(),
@@ -1043,6 +1053,22 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.skills_prompt = prev.skills_prompt.clone();
     options.agent = prev.agent.clone();
     options.preloaded_contracts = prev.preloaded_contracts.clone();
+}
+
+/// True when a send names neither `thinking_level` nor `provider_options` —
+/// the condition under which an existing session keeps the prior turn's
+/// reasoning instead of falling back to the provider default.
+fn reasoning_fields_omitted(opts: Option<&SendOptions>) -> bool {
+    opts.is_none_or(|o| o.thinking_level.is_none() && o.provider_options.is_none())
+}
+
+/// Reasoning is sticky like model and prompt: a silent effort change also
+/// busts the provider's messages cache. The two fields travel as one unit so
+/// a stale native effort never overrides an explicit `thinking_level` (the
+/// same rule as `subagent::child_reasoning`).
+fn inherit_prior_reasoning(options: &mut TurnOptions, prev: &TurnOptions) {
+    options.thinking_level = prev.thinking_level;
+    options.provider_options = prev.provider_options.clone();
 }
 
 /// Resolve `options.agent` for this send, or `None` when absent. Validation
@@ -2170,6 +2196,61 @@ mod tests {
         assert!(!prompt_fields_omitted(Some(&bare_strategy)));
     }
 
+    fn codex_effort(effort: &str) -> BTreeMap<String, Value> {
+        BTreeMap::from([(
+            "openai-codex".to_string(),
+            serde_json::json!({ "reasoning_effort": effort }),
+        )])
+    }
+
+    #[test]
+    fn a_send_naming_no_reasoning_field_inherits_the_prior_reasoning_whole() {
+        assert!(reasoning_fields_omitted(None));
+        assert!(reasoning_fields_omitted(Some(&SendOptions::default())));
+
+        let mut prev = bare_options();
+        prev.thinking_level = Some(ThinkingLevel::Xhigh);
+        prev.provider_options = Some(codex_effort("xhigh"));
+        let mut next = bare_options();
+        inherit_prior_reasoning(&mut next, &prev);
+        assert_eq!(next.thinking_level, Some(ThinkingLevel::Xhigh));
+        assert_eq!(next.provider_options, prev.provider_options);
+    }
+
+    #[test]
+    fn naming_either_reasoning_field_blocks_inheritance() {
+        // A new level alone must not pick up the prior native effort, which
+        // would override it at the provider.
+        let level_only = SendOptions {
+            thinking_level: Some(ThinkingLevel::Low),
+            ..Default::default()
+        };
+        assert!(!reasoning_fields_omitted(Some(&level_only)));
+        let native_only = SendOptions {
+            provider_options: Some(codex_effort("high")),
+            ..Default::default()
+        };
+        assert!(!reasoning_fields_omitted(Some(&native_only)));
+
+        // `provider_options: {}` is the reset hatch: it names the field, and
+        // the turn reaches the router with no reasoning options at all.
+        let reset = SendOptions {
+            provider_options: Some(BTreeMap::new()),
+            ..Default::default()
+        };
+        assert!(!reasoning_fields_omitted(Some(&reset)));
+        let opts = build_options(
+            &WorkerConfig::default(),
+            &agent_send_request(reset),
+            "m".into(),
+            None,
+            None,
+            crate::prompt::DEFAULT,
+        );
+        assert_eq!(opts.thinking_level, None);
+        assert_eq!(opts.provider_options, None);
+    }
+
     #[test]
     fn skill_context_is_new_for_fresh_sessions_inherited_when_omitted_and_rejects_legacy_changes() {
         let view = crate::skills::EffectiveView::Removed { generation: 1 };
@@ -2670,7 +2751,8 @@ mod tests {
     #[test]
     fn agent_identity_inherits_with_the_prompt_and_sheds_with_it() {
         let cfg = WorkerConfig::default();
-        let agent = resolved_agent(None);
+        let mut agent = resolved_agent(Some("openai-codex::codex/gpt-5.6-sol"));
+        agent.reasoning_effort = Some("high".into());
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
@@ -2678,17 +2760,21 @@ mod tests {
         let prev = build_options(
             &cfg,
             &req,
-            "m".into(),
-            None,
+            "codex/gpt-5.6-sol".into(),
+            Some("openai-codex".into()),
             Some(&agent),
             crate::prompt::DEFAULT,
         );
 
-        // A bare steer inherits prompt AND identity.
+        // A bare steer inherits prompt AND identity, and the profile's
+        // reasoning effort stays authoritative past turn 1.
         let mut next = bare_options();
         inherit_prior_system_prompt(&mut next, &prev);
+        inherit_prior_reasoning(&mut next, &prev);
         assert_eq!(next.system_prompt, prev.system_prompt);
         assert_eq!(next.agent, prev.agent);
+        assert_eq!(next.thinking_level, Some(ThinkingLevel::High));
+        assert_eq!(next.provider_options, Some(codex_effort("high")));
 
         // An explicit prompt field resolves fresh — no inherit call — and the
         // freshly built options carry no identity.
