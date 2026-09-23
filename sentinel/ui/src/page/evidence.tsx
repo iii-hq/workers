@@ -10,8 +10,10 @@ import {
   CollapsibleCardTrigger,
   EmptyState,
   Skeleton,
+  StatusPanel,
 } from '@iii-dev/console-ui'
-import { copyText, errorMessage } from '@iii-dev/console-ui/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
+import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import type { Host } from '@iii-dev/console-ui'
 import { Check, ChevronDown, Copy } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -39,11 +41,12 @@ export function EvidenceView({ api, now, occurrence }: Props) {
   const [bundle, setBundle] = useState<EvidenceBundle | null>(null)
   const [pruned, setPruned] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
+  // The previous bundle stays on screen while the next one loads: a new
+  // occurrence arriving every few seconds must not blank what is being read.
   useEffect(() => {
     let live = true
-    setBundle(null)
-    setPruned(false)
     setError(null)
     api
       .evidence(occurrence.id)
@@ -56,9 +59,22 @@ export function EvidenceView({ api, now, occurrence }: Props) {
     return () => {
       live = false
     }
-  }, [api, occurrence.id])
+  }, [api, occurrence.id, attempt])
 
-  if (error) return <EmptyState compact title="Could not read the evidence" description={error} />
+  if (error) {
+    return (
+      <StatusPanel
+        variant="alert"
+        headline="Could not read the evidence"
+        detail={error}
+        action={
+          <Button size="sm" onClick={() => setAttempt((previous) => previous + 1)}>
+            Retry
+          </Button>
+        }
+      />
+    )
+  }
   if (pruned) {
     return (
       <EmptyState
@@ -326,22 +342,12 @@ function LogRecord({ bundle, captured }: { bundle: EvidenceBundle; captured: str
 }
 
 function CopyTrace({ traceId }: { traceId: string }) {
-  const [copied, setCopied] = useState(false)
+  const { state, copy } = useCopyFlash(traceId, 1500)
   if (!traceId) return null
   return (
-    <Button
-      size="sm"
-      variant="ghost"
-      className="sentinel-ui-card-end"
-      onClick={() =>
-        copyText(traceId).then((ok) => {
-          setCopied(ok)
-          if (ok) window.setTimeout(() => setCopied(false), 1500)
-        })
-      }
-    >
-      {copied ? <Check size={16} /> : <Copy size={16} />}
-      {copied ? 'Copied' : 'Copy trace id'}
+    <Button size="sm" variant="ghost" className="sentinel-ui-card-end" onClick={copy}>
+      {state === 'copied' ? <Check size={16} /> : <Copy size={16} />}
+      {state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : 'Copy trace id'}
     </Button>
   )
 }

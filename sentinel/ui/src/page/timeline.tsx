@@ -1,4 +1,4 @@
-import { Card, CardBody, CardHeader, EmptyState, Skeleton } from '@iii-dev/console-ui'
+import { Button, Card, CardBody, CardHeader, Skeleton, StatusPanel } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
 import { useEffect, useState } from 'react'
 import type { Client, GroupSummary, GroupTransition } from '../api'
@@ -17,10 +17,12 @@ export function GroupTimeline({ api, group, now }: { api: Client; group: GroupSu
   const [rows, setRows] = useState<GroupTransition[] | null>(null)
   const [total, setTotal] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
+  useEffect(() => setRows(null), [group.id])
   useEffect(() => {
     let live = true
-    setRows(null)
+    setError(null)
     api
       .history(group.id)
       .then((response) => {
@@ -32,9 +34,22 @@ export function GroupTimeline({ api, group, now }: { api: Client; group: GroupSu
     return () => {
       live = false
     }
-  }, [api, group.id, group.status])
+  }, [api, group.id, group.status, attempt])
 
-  if (error) return <EmptyState compact title="Could not read the history" description={error} />
+  if (error) {
+    return (
+      <StatusPanel
+        variant="alert"
+        headline="Could not read the history"
+        detail={error}
+        action={
+          <Button size="sm" onClick={() => setAttempt((previous) => previous + 1)}>
+            Retry
+          </Button>
+        }
+      />
+    )
+  }
   if (!rows) return <Skeleton />
 
   const born = rows.some((row) => !row.from_status)

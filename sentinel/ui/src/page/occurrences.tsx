@@ -6,6 +6,7 @@ import {
   Chip,
   EmptyState,
   Skeleton,
+  StatusPanel,
   Table,
   TableBody,
   TableCell,
@@ -42,10 +43,14 @@ export function OccurrencesTable({
   const [rows, setRows] = useState<OccurrenceSummary[] | null>(null)
   const [kept, setKept] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
+  // A new group starts empty; a new occurrence of the same group re-reads
+  // in place, rows and scroll untouched.
+  useEffect(() => setRows(null), [groupId])
   useEffect(() => {
     let live = true
-    setRows(null)
+    setError(null)
     api
       .occurrences(groupId)
       .then((response) => {
@@ -57,9 +62,22 @@ export function OccurrencesTable({
     return () => {
       live = false
     }
-  }, [api, groupId])
+  }, [api, groupId, total, attempt])
 
-  if (error) return <EmptyState compact title="Could not read the occurrences" description={error} />
+  if (error) {
+    return (
+      <StatusPanel
+        variant="alert"
+        headline="Could not read the occurrences"
+        detail={error}
+        action={
+          <Button size="sm" onClick={() => setAttempt((previous) => previous + 1)}>
+            Retry
+          </Button>
+        }
+      />
+    )
+  }
   if (!rows) return <Skeleton />
   if (rows.length === 0) {
     return <EmptyState compact title="No occurrences kept" description="Retention removed the rows; the counters stay." />

@@ -322,7 +322,7 @@ export function GroupsListView({
 
 /** The issue cell: the exception type in bold, the message after it, and
     where it failed on the line below. */
-function Issue({ group }: { group: GroupSummary }) {
+function Issue({ group, extra }: { group: GroupSummary; extra?: string }) {
   const { type, rest } = splitTitle(group.title, group.exception_type)
   const where = [
     group.service_name,
@@ -335,11 +335,12 @@ function Issue({ group }: { group: GroupSummary }) {
     <div className="sentinel-ui-issue">
       <Dot tone={statusLook(group.status).dot} pulse={group.status === 'investigating'} />
       <div className="sentinel-ui-issue-copy">
-        <span className="sentinel-ui-issue-title">
+        <span className="sentinel-ui-issue-title" title={group.title}>
           {type ? <b>{type}</b> : null} {rest}
           {group.source === 'log' ? <Chip className="sentinel-ui-source">log</Chip> : null}
         </span>
         <span className="sentinel-ui-issue-where">{where}</span>
+        {extra ? <span className="sentinel-ui-issue-extra">{extra}</span> : null}
       </div>
     </div>
   )
@@ -409,16 +410,16 @@ function GroupRowNarrow({
   onOpen: (groupId: string) => void
 }) {
   return (
+    // The title is the task; the facts that sat beside it go under it, where
+    // they cost a line instead of half the width. The dot carries the tone.
     <ListItem
       onClick={() => onOpen(group.id)}
       data-regressed={group.status === 'regressed' ? 'true' : undefined}
-      label={<Issue group={group} />}
-      trailing={
-        <span className="sentinel-ui-row-trailing">
-          <StatusBadge status={group.status} />
-          <span className="sentinel-ui-number">{spaced(group.occurrence_count)}</span>
-          <span className="sentinel-ui-when">{ago(group.last_seen_ms, now)}</span>
-        </span>
+      label={
+        <Issue
+          group={group}
+          extra={`${group.status} · ${spaced(group.occurrence_count)} · ${ago(group.last_seen_ms, now)}`}
+        />
       }
     />
   )

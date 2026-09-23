@@ -29,7 +29,7 @@ import {
   Square,
   TriangleAlert,
 } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   Client,
   DiagnosisRecord,
@@ -67,6 +67,8 @@ interface Props {
   onChanged: () => void
   onLoaded: (group: GroupSummary) => void
   announce: (text: string) => void
+  /** Bumps whenever the list re-reads: a group event, or the poll. */
+  revision: number
 }
 
 type Tab = 'latest' | 'occurrences' | 'diagnosis' | 'history'
@@ -83,6 +85,7 @@ export function GroupDetailView({
   onChanged,
   onLoaded,
   announce,
+  revision,
 }: Props) {
   const [detail, setDetail] = useState<GroupDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -95,22 +98,34 @@ export function GroupDetailView({
   const [viewing, setViewing] = useState<OccurrenceSummary | null>(null)
   const diagnoses = useDiagnoses(api, groupId, detail?.diagnosis?.id)
 
+  // Only the newest read may land: a slow answer for the group somebody
+  // just left must not paint over the one they opened.
+  const request = useRef(0)
   const load = useCallback(() => {
+    const seq = ++request.current
     api
       .group(groupId)
       .then((value) => {
+        if (seq !== request.current) return
         setDetail(value)
         setError(null)
         onLoaded(value.group)
       })
-      .catch((cause) => setError(errorMessage(cause)))
+      .catch((cause) => {
+        if (seq === request.current) setError(errorMessage(cause))
+      })
   }, [api, groupId])
 
-  useEffect(load, [load])
   useEffect(() => {
+    setDetail(null)
+    setError(null)
+    setNotice(null)
     setTab('latest')
     setViewing(null)
   }, [groupId])
+  // Live: the list's refetch is the cue, so an investigation that records,
+  // a regression, or a person resolving it elsewhere shows up here too.
+  useEffect(load, [load, revision])
 
   // Every outcome is announced; only the ones no state note will explain
   // (a stopped pass) stay on screen as well.
@@ -149,9 +164,15 @@ export function GroupDetailView({
     )
   }
   if (!detail) {
+    // The silhouette of the screen that is coming: title, facts, a card.
     return (
-      <div className="sentinel-ui-detail">
-        <Skeleton />
+      <div className="sentinel-ui-detail" data-narrow={narrow} aria-busy="true">
+        <div className="sentinel-ui-skeleton-head">
+          <Skeleton />
+          <Skeleton />
+        </div>
+        <Skeleton className="sentinel-ui-skeleton-facts" />
+        <Skeleton className="sentinel-ui-skeleton-card" />
       </div>
     )
   }
@@ -193,10 +214,13 @@ export function GroupDetailView({
     })
   }
 
+  // Phones and narrow panes get touch-sized actions.
+  const size = narrow ? 'lg' : 'sm'
+
   const investigateMenu = (primary: boolean) => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" variant={primary ? 'primary' : 'pill'} disabled={busy}>
+        <Button size={size} variant={primary ? 'primary' : 'pill'} disabled={busy}>
           {primary ? <ScanSearch size={16} /> : null}
           Investigate
           <ChevronDown size={16} />
@@ -217,7 +241,7 @@ export function GroupDetailView({
   const resolveMenu = (primary: boolean) => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" variant={primary ? 'primary' : 'pill'} disabled={busy}>
+        <Button size={size} variant={primary ? 'primary' : 'pill'} disabled={busy}>
           {primary ? <CircleCheck size={16} /> : null}
           Resolve
           <ChevronDown size={16} />
@@ -248,7 +272,7 @@ export function GroupDetailView({
   const ignoreMenu = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="pill" disabled={busy}>
+        <Button size={size} variant="pill" disabled={busy}>
           Ignore
           <ChevronDown size={16} />
         </Button>
@@ -274,7 +298,7 @@ export function GroupDetailView({
   )
   const sessionButton =
     session && !sessionInView ? (
-      <Button size="sm" variant="pill" onClick={openSession}>
+      <Button size={size} variant="pill" onClick={openSession}>
         <MessageSquare size={16} />
         {running ? <Dot tone="accent" pulse /> : null}
         {group.status === 'diagnosed' ? 'Continue in chat' : 'Open session'}
@@ -338,7 +362,7 @@ export function GroupDetailView({
                 {sessionButton}
                 {actions.includes('stop') && running ? (
                   <Button
-                    size="sm"
+                    size={size}
                     variant="pill"
                     disabled={busy}
                     onClick={() =>
@@ -355,7 +379,7 @@ export function GroupDetailView({
                 ) : null}
                 {actions.includes('reopen') ? (
                   <Button
-                    size="sm"
+                    size={size}
                     variant="primary"
                     disabled={busy}
                     onClick={() => act(() => api.reopen(group.id), 'Reopened.')}
@@ -366,7 +390,7 @@ export function GroupDetailView({
                 ) : null}
                 {actions.includes('unignore') ? (
                   <Button
-                    size="sm"
+                    size={size}
                     variant="primary"
                     disabled={busy}
                     onClick={() => act(() => api.unignore(group.id), 'Back in the open list.')}
@@ -395,7 +419,18 @@ export function GroupDetailView({
           }
         />
       ) : null}
-      {error ? <StatusPanel variant="alert" headline="That did not go through" detail={error} /> : null}
+      {error ? (
+        <StatusPanel
+          variant="alert"
+          headline="That did not go through"
+          detail={error}
+          action={
+            <Button size="sm" variant="ghost" onClick={() => setError(null)}>
+              Dismiss
+            </Button>
+          }
+        />
+      ) : null}
 
       {group.status === 'regressed' ? (
         <StatusPanel
@@ -457,7 +492,7 @@ export function GroupDetailView({
       <Tabs value={tab} onValueChange={(next) => setTab(next as Tab)}>
         <TabsList variant="line">
           <TabsTrigger value="latest" icon={false}>
-            {viewing ? 'Occurrence' : 'Latest occurrence'}
+            {viewing ? 'Occurrence' : narrow ? 'Latest' : 'Latest occurrence'}
           </TabsTrigger>
           <TabsTrigger value="occurrences" icon={false}>
             Occurrences<span className="sentinel-ui-tab-count">{spaced(group.occurrence_count)}</span>
@@ -513,7 +548,11 @@ export function GroupDetailView({
               group={group}
               host={host}
               now={now}
-              records={diagnoses.records}
+              // Until the versions arrive — or if they cannot — the one the
+              // group already carries is still the answer.
+              records={
+                diagnoses.records.length > 0 ? diagnoses.records : detail.diagnosis ? [detail.diagnosis] : []
+              }
               investigation={running ?? detail.latest_investigation}
               running={Boolean(running)}
               sessionInView={sessionInView}

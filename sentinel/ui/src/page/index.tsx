@@ -129,7 +129,14 @@ export function SentinelPage({
     })
   }, [groups.data])
 
-  // "12 s ago" has to keep moving between refreshes.
+  // The list refetches on every group event and on the fallback poll; each
+  // new answer is the detail's cue to re-read its own group.
+  const [revision, setRevision] = useState(0)
+  useEffect(() => {
+    if (groups.data) setRevision((previous) => previous + 1)
+  }, [groups.data])
+
+  // "12s ago" has to keep moving between refreshes.
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const tick = window.setInterval(() => setNow(Date.now()), 15_000)
@@ -184,17 +191,14 @@ export function SentinelPage({
       <PageHeader
         icon={<Activity size={16} />}
         title="Sentinel"
-        description={
-          selected
-            ? opened
-              ? [opened.service_name, opened.function_id].filter(Boolean).join(' · ')
-              : undefined
-            : describe(status)
-        }
+        // On a group the header reads title, back, then where it failed —
+        // the design's order — so the kicker rides after the back action
+        // instead of in `description`, which renders before it.
+        description={selected ? undefined : describe(status)}
         onClose={onRequestClose}
         actions={
           <>
-            {!selected && status?.groups.last_seen_ms ? (
+            {!selected && !narrow && status?.groups.last_seen_ms ? (
               <span className="sentinel-ui-ingested">
                 ingested {ago(status.groups.last_seen_ms, now)}
               </span>
@@ -206,10 +210,23 @@ export function SentinelPage({
         }
       >
         {selected ? (
-          <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
-            <ArrowLeft size={16} />
-            Groups
-          </Button>
+          narrow ? (
+            // A worded button does not fit beside the header's own actions
+            // on a phone; the arrow keeps its name for everyone else.
+            <IconButton label="Back to the groups" onClick={() => setSelected(null)}>
+              <ArrowLeft size={16} />
+            </IconButton>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
+              <ArrowLeft size={16} />
+              Groups
+            </Button>
+          )
+        ) : null}
+        {selected && opened ? (
+          <span className="sentinel-ui-header-kicker">
+            {[opened.service_name, opened.function_id].filter(Boolean).join(' · ')}
+          </span>
         ) : null}
       </PageHeader>
       <PageMain>
@@ -269,6 +286,7 @@ export function SentinelPage({
               onBack={() => setSelected(null)}
               onChanged={() => groups.refresh()}
               onLoaded={setOpened}
+            revision={revision}
               announce={announce}
             />
           ) : (
@@ -278,7 +296,9 @@ export function SentinelPage({
               status={status}
               filters={filters}
               groups={groups.data?.groups ?? []}
-              loading={groups.loading || !groups.data}
+              // No answer yet is loading; a failed first read is the error
+            // panel above, not skeleton rows that never resolve.
+            loading={groups.loading || (!groups.data && !groups.error)}
               narrow={narrow}
               now={now}
               onFilters={setFilters}

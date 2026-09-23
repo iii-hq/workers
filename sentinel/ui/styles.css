@@ -64,22 +64,15 @@
 
 /* ── shared marks ─────────────────────────────────────────────────────── */
 
-[data-iii-ui="sentinel"] .sentinel-ui-dot {
+[data-iii-ui="sentinel"] .sentinel-ui-dot { flex: 0 0 auto; }
+
+/* The tones are `StatusDot`'s; a quiet state has none there. */
+[data-iii-ui="sentinel"] .sentinel-ui-dot--quiet {
   display: inline-block;
-  flex: 0 0 auto;
   width: 6px;
   height: 6px;
   border-radius: 9999px;
   background: var(--color-ink-ghost);
-}
-
-[data-iii-ui="sentinel"] .sentinel-ui-dot[data-tone="alert"] { background: var(--color-alert); }
-[data-iii-ui="sentinel"] .sentinel-ui-dot[data-tone="accent"] { background: var(--color-accent); }
-[data-iii-ui="sentinel"] .sentinel-ui-dot[data-tone="ok"] { background: var(--color-ok); }
-[data-iii-ui="sentinel"] .sentinel-ui-dot[data-tone="current"] { background: currentColor; }
-
-[data-iii-ui="sentinel"] .sentinel-ui-dot[data-pulse="true"] {
-  box-shadow: 0 0 0 2px var(--color-accent-muted);
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-mono,
@@ -112,6 +105,7 @@
   background: none;
   color: var(--color-accent);
   font: inherit;
+  text-align: left;
   cursor: pointer;
 }
 
@@ -128,6 +122,16 @@
   height: 1px;
   overflow: hidden;
   clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The header's description recipe, for the kicker that follows Back. */
+[data-iii-ui="sentinel"] .sentinel-ui-header-kicker {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-ghost);
+  font-size: 12px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -246,9 +250,9 @@
 
 /* A regression is the one row that says somebody's fix did not hold; it
    keeps its wash on hover, in both the wide table and the narrow list. */
-[data-iii-ui="sentinel"] tr[data-regressed="true"],
-[data-iii-ui="sentinel"] tr[data-regressed="true"]:hover,
-[data-iii-ui="sentinel"] [data-regressed="true"].iii-ui-list-item {
+[data-iii-ui="sentinel"] tr[data-regressed="true"]:not([data-selected="true"]),
+[data-iii-ui="sentinel"] tr[data-regressed="true"]:not([data-selected="true"]):hover,
+[data-iii-ui="sentinel"] [data-regressed="true"].iii-ui-list-item:not([data-selected="true"]) {
   background: var(--color-alert-muted);
 }
 
@@ -290,11 +294,11 @@
   white-space: nowrap;
 }
 
-[data-iii-ui="sentinel"] .sentinel-ui-row-trailing {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
+[data-iii-ui="sentinel"] .sentinel-ui-issue-extra {
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Twenty-four bars of CSS rather than an inline chart. */
@@ -501,9 +505,30 @@
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-origin,
-[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-fix {
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-fix,
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-provenance {
   grid-template-columns: minmax(0, 1fr);
 }
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-provenance > button {
+  justify-self: start;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-detail[data-narrow="true"] .sentinel-ui-kv {
+  grid-template-columns: 120px minmax(0, 1fr);
+}
+
+/* The loading silhouette of the detail. */
+[data-iii-ui="sentinel"] .sentinel-ui-skeleton-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 520px);
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-skeleton-head > :first-child { height: 28px; }
+[data-iii-ui="sentinel"] .sentinel-ui-skeleton-facts { height: 60px; }
+[data-iii-ui="sentinel"] .sentinel-ui-skeleton-card { height: 240px; }
 
 /* ── cards of the tabs ────────────────────────────────────────────────── */
 

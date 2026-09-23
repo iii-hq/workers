@@ -4,6 +4,8 @@
  * read — and tested — without mounting anything.
  */
 
+import { formatRelative } from '@iii-dev/console-ui/format'
+
 /** @typedef {'new'|'investigating'|'diagnosed'|'resolved'|'regressed'|'ignored'} GroupStatus */
 
 /** The states the list shows when nobody has narrowed it. @type {GroupStatus[]} */
@@ -219,19 +221,13 @@ export function spaced(count) {
 }
 
 /**
- * How long ago, in the units a person reads at a glance.
+ * How long ago: the console's own relative time, read as a phrase.
  * @param {number} at_ms
  * @param {number} now
  */
 export function ago(at_ms, now) {
-  const seconds = Math.max(0, Math.round((now - at_ms) / 1000))
-  if (seconds < 5) return 'just now'
-  if (seconds < 60) return `${seconds} s ago`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} min ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} h ago`
-  return `${Math.floor(hours / 24)} d ago`
+  const relative = formatRelative(at_ms, now)
+  return relative === 'just now' ? relative : `${relative} ago`
 }
 
 /** The absolute half of a fact, on the reader's own clock. @param {number} at_ms */

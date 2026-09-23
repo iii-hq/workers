@@ -143,13 +143,13 @@ test('counts set their thousands apart with a space', () => {
   assert.equal(spaced(8), '8')
 })
 
-test('ago reads in the units a person glances at', () => {
+test('ago is the console\'s relative time, read as a phrase', () => {
   const now = 1_790_000_000_000
   assert.equal(ago(now - 2_000, now), 'just now')
-  assert.equal(ago(now - 12_000, now), '12 s ago')
-  assert.equal(ago(now - 6 * 60_000, now), '6 min ago')
-  assert.equal(ago(now - 3 * 3_600_000, now), '3 h ago')
-  assert.equal(ago(now - 14 * 86_400_000, now), '14 d ago')
+  assert.equal(ago(now - 12_000, now), '12s ago')
+  assert.equal(ago(now - 6 * 60_000, now), '6m ago')
+  assert.equal(ago(now - 3 * 3_600_000, now), '3h ago')
+  assert.equal(ago(now - 14 * 86_400_000, now), '14d ago')
 })
 
 test('a version range collapses when nothing changed', () => {
@@ -200,7 +200,7 @@ test('a regression says what was resolved and what brought it back', () => {
       },
       now,
     ),
-    'Resolved 3 d ago in state 0.22.1 with until version change; the first occurrence on 0.23.0 reopened it 12 s ago. Occurrences on 0.22.1 kept counting without reopening.',
+    'Resolved 3d ago in state 0.22.1 with until version change; the first occurrence on 0.23.0 reopened it 12s ago. Occurrences on 0.22.1 kept counting without reopening.',
   )
   assert.equal(
     regressedNote({ service_name: 'state' }, now),
