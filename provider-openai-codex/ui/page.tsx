@@ -2,7 +2,7 @@ import { Button, type Host, type ProviderConfigFormProps } from '@iii-dev/consol
 import { copyText } from '@iii-dev/console-ui/format'
 import { useEffect, useState } from 'react'
 import { createImageRenderer } from './src/image-renderer'
-import { useCodexAuth, type LoginStartResponse } from './src/use-codex-auth'
+import { type LoginStartResponse, useCodexAuth } from './src/use-codex-auth'
 
 /** Replaced by the worker at serve time with its `CODEX_COMPAT_VERSION`. */
 const COMPAT_VERSION = '__CODEX_COMPAT_VERSION__'

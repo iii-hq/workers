@@ -108,10 +108,7 @@ export function inlineImageUrl(output: unknown): string | null {
   return imageBlockUrl(envelope.content) ?? imageBlockUrl(asRecord(envelope.details)?.content)
 }
 
-type PreviewState =
-  | { status: 'loading' }
-  | { status: 'ready'; src: string }
-  | { status: 'error'; message: string }
+type PreviewState = { status: 'loading' } | { status: 'ready'; src: string } | { status: 'error'; message: string }
 
 function usePreview(host: Host, path: string, inline: string | null): PreviewState {
   const [state, setState] = useState<PreviewState>(() =>
@@ -159,26 +156,14 @@ function PathLine({ path }: { path: string }) {
         {dir ? <span className="oai-image-path-dir">{dir}</span> : null}
         <span className="oai-image-path-name">{name}</span>
       </code>
-      <IconButton
-        label={state === 'copied' ? 'Path copied' : 'Copy path'}
-        variant="ghost"
-        onClick={copy}
-      >
+      <IconButton label={state === 'copied' ? 'Path copied' : 'Copy path'} variant="ghost" onClick={copy}>
         {state === 'copied' ? <Check size={16} aria-hidden /> : <Copy size={16} aria-hidden />}
       </IconButton>
     </div>
   )
 }
 
-function ImageCard({
-  host,
-  details,
-  inline,
-}: {
-  host: Host
-  details: ImageDetails
-  inline: string | null
-}) {
+function ImageCard({ host, details, inline }: { host: Host; details: ImageDetails; inline: string | null }) {
   const preview = usePreview(host, details.path, inline)
   const dims = details.width && details.height ? `${details.width}×${details.height}` : null
   const facts = [
@@ -241,9 +226,7 @@ function GeneratingCard({ input }: { input: unknown }) {
 
 /** Dims the namespace so the op (`image::generate`) reads first. */
 export function FunctionIdLabel({ functionId }: { functionId: string }) {
-  const [ns, op] = functionId.startsWith(PREFIX)
-    ? [PREFIX, functionId.slice(PREFIX.length)]
-    : ['', functionId]
+  const [ns, op] = functionId.startsWith(PREFIX) ? [PREFIX, functionId.slice(PREFIX.length)] : ['', functionId]
   return (
     <>
       {ns ? <span className="oai-image-fn-ns">{ns}</span> : null}
@@ -257,12 +240,7 @@ export function isImageFunction(functionId: string): boolean {
 }
 
 function renderSettled(host: Host, message: FunctionTriggerMessage): React.ReactNode | null {
-  if (
-    !isImageFunction(message.functionId) ||
-    message.pendingApproval ||
-    message.running ||
-    message.output == null
-  ) {
+  if (!isImageFunction(message.functionId) || message.pendingApproval || message.running || message.output == null) {
     return null
   }
   const details = parseImageDetails(message.output)
