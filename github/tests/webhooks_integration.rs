@@ -344,21 +344,69 @@ async fn recovery_follows_delivery_cursors_and_stops_after_five_pages() {
         state["delivery_pages"] = json!([[], [], [], [], [], []]);
         state["calls"] = json!([]);
         std::fs::write(&fixture.gh_path, state.to_string()).unwrap();
-        let error = fixture
-            .iii
-            .trigger(mocks::request(
-                "github::pr::recover",
-                json!({"repo":"owner/repo"}),
-            ))
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("five pages"), "{error}");
+        call(
+            &fixture.iii,
+            "github::pr::recover",
+            json!({"repo":"owner/repo"}),
+        )
+        .await;
         let count = fixture
             .calls("GET")
             .iter()
             .filter(|call| call["endpoint"].as_str().unwrap().contains("/deliveries?"))
             .count();
         assert_eq!(count, 5);
+        async fn assert_ready(fixture: &Fixture, number: u64) {
+            let status = fixture.status(number).await;
+            assert_eq!(status["status"], "active", "{status}");
+            assert_eq!(status["health"]["hook_ready"], true, "{status}");
+            assert!(status["health"]["last_error"]
+                .as_str()
+                .unwrap()
+                .contains("five pages"));
+            assert!(fixture.database()["repos"]["owner/repo"]["error"].is_null());
+        }
+        for number in [1, 2] {
+            assert_ready(&fixture, number).await;
+        }
+        // Recovery of healthy hooks must not enter a perpetual PATCH loop.
+        call(
+            &fixture.iii,
+            "github::pr::recover",
+            json!({"repo":"owner/repo"}),
+        )
+        .await;
+        assert!(fixture.calls("PATCH").is_empty());
+        let expires = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        call(
+            &fixture.iii,
+            "github::pr::watch",
+            json!({"watch_id":"watch-3", "repo":"owner/repo", "number":1,
+                "expires_at":expires}),
+        )
+        .await;
+        assert_ready(&fixture, 3).await;
+        assert!(fixture.calls("PATCH").is_empty());
+        // A real URL change still configures the hook once, drains the lifecycle
+        // job, and leaves all watches active despite the bounded-history warning.
+        fixture
+            .tunnel
+            .ready(
+                &fixture.iii,
+                "https://two.trycloudflare.com",
+                "generation-two",
+            )
+            .await;
+        fixture.flush().await;
+        assert_eq!(fixture.calls("PATCH").len(), 1);
+        for number in [1, 2, 3] {
+            assert_ready(&fixture, number).await;
+        }
+        assert!(fixture.database()["jobs"].as_object().unwrap().is_empty());
+        assert!(
+            fixture.calls("POST").is_empty(),
+            "must not create another hook"
+        );
     })
     .catch_unwind()
     .await;

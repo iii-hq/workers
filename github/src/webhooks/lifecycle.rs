@@ -767,13 +767,18 @@ impl Service {
                 guids.insert(guid.to_owned());
             }
         }
-        if complete {
-            Ok(())
-        } else {
-            Err(Failure::Invalid(
-                "delivery recovery exceeds five pages; inspect older deliveries manually".into(),
-            ))
+        if !complete {
+            // A bounded history scan says nothing about the configured hook's
+            // readiness. Keep it observable without poisoning RepoHook.error or
+            // retrying a successfully configured URL through lifecycle jobs.
+            self.store()?.change(|d| {
+                d.last_error.get_or_insert_with(|| {
+                    format!("recovery warning for {repo}: delivery recovery exceeds five pages; inspect older deliveries manually")
+                });
+                Ok(())
+            })?;
         }
+        Ok(())
     }
 }
 
