@@ -93,7 +93,7 @@ export function DiagnosisTab({
         <EmptyState
           icon={ScanSearch}
           title="No diagnosis yet"
-          description="Investigate opens a harness session beside this page with the frozen evidence and read-only access to the mapped repository. You watch it work and can steer it; when it has a probable cause it records it with sentinel::diagnosis::record, and the cards land here."
+          description="Investigate opens a harness session beside this page with the frozen evidence and read-only access to the mapped project. You watch it work and can steer it; when it has a probable cause it records it with sentinel::diagnosis::record, and the cards land here."
           // The way forward from here: ask the session that exists, or start one.
           action={
             onAsk

@@ -63,7 +63,7 @@ fn entry_spec() -> EntrySpec {
         form_id: CONFIG_FORM_ID,
         name: "Sentinel",
         description:
-            "Error monitoring: sources, value redaction, fingerprint identity numbers, evidence retention, mapped repositories, and the model an investigation opens with.",
+            "Error monitoring: sources, value redaction, fingerprint identity numbers, evidence retention, mapped projects, and the model an investigation opens with.",
         schema: serde_json::to_value(schema_for!(WorkerConfig))
             .expect("the configuration schema must serialize"),
         default_value: serde_json::to_value(WorkerConfig::default())

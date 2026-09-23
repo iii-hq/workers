@@ -80,7 +80,7 @@ export function problems(config) {
   for (const repository of repositories) {
     const path = String(repository?.path ?? '')
     if (!path.startsWith('/')) {
-      out.push(`${repository?.id || 'a repository'} needs an absolute path`)
+      out.push(`${repository?.id || 'a project'} needs an absolute path`)
     }
     for (const worker of repository?.workers ?? []) {
       const owner = seen.get(worker)
@@ -110,7 +110,7 @@ export function problems(config) {
 export function addRepository(config, path) {
   /** @type {{ id: string, path: string, workers: string[] }[]} */
   const repositories = Array.isArray(config.repositories) ? config.repositories : []
-  const base = path.split('/').filter(Boolean).pop() || 'repository'
+  const base = path.split('/').filter(Boolean).pop() || 'project'
   let id = base
   let suffix = 2
   while (repositories.some((repository) => repository.id === id)) id = `${base}-${suffix++}`

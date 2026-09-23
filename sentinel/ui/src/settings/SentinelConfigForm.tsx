@@ -117,7 +117,7 @@ export function SentinelConfigForm({
   // What a repository can be given: the workers that failed lately, and the
   // ones another repository holds — picking one of those moves it.
   const suggestionsFor = (id: string): WorkerSuggestion[] => [
-    ...unmapped.map((worker) => ({ value: worker, description: 'failed this week, no repository' })),
+    ...unmapped.map((worker) => ({ value: worker, description: 'failed this week, no project' })),
     ...[...mapped]
       .filter(([, owner]) => owner !== id)
       .map(([worker, owner]) => ({ value: worker, description: `in ${owner}/ — moves here` })),
@@ -213,8 +213,8 @@ export function SentinelConfigForm({
       </SettingsSection>
 
       <SettingsSection
-        title="Repositories"
-        description="Where each worker's source lives on this machine. A worker with no repository is still grouped and investigated from the trace alone."
+        title="Projects"
+        description="Where each worker's source lives on this machine. A worker with no project is still grouped and investigated from the trace alone."
       >
         <SettingsDeck
           open={Boolean(selected)}
@@ -225,7 +225,7 @@ export function SentinelConfigForm({
             <SettingsList>
               {repositories.length === 0 ? (
                 <SettingsRow
-                  label="No checkout mapped"
+                  label="No project mapped"
                   description="Without one an investigation works from the evidence alone and says so."
                 />
               ) : (
@@ -271,13 +271,13 @@ export function SentinelConfigForm({
                       <span className="sentinel-ui-mono">{unmapped.join(', ')}</span>
                     </span>
                   ) : (
-                    <span className="sentinel-ui-quiet">Every worker seen in the last 7 days has a repository.</span>
+                    <span className="sentinel-ui-quiet">Every worker seen in the last 7 days has a project.</span>
                   )
                 }
                 control={
                   // No `data-settings-deck-fallback`: `DirectoryPicker` does
                   // not forward unknown props, so it would never reach the DOM.
-                  <DirectoryPicker value={null} emptyLabel="Add repository" onChange={openAt} />
+                  <DirectoryPicker value={null} emptyLabel="Add project" onChange={openAt} />
                 }
               />
             </SettingsList>
@@ -288,7 +288,7 @@ export function SentinelConfigForm({
                 <SettingsField
                   field={`repositories.${repositories.indexOf(selected)}.path`}
                   label="Folder"
-                  description="The checkout an investigation reads, read-only, on this machine."
+                  description="The folder an investigation reads, read-only, on this machine."
                   error={folderError}
                   renderControl={() => (
                     <DirectoryPicker
@@ -311,7 +311,7 @@ export function SentinelConfigForm({
                 <SettingsField
                   field={`repositories.${repositories.indexOf(selected)}.workers`}
                   label="Workers"
-                  description="The workers whose code lives here. A worker belongs to one checkout; adding one mapped elsewhere moves it."
+                  description="The workers whose code lives here. A worker belongs to one project; adding one mapped elsewhere moves it."
                   layout="stacked"
                   controlSize="full"
                   renderControl={(props) => (
@@ -323,7 +323,7 @@ export function SentinelConfigForm({
                         onChange(setRepositoryWorkers(config, selected.id, next) as ConfigFormProps['value'])
                       }
                       suggestions={suggestionsFor(selected.id)}
-                      empty="No worker yet — until one is added, this checkout maps nothing."
+                      empty="No worker yet — until one is added, this project maps nothing."
                     />
                   )}
                 />

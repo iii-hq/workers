@@ -342,7 +342,7 @@ export function GroupDetailView({
             ) : (
               <Chip tone="warning">
                 <Folder size={16} aria-hidden="true" />
-                no repository mapped
+                no project mapped
               </Chip>
             )}
           </div>
@@ -461,8 +461,8 @@ export function GroupDetailView({
         <StatusPanel
           variant="info"
           icon={<Folder size={16} />}
-          headline={`No repository is mapped for ${group.service_name}.`}
-          detail={`An investigation reads the ${group.source === 'log' ? 'log window' : 'trace'} and nothing else. Grouping, evidence, regression and the whole list work the same — only the agent's code access is missing. Map it in the configuration to give the agent the source.`}
+          headline={`No project is mapped for ${group.service_name}.`}
+          detail={`An investigation reads the ${group.source === 'log' ? 'log window' : 'trace'} and nothing else. Grouping, evidence, regression and the whole list work the same — only the agent's code access is missing. To give it the source, open the settings icon at the top of this page and, under Projects, add ${group.service_name} to the project that holds its code.`}
         />
       ) : null}
 
