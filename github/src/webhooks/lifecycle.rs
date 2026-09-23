@@ -49,6 +49,7 @@ impl Service {
                     secret: store::random_id(),
                     hook_id: None,
                     url: None,
+                    pending_url: None,
                     generation: None,
                     create_started: false,
                     cleanup_attempts: 0,
@@ -289,19 +290,14 @@ impl Service {
             && h.generation.as_deref() == Some(generation)
             && h.hook_id.is_some()
             && h.error.is_none()
+            && h.pending_url.is_none()
         {
             return Ok(false);
         }
         let config =
             json!({"url": url, "content_type":"json", "insecure_ssl":"0", "secret":h.secret});
         let id = if let Some(id) = h.hook_id {
-            self.verify_owned(repo, h).await?;
-            self.api(
-                "PATCH",
-                &format!("repos/{repo}/hooks/{id}"),
-                Some(json!({"active":true,"config":config,"events":hook_events()})),
-            )
-            .await?;
+            self.patch_owned(repo, h, &url, config).await?;
             id
         } else {
             self.store()?.change(|d| {
@@ -333,15 +329,9 @@ impl Service {
                     let data = self.store()?.read()?;
                     let h = data.repos.get(repo).ok_or(Failure::NotFound)?;
                     let id = h.hook_id.ok_or(error)?;
-                    self.verify_owned(repo, h).await?;
-                    // GitHub masks secrets in GET/list. Exact URL ownership
-                    // permits PATCHing our own secret, never trusting the mask.
-                    self.api(
-                        "PATCH",
-                        &format!("repos/{repo}/hooks/{id}"),
-                        Some(json!({"active":true,"config":config,"events":hook_events()})),
-                    )
-                    .await?;
+                    // GET/list masks the secret: reapply our configuration only
+                    // after verifying exact ownership, retaining PATCH intent.
+                    self.patch_owned(repo, h, &url, config).await?;
                     id
                 }
             }
@@ -350,6 +340,7 @@ impl Service {
             let h = d.repos.get_mut(repo).ok_or(Failure::NotFound)?;
             h.hook_id = Some(id);
             h.url = Some(url);
+            h.pending_url = None;
             h.generation = Some(generation.into());
             h.error = None;
             Ok(())
@@ -413,17 +404,48 @@ impl Service {
         }
         Err(Failure::AmbiguousHook)
     }
-    async fn verify_owned(&self, repo: &str, hook: &RepoHook) -> Result<()> {
+    /// Persist both the observed URL and new intent before an owned hook PATCH.
+    async fn patch_owned(
+        &self,
+        repo: &str,
+        hook: &RepoHook,
+        url: &str,
+        config: Value,
+    ) -> Result<()> {
+        let observed_url = self.verify_owned(repo, hook).await?;
+        let id = hook.hook_id.ok_or(Failure::Ownership)?;
+        self.store()?.change(|d| {
+            let h = d.repos.get_mut(repo).ok_or(Failure::NotFound)?;
+            h.url = Some(observed_url);
+            h.pending_url = Some(url.to_owned());
+            h.generation = None;
+            h.error = Some("hook update requires configuration confirmation".into());
+            Ok(())
+        })?;
+        self.api(
+            "PATCH",
+            &format!("repos/{repo}/hooks/{id}"),
+            Some(json!({"active":true,"config":config,"events":hook_events()})),
+        )
+        .await?;
+        Ok(())
+    }
+    /// Verify the hook ID and an exact confirmed or durably intended URL.
+    async fn verify_owned(&self, repo: &str, hook: &RepoHook) -> Result<String> {
         let id = hook.hook_id.ok_or(Failure::Ownership)?;
         let actual = self
             .api("GET", &format!("repos/{repo}/hooks/{id}"), None)
             .await?;
+        let url = actual
+            .pointer("/config/url")
+            .and_then(Value::as_str)
+            .ok_or(Failure::Ownership)?;
         if actual["id"].as_u64() != Some(id)
-            || actual.pointer("/config/url").and_then(Value::as_str) != hook.url.as_deref()
+            || (Some(url) != hook.url.as_deref() && Some(url) != hook.pending_url.as_deref())
         {
             return Err(Failure::Ownership);
         }
-        Ok(())
+        Ok(url.to_owned())
     }
     pub(super) async fn reconcile_watch(&self, id: &str, source: &str) -> Result<()> {
         let data = self.store()?.read()?;
@@ -455,10 +477,9 @@ impl Service {
             let changed = w.snapshot != snapshot || w.status == WatchState::Preparing;
             w.snapshot = snapshot;
             w.status = if d.tunnel_status == "ready"
-                && d.repos
-                    .get(&w.spec.repo)
-                    .is_some_and(|h| h.hook_id.is_some() && h.error.is_none())
-            {
+                && d.repos.get(&w.spec.repo).is_some_and(|h| {
+                    h.hook_id.is_some() && h.error.is_none() && h.pending_url.is_none()
+                }) {
                 WatchState::Active
             } else {
                 WatchState::Preparing

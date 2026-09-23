@@ -45,10 +45,11 @@ elif method == 'GET' and path.endswith('/deliveries'):
 elif method == 'POST' and path.endswith('/attempts'):
     failed = bool(s.get('fail_redeliver'))
 elif '/hooks/42' in path and method == 'GET':
+    failed = bool(s.get('fail_get_hook'))
     answer = s['hook']
 elif '/hooks/42' in path and method == 'PATCH':
     failed = bool(s.get('fail_patch'))
-    if not failed:
+    if not failed or s.get('patch_applied'):
         s['hook'].update(body)
     answer = s['hook']
 elif '/hooks/42' in path and method == 'DELETE':

@@ -44,6 +44,157 @@ fn crash_intent(s: &Service) {
         .unwrap();
 }
 
+/// Model a rejected PATCH or an applied PATCH whose response was lost.
+async fn interrupted_rotation(s: &Service, dir: &Path, applied: bool) {
+    s.ensure_hook("owner/repo", "https://one.example", "one")
+        .await
+        .unwrap();
+    s.store()
+        .unwrap()
+        .change(|d| {
+            d.tunnel_status = "ready".into();
+            for watch in d.watches.values_mut() {
+                watch.status = WatchState::Active;
+                watch.lease_id = Some(format!("lease-{}", watch.spec.watch_id));
+            }
+            Ok(())
+        })
+        .unwrap();
+    configure_gh(dir, json!({"fail_patch":true,"patch_applied":applied}));
+    assert!(s
+        .ensure_hook("owner/repo", "https://two.example", "two")
+        .await
+        .is_err());
+    let data = s.store().unwrap().read().unwrap();
+    let hook = &data.repos["owner/repo"];
+    assert_eq!(
+        hook.url.as_deref(),
+        Some("https://one.example/webhooks/github/endpoint")
+    );
+    assert_eq!(
+        hook.pending_url.as_deref(),
+        Some("https://two.example/webhooks/github/endpoint")
+    );
+    assert!(hook.generation.is_none());
+    assert!(hook.error.is_some());
+    assert!(!s.status("w1").unwrap().health.hook_ready);
+}
+
+#[tokio::test]
+async fn lost_patch_response_recovers_after_restart_and_another_url_change() {
+    for applied in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = service(dir.path()).await;
+        tests::seed(&s);
+        interrupted_rotation(&s, dir.path(), applied).await;
+        s.store = None;
+        s.store = Some(Store::open(&dir.path().join("store.sqlite3")).unwrap());
+        configure_gh(dir.path(), json!({"fail_patch":false}));
+        s.apply_tunnel(&tunnel("ready", Some("https://three.example"), "three"))
+            .await
+            .unwrap();
+        let data = s.store().unwrap().read().unwrap();
+        let hook = &data.repos["owner/repo"];
+        assert_eq!(hook.hook_id, Some(42));
+        assert_eq!(
+            hook.url.as_deref(),
+            Some("https://three.example/webhooks/github/endpoint")
+        );
+        assert_eq!(hook.generation.as_deref(), Some("three"));
+        assert!(hook.pending_url.is_none());
+        assert!(hook.error.is_none());
+        for id in ["w1", "w2"] {
+            let status = s.status(id).unwrap();
+            assert_eq!(status.status, WatchState::Active);
+            assert!(status.health.hook_ready);
+        }
+        assert_eq!(gh_calls(dir.path(), "POST").len(), 1);
+        assert_eq!(gh_calls(dir.path(), "PATCH").len(), 2);
+        assert_eq!(
+            gh_state(dir.path())["hook"]["config"]["secret"],
+            "test-secret"
+        );
+        s.iii.shutdown_async().await;
+    }
+}
+
+#[tokio::test]
+async fn lost_patch_response_allows_cleanup_after_restart_without_releasing_foreign_hooks() {
+    for applied in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = service(dir.path()).await;
+        tests::seed(&s);
+        interrupted_rotation(&s, dir.path(), applied).await;
+        s.store = None;
+        s.store = Some(Store::open(&dir.path().join("store.sqlite3")).unwrap());
+        stop_watches(&s);
+        let bus = s.bus.as_ref().unwrap();
+        for _ in 0..2 {
+            bus.reply("quick-tunnel::release", Ok(Value::Null));
+        }
+        s.cleanup().await.unwrap();
+        let data = s.store().unwrap().read().unwrap();
+        assert!(data.repos.is_empty());
+        assert!(data.watches.values().all(|w| w.lease_id.is_none()));
+        assert_eq!(gh_calls(dir.path(), "DELETE").len(), 1);
+        assert_eq!(gh_calls(dir.path(), "PATCH").len(), 1);
+        assert_eq!(bus.calls()[0].payload["lease_id"], "lease-w1");
+        assert_eq!(bus.calls()[1].payload["lease_id"], "lease-w2");
+        s.iii.shutdown_async().await;
+    }
+}
+
+#[tokio::test]
+async fn pending_patch_does_not_authorize_unknown_urls_ids_or_failed_reads() {
+    for failure in ["url", "id", "read"] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = service(dir.path()).await;
+        tests::seed(&s);
+        interrupted_rotation(&s, dir.path(), true).await;
+        let mut state = gh_state(dir.path());
+        match failure {
+            "url" => {
+                state["hook"]["config"]["url"] =
+                    json!("https://foreign.example/webhooks/github/endpoint")
+            }
+            "id" => state["hook"]["id"] = json!(99),
+            _ => state["fail_get_hook"] = json!(true),
+        }
+        std::fs::write(dir.path().join("mock.json"), state.to_string()).unwrap();
+        assert!(s
+            .ensure_hook("owner/repo", "https://three.example", "three")
+            .await
+            .is_err());
+        stop_watches(&s);
+        assert!(s.cleanup().await.is_err());
+        let data = s.store().unwrap().read().unwrap();
+        assert_eq!(
+            data.repos["owner/repo"].pending_url.as_deref(),
+            Some("https://two.example/webhooks/github/endpoint")
+        );
+        assert!(data.watches.values().all(|w| w.lease_id.is_some()));
+        assert!(gh_calls(dir.path(), "DELETE").is_empty());
+        assert_eq!(gh_calls(dir.path(), "PATCH").len(), 1);
+        assert!(s.bus.as_ref().unwrap().calls().is_empty());
+        s.iii.shutdown_async().await;
+    }
+}
+
+#[test]
+fn legacy_hook_without_update_intent_remains_readable() {
+    let hook: RepoHook = serde_json::from_value(json!({
+        "endpoint_id":"endpoint", "secret":"test-secret", "hook_id":42,
+        "url":"https://one.example/webhooks/github/endpoint", "generation":"one",
+        "create_started":false, "cleanup_attempts":0, "error":null
+    }))
+    .unwrap();
+    assert!(hook.pending_url.is_none());
+    assert!(serde_json::to_value(hook)
+        .unwrap()
+        .get("pending_url")
+        .is_none());
+}
+
 #[tokio::test]
 async fn rejected_post_without_hook_clears_intent_and_releases_lease() {
     let dir = tempfile::tempdir().unwrap();

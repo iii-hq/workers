@@ -36,6 +36,7 @@ fn hook() -> RepoHook {
         secret: "preserved-secret".into(),
         hook_id: Some(42),
         url: Some("https://example.test/hooks".into()),
+        pending_url: None,
         generation: Some("generation".into()),
         create_started: true,
         cleanup_attempts: 3,

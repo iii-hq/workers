@@ -284,6 +284,9 @@ pub struct RepoHook {
     pub secret: String,
     pub hook_id: Option<u64>,
     pub url: Option<String>,
+    /// Exact destination persisted before PATCH; retained if its response is lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_url: Option<String>,
     pub generation: Option<String>,
     pub create_started: bool,
     pub cleanup_attempts: u32,

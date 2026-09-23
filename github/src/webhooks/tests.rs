@@ -334,6 +334,7 @@ pub(super) fn seed(s: &Service) {
                     secret: "test-secret".into(),
                     hook_id: None,
                     url: None,
+                    pending_url: None,
                     generation: None,
                     create_started: false,
                     cleanup_attempts: 0,

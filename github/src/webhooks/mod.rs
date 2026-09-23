@@ -162,7 +162,9 @@ impl Service {
         let w = d.watches.get(id).ok_or(Failure::NotFound)?;
         let hook = d.repos.get(&w.spec.repo);
         let hook_ready = d.tunnel_status == "ready"
-            && hook.is_some_and(|h| h.hook_id.is_some() && h.error.is_none())
+            && hook.is_some_and(|h| {
+                h.hook_id.is_some() && h.error.is_none() && h.pending_url.is_none()
+            })
             && w.error.is_none();
         let status = if w.status == WatchState::Active && !hook_ready {
             WatchState::Preparing
