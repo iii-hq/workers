@@ -12,6 +12,7 @@ fn default_config_targets_v1_personal_mode() {
     assert_eq!(cfg.org_id, "");
     assert_eq!(cfg.request_timeout_secs, 120);
     assert!(cfg.iii_context);
+    assert!(cfg.session_recording);
     assert_eq!(cfg.devin_bin(), "devin");
 }
 
