@@ -626,6 +626,8 @@ pub struct PendingInfo {
     /// Hook holds only: the arguments as mutated by the chain up to the hold,
     /// checkpointed so a release executes the mutated call (issue #506).
     pub held_arguments: Option<Value>,
+    /// Argument repairs applied before the hold (MOT-4847).
+    pub reconciled: Option<Vec<crate::reconcile::Change>>,
     pub child_session_id: Option<String>,
     pub child_turn_id: Option<String>,
 }
@@ -854,7 +856,7 @@ fn arguments_preview(arguments: &Value) -> String {
 
 const PREVIEW_CHARS: usize = 200;
 
-fn truncate_chars(s: &str, max: usize) -> String {
+pub(crate) fn truncate_chars(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
         Some((i, _)) => s[..i].to_string(),
         None => s.to_string(),

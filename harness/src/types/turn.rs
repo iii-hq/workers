@@ -265,6 +265,10 @@ pub struct CallCheckpoint {
     /// field existed; release falls back to transcript recovery then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_arguments: Option<Value>,
+    /// Argument repairs applied before the hold (MOT-4847), so a release
+    /// still notes them on the result and its origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconciled: Option<Vec<crate::reconcile::Change>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_timeout_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -537,6 +541,7 @@ mod tests {
             child_session_reused: reused,
             held_by: None,
             held_arguments: None,
+            reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
         }

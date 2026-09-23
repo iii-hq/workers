@@ -206,7 +206,13 @@ fn origin(turn_id: &str) -> Value {
 /// `plan_calls`): the call's stated purpose, used as reconciliation intent.
 fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
     content.iter().find_map(|block| match block {
-        ContentBlock::FunctionCall { id, arguments, .. } if id == call_id => {
+        // Only the wrapper's field: in native exposure `description` would
+        // be one of the target's own parameters.
+        ContentBlock::FunctionCall {
+            id,
+            function_id,
+            arguments,
+        } if id == call_id && function_id == policy::AGENT_TRIGGER_NAME => {
             arguments.get("description").and_then(Value::as_str)
         }
         _ => None,
@@ -1556,6 +1562,7 @@ async fn finish_step(
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
                         held_arguments: Some(arguments),
+                        reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1586,6 +1593,13 @@ async fn finish_step(
                     reconciled.as_ref(),
                     &call.function_id,
                 );
+                if crate::reconcile::looks_like_argument_error(&data) {
+                    if let Some(diagnosis) =
+                        crate::reconcile::diagnose(deps, &cfg, &call.function_id, call_args).await
+                    {
+                        data.content.push(ContentBlock::text(diagnosis));
+                    }
+                }
                 append_function_result(
                     &session,
                     &record,
@@ -1615,6 +1629,7 @@ async fn finish_step(
                         child_session_reused: child.as_ref().is_some_and(|c| c.reused),
                         held_by: None,
                         held_arguments: None,
+                        reconciled: None,
                         pending_timeout_ms: None,
                         pending_at: None,
                     },
@@ -1635,6 +1650,7 @@ async fn finish_step(
                     child_session_reused: false,
                     held_by: None,
                     held_arguments: None,
+                    reconciled: None,
                     pending_timeout_ms: None,
                     pending_at: None,
                 },
@@ -1685,6 +1701,7 @@ async fn finish_step(
                         // A post-trigger release re-invokes the target: keep
                         // the fully pre-mutated args, not the model originals.
                         held_arguments: Some(eff_args.clone()),
+                        reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1717,9 +1734,12 @@ async fn finish_step(
                 reconciled.as_ref(),
                 &call.function_id,
             );
-            // A failed call whose arguments still violate the schema: name
-            // the violations (the target's serde error names no field).
-            if data.is_error && call.function_id != "engine::functions::info" {
+            // A call the target rejected as malformed, whose arguments still
+            // violate the schema: name the violations (the target's serde
+            // error names no field).
+            if crate::reconcile::looks_like_argument_error(&data)
+                && call.function_id != "engine::functions::info"
+            {
                 if let Some(diagnosis) =
                     crate::reconcile::diagnose(deps, &cfg, &call.function_id, call_args).await
                 {
@@ -2620,6 +2640,7 @@ fn checkpoint_pending(
             child_session_reused: false,
             held_by: info.held_by.clone(),
             held_arguments: info.held_arguments.clone(),
+            reconciled: info.reconciled.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
         },
@@ -2641,6 +2662,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             child_session_reused: false,
             held_by: None,
             held_arguments: None,
+            reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
         },
@@ -3515,9 +3537,29 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::{
-        cancel_requested, concrete_allowed_tools, count_model_visible,
+        call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
         retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
     };
+
+    #[test]
+    fn call_description_reads_only_the_agent_trigger_wrapper() {
+        let blocks = vec![
+            ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "agent_trigger".into(),
+                arguments: serde_json::json!({ "function": "x::y", "description": "look up" }),
+            },
+            ContentBlock::FunctionCall {
+                id: "c2".into(),
+                function_id: "directory::skills::create".into(),
+                arguments: serde_json::json!({ "name": "s", "description": "a skill that…" }),
+            },
+        ];
+
+        assert_eq!(call_description(&blocks, "c1"), Some("look up"));
+        assert_eq!(call_description(&blocks, "c2"), None);
+        assert_eq!(call_description(&blocks, "c3"), None);
+    }
     use crate::clients::router::ChatError;
     use crate::error::HarnessError;
     use crate::types::content::ContentBlock;

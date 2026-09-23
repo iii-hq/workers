@@ -34,7 +34,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use iii_sdk::protocol::TriggerRequest;
 use jsonschema::error::ValidationErrorKind;
 use jsonschema::JSONSchema;
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::config::{CallReconciliation, WorkerConfig};
@@ -50,12 +51,19 @@ const JUDGE_FUNCTION_ID: &str = "judge::evaluate";
 const JUDGE_PAUSE_MS: u64 = 30_000;
 /// The `choice` key meaning "none of these".
 const NONE_OPTION: &str = "none";
+/// Enum values a `choice` question may list (the contract caps criteria at
+/// 255, one of which is `none`).
+const MAX_ENUM_OPTIONS: usize = 254;
+/// Longest string kept verbatim in the judge's view of the arguments.
+const MAX_JUDGE_STRING_CHARS: usize = 512;
+/// Largest evaluation sent to the judge (the directory's calibration).
+const MAX_EVALUATION_BYTES: usize = 48 * 1024;
 
 /// Epoch ms until which the judge is skipped after a failure.
 static JUDGE_PAUSED_UNTIL: AtomicU64 = AtomicU64::new(0);
 
 /// One repair applied to the arguments.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Change {
     /// RFC 6901 pointer into the arguments (`""` = the whole object).
     pub path: String,
@@ -64,7 +72,7 @@ pub struct Change {
     pub to: Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
     /// A string holding JSON of the schema's type was parsed (layer A).
@@ -196,14 +204,52 @@ fn coerce_compiled(compiled: &JSONSchema, arguments: &Value) -> Option<Reconcile
     })
 }
 
-/// `(instance pointer, offending value)` for every schema violation.
+/// `(instance pointer, offending value)` for every schema violation. Only a
+/// string instance is kept (the one shape layer A can parse); a violation on
+/// an object or array yields `Null` instead of cloning the whole subtree.
 fn violations(schema: &JSONSchema, value: &Value) -> Vec<(String, Value)> {
     match schema.validate(value) {
         Ok(()) => Vec::new(),
         Err(errors) => errors
-            .map(|e| (e.instance_path.to_string(), e.instance.into_owned()))
+            .map(|e| {
+                let instance = match e.instance.as_ref() {
+                    Value::String(_) => e.instance.into_owned(),
+                    _ => Value::Null,
+                };
+                (e.instance_path.to_string(), instance)
+            })
             .collect(),
     }
+}
+
+/// Whether a failed result is the target rejecting the arguments themselves
+/// (SDK deserialization, harness request validation, an explicit
+/// invalid-argument error), as opposed to failing for another reason.
+pub fn looks_like_argument_error(data: &crate::trigger::ResultData) -> bool {
+    const MARKERS: [&str; 7] = [
+        "serialization error",
+        "invalid type",
+        "missing field",
+        "unknown field",
+        "invalid_request",
+        "invalid_argument",
+        "invalid spawn arguments",
+    ];
+    data.is_error && {
+        let text = text_of(&data.content).to_ascii_lowercase();
+        MARKERS.iter().any(|marker| text.contains(marker))
+    }
+}
+
+fn text_of(blocks: &[crate::types::content::ContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            crate::types::content::ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A string that parses as JSON of a non-string type.
@@ -259,7 +305,8 @@ fn questions(schema: &JSONSchema, raw_schema: &Value, value: &Value) -> Vec<Ques
                     .extend(keys.iter().cloned());
             }
             ValidationErrorKind::Enum { options } => {
-                if let Some(options) = options.as_array() {
+                // `choice` takes at most 255 options, one of which is `none`.
+                if let Some(options) = options.as_array().filter(|o| o.len() <= MAX_ENUM_OPTIONS) {
                     enums.push(Question::Enum {
                         path,
                         value: error.instance.clone().into_owned(),
@@ -392,16 +439,39 @@ fn evaluation(
         };
         asked.insert(format!("q{index}"), body);
     }
-    Some(json!({
+    let evaluation = json!({
         "id": "reconcile",
         "state": {
             "function": function_id,
             "description": description.unwrap_or_default(),
-            "arguments": arguments,
+            "arguments": bounded(arguments),
             "schema": compact,
         },
         "questions": asked,
-    }))
+    });
+    // An oversized evaluation is the provider's rejection waiting to happen;
+    // skip the judge rather than pay the round trip and the pause.
+    (evaluation.to_string().len() <= MAX_EVALUATION_BYTES).then_some(evaluation)
+}
+
+/// The arguments as the judge sees them: long strings (file contents, page
+/// text) cut to a preview, so the evaluation stays small and cheap.
+fn bounded(value: &Value) -> Value {
+    match value {
+        Value::String(text) if text.chars().nth(MAX_JUDGE_STRING_CHARS).is_some() => {
+            json!(format!(
+                "{}…",
+                crate::trigger::truncate_chars(text, MAX_JUDGE_STRING_CHARS)
+            ))
+        }
+        Value::Array(values) => Value::Array(values.iter().map(bounded).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), bounded(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 /// Apply the judge's confident answers to `arguments`. Reads the reply
@@ -524,9 +594,8 @@ async fn judge_layer(
     if now_ms() < JUDGE_PAUSED_UNTIL.load(Ordering::Relaxed) {
         return None;
     }
-    let asked = questions(compiled, schema, arguments);
-    let evaluation = evaluation(function_id, description, arguments, schema, &asked)?;
-    // No RPC when the judge is not deployed: the snapshot lists it.
+    // No RPC, and no question building, when the judge is not deployed:
+    // the snapshot lists it.
     if !deps
         .functions()
         .await
@@ -536,7 +605,10 @@ async fn judge_layer(
     {
         return None;
     }
-    let timeout_ms = cfg.call_reconciliation_judge_timeout_ms;
+    let asked = questions(compiled, schema, arguments);
+    let evaluation = evaluation(function_id, description, arguments, schema, &asked)?;
+    // The contract wants timeout_ms >= 1; a misconfigured 0 is not an outage.
+    let timeout_ms = cfg.call_reconciliation_judge_timeout_ms.max(1);
     let wait = timeout_ms.saturating_add(1_000);
     let call = deps.iii.trigger(TriggerRequest {
         function_id: JUDGE_FUNCTION_ID.into(),
@@ -552,8 +624,14 @@ async fn judge_layer(
                 Ok(Err(error)) => error.to_string(),
                 Err(_) => "timeout".to_string(),
             };
-            tracing::debug!(function_id, %reason, "judge unavailable for call reconciliation");
-            JUDGE_PAUSED_UNTIL.store(now_ms() + JUDGE_PAUSE_MS, Ordering::Relaxed);
+            // A rejected request is this code's bug, not an outage: say so
+            // and keep trying, instead of hiding it behind the pause.
+            if reason == "invalid_request" {
+                tracing::warn!(function_id, "judge rejected the reconciliation request");
+            } else {
+                tracing::debug!(function_id, %reason, "judge unavailable for call reconciliation");
+                JUDGE_PAUSED_UNTIL.store(now_ms() + JUDGE_PAUSE_MS, Ordering::Relaxed);
+            }
             return None;
         }
     };
@@ -562,7 +640,7 @@ async fn judge_layer(
         arguments,
         &asked,
         answers,
-        cfg.call_reconciliation_judge_threshold,
+        cfg.call_reconciliation_judge_threshold.clamp(0.0, 1.0),
     )?;
     compiled.is_valid(&judged.arguments).then_some(judged)
 }
@@ -594,11 +672,7 @@ fn diagnosis(schema: &JSONSchema, function_id: &str, arguments: &Value) -> Optio
         Ok(()) => return None,
         Err(errors) => errors
             .map(|error| {
-                let message = error.to_string();
-                let message = match message.char_indices().nth(MAX_DIAGNOSIS_CHARS) {
-                    Some((cut, _)) => format!("{}…", &message[..cut]),
-                    None => message,
-                };
+                let message = ellipsis(&error.to_string(), MAX_DIAGNOSIS_CHARS);
                 format!(
                     "`{}`: {message}",
                     display_path(&error.instance_path.to_string())
@@ -654,10 +728,16 @@ fn display_path(path: &str) -> String {
 }
 
 fn preview(value: &Value) -> String {
-    let text = value.to_string();
-    match text.char_indices().nth(PREVIEW_CHARS) {
-        Some((cut, _)) => format!("{}…", &text[..cut]),
-        None => text,
+    ellipsis(&value.to_string(), PREVIEW_CHARS)
+}
+
+/// The first `max` chars, with an ellipsis when something was cut.
+fn ellipsis(text: &str, max: usize) -> String {
+    let cut = crate::trigger::truncate_chars(text, max);
+    if cut.len() < text.len() {
+        format!("{cut}…")
+    } else {
+        cut
     }
 }
 
@@ -1004,6 +1084,62 @@ mod tests {
             );
         }
         iii.shutdown_async().await;
+    }
+
+    #[test]
+    fn the_judge_sees_bounded_arguments_and_oversized_evaluations_are_skipped() {
+        let schema = json!({ "type": "object", "properties": {}, "additionalProperties": false });
+        let arguments = json!({ "contents": "x".repeat(4_000) });
+        let asked = questions(&compile(&schema), &schema, &arguments);
+
+        let bounded = evaluation("coder::write", None, &arguments, &schema, &asked)
+            .expect("one drop question");
+        let shown = bounded["state"]["arguments"]["contents"].as_str().unwrap();
+        assert!(shown.len() < 600 && shown.ends_with('…'), "{}", shown.len());
+
+        let huge = json!({ "contents": "y".repeat(MAX_EVALUATION_BYTES) });
+        let items: Map<String, Value> = (0..200).map(|i| (format!("k{i}"), huge.clone())).collect();
+        let arguments = Value::Object(items);
+        let asked = questions(&compile(&schema), &schema, &arguments);
+        assert_eq!(
+            evaluation("coder::write", None, &arguments, &schema, &asked),
+            None
+        );
+    }
+
+    #[test]
+    fn an_enum_wider_than_a_choice_question_is_not_asked() {
+        let options: Vec<Value> = (0..300).map(|i| json!(format!("v{i}"))).collect();
+        let schema = json!({ "type": "object", "properties": { "op": { "enum": options } } });
+        assert!(questions(&compile(&schema), &schema, &json!({ "op": "zzz" })).is_empty());
+    }
+
+    #[test]
+    fn only_argument_rejections_get_a_diagnosis() {
+        use crate::trigger::ResultData;
+        use crate::types::content::ContentBlock;
+        let result = |text: &str, is_error: bool| ResultData {
+            content: vec![ContentBlock::text(text.to_string())],
+            is_error,
+            details: Value::Null,
+        };
+
+        assert!(looks_like_argument_error(&result(
+            "coder::search: remote error (invocation_failed): serialization error: invalid type: string \"true\", expected a boolean",
+            true
+        )));
+        assert!(looks_like_argument_error(&result(
+            "invalid spawn arguments: missing field `task`",
+            true
+        )));
+        assert!(!looks_like_argument_error(&result(
+            "shell::fs::ls: remote error (S211): /tmp/x: not found or not accessible",
+            true
+        )));
+        assert!(!looks_like_argument_error(&result(
+            "serialization error",
+            false
+        )));
     }
 
     #[test]

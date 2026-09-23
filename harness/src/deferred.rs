@@ -354,7 +354,7 @@ pub async fn resolve(
                     });
                 }
             };
-            let (data, contract_updates) = match info_raw {
+            let (mut data, contract_updates) = match info_raw {
                 Some(raw) => crate::trigger::prepare_info_result(
                     &req.function_call_id,
                     &arguments,
@@ -373,6 +373,15 @@ pub async fn resolve(
             }
             for (k, v) in annotations {
                 origin.insert(k, v);
+            }
+            // Repairs applied before the hold (MOT-4847) ride on the
+            // checkpoint: note them exactly as the turn loop would have.
+            if let Some(changes) = checkpoint.reconciled.as_deref() {
+                origin.insert("reconciled".into(), json!(changes));
+                if function_id != "engine::functions::info" {
+                    data.content
+                        .push(ContentBlock::text(crate::reconcile::note(changes)));
+                }
             }
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
@@ -755,6 +764,7 @@ mod tests {
             child_session_reused: false,
             held_by: held_by.map(str::to_string),
             held_arguments: None,
+            reconciled: None,
             pending_timeout_ms: timeout_ms,
             pending_at: Some(pending_at),
         }
