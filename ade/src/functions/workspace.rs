@@ -119,9 +119,13 @@ impl Tab {
             .position(|s| s.as_deref() == Some(screen))
     }
 
+    /// The home tab (the SPA's `isDefaultLayoutTab`): chat alone — what a
+    /// fresh workspace starts with — or the classic chat + traces tab of
+    /// layouts saved before that default changed.
     fn is_default_layout(&self) -> bool {
         self.screens.first().and_then(Option::as_deref) == Some(CHAT_SCREEN)
-            && self.screens.get(1).and_then(Option::as_deref) == Some("traces")
+            && (self.screens.len() == 1
+                || self.screens.get(1).and_then(Option::as_deref) == Some("traces"))
     }
 
     fn with_layout(
@@ -236,19 +240,22 @@ pub fn parse_active_tab_id(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A fresh workspace (the SPA's `defaultTabs`): one tab with the chat alone.
+/// Traces stay one command away; only used when nothing is stored, so a saved
+/// layout — including one with Traces open — is never rewritten.
 pub fn default_tabs() -> Vec<Tab> {
     vec![Tab {
         id: "tab-home".to_string(),
         name: None,
-        columns: Some(2),
-        screens: vec![Some(CHAT_SCREEN.to_string()), Some("traces".to_string())],
+        columns: Some(1),
+        screens: vec![Some(CHAT_SCREEN.to_string())],
         sizes: None,
         rest: Map::new(),
     }]
 }
 
-/// The SPA's `resolveActiveTab`: the pointed tab, else the chat + traces
-/// tab, else the first one.
+/// The SPA's `resolveActiveTab`: the pointed tab, else the home tab (see
+/// `is_default_layout`), else the first one.
 pub fn resolve_active<'a>(tabs: &'a [Tab], pointer: Option<&str>) -> Option<&'a Tab> {
     tabs.iter()
         .find(|t| Some(t.id.as_str()) == pointer)
@@ -1358,16 +1365,32 @@ mod tests {
         assert_eq!(stale.tab_id, "tab-home");
     }
 
+    /// A fresh workspace starts with the chat alone; a layout saved with
+    /// the classic chat + traces tab is still the home tab and loads as-is.
+    #[test]
+    fn fresh_workspace_has_no_traces_and_saved_layouts_stay_home() {
+        let fresh = default_tabs();
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].columns, Some(1));
+        assert_eq!(fresh[0].screens, vec![Some(CHAT_SCREEN.to_string())]);
+        assert!(!fresh[0].has_screen("traces"));
+        assert!(fresh[0].is_default_layout());
+
+        let saved = tabs_from(&json!([
+            { "id": "w", "columns": 1, "screens": ["workers"] },
+            { "id": "tab-home", "columns": 2, "screens": ["chat", "traces"] }
+        ]));
+        assert_eq!(resolve_active(&saved, None).unwrap().id, "tab-home");
+        assert!(saved[1].has_screen("traces"));
+    }
+
     #[test]
     fn with_layout_keeps_sibling_keys() {
         let value = json!({ "tabs": [], "other": true });
         let next = with_layout(value, &merge_tabs(&[], &default_tabs()), "tab-home", false);
         assert_eq!(next.pointer("/other"), Some(&json!(true)));
         assert_eq!(next.pointer("/activeTabId"), Some(&json!("tab-home")));
-        assert_eq!(
-            next.pointer("/tabs/0/screens"),
-            Some(&json!(["chat", "traces"]))
-        );
+        assert_eq!(next.pointer("/tabs/0/screens"), Some(&json!(["chat"])));
         // The document is flat: no legacy `workspace` envelope is ever written.
         assert!(next.get("workspace").is_none());
     }
@@ -1439,10 +1462,9 @@ mod tests {
         assert_eq!(reloaded.active_tab_id, "tab-home");
         let doc = store.load().await.unwrap().unwrap();
         assert_eq!(doc["activeTabId"], "tab-home");
-        assert_eq!(
-            doc["tabs"][0]["screens"],
-            json!(["chat", "ext:ide", "traces"])
-        );
+        // A fresh workspace is the chat alone; opening a page puts it beside
+        // the chat and never brings Traces along.
+        assert_eq!(doc["tabs"][0]["screens"], json!(["chat", "ext:ide"]));
         assert!(doc.get("workspace").is_none());
         let _ = std::fs::remove_dir_all(store.dir().await);
     }
