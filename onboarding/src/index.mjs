@@ -296,7 +296,7 @@ const SIGNUP_ORIGIN = process.env.III_ONBOARDING_SIGNUP_ORIGIN ?? 'http://127.0.
  * subscribes and writes it to the person keyed by that machine's `device_id`,
  * which only the engine knows.
  */
-const IDENTIFY_TOPIC = 'telemetry:identify'
+const IDENTIFY_TOPIC = 'email:signup'
 
 /**
  * Best effort, and after the list has taken the address: an engine with
