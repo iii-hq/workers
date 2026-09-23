@@ -119,7 +119,7 @@ scoring, as SemIf documents for its own fast paths.
 
 ## Building
 
-llama.cpp is compiled from source: `cmake`, a C++ compiler and `libclang`
+llama.cpp is compiled from source through `crates/llama-runtime`: `cmake`, a C++ compiler and `libclang`
 (for bindgen) are required; if libclang lives outside the default search path
 set `LIBCLANG_PATH` (and `BINDGEN_EXTRA_CLANG_ARGS=-I<clang>/include` when its
 builtin headers are not found). Linux x86_64 builds also need the Vulkan

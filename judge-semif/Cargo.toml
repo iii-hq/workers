@@ -20,7 +20,7 @@ iii-console-ui = { path = "../crates/console-ui", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-llama-cpp-2 = { version = "0.1.156", default-features = false }
+iii-llama-runtime = { path = "../crates/llama-runtime" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
@@ -29,19 +29,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 tracing = "0.1"
 
 # macOS: Metal GPU offload is always compiled in.
-# Linux x86_64 and Windows load llama.cpp's backends at runtime (GGML_BACKEND_DL):
-# the Vulkan backend is a module beside the binary that only loads where a
-# Vulkan loader exists (else the CPU runs it), and the CPU module is picked per
-# host CPU (AVX2, AVX-512, ...). Keep this cfg in sync with engine.rs.
-[target.'cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "windows"))'.dependencies]
-llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["dynamic-backends", "vulkan"] }
-# Only for its `links = "llama"` metadata: build.rs copies the backend modules
-# beside the binary for packaging.
-llama-cpp-sys-2 = { version = "=0.1.156", default-features = false }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["metal"] }
-
 [dev-dependencies]
 futures-util = "0.3"
 tempfile = "3"

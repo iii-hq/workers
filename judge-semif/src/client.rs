@@ -283,6 +283,7 @@ impl SemifClient {
                     self.engine.device, self.engine.context_tokens
                 ),
                 release_date: self.revision.to_string(),
+                context_window: Some(self.engine.context_tokens),
             }],
             stats: stats(true),
         }

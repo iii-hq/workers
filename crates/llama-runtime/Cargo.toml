@@ -1,0 +1,31 @@
+[workspace]
+
+[package]
+name = "iii-llama-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "llama.cpp runtime shared by the in-process judge providers: backend modules, device selection, model loading and the thread that owns the context"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+# Deliberately unpublished: workers in this repo link it by path, like
+# crates/config-client.
+publish = false
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+llama-cpp-2 = { version = "0.1.156", default-features = false }
+
+# Linux x86_64 and Windows load llama.cpp's backends at runtime (GGML_BACKEND_DL):
+# the per-CPU variants and the Vulkan module are loaded from the executable's
+# directory, so one build runs on GPU desktops, servers and containers alike.
+[target.'cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "windows"))'.dependencies]
+llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["dynamic-backends", "vulkan"] }
+# Only for its `links = "llama"` metadata: build.rs copies the backend modules
+# (DEP_LLAMA_BACKENDS_DIR) and the shared libraries beside the binary.
+llama-cpp-sys-2 = { version = "=0.1.156", default-features = false }
+
+# macOS: Metal is linked in; Apple Silicon GPUs run the model.
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["metal"] }
