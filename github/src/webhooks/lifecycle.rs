@@ -847,10 +847,27 @@ fn delivery_page(output: &str, base: &str) -> Result<(Value, Option<String>)> {
                         _ => false,
                     }
             });
-            if path != base || !valid || !keys.contains("cursor") || next.is_some() {
+            // GitHub canonicalizes repo slugs to numeric repository IDs in Link.
+            // Accept only the same hook's deliveries route, then apply its cursor
+            // to our already verified base; never follow a Link-provided repo.
+            let canonical_path = path
+                .strip_prefix("repositories/")
+                .and_then(|path| path.split_once('/'))
+                .is_some_and(|(repository_id, suffix)| {
+                    repository_id.bytes().all(|b| b.is_ascii_digit())
+                        && repository_id.parse::<u64>().is_ok_and(|id| id > 0)
+                        && base
+                            .split_once("/hooks/")
+                            .is_some_and(|(_, hook)| suffix == format!("hooks/{hook}"))
+                });
+            if (path != base && !canonical_path)
+                || !valid
+                || !keys.contains("cursor")
+                || next.is_some()
+            {
                 return Err(Failure::Invalid("unsafe delivery pagination link".into()));
             }
-            next = Some(endpoint.to_owned());
+            next = Some(format!("{base}?{query}"));
         }
     }
     Ok((serde_json::from_str(body)?, next))
@@ -939,9 +956,41 @@ mod delivery_tests {
     }
 
     #[test]
+    fn canonical_repository_link_keeps_the_verified_base_and_opaque_cursor() {
+        let response = "HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repositories/1185701685/hooks/42/deliveries?per_page=100&cursor=v1_3844358593348378624%3D>; rel=\"next\"\r\n\r\n[{\"id\":7}]";
+        assert_eq!(
+            delivery_page(response, BASE).unwrap(),
+            (
+                json!([{ "id": 7 }]),
+                Some(format!(
+                    "{BASE}?per_page=100&cursor=v1_3844358593348378624%3D"
+                ))
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_multiple_next_links_even_with_a_canonical_alias() {
+        let response = format!(
+            "HTTP/2.0 200 OK\nLink: <https://api.github.com/{BASE}?cursor=a>; rel=\"next\", <https://api.github.com/repositories/123/hooks/42/deliveries?cursor=b>; rel=\"next\"\n\n[]"
+        );
+        assert!(delivery_page(&response, BASE).is_err());
+    }
+
+    #[test]
     fn rejects_links_outside_owned_hook_and_invalid_pagination() {
         for url in [
             format!("https://evil.example/{BASE}?cursor=a"),
+            "https://evil.example/repositories/123/hooks/42/deliveries?cursor=a".into(),
+            "https://api.github.com/repositories/123/hooks/99/deliveries?cursor=a".into(),
+            "https://api.github.com/repositories/123/hooks/42/deliveries/7?cursor=a".into(),
+            "https://api.github.com/repositories/123/hooks/42/../deliveries?cursor=a".into(),
+            "https://api.github.com/repositories/123/hooks/42/deliveries?cursor=a&other=b".into(),
+            "https://api.github.com/repositories/123/hooks/42/deliveries?cursor=a&cursor=b".into(),
+            "https://api.github.com/repositories/0/hooks/42/deliveries?cursor=a".into(),
+            "https://api.github.com/repositories/abc/hooks/42/deliveries?cursor=a".into(),
+            "https://api.github.com/repositories/+123/hooks/42/deliveries?cursor=a".into(),
+            "https://api.github.com/repositories//hooks/42/deliveries?cursor=a".into(),
             "https://api.github.com/repos/other/repo/hooks/42/deliveries?cursor=a".into(),
             format!("https://api.github.com/{BASE}?page=2"),
             format!("https://api.github.com/{BASE}?cursor="),

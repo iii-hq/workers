@@ -37,7 +37,9 @@ with open(os.environ['GH_TOKEN'], 'r+', encoding='utf-8') as stream:
         index = 0 if not cursor else int(cursor.removeprefix('opaque-').removesuffix('='))
         answer = pages[index]
         if index + 1 < len(pages):
-            next_link = f'https://api.github.com/{path}?per_page=100&cursor=opaque-{index + 1}%3D'
+            # Keep accepting only the original repo endpoint: the worker must
+            # reuse its verified base rather than follow this numeric alias.
+            next_link = f'https://api.github.com/repositories/123/hooks/42/deliveries?per_page=100&cursor=opaque-{index + 1}%3D'
     elif path.startswith(prefix + 'hooks/42/deliveries/') and path.endswith('/attempts') and method == 'POST':
         answer = {}
     elif path == prefix + 'hooks' and method == 'POST':

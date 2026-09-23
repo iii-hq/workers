@@ -35,7 +35,8 @@ elif method == 'GET' and path.endswith('/deliveries'):
     pages = s.get('delivery_pages', [[]])
     answer = pages[page - 1]
     if page < len(pages):
-        link = f'https://api.github.com/{path}?per_page=100&cursor={page + 1}'
+        # GitHub canonicalizes delivery links to the numeric repository route.
+        link = f'https://api.github.com/repositories/123/hooks/42/deliveries?per_page=100&cursor={page + 1}'
     if page == s.get('pause_delivery_page'):
         p.with_suffix('.waiting').touch()
         deadline = time.monotonic() + 4
