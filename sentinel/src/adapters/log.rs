@@ -201,6 +201,19 @@ fn non_empty(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Whether an ERROR log is the monitor's own: written by this worker, or
+/// written by anyone about one of its functions (`function_id` or the call
+/// site) — the engine's "Function not found" for a closed tab's live-update
+/// handler above all. See `trace::is_own_function`.
+pub fn is_own(log: &LogRecord, config: &crate::WorkerConfig) -> bool {
+    let own = crate::WORKER_NAME;
+    config.resolve_service_alias(&log.service_name) == own
+        || [log.attribute("function_id"), log.call_site()]
+            .into_iter()
+            .flatten()
+            .any(|function| super::trace::is_own_function(&function, own))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,6 +256,36 @@ mod tests {
 
         log.attributes.remove("target");
         assert_eq!(log.call_site().as_deref(), Some("queue::delivery"));
+    }
+
+    #[test]
+    fn a_log_about_one_of_the_monitors_own_functions_is_its_own() {
+        let config = crate::WorkerConfig::default();
+        let mut log = LogRecord::from_payload(&payload()).unwrap();
+        log.service_name = "iii".into();
+        log.attributes.remove("code.function");
+        log.attributes.insert(
+            "function_id".into(),
+            "iii::sentinel-ui::events::tab-c28f:pane:0::console-3691".into(),
+        );
+        assert!(is_own(&log, &config), "a closed tab's live-update handler");
+
+        log.attributes
+            .insert("function_id".into(), "sentinel::groups::list".into());
+        assert!(is_own(&log, &config), "one of the worker's functions");
+
+        log.attributes.insert(
+            "function_id".into(),
+            "provider::claude-code::count_tokens".into(),
+        );
+        assert!(
+            !is_own(&log, &config),
+            "somebody else's function is watched"
+        );
+
+        log.attributes.remove("function_id");
+        log.service_name = "sentinel".into();
+        assert!(is_own(&log, &config), "the worker's own ERROR log");
     }
 
     #[test]

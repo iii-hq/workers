@@ -234,6 +234,18 @@ impl TraceContext<'_> {
     }
 }
 
+/// Whether a function is this worker's own: one of its `<worker>::*`
+/// functions, or a handler its console page registers from the browser
+/// (`iii::<worker>-ui::*`, the live-update subscription of every open tab).
+///
+/// An error in one of them never becomes a group. The monitor watching
+/// itself turns one failure into a loop: a closed tab leaves its handler
+/// behind, delivering a group change to it fails, the engine logs the
+/// failure, the log changes a group, and the change is delivered again.
+pub fn is_own_function(function: &str, own: &str) -> bool {
+    function.starts_with(&format!("{own}::")) || function.starts_with(&format!("iii::{own}-ui::"))
+}
+
 /// Whether the whole trace must be left alone, judged from its **root**.
 pub fn exclusion(spans: &[SpanNode], context: &TraceContext) -> Option<Exclusion> {
     if context
@@ -249,7 +261,7 @@ pub fn exclusion(spans: &[SpanNode], context: &TraceContext) -> Option<Exclusion
         // A queue step runs as its own trace, named for the queue rather than
         // the worker, so the name has to be checked as well as the service.
         if service == context.own_service
-            || function.starts_with(&format!("{}::", context.own_service))
+            || is_own_function(&function, context.own_service)
             || root
                 .name
                 .starts_with(&format!("fn_queue {}-", context.own_service))
@@ -472,6 +484,24 @@ pub fn bundle_for(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_monitors_own_functions_include_its_pages_handlers() {
+        assert!(is_own_function("sentinel::groups::list", "sentinel"));
+        assert!(is_own_function(
+            "iii::sentinel-ui::events::tab-c28f:pane:0::console-3691",
+            "sentinel"
+        ));
+        assert!(
+            !is_own_function("iii::kanban-ui::events::tab", "sentinel"),
+            "another page's handler"
+        );
+        assert!(
+            !is_own_function("sentinel-e2e::boom", "sentinel"),
+            "a worker that merely shares the prefix"
+        );
+        assert!(!is_own_function("state::get", "sentinel"));
+    }
 
     fn span(id: &str, name: &str, service: &str, status: &str, children: Value) -> Value {
         json!({

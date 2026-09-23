@@ -195,6 +195,15 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
         let captured_at_ms = ids::now_ms();
 
         for leaf in trace_adapter::leaf_errors(&spans) {
+            // Somebody else's trace can still fail inside one of ours — the
+            // console timing out on `sentinel::groups::list`, a tab's handler
+            // gone. That failure is the monitor's own, not the caller's.
+            if leaf.function_id().is_some_and(|function| {
+                trace_adapter::is_own_function(&function, crate::WORKER_NAME)
+            }) {
+                self.counters.add_dropped_own_trace(1);
+                continue;
+            }
             let mut redactions = 0;
             let mut event = trace_adapter::event_for(leaf, &context, &redactor, &mut redactions);
             let mut bundle = trace_adapter::bundle_for(
@@ -234,6 +243,12 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             return Ok(report);
         };
         if !log.is_error() {
+            return Ok(report);
+        }
+        // Checked before the trace is looked up: the engine's logs about a
+        // delivery to a closed tab carry no trace at all.
+        if log_adapter::is_own(&log, config) {
+            self.counters.add_dropped_own_trace(1);
             return Ok(report);
         }
 
@@ -646,7 +661,7 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
         let function = summary.function_id.clone().unwrap_or_default();
         let name = summary.name.clone().unwrap_or_default();
         if service == crate::WORKER_NAME
-            || function.starts_with(&format!("{}::", crate::WORKER_NAME))
+            || trace_adapter::is_own_function(&function, crate::WORKER_NAME)
             || name.starts_with(&format!("fn_queue {}-", crate::WORKER_NAME))
         {
             return Some(trace_adapter::Exclusion::OwnTrace);

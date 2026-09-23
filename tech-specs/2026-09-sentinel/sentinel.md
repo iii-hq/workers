@@ -261,6 +261,16 @@ sequenceDiagram
    - spans `iii.function.kind = internal` ou `function_id` `engine::*`
      (`traces::list` já os oculta por padrão; a verificação é cinto);
    - `service_name` na lista `ignore_services` da config.
+   ⚠ **Nenhuma função do próprio Sentinel vira grupo**, venha de onde vier:
+   `sentinel::*` e os handlers que a página registra do navegador
+   (`iii::sentinel-ui::*`, a assinatura ao vivo de cada aba). A regra vale
+   para a raiz, para uma folha de erro dentro do trace de outro worker (o
+   console estourando o timeout de `sentinel::groups::list`) e para logs —
+   inclusive os do engine sem trace, julgados pelo `function_id` e pelo
+   local da chamada. Visto na stack de dev (23/09): com o console
+   reiniciado, as abas deixaram handlers mortos; cada mudança de grupo era
+   entregue a eles, o engine registrava "Function not found", o log mudava
+   um grupo e a mudança era entregue de novo — 5 710 ocorrências em 25 min.
    Logs não carregam tag de sessão; como se aplica a eles está em
    [Logs sem tag de sessão](#logs-sem-tag-de-sessão).
 2. **Ticks fantasmas.** `sentinel::ingest` roda como trace próprio (`fn_queue`
