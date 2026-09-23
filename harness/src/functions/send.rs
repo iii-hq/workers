@@ -910,6 +910,7 @@ fn build_options(
             .unwrap_or(cfg.max_validation_retries),
         max_transient_resumes: cfg.max_transient_resumes,
         preloaded_contracts: agent.map(|a| a.contract_digests.clone()),
+        seeded_contracts: None,
     }
 }
 
@@ -1053,6 +1054,7 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.skills_prompt = prev.skills_prompt.clone();
     options.agent = prev.agent.clone();
     options.preloaded_contracts = prev.preloaded_contracts.clone();
+    options.seeded_contracts = prev.seeded_contracts.clone();
 }
 
 /// True when a send names neither `thinking_level` nor `provider_options` —
@@ -1841,6 +1843,7 @@ mod tests {
             max_validation_retries: 2,
             max_transient_resumes: 1,
             preloaded_contracts: None,
+            seeded_contracts: None,
         }
     }
 
@@ -2158,6 +2161,7 @@ mod tests {
             "state::get".to_string(),
             Some("sha256:frozen".to_string()),
         )]));
+        prev.seeded_contracts = Some("<preloaded_functions>…</preloaded_functions>".into());
         inherit_prior_system_prompt(&mut options, &prev);
         assert_eq!(
             options.system_prompt.as_deref(),
@@ -2167,8 +2171,10 @@ mod tests {
             options.skills_prompt.as_deref(),
             Some("frozen skill prompt")
         );
-        // The frozen contract digests travel with the identity.
+        // The frozen contract digests travel with the identity, and so does a
+        // spawned child's seeded contract block.
         assert_eq!(options.preloaded_contracts, prev.preloaded_contracts);
+        assert_eq!(options.seeded_contracts, prev.seeded_contracts);
 
         // A prior `disabled` turn's None inherits too — disabled stays disabled.
         let mut options = bare_options();

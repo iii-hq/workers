@@ -344,10 +344,37 @@ async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
     if agent.functions.is_empty() {
         return;
     }
+    let (ordered, unavailable, digests) = preload_contracts(deps, &agent.functions).await;
+    agent.contract_digests = digests;
+    if !unavailable.is_empty() {
+        tracing::warn!(
+            agent = %agent.identity.id,
+            unavailable = ?unavailable,
+            "agent profile names preloaded functions the engine does not know"
+        );
+    }
+    agent.prompt = append_block(
+        &agent.prompt,
+        &render_preloaded_functions(&ordered, &unavailable, "this agent profile"),
+    );
+}
+
+/// The current contracts of `ids`, in order: from the cached registry
+/// snapshot, then one `engine::functions::info` batch per 32 ids the snapshot
+/// cannot vouch for. Returns the contracts found, the ids the engine does not
+/// know, and every id's digest (`None` when unavailable).
+pub(crate) async fn preload_contracts(
+    deps: &Deps,
+    ids: &[String],
+) -> (
+    Vec<PreloadedContract>,
+    Vec<String>,
+    BTreeMap<String, Option<String>>,
+) {
     let snapshot = deps.functions().await;
     let mut contracts: HashMap<String, PreloadedContract> = HashMap::new();
     let mut pending: Vec<String> = Vec::new();
-    for id in &agent.functions {
+    for id in ids {
         match snapshot
             .functions
             .iter()
@@ -384,16 +411,15 @@ async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
                 }
             }
             Err(error) => tracing::warn!(
-                agent = %agent.identity.id,
                 %error,
                 "preloaded function contracts could not be fetched; those ids render as unavailable"
             ),
         }
     }
-    let mut ordered = Vec::with_capacity(agent.functions.len());
+    let mut ordered = Vec::with_capacity(ids.len());
     let mut unavailable = Vec::new();
     let mut digests = BTreeMap::new();
-    for id in &agent.functions {
+    for id in ids {
         match contracts.remove(id) {
             Some(contract) => {
                 digests.insert(id.clone(), Some(digest_of(&contract)));
@@ -405,18 +431,7 @@ async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
             }
         }
     }
-    agent.contract_digests = digests;
-    if !unavailable.is_empty() {
-        tracing::warn!(
-            agent = %agent.identity.id,
-            unavailable = ?unavailable,
-            "agent profile names preloaded functions the engine does not know"
-        );
-    }
-    agent.prompt = append_block(
-        &agent.prompt,
-        &render_preloaded_functions(&ordered, &unavailable),
-    );
+    (ordered, unavailable, digests)
 }
 
 /// The contracts one `engine::functions::info { function_ids }` batch
@@ -462,13 +477,15 @@ fn append_block(prompt: &str, block: &str) -> String {
 /// schema — in the profile's declaration order, then the ids the engine does
 /// not know. Read against the doctrine's Step 1 / Step 2: a contract in this
 /// block is "pre-verified", so the model skips discovery and
-/// `engine::functions::info` for it and calls it on the first step.
+/// `engine::functions::info` for it and calls it on the first step. `scope`
+/// names who preloaded them ("this agent profile", "this sub-agent task").
 pub(crate) fn render_preloaded_functions(
     contracts: &[PreloadedContract],
     unavailable: &[String],
+    scope: &str,
 ) -> String {
     let mut body = format!(
-        "<preloaded_functions>\nThese functions are preloaded for this agent profile: the contracts below are \
+        "<preloaded_functions>\nThese functions are preloaded for {scope}: the contracts below are \
          pre-verified and already in context. Call each one directly through `{tool}` with a \
          `payload` object matching its request schema — skip `directory::search_functions` and \
          `engine::functions::info` for these ids (fetch a contract again only after an \
@@ -943,8 +960,14 @@ mod tests {
             ),
             PreloadedContract::new("bare", None, None),
         ];
-        let block = render_preloaded_functions(&contracts, &["gone::away".to_string()]);
-        assert!(block.starts_with("<preloaded_functions>\n"));
+        let block = render_preloaded_functions(
+            &contracts,
+            &["gone::away".to_string()],
+            "this agent profile",
+        );
+        assert!(block.starts_with(
+            "<preloaded_functions>\nThese functions are preloaded for this agent profile: "
+        ));
         assert!(block.ends_with("\n</preloaded_functions>"));
         assert!(block.contains("pre-verified"));
         assert!(block.contains("through `agent_trigger`"));
@@ -958,8 +981,9 @@ mod tests {
         assert!(block.contains("NOT registered right now — do not call: `gone::away`."));
 
         // Nothing unavailable → no such paragraph.
-        let clean = render_preloaded_functions(&contracts, &[]);
+        let clean = render_preloaded_functions(&contracts, &[], "this sub-agent task");
         assert!(!clean.contains("NOT registered"));
+        assert!(clean.contains("preloaded for this sub-agent task: the contracts below"));
 
         // The block follows the identity after one blank line, or stands
         // alone for a prompt-less profile.

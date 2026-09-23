@@ -338,6 +338,21 @@ Spawning
 with `agent` into an already RUNNING session of the caller's own tree merges
 the task like any reuse and does not re-apply the profile.
 
+A spawned child also starts with the contracts it would otherwise look up
+first, in a `<preloaded_functions>` block of its own (MOT-4851). The block
+holds, capped at 30 contracts:
+- its whole allow-list, when that is a short (≤ 30), glob-free list of
+  explicit ids;
+- then every function id its task names verbatim (for example
+  `` `coder::read-file` ``).
+
+Only ids the child may dispatch are seeded, and only when the registry lists
+them. Discovery grants and ids its profile already preloads are skipped, and
+`expose: native` seeds nothing, because the tools already carry the schemas.
+The block is frozen at spawn and rides after the cache seam (the runtime aid),
+so default-identity sessions keep sharing their stable prefix. Its digests join
+the preloaded-contract stale notice.
+
 The harness ships one profile of its own, `worker-builder`
 ([`agents/worker-builder.md`](agents/worker-builder.md)): an identity that
 extends the bundled `iii` base and takes a new worker for this repository from
