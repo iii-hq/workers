@@ -142,7 +142,7 @@ fn plan_hydration(
 }
 
 /// The engine's `function_ids` batch cap (`engine::functions::info`).
-const INFO_BATCH_MAX: usize = 32;
+pub(crate) const INFO_BATCH_MAX: usize = 32;
 
 /// Fill each descriptor's `parameters`, carrying already-hydrated schemas
 /// forward and fetching only new/unresolved ids — one `engine::functions::info`
