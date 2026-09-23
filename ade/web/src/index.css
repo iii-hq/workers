@@ -940,6 +940,71 @@
   color: var(--color-ink);
 }
 
+/* The WYSIWYG blocks, drawn the way the sent message renders them (see the
+   ul / ol / code / pre renderers in lib/markdown.tsx) so the draft is a
+   preview, not a guess. Class names come from the editor theme in
+   LexicalShell; paragraphs are plain lines. */
+.composer-editor p {
+  margin: 0;
+}
+
+.composer-editor .composer-ul,
+.composer-editor .composer-ol {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+}
+
+.composer-editor .composer-ul {
+  list-style: disc;
+}
+
+.composer-editor .composer-ul .composer-ul {
+  list-style: circle;
+}
+
+.composer-editor .composer-ol {
+  list-style: decimal;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-editor .composer-li {
+  margin: 0;
+}
+
+.composer-editor .composer-li::marker {
+  color: var(--color-ink-faint);
+}
+
+/* The item that only holds a nested list: no bullet of its own. */
+.composer-editor .composer-li-nested {
+  list-style: none;
+}
+
+.composer-editor .composer-inline-code {
+  font-family: var(--font-code);
+  font-size: 0.875em;
+  padding: 1px 4px;
+  border: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+  color: var(--color-ink);
+}
+
+.composer-editor .composer-code {
+  display: block;
+  margin: 0.375rem 0;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 6px;
+  background: var(--color-bg);
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink);
+  white-space: pre;
+  overflow-x: auto;
+  tab-size: 2;
+}
+
 .composer-placeholder {
   pointer-events: none;
   position: absolute;
