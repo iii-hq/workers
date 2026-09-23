@@ -32,6 +32,7 @@ import {
   joinPath,
 } from './coder'
 import { readFileBytes } from './file-bytes'
+import { referenceWarning } from './reference-warning'
 import { ImagePreview } from './image-preview'
 import {
   EDITOR_FULL_READ_BUDGET,
@@ -148,7 +149,10 @@ export function EditorPane({
   useEffect(() => {
     setPreviewChoice(null)
   }, [richPreview])
-  const showPreview = previewable && (previewChoice ?? richPreview)
+  const showPreview = previewable && (previewChoice ?? (reveal ? false : richPreview))
+  useEffect(() => {
+    if (reveal) setPreviewChoice(false)
+  }, [reveal])
   const [pane, setPane] = useState<PaneState>({ phase: 'loading' })
   const [draft, setDraftState] = useState('')
   const [savedContent, setSavedContent] = useState('')
@@ -179,13 +183,14 @@ export function EditorPane({
   // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt re-runs the load on demand
   useEffect(() => {
     const seq = ++seqRef.current
+    const cancel = () => { seqRef.current += 1 }
     setSaveError(null)
     const cached = cache.get(relPath)
     if (cached) {
       setDraftState(cached.draft)
       setSavedContent(cached.savedContent)
       setPane({ phase: 'ready' })
-      return
+      return cancel
     }
     setPane({ phase: 'loading' })
     const mime = imageMimeFromPath(relPath)
@@ -213,7 +218,7 @@ export function EditorPane({
           onMissingRef.current?.(relPath, false)
         })
         .catch((err: unknown) => failLoad(seq, err))
-      return
+      return cancel
     }
     const finish = (fresh: EditorCacheEntry) => {
       if (seqRef.current !== seq) return
@@ -258,6 +263,7 @@ export function EditorPane({
           failLoad(seq, windowError)
         }
       })
+    return cancel
   }, [host, absPath, relPath, cache, createObjectUrl, failLoad, loadAttempt])
 
   const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), [])
@@ -270,8 +276,11 @@ export function EditorPane({
   const dirty = pane.phase === 'ready' && draft !== savedContent
   const readOnly = entry?.readOnly ?? null
   const ready = pane.phase === 'ready'
+  const citationWarning = ready && reveal
+    ? referenceWarning(reveal, draft, readOnly)
+    : null
   useEffect(() => {
-    if (!reveal || !ready) return
+    if (!reveal || !ready || readOnly === 'binary' || showPreview) return
     const editor = editorRef.current
     if (!editor) return
     // A referenced range is selected so the lines read as the citation
@@ -281,7 +290,7 @@ export function EditorPane({
     } else {
       editor.revealLine(reveal.line, reveal.column)
     }
-  }, [reveal, ready])
+  }, [reveal, ready, readOnly, showPreview])
   const selectionActions = useMemo(
     () =>
       onReferenceInChat
@@ -460,6 +469,7 @@ export function EditorPane({
         ) : null}
       </div>
 
+      {citationWarning ? <div className="shui-side-note" role="status">{citationWarning}</div> : null}
       <div
         className="shui-editor-body"
         data-keybindings-standdown=""

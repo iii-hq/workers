@@ -61,9 +61,9 @@ import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
+import { ChatFileNavigation, openChatFile } from '@/lib/file-navigation'
 import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
-import { requestPanelOpen } from '@/lib/panel-context'
 import { withScreenWakeLock } from '@/lib/screen-wake-lock'
 import { newMessageId } from '@/lib/session-id'
 import { isCallSettled } from '@/lib/sessions/entry-mapper'
@@ -294,24 +294,16 @@ export function ChatView({
   // referenced lines when the mention carries a window. Relative mentions
   // resolve against the session's folder; absolute ones (a file referenced
   // from a shell rooted elsewhere) go as they are.
+  const [fileOpenError, setFileOpenError] = useState<string | null>(null)
   const handleOpenFileMention = useCallback(
     (ref: FileMentionRef) => {
       if (!workingDirEnabled || ref.path.endsWith('/')) return
-      const dir = workingDirRef.current
-      const path = ref.path.startsWith('/')
-        ? ref.path
-        : dir
-          ? `${dir.replace(/\/+$/, '')}/${ref.path}`
-          : null
-      if (!path) return
-      requestPanelOpen({
-        pageId: 'ide',
-        context: {
-          type: 'file',
-          path,
-          ...(ref.range ? { line: ref.range.from, endLine: ref.range.to } : {}),
-        },
-      })
+      setFileOpenError(null)
+      try {
+        openChatFile(ref, workingDirRef.current)
+      } catch (error) {
+        setFileOpenError(error instanceof Error ? error.message : 'Could not open this file.')
+      }
     },
     [workingDirEnabled],
   )
@@ -2630,55 +2622,62 @@ export function ChatView({
         />
       ) : null}
 
-      <RegisteredTriggerStatusProvider
-        loaded={triggersSnapshotSessionId === conversation.id}
-        triggersById={triggersById}
+      <ChatFileNavigation
+        messages={conversation.messages}
+        workingDir={conversation.workingDir ?? null}
+        enabled={workingDirEnabled}
       >
-        <MessageList
-          messages={conversation.messages}
-          agentName={conversation.agentProfile?.name}
-          sessionId={conversation.id}
-          spawnContext={{
-            title: conversation.title,
-            model: effectiveModel,
-            appearance: conversation.subagentAppearance,
-          }}
-          transcriptHydrated={conversation.hydrated !== false}
-          isThinking={isThinking}
-          turnVisualPhase={turnVisualState.phase}
-          turnKey={turnVisualState.turnKey}
-          thinkingDetail={
-            conversation.status === 'working' && conversation.statusReason
-              ? conversation.statusReason
-              : (phaseDetail ?? waitingFallback)
-          }
-          density={density}
-          onResolveApproval={resolveApproval}
-          onAlwaysAllow={handleAlwaysAllow}
-          onResolveFilesystemAccess={handleFilesystemResolve}
-          onManageFilesystemAccess={handleManageFilesystemAccess}
-          onConfigureProvider={handleOpenModelPicker}
-          workingDir={conversation.workingDir ?? null}
-          onWorkingDirChange={
-            workingDirEnabled ? handleWorkingDirChange : undefined
-          }
-          defaultWorkingDir={defaultWorkingDir}
-          worktreePicker={
-            worktreeEnabled
-              ? { enabled: true, onPick: handlePickWorktree }
-              : undefined
-          }
+        <RegisteredTriggerStatusProvider
+          loaded={triggersSnapshotSessionId === conversation.id}
           triggersById={triggersById}
-          focusMessageId={focusMessageId}
-          onFocusMessageHandled={handleFocusMessageHandled}
-          history={conversation.history}
-          onLoadOlder={handleLoadOlder}
-          onLoadActivityEntries={handleLoadActivityEntries}
-        />
-      </RegisteredTriggerStatusProvider>
+        >
+          <MessageList
+            messages={conversation.messages}
+            agentName={conversation.agentProfile?.name}
+            sessionId={conversation.id}
+            spawnContext={{
+              title: conversation.title,
+              model: effectiveModel,
+              appearance: conversation.subagentAppearance,
+            }}
+            transcriptHydrated={conversation.hydrated !== false}
+            isThinking={isThinking}
+            turnVisualPhase={turnVisualState.phase}
+            turnKey={turnVisualState.turnKey}
+            thinkingDetail={
+              conversation.status === 'working' && conversation.statusReason
+                ? conversation.statusReason
+                : (phaseDetail ?? waitingFallback)
+            }
+            density={density}
+            onResolveApproval={resolveApproval}
+            onAlwaysAllow={handleAlwaysAllow}
+            onResolveFilesystemAccess={handleFilesystemResolve}
+            onManageFilesystemAccess={handleManageFilesystemAccess}
+            onConfigureProvider={handleOpenModelPicker}
+            workingDir={conversation.workingDir ?? null}
+            onWorkingDirChange={
+              workingDirEnabled ? handleWorkingDirChange : undefined
+            }
+            defaultWorkingDir={defaultWorkingDir}
+            worktreePicker={
+              worktreeEnabled
+                ? { enabled: true, onPick: handlePickWorktree }
+                : undefined
+            }
+            triggersById={triggersById}
+            focusMessageId={focusMessageId}
+            onFocusMessageHandled={handleFocusMessageHandled}
+            history={conversation.history}
+            onLoadOlder={handleLoadOlder}
+            onLoadActivityEntries={handleLoadActivityEntries}
+          />
+        </RegisteredTriggerStatusProvider>
+      </ChatFileNavigation>
       <LiveRegion announcement={announcer.announcement} />
 
       <footer className={footerPad}>
+        {fileOpenError ? <p role="alert" className="mx-auto max-w-[760px] break-words text-[12px] text-alert">{fileOpenError}</p> : null}
         <div className="mx-auto max-w-[760px]">
           {conversationsCtx ? (
             <ActiveSubagentChips
