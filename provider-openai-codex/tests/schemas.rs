@@ -44,6 +44,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "provider::openai-codex::refresh_models",
             "provider::openai-codex::on_router_ready",
             "provider::openai-codex::count_tokens",
+            "provider::openai-codex::image::generate",
+            "provider::openai-codex::image::read",
             "provider::openai-codex::login::start",
             "provider::openai-codex::login::poll",
             "provider::openai-codex::login::cancel",

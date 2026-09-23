@@ -94,13 +94,22 @@ goes back to 5 minutes everywhere.
 
 ## Models
 
-The catalog slice is live `GET /v1/models` merged with a curated capability
-snapshot — context windows, output ceilings, thinking budgets, pricing
-(USD per MTok). Live ids the snapshot doesn't know get conservative
-defaults; curated aliases the API doesn't enumerate are kept, so the catalog
-has no cold hole before first discovery. The snapshot lives in
-[`src/curated.rs`](src/curated.rs) — update it against models.dev when
-Anthropic ships new models; discovery only supplies bare ids.
+The catalog slice is **live** `GET /v1/models`: model ids, display names,
+context windows, output ceilings, and the capability flags (adaptive
+thinking, `xhigh` effort, vision) all come from the API on every refresh, so
+a newly shipped model (Opus 5.5, Sonnet 5, Fable 5.1, …) appears in the
+picker as soon as the API lists it — no code or SDK change required. Rows the
+API marks as thinking-capable but *not* adaptive-capable (the pre-4.6
+generation) are dropped because this provider only implements adaptive
+thinking; the haiku family is the exception and stays with thinking gated off.
+
+The API does not publish pricing, so that is the one hand-maintained table:
+[`src/curated.rs`](src/curated.rs), USD per MTok keyed by base model id
+(date suffixes stripped). A model missing there still routes and shows up;
+it only loses cost enrichment, and the harness refuses `max_cost_usd`
+budgets on it. Update the table against
+[platform.claude.com/docs/en/about-claude/pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+when Anthropic ships or reprices a model.
 
 ## Notes
 

@@ -10,3 +10,7 @@ rules:
   - '!provider::openai::on_router_ready'
   - '!provider::openai::embed'
   - '!provider::openai::count_tokens'
+  # provider::openai::image::generate and image::read are deliberately NOT
+  # listed: images have no router front door, the calls bypass no accounting,
+  # and agents need them directly (generate saves to data/provider-openai/images/,
+  # read is how an agent looks at a saved picture when it must).

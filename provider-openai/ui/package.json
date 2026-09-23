@@ -1,0 +1,20 @@
+{
+  "name": "@iii-workers/provider-openai-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "@iii-dev/console-ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "catalog:",
+    "esbuild": "catalog:",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "typescript": "catalog:"
+  }
+}

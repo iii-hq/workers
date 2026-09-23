@@ -7,6 +7,7 @@ pub mod count_tokens;
 pub mod credential_store;
 pub mod discovery;
 pub mod errors;
+pub mod image;
 pub mod login;
 pub mod manifest;
 pub mod oauth;
