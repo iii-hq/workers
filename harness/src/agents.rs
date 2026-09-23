@@ -117,6 +117,7 @@ pub async fn resolve(
     deps: &Deps,
     cfg: &WorkerConfig,
     id: &str,
+    policy: &crate::policy::CompiledPolicy,
 ) -> Result<ResolvedAgent, HarnessError> {
     let value = deps
         .iii
@@ -134,7 +135,7 @@ pub async fn resolve(
     check_resolvable(&wire)?;
     let unknown_skills = wire.unknown_skills.clone();
     let mut agent = normalize(id, wire);
-    attach_preloaded_functions(deps, &mut agent).await;
+    attach_preloaded_functions(deps, &mut agent, policy).await;
     attach_preloaded_skills(deps, &mut agent, &unknown_skills).await;
     Ok(agent)
 }
@@ -330,6 +331,36 @@ pub(crate) fn contract_digest(
     ))
 }
 
+/// Resolve the session's effective contract without any RPC. Only the explicit
+/// intercepted controls can exist outside the authoritative registry snapshot;
+/// their canonical schema wins over a same-id native descriptor. An id the
+/// public inventory hides but the registry knows (`snapshot.internal_ids`,
+/// e.g. `engine::functions::info`) is present without a schema. The catalog
+/// never grants permission. A contract without a schema remains unjudged.
+pub(crate) fn effective_contract(
+    id: &str,
+    policy: &crate::policy::CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Option<PreloadedContract> {
+    if !policy.allows(id) {
+        return None;
+    }
+    if let Some((description, schema)) = crate::functions::subscribe::control_contract(id) {
+        return Some(PreloadedContract::new(id, Some(description), Some(schema)));
+    }
+    if let Some(descriptor) = snapshot.functions.iter().find(|d| d.function_id == id) {
+        return Some(PreloadedContract::new(
+            id,
+            descriptor.description.as_deref(),
+            descriptor.parameters.clone(),
+        ));
+    }
+    snapshot
+        .internal_ids
+        .contains(id)
+        .then(|| PreloadedContract::new(id, None, None))
+}
+
 /// Freeze the profile's preloaded functions onto the prompt. Contracts come
 /// from the cached registry snapshot (already hydrated with schemas, no
 /// round-trip) and, for ids the snapshot cannot vouch for — not listed, or
@@ -340,17 +371,21 @@ pub(crate) fn contract_digest(
 /// as unavailable. Resolved ONCE, like the rest of the identity — a worker
 /// that re-registers with a new contract mid-session is what the
 /// registry-changed notice covers.
-async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
+async fn attach_preloaded_functions(
+    deps: &Deps,
+    agent: &mut ResolvedAgent,
+    policy: &crate::policy::CompiledPolicy,
+) {
     if agent.functions.is_empty() {
         return;
     }
-    let (ordered, unavailable, digests) = preload_contracts(deps, &agent.functions).await;
+    let (ordered, unavailable, digests) = preload_contracts(deps, &agent.functions, policy).await;
     agent.contract_digests = digests;
     if !unavailable.is_empty() {
         tracing::warn!(
             agent = %agent.identity.id,
             unavailable = ?unavailable,
-            "agent profile names preloaded functions the engine does not know"
+            "agent profile names preloaded functions unavailable to this session"
         );
     }
     agent.prompt = append_block(
@@ -366,6 +401,7 @@ async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
 pub(crate) async fn preload_contracts(
     deps: &Deps,
     ids: &[String],
+    policy: &crate::policy::CompiledPolicy,
 ) -> (
     Vec<PreloadedContract>,
     Vec<String>,
@@ -375,20 +411,12 @@ pub(crate) async fn preload_contracts(
     let mut contracts: HashMap<String, PreloadedContract> = HashMap::new();
     let mut pending: Vec<String> = Vec::new();
     for id in ids {
-        match snapshot
-            .functions
-            .iter()
-            .find(|descriptor| descriptor.function_id == *id)
-        {
-            Some(descriptor) if descriptor.parameters.is_some() => {
-                contracts.insert(
-                    id.clone(),
-                    PreloadedContract::new(
-                        id,
-                        descriptor.description.as_deref(),
-                        descriptor.parameters.clone(),
-                    ),
-                );
+        if !policy.allows(id) {
+            continue;
+        }
+        match effective_contract(id, policy, &snapshot) {
+            Some(contract) if contract.request_schema.is_some() => {
+                contracts.insert(id.clone(), contract);
             }
             _ => pending.push(id.clone()),
         }
@@ -407,7 +435,10 @@ pub(crate) async fn preload_contracts(
         match response {
             Ok(response) => {
                 for contract in contracts_in_info_batch(&response) {
-                    contracts.insert(contract.function_id.clone(), contract);
+                    if chunk.contains(&contract.function_id) && policy.allows(&contract.function_id)
+                    {
+                        contracts.insert(contract.function_id.clone(), contract);
+                    }
                 }
             }
             Err(error) => tracing::warn!(
@@ -508,7 +539,9 @@ pub(crate) fn render_preloaded_functions(
         }
     }
     if !unavailable.is_empty() {
-        body.push_str("\n\nDeclared by the profile but NOT registered right now — do not call: ");
+        body.push_str(
+            "\n\nDeclared by the profile but NOT available in this session — do not call: ",
+        );
         body.push_str(
             &unavailable
                 .iter()
@@ -682,7 +715,7 @@ impl ResolvedAgent {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn wire(json: serde_json::Value) -> AgentGetWire {
@@ -978,11 +1011,11 @@ mod tests {
             "### `coder::tree`\nShow a directory tree.\nrequest_schema: {\"properties\":{\"path\":{\"type\":\"string\"}},\"type\":\"object\"}"
         ));
         assert!(block.contains("### `bare`\nrequest_schema: (none published"));
-        assert!(block.contains("NOT registered right now — do not call: `gone::away`."));
+        assert!(block.contains("NOT available in this session — do not call: `gone::away`."));
 
         // Nothing unavailable → no such paragraph.
         let clean = render_preloaded_functions(&contracts, &[], "this sub-agent task");
-        assert!(!clean.contains("NOT registered"));
+        assert!(!clean.contains("NOT available"));
         assert!(clean.contains("preloaded for this sub-agent task: the contracts below"));
 
         // The block follows the identity after one blank line, or stands
@@ -1010,5 +1043,130 @@ mod tests {
                 Some(serde_json::json!({ "type": "object" })),
             )
         );
+    }
+
+    pub(crate) fn disconnected_contract_deps() -> Deps {
+        let iii = std::sync::Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:0"));
+        Deps::new(
+            iii.clone(),
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(
+                WorkerConfig::default(),
+            ))),
+            crate::discovery::new_cell(),
+            crate::skills::new_cell(),
+            crate::events::TurnEvents::register(&iii),
+            crate::hooks::HookRegistry::register(&iii),
+        )
+    }
+
+    #[tokio::test]
+    async fn effective_preload_matrix_uses_virtual_contracts_and_final_policy_without_rpc() {
+        use crate::{
+            policy::CompiledPolicy,
+            types::turn::{ExposeMode, FunctionPolicy},
+        };
+        let deps = disconnected_contract_deps();
+        let ids: Vec<String> = ["engine::register_trigger", "engine::unregister_trigger"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        for expose in [ExposeMode::Native, ExposeMode::AgentTrigger] {
+            for policy in [
+                None,
+                Some(FunctionPolicy {
+                    allow: vec!["*".into()],
+                    deny: vec![],
+                    expose,
+                }),
+                Some(FunctionPolicy {
+                    allow: vec!["*".into()],
+                    deny: vec!["engine::register_trigger".into()],
+                    expose,
+                }),
+                Some(FunctionPolicy {
+                    allow: vec![],
+                    deny: vec![],
+                    expose,
+                }),
+            ] {
+                let policy = CompiledPolicy::from(policy.as_ref());
+                for native in [false, true] {
+                    crate::discovery::apply(
+                        &deps.functions,
+                        if native {
+                            ids.iter()
+                                .map(|id| crate::clients::FunctionDescriptor {
+                                    function_id: id.clone(),
+                                    description: Some("native".into()),
+                                    parameters: Some(
+                                        json!({"type":"object", "required":["function_id"]}),
+                                    ),
+                                })
+                                .collect()
+                        } else {
+                            vec![]
+                        },
+                    )
+                    .await;
+                    let (contracts, unavailable, digests) = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        preload_contracts(&deps, &ids, &policy),
+                    )
+                    .await
+                    .expect("virtual/denied contracts must not call the engine");
+                    for id in &ids {
+                        let actual = contracts.iter().find(|c| &c.function_id == id);
+                        assert_eq!(actual.is_some(), policy.allows(id), "{id}");
+                        assert_eq!(unavailable.contains(id), !policy.allows(id));
+                        assert_eq!(digests[id].is_some(), policy.allows(id));
+                        if let Some(actual) = actual {
+                            let (description, schema) =
+                                crate::functions::subscribe::control_contract(id).unwrap();
+                            assert_eq!(
+                                *actual,
+                                PreloadedContract::new(id, Some(description), Some(schema))
+                            );
+                            assert_eq!(digests[id].as_ref().unwrap(), &digest_of(actual));
+                        }
+                    }
+                    let empty = crate::discovery::snapshot_of(vec![]);
+                    assert!(
+                        super::effective_contract("engine::anything", &policy, &empty).is_none()
+                    );
+                    assert!(
+                        super::effective_contract("engine::functions::info", &policy, &empty)
+                            .is_none()
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_freezes_only_effectively_authorized_controls() {
+        let deps = disconnected_contract_deps();
+        let mut agent = normalize(
+            "fixture",
+            wire(json!({
+                "name":"Fixture", "system_prompt":"Identity.",
+                "functions":["engine::register_trigger", "engine::unregister_trigger"]
+            })),
+        );
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                deny: vec!["engine::unregister_trigger".into()],
+                ..Default::default()
+            }));
+        attach_preloaded_functions(&deps, &mut agent, &policy).await;
+        assert!(agent
+            .prompt
+            .starts_with("Identity.\n\n<preloaded_functions>"));
+        assert!(agent.prompt.contains("### `engine::register_trigger`"));
+        assert!(!agent.prompt.contains("### `engine::unregister_trigger`"));
+        assert!(agent
+            .prompt
+            .contains("NOT available in this session — do not call: `engine::unregister_trigger`"));
+        assert_eq!(agent.contract_digests["engine::unregister_trigger"], None);
     }
 }

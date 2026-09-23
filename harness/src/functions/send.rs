@@ -1084,7 +1084,22 @@ async fn resolve_send_agent(
     let Some(id) = agent_send_id(req.options.as_ref(), prev.is_some())? else {
         return Ok(None);
     };
-    crate::agents::resolve(deps, cfg, id).await.map(Some)
+    // A profile send cannot also be a steer. Match build_options followed by
+    // inherit_prior_functions: explicit (even empty) policy wins, else default.
+    let policy = crate::policy::CompiledPolicy::from(profile_send_functions(cfg, req));
+    crate::agents::resolve(deps, cfg, id, &policy)
+        .await
+        .map(Some)
+}
+
+fn profile_send_functions<'a>(
+    cfg: &'a WorkerConfig,
+    req: &'a SendRequest,
+) -> Option<&'a FunctionPolicy> {
+    req.options
+        .as_ref()
+        .and_then(|o| o.functions.as_ref())
+        .or(cfg.default_functions.as_ref())
 }
 
 /// The pre-fetch half of agent-send validation: which id (if any) this send
@@ -2799,5 +2814,58 @@ mod tests {
             crate::prompt::DEFAULT,
         );
         assert_eq!(explicit.agent, None);
+    }
+    #[tokio::test]
+    async fn profile_preload_policy_matches_persisted_send_options_and_validates_before_rpc() {
+        let deps = crate::agents::tests::disconnected_contract_deps();
+        let broad = FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        };
+        for defaults in [None, Some(broad.clone())] {
+            let cfg = WorkerConfig {
+                default_functions: defaults,
+                ..Default::default()
+            };
+            for explicit in [
+                None,
+                Some(FunctionPolicy::default()),
+                Some(FunctionPolicy {
+                    allow: vec!["engine::*".into()],
+                    deny: vec!["engine::unregister_trigger".into()],
+                    ..Default::default()
+                }),
+            ] {
+                let req: SendRequest = serde_json::from_value(serde_json::json!({
+                    "message":"fixture", "model":"fixture", "options":{"functions":explicit}
+                }))
+                .unwrap();
+                let preload = policy::CompiledPolicy::from(profile_send_functions(&cfg, &req));
+                let mut persisted =
+                    build_options(&cfg, &req, "fixture".into(), None, None, "identity");
+                inherit_prior_functions(&mut persisted, cfg.default_functions.as_ref());
+                let persisted_policy = policy::CompiledPolicy::from(persisted.functions.as_ref());
+                for id in [
+                    "engine::register_trigger",
+                    "engine::unregister_trigger",
+                    "engine::functions::info",
+                    "state::set",
+                ] {
+                    assert_eq!(preload.allows(id), persisted_policy.allows(id), "{id}");
+                }
+                let mut invalid = req;
+                let opts = invalid.options.as_mut().unwrap();
+                opts.agent = Some("fixture".into());
+                opts.system_prompt = Some("conflicting prompt".into());
+                let error = tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    resolve_send_agent(&deps, &cfg, &invalid, None),
+                )
+                .await
+                .expect("validation must run before profile RPC")
+                .unwrap_err();
+                assert_eq!(error.code(), "harness/invalid_request");
+            }
+        }
     }
 }

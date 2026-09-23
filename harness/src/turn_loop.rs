@@ -561,15 +561,33 @@ async fn generate_step(
     let current_generation = functions.generation;
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record);
-    let registry_notice_message =
-        registry_notice(record.functions_generation, current_generation).map(notice_message);
+    let registry_changed = registry_notice(record.functions_generation, current_generation);
     // Preloaded contracts that drifted from the live registry: named per id,
     // every step while the drift lasts (the frozen block is never rewritten).
-    let preloaded_stale_message = preloaded_stale_notice(
+    let preloaded_stale = preloaded_stale_notice(
         record.options.preloaded_contracts.as_ref(),
-        &functions.functions,
-    )
-    .map(notice_message);
+        &functions,
+        &policy,
+    );
+    // The notices are ephemeral tail messages no transcript or hook ever sees,
+    // so the log is the one place their exact text can be verified.
+    for (kind, notice) in [
+        ("registry-changed", &registry_changed),
+        ("preloaded-stale", &preloaded_stale),
+    ] {
+        if let Some(notice) = notice {
+            tracing::info!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                step = record.step,
+                kind,
+                %notice,
+                "contract notice appended to the generate request"
+            );
+        }
+    }
+    let registry_notice_message = registry_changed.map(notice_message);
+    let preloaded_stale_message = preloaded_stale.map(notice_message);
     record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
@@ -3346,7 +3364,7 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
 
 /// The single-line notice delivered as a tail message when the registry
 /// changed under a session that had already acknowledged an earlier generation.
-const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — confirm the contracts you rely on through an available, authorized discovery path before calling them again; if none is available, report that limitation.";
 
 /// Wrap the notice as an ephemeral tail user message for the generate request.
 /// `timestamp` is mandatory — the router's message types have no serde default
@@ -3378,29 +3396,37 @@ pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<S
 /// no schema (`parameters: None`) are not judged.
 pub(crate) fn preloaded_stale_notice(
     frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
-    live: &[crate::clients::FunctionDescriptor],
+    snapshot: &crate::discovery::FunctionsSnapshot,
+    policy: &CompiledPolicy,
 ) -> Option<String> {
     let frozen = frozen?;
-    let (mut changed, mut removed, mut available) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut changed, mut removed, mut available, mut denied) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (id, digest) in frozen {
-        let descriptor = live.iter().find(|d| d.function_id == *id);
+        if !policy.allows(id) {
+            if digest.is_some() {
+                denied.push(id.as_str());
+            }
+            continue;
+        }
+        let descriptor = crate::agents::effective_contract(id, policy, snapshot);
         match (digest, descriptor) {
             (Some(_), None) => removed.push(id.as_str()),
-            (Some(frozen_digest), Some(d)) if d.parameters.is_some() => {
+            (Some(frozen_digest), Some(d)) if d.request_schema.is_some() => {
                 let live_digest = crate::agents::contract_digest(
                     id,
                     d.description.as_deref(),
-                    d.parameters.clone(),
+                    d.request_schema.clone(),
                 );
                 if live_digest != *frozen_digest {
                     changed.push(id.as_str());
                 }
             }
-            (None, Some(d)) if d.parameters.is_some() => available.push(id.as_str()),
+            (None, Some(d)) if d.request_schema.is_some() => available.push(id.as_str()),
             _ => {}
         }
     }
-    if changed.is_empty() && removed.is_empty() && available.is_empty() {
+    if changed.is_empty() && removed.is_empty() && available.is_empty() && denied.is_empty() {
         return None;
     }
     let list = |ids: &[&str]| {
@@ -3419,10 +3445,24 @@ pub(crate) fn preloaded_stale_notice(
     if !available.is_empty() {
         parts.push(format!("now available: {}", list(&available)));
     }
+    if !denied.is_empty() {
+        parts.push(format!("no longer permitted: {}", list(&denied)));
+    }
+    // Name the discovery path only when this session can actually call it:
+    // permitted AND present (public or internal); permission alone is not
+    // availability.
+    let refetch = if crate::agents::effective_contract("engine::functions::info", policy, snapshot)
+        .is_some()
+    {
+        "Re-fetch changed or newly available contracts with engine::functions::info before \
+         calling them."
+    } else {
+        "This session cannot re-fetch contracts; if you need a changed or newly available one, \
+         say so rather than guessing its schema."
+    };
     Some(format!(
         "NOTE: preloaded function contracts in your instructions are out of date — {}. \
-         Re-fetch changed or newly available contracts with engine::functions::info before \
-         calling them; do not call the removed ones.",
+         {refetch} Do not call removed or denied functions.",
         parts.join("; ")
     ))
 }
@@ -3433,13 +3473,14 @@ pub(crate) fn preloaded_stale_notice(
 /// does not list). This is the decision surface hooks reason over,
 /// independent of how tools reach the provider. `hidden` are the spawn's
 /// dispatch-only grants (`TurnRecord::dispatch_only_functions`): still
-/// callable by id, never a tool.
+/// callable by id, never a tool — the intercepted controls included.
 fn concrete_allowed_tools(
     policy: &CompiledPolicy,
     descriptors: &[crate::clients::FunctionDescriptor],
     hidden: &[String],
 ) -> Vec<crate::types::model::AgentFunction> {
     let mut tools = crate::functions::subscribe::native_control_tools(policy);
+    tools.retain(|tool| !hidden.contains(&tool.name));
     for descriptor in descriptors {
         if !policy.allows(&descriptor.function_id)
             || hidden.iter().any(|id| id == &descriptor.function_id)
@@ -3518,6 +3559,10 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
+    fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {
+        crate::discovery::snapshot_of(live.to_vec())
+    }
+
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -3743,7 +3788,11 @@ mod tests {
     fn dispatch_only_grants_stay_callable_but_never_become_native_tools() {
         let policy =
             crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
-                allow: vec!["db::x".into(), "directory::skills::get".into()],
+                allow: vec![
+                    "db::x".into(),
+                    "directory::skills::get".into(),
+                    "engine::register_trigger".into(),
+                ],
                 deny: vec![],
                 expose: Default::default(),
             }));
@@ -3759,16 +3808,18 @@ mod tests {
                 parameters: None,
             },
         ];
-        let hidden = vec!["directory::skills::get".to_string()];
+        let hidden = vec![
+            "directory::skills::get".to_string(),
+            "engine::register_trigger".to_string(),
+        ];
         let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &hidden)
             .into_iter()
             .map(|tool| tool.name)
             .collect();
         assert_eq!(names, vec!["db::x"], "the grant is not a tool");
-        assert!(
-            policy.allows("directory::skills::get"),
-            "but it is still callable by id"
-        );
+        for id in ["directory::skills::get", "engine::register_trigger"] {
+            assert!(policy.allows(id), "{id} is still callable by id");
+        }
     }
 
     #[test]
@@ -3920,7 +3971,46 @@ mod tests {
     }
 
     #[test]
+    fn authorized_virtual_controls_are_not_removed_by_public_catalog() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec![
+                    "engine::register_trigger".into(),
+                    "engine::unregister_trigger".into(),
+                ],
+                deny: vec![],
+                expose: crate::types::turn::ExposeMode::Native,
+            }));
+        let public_catalog = crate::discovery::snapshot_of(vec![]);
+        let tools = concrete_allowed_tools(&policy, &public_catalog.functions, &[]);
+        assert_eq!(tools.len(), 2, "both controls are effectively offered");
+        let frozen = tools
+            .iter()
+            .map(|tool| {
+                (
+                    tool.name.clone(),
+                    Some(crate::agents::contract_digest(
+                        &tool.name,
+                        Some(&tool.description),
+                        Some(tool.parameters.clone()),
+                    )),
+                )
+            })
+            .collect();
+        let notice = super::preloaded_stale_notice(Some(&frozen), &public_catalog, &policy);
+        assert!(
+            notice.is_none(),
+            "authorized effective contracts must not be removed by the public catalog: {notice:?}"
+        );
+    }
+
+    #[test]
     fn preloaded_stale_notice_names_changed_removed_and_now_available_only() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                ..Default::default()
+            }));
         use crate::clients::FunctionDescriptor;
         let schema =
             serde_json::json!({ "type": "object", "properties": { "k": { "type": "string" } } });
@@ -3955,21 +4045,25 @@ mod tests {
             descriptor("late::fn", "now registered", Some(schema.clone())),
             descriptor("unrelated::fn", "never preloaded", Some(schema.clone())),
         ];
-        let notice = super::preloaded_stale_notice(Some(&frozen), &live).unwrap();
+        let mut snapshot = snap(&live);
+        snapshot
+            .internal_ids
+            .insert("engine::functions::info".to_string());
+        let notice = super::preloaded_stale_notice(Some(&frozen), &snapshot, &policy).unwrap();
         assert_eq!(
             notice,
             "NOTE: preloaded function contracts in your instructions are out of date — \
              changed: `changed::fn`; no longer registered: `gone::fn`; now available: `late::fn`. \
              Re-fetch changed or newly available contracts with engine::functions::info before \
-             calling them; do not call the removed ones."
+             calling them. Do not call removed or denied functions."
         );
         // Nothing frozen, or nothing drifted: no notice.
-        assert!(super::preloaded_stale_notice(None, &live).is_none());
+        assert!(super::preloaded_stale_notice(None, &snapshot, &policy).is_none());
         let steady = std::collections::BTreeMap::from([(
             "same::fn".to_string(),
             digest("same::fn", "unchanged"),
         )]);
-        assert!(super::preloaded_stale_notice(Some(&steady), &live).is_none());
+        assert!(super::preloaded_stale_notice(Some(&steady), &snapshot, &policy).is_none());
     }
 
     #[test]
@@ -4566,5 +4660,136 @@ mod tests {
     fn no_signal_does_not_cancel() {
         assert!(!cancel_requested(false, false, StopReason::End));
         assert!(!cancel_requested(false, false, StopReason::FunctionCall));
+    }
+
+    #[test]
+    fn effective_notice_matrix_keeps_true_drift_and_rejects_prefix_exceptions() {
+        use crate::{
+            agents::{contract_digest, effective_contract},
+            clients::FunctionDescriptor,
+            policy::CompiledPolicy,
+            types::turn::FunctionPolicy,
+        };
+        let all = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let desc = |id: &str, schema| FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("real internal".into()),
+            parameters: schema,
+        };
+        let schema = serde_json::json!({"type":"object"});
+        let mut with_info = snap(&[]);
+        with_info
+            .internal_ids
+            .insert("engine::functions::info".to_string());
+        for id in [
+            "engine::functions::info",
+            "engine::arbitrary",
+            "common::action",
+        ] {
+            let live = vec![desc(id, Some(schema.clone()))];
+            let frozen = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(
+                    id,
+                    Some("real internal"),
+                    Some(schema.clone()),
+                )),
+            )]);
+            assert!(super::preloaded_stale_notice(Some(&frozen), &snap(&live), &all).is_none());
+            let removed = super::preloaded_stale_notice(Some(&frozen), &snap(&[]), &all).unwrap();
+            assert!(removed.contains(&format!("no longer registered: `{id}`")));
+            assert!(
+                !removed.contains("with engine::functions::info"),
+                "permitted but absent introspection is not recommended: {removed}"
+            );
+            if id != "engine::functions::info" {
+                let removed =
+                    super::preloaded_stale_notice(Some(&frozen), &with_info, &all).unwrap();
+                assert!(
+                    removed.contains("with engine::functions::info"),
+                    "permitted and present introspection is named: {removed}"
+                );
+            }
+            let mut internal_only = snap(&[]);
+            internal_only.internal_ids.insert(id.to_string());
+            assert!(
+                super::preloaded_stale_notice(Some(&frozen), &internal_only, &all).is_none(),
+                "an id the registry knows but the public inventory hides is present, not removed"
+            );
+            let changed = super::preloaded_stale_notice(
+                Some(&frozen),
+                &snap(&[desc(id, Some(serde_json::json!({"type":"string"})))]),
+                &all,
+            )
+            .unwrap();
+            assert!(changed.contains(&format!("changed: `{id}`")));
+            for schema in [None, Some(serde_json::Value::Null)] {
+                assert!(
+                    super::preloaded_stale_notice(Some(&frozen), &snap(&[desc(id, schema)]), &all)
+                        .is_none(),
+                    "no schema is unjudged"
+                );
+            }
+            let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
+            assert!(
+                super::preloaded_stale_notice(Some(&missing), &snap(&live), &all)
+                    .unwrap()
+                    .contains("now available")
+            );
+            assert!(super::preloaded_stale_notice(
+                Some(&missing),
+                &snap(&live),
+                &CompiledPolicy::from(None)
+            )
+            .is_none());
+        }
+        for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+            let effective = effective_contract(id, &all, &snap(&[])).unwrap();
+            let frozen = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(
+                    id,
+                    effective.description.as_deref(),
+                    effective.request_schema.clone(),
+                )),
+            )]);
+            assert!(
+                super::preloaded_stale_notice(
+                    Some(&frozen),
+                    &snap(&[desc(id, Some(schema.clone()))]),
+                    &all
+                )
+                .is_none(),
+                "virtual beats native"
+            );
+            let legacy = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(id, Some("native"), Some(schema.clone()))),
+            )]);
+            let changed = super::preloaded_stale_notice(Some(&legacy), &snap(&[]), &all).unwrap();
+            assert!(changed.contains("changed:"));
+            assert!(!changed.contains("no longer registered"));
+            let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
+            assert!(
+                super::preloaded_stale_notice(Some(&missing), &snap(&[]), &all)
+                    .unwrap()
+                    .contains("now available")
+            );
+            let denied = CompiledPolicy::from(Some(&FunctionPolicy {
+                allow: vec!["*".into()],
+                deny: vec![id.into(), "engine::functions::info".into()],
+                ..Default::default()
+            }));
+            assert!(super::preloaded_stale_notice(Some(&missing), &with_info, &denied).is_none());
+            let notice = super::preloaded_stale_notice(Some(&frozen), &with_info, &denied).unwrap();
+            assert!(notice.contains("no longer permitted"));
+            assert!(
+                !notice.contains("engine::functions::info"),
+                "present but denied introspection is not recommended: {notice}"
+            );
+        }
     }
 }

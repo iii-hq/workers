@@ -131,6 +131,33 @@ impl EngineClient {
         }
     }
 
+    /// Every id the registry knows, public or internal (`include_internal:
+    /// true`) — presence only, no schemas. `None` on failure so the caller
+    /// keeps its previous set instead of declaring every internal id gone.
+    pub async fn internal_function_ids(&self) -> Option<std::collections::BTreeSet<String>> {
+        let resp = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "engine::functions::list".into(),
+                payload: json!({ "include_internal": true }),
+                action: None,
+                timeout_ms: Some(self.timeout_ms),
+            })
+            .await;
+        match resp {
+            Ok(v) => Some(
+                parse_descriptor_list(&v)
+                    .into_iter()
+                    .map(|d| d.function_id)
+                    .collect(),
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "engine::functions::list (include_internal) failed");
+                None
+            }
+        }
+    }
+
     /// Read one function's descriptor (`None` when unknown).
     pub async fn functions_info(&self, function_id: &str) -> Option<FunctionDescriptor> {
         let resp = self

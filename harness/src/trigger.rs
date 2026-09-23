@@ -819,13 +819,27 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
 /// Discovery must describe the intercept, or an agent that reads
 /// `functions::info` "learns" its tool schema is wrong.
 fn overlay_control_contract(item: &mut Value, id: &str) {
+    // A real engine/auth failure must never be dressed up as a contract.
+    if item.get("error").is_some() {
+        return;
+    }
     let Some((description, schema)) = crate::functions::subscribe::control_contract(id) else {
         return;
     };
     if let Some(map) = item.as_object_mut() {
         map.insert("description".into(), Value::String(description.into()));
-        if map.contains_key("request_schema") {
-            map.insert("request_schema".into(), schema);
+        for key in ["parameters", "request_format"] {
+            if map.contains_key(key) {
+                map.insert(key.into(), schema.clone());
+            }
+        }
+        map.insert("request_schema".into(), schema);
+        if let Some(response) = crate::functions::subscribe::control_response_schema(id) {
+            for key in ["response_schema", "response_format"] {
+                if map.contains_key(key) {
+                    map.insert(key.into(), response.clone());
+                }
+            }
         }
     }
 }
@@ -2215,5 +2229,131 @@ mod tests {
             call_digest("coder::read-file", &json!({ "path": "b" }))
         );
         assert_ne!(base, call_digest("coder::search", &json!({ "path": "a" })));
+    }
+
+    #[test]
+    fn virtual_info_overlay_matches_preload_and_preserves_real_errors() {
+        for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+            let policy = pol(&["*"]);
+            let expected = crate::agents::effective_contract(
+                id,
+                &policy,
+                &crate::discovery::snapshot_of(vec![]),
+            )
+            .unwrap();
+            for key in ["request_schema", "request_format", "parameters"] {
+                let mut detail = json!({"function_id":id, "description":"native"});
+                detail[key] = json!({"required":["function_id"]});
+                post_filter_info(&mut detail, &policy);
+                assert_eq!(
+                    crate::agents::contract_digest(
+                        id,
+                        detail["description"].as_str(),
+                        Some(detail["request_schema"].clone())
+                    ),
+                    crate::agents::contract_digest(
+                        id,
+                        expected.description.as_deref(),
+                        expected.request_schema.clone()
+                    )
+                );
+                assert_eq!(detail[key], detail["request_schema"]);
+            }
+            // The native `{ id }` response is not what the intercept returns.
+            let mut detail = json!({
+                "function_id": id, "description": "native",
+                "request_schema": {"required": ["function_id"]},
+                "response_schema": {"required": ["id"]},
+                "response_format": {"required": ["id"]}
+            });
+            post_filter_info(&mut detail, &policy);
+            let required: Vec<&str> = detail["response_schema"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            let wrapper_field = if id.ends_with("::register_trigger") {
+                "subscription_id"
+            } else {
+                "removed"
+            };
+            assert!(required.contains(&wrapper_field), "{id}: {required:?}");
+            assert!(!required.contains(&"id"), "{id}: {required:?}");
+            assert_eq!(detail["response_format"], detail["response_schema"]);
+            for error in ["not_found", "forbidden"] {
+                let mut detail = json!({"function_id":id, "error":error});
+                let original = detail.clone();
+                post_filter_info(&mut detail, &policy);
+                assert_eq!(detail, original, "a real negative stays negative");
+            }
+            let mut detail = json!({"function_id":id, "request_schema":{}});
+            post_filter_info(&mut detail, &CompiledPolicy::from(None));
+            assert!(detail.is_null());
+            let mut batch = json!({"functions":[{"function_id":id, "request_schema":{}}]});
+            post_filter_info(&mut batch, &CompiledPolicy::from(None));
+            assert_eq!(
+                batch["functions"][0],
+                json!({"function_id":id,"error":"not available"})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn denied_controls_in_both_exposures_have_no_dispatch_or_subscription_effect() {
+        use crate::types::{
+            content::ContentBlock,
+            turn::{ExposeMode, FunctionPolicy},
+        };
+        let iii = std::sync::Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:0"));
+        let engine = EngineClient::new(iii, 5);
+        for expose in [ExposeMode::Native, ExposeMode::AgentTrigger] {
+            for raw_policy in [
+                None,
+                Some(FunctionPolicy {
+                    allow: vec!["*".into()],
+                    deny: vec!["engine::*".into()],
+                    expose,
+                }),
+                Some(FunctionPolicy::default()),
+            ] {
+                let policy = CompiledPolicy::from(raw_policy.as_ref());
+                for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+                    let args = if id.ends_with("::register_trigger") {
+                        json!({"trigger_type":"state","config":{"scope":"test","key":"done"}})
+                    } else {
+                        json!({"id":"not-owned"})
+                    };
+                    let mut message = crate::types::message::empty_assistant("fixture", "fixture");
+                    message.content = vec![ContentBlock::FunctionCall {
+                        id: "call".into(),
+                        function_id: if expose == ExposeMode::Native {
+                            id.into()
+                        } else {
+                            crate::policy::AGENT_TRIGGER_NAME.into()
+                        },
+                        arguments: if expose == ExposeMode::Native {
+                            args
+                        } else {
+                            json!({"function":id,"description":"fixture","payload":args})
+                        },
+                    }];
+                    let calls = crate::policy::plan_calls(&message, expose);
+                    assert_eq!(calls[0].function_id, id);
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        trigger_call(&engine, &policy, id, &calls[0].arguments),
+                    )
+                    .await
+                    .expect("denial is local");
+                    let TriggerResult::Result(result) = result else {
+                        panic!("unexpected pending")
+                    };
+                    assert!(result.is_error);
+                    assert_eq!(result.details["error"], "policy_denied");
+                    assert_eq!(result.details["function_id"], id);
+                }
+            }
+        }
     }
 }

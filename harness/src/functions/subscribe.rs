@@ -178,6 +178,18 @@ pub fn control_contract(function_id: &str) -> Option<(&'static str, Value)> {
     }
 }
 
+/// What the intercept actually answers for a control id —
+/// `{ subscription_id, once, note? }` / `{ removed }` — never the engine's
+/// native `{ id }`, so `functions::info` describes both halves of the contract
+/// an agent calls.
+pub fn control_response_schema(function_id: &str) -> Option<Value> {
+    match function_id {
+        REGISTER_TRIGGER_ID => Some(crate::surface::schema_value::<SubscribeResponse>()),
+        UNREGISTER_TRIGGER_ID => Some(crate::surface::schema_value::<UnsubscribeResponse>()),
+        _ => None,
+    }
+}
+
 pub fn native_control_tools(policy: &CompiledPolicy) -> Vec<AgentFunction> {
     [
         (
