@@ -14,10 +14,20 @@ import {
 } from '@iii-dev/console-ui'
 import type { ConfigFormProps, Host } from '@iii-dev/console-ui'
 import { Folder, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { client } from '../api'
 import { catalogKey, modelGroups, splitKey } from './catalog.js'
-import { addRepository, normalize, problems, setPath } from './form-model.js'
+import {
+  addRepository,
+  normalize,
+  problems,
+  repositoryAt,
+  setPath,
+  setRepositoryPath,
+  setRepositoryWorkers,
+} from './form-model.js'
+import { WorkerTokens } from './WorkerTokens'
+import type { WorkerSuggestion } from './WorkerTokens'
 import { useModelCatalog } from './useModelCatalog'
 
 /** Worker names shown on a repository row before the rest fold into a count. */
@@ -25,28 +35,38 @@ const SHOWN_WORKERS = 8
 const WEEK_MS = 7 * 24 * 3_600_000
 
 /**
- * The workers that failed this week and have no checkout: the ones an
- * investigation could only read from the trace. Read once per form mount;
- * the list is advice, so a failed read shows nothing rather than an error.
+ * What the form knows from the worker itself: the workers that failed this
+ * week (the names worth suggesting, and the unmapped ones worth pointing
+ * out) and which mapped checkouts are actually on disk. Read once per form
+ * mount; it is advice, so a failed read shows nothing rather than an error.
  */
-function useUnmappedWorkers(host: Host, repositories: { workers: string[] }[]): string[] {
+function useWorkerFacts(host: Host) {
   const [seen, setSeen] = useState<string[]>([])
+  const [onDisk, setOnDisk] = useState<Record<string, boolean>>({})
   useEffect(() => {
     let live = true
-    client(host.iii)
+    const api = client(host.iii)
+    api
       .groups({
         status: ['new', 'investigating', 'diagnosed', 'regressed', 'resolved', 'ignored'],
         since_ms: Date.now() - WEEK_MS,
         limit: 200,
       })
-      .then((response) => live && setSeen([...new Set(response.groups.map((group) => group.service_name))]))
+      .then((response) => live && setSeen([...new Set(response.groups.map((group) => group.service_name))].sort()))
       .catch(() => live && setSeen([]))
+    api
+      .status()
+      .then(
+        (status) =>
+          live &&
+          setOnDisk(Object.fromEntries(status.repositories.map((repository) => [repository.id, repository.exists]))),
+      )
+      .catch(() => live && setOnDisk({}))
     return () => {
       live = false
     }
   }, [host])
-  const mapped = repositories.flatMap((repository) => repository.workers)
-  return useMemo(() => seen.filter((worker) => !mapped.includes(worker)).sort(), [seen, mapped.join(',')])
+  return { seen, onDisk }
 }
 
 /**
@@ -91,7 +111,31 @@ export function SentinelConfigForm({
   const ignored = Array.isArray(config.ignore_services) ? (config.ignore_services as string[]) : []
   const joinSeconds =
     ((config.sources as { log?: { join_window_ms?: number } }).log?.join_window_ms ?? 2000) / 1000
-  const unmapped = useUnmappedWorkers(host, repositories)
+  const facts = useWorkerFacts(host)
+  const mapped = new Map(repositories.flatMap((repository) => repository.workers.map((worker) => [worker, repository.id])))
+  const unmapped = facts.seen.filter((worker) => !mapped.has(worker))
+  // What a repository can be given: the workers that failed lately, and the
+  // ones another repository holds — picking one of those moves it.
+  const suggestionsFor = (id: string): WorkerSuggestion[] => [
+    ...unmapped.map((worker) => ({ value: worker, description: 'failed this week, no repository' })),
+    ...[...mapped]
+      .filter(([, owner]) => owner !== id)
+      .map(([worker, owner]) => ({ value: worker, description: `in ${owner}/ — moves here` })),
+  ]
+  const [folderError, setFolderError] = useState<string | null>(null)
+  useEffect(() => setFolderError(null), [openRepository])
+  const openAt = (directory: string) => {
+    // A folder already mapped opens that repository instead of adding a copy.
+    const existing = repositoryAt(config, directory)
+    if (existing) {
+      setOpenRepository(existing.id)
+      return
+    }
+    const next = addRepository(config, directory)
+    onChange(next as ConfigFormProps['value'])
+    // Straight into the new repository: without workers it maps nothing.
+    setOpenRepository(repositoryAt(next, directory)?.id ?? null)
+  }
   const selected = repositories.find((repository) => repository.id === openRepository)
 
   // A host deep link names a field by its dotted path. Open the deck level
@@ -233,11 +277,7 @@ export function SentinelConfigForm({
                 control={
                   // No `data-settings-deck-fallback`: `DirectoryPicker` does
                   // not forward unknown props, so it would never reach the DOM.
-                  <DirectoryPicker
-                    value={null}
-                    emptyLabel="Add repository"
-                    onChange={(directory) => onChange(addRepository(config, directory) as ConfigFormProps['value'])}
-                  />
+                  <DirectoryPicker value={null} emptyLabel="Add repository" onChange={openAt} />
                 }
               />
             </SettingsList>
@@ -246,29 +286,44 @@ export function SentinelConfigForm({
             selected ? (
               <SettingsList>
                 <SettingsField
+                  field={`repositories.${repositories.indexOf(selected)}.path`}
+                  label="Folder"
+                  description="The checkout an investigation reads, read-only, on this machine."
+                  error={folderError}
+                  renderControl={() => (
+                    <DirectoryPicker
+                      value={selected.path}
+                      externalError={
+                        facts.onDisk[selected.id] === false ? 'This folder is not on this machine any more.' : null
+                      }
+                      onChange={(directory) => {
+                        const other = repositoryAt(config, directory)
+                        if (other && other.id !== selected.id) {
+                          setFolderError(`That folder is already mapped as ${other.id}.`)
+                          return
+                        }
+                        setFolderError(null)
+                        onChange(setRepositoryPath(config, selected.id, directory) as ConfigFormProps['value'])
+                      }}
+                    />
+                  )}
+                />
+                <SettingsField
                   field={`repositories.${repositories.indexOf(selected)}.workers`}
                   label="Workers"
-                  description="Comma separated. A worker belongs to at most one checkout."
+                  description="The workers whose code lives here. A worker belongs to one checkout; adding one mapped elsewhere moves it."
+                  layout="stacked"
+                  controlSize="full"
                   renderControl={(props) => (
-                    <Input
-                      {...props}
-                      value={selected.workers.join(', ')}
+                    <WorkerTokens
+                      control={props}
+                      label={`Workers in ${selected.id}`}
+                      value={selected.workers}
                       onChange={(next) =>
-                        update(
-                          'repositories',
-                          repositories.map((repository) =>
-                            repository.id === selected.id
-                              ? {
-                                  ...repository,
-                                  workers: next
-                                    .split(',')
-                                    .map((name: string) => name.trim())
-                                    .filter(Boolean),
-                                }
-                              : repository,
-                          ),
-                        )
+                        onChange(setRepositoryWorkers(config, selected.id, next) as ConfigFormProps['value'])
                       }
+                      suggestions={suggestionsFor(selected.id)}
+                      empty="No worker yet — until one is added, this checkout maps nothing."
                     />
                   )}
                 />
@@ -331,20 +386,16 @@ export function SentinelConfigForm({
             field="ignore_services"
             label="Ignored workers"
             description="Never ingested. Sentinel itself and its investigation sessions are always excluded."
+            layout="stacked"
+            controlSize="full"
             renderControl={(props) => (
-              <Input
-                {...props}
-                placeholder="e.g. harness-e2e"
-                value={ignored.join(', ')}
-                onChange={(next) =>
-                  update(
-                    'ignore_services',
-                    next
-                      .split(',')
-                      .map((name: string) => name.trim())
-                      .filter(Boolean),
-                  )
-                }
+              <WorkerTokens
+                control={props}
+                label="Ignored workers"
+                value={ignored}
+                onChange={(next) => update('ignore_services', next)}
+                suggestions={facts.seen.map((worker) => ({ value: worker, description: 'failed this week' }))}
+                empty="None — every worker is watched."
               />
             )}
           />

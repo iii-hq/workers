@@ -8,6 +8,9 @@ import { formatRelative } from '@iii-dev/console-ui/format'
 
 /** @typedef {'new'|'investigating'|'diagnosed'|'resolved'|'regressed'|'ignored'} GroupStatus */
 
+/** Groups read per page of the list; Show more adds another page. */
+export const PAGE_SIZE = 50
+
 /** The states the list shows when nobody has narrowed it. @type {GroupStatus[]} */
 export const OPEN_STATES = ['new', 'investigating', 'diagnosed', 'regressed']
 

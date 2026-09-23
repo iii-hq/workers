@@ -116,3 +116,55 @@ export function addRepository(config, path) {
   while (repositories.some((repository) => repository.id === id)) id = `${base}-${suffix++}`
   return { ...config, repositories: [...repositories, { id, path, workers: [] }] }
 }
+
+/** @param {string} path */
+const trimmed = (path) => path.replace(/\/+$/, '') || '/'
+
+/**
+ * The repository already mapped at this folder, if any. Picking a folder a
+ * second time opens the one that is there instead of adding a copy.
+ * @param {Config} config
+ * @param {string} path
+ * @returns {{ id: string, path: string, workers: string[] } | undefined}
+ */
+export function repositoryAt(config, path) {
+  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  return repositories.find((repository) => trimmed(String(repository?.path ?? '')) === trimmed(path))
+}
+
+/**
+ * Point a repository at another folder; its workers stay mapped to it.
+ * @param {Config} config
+ * @param {string} id
+ * @param {string} path
+ * @returns {Config}
+ */
+export function setRepositoryPath(config, id, path) {
+  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  return {
+    ...config,
+    repositories: repositories.map((repository) => (repository.id === id ? { ...repository, path } : repository)),
+  }
+}
+
+/**
+ * Give a repository its workers. A worker belongs to at most one checkout,
+ * so one taken from another repository moves rather than being mapped
+ * twice — the conflict is resolved where it is made, not reported on save.
+ * @param {Config} config
+ * @param {string} id
+ * @param {string[]} workers
+ * @returns {Config}
+ */
+export function setRepositoryWorkers(config, id, workers) {
+  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  const unique = [...new Set(workers.map((worker) => worker.trim()).filter(Boolean))]
+  return {
+    ...config,
+    repositories: repositories.map((repository) =>
+      repository.id === id
+        ? { ...repository, workers: unique }
+        : { ...repository, workers: (repository.workers ?? []).filter((/** @type {string} */ worker) => !unique.includes(worker)) },
+    ),
+  }
+}

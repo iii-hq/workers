@@ -28,6 +28,8 @@ interface Props {
   running: boolean
   sessionInView: boolean
   onAsk?: () => void
+  /** Present when the group can be investigated: the empty tab's next step. */
+  onInvestigate?: () => void
   onOpenSession?: () => void
   repositoryPath: string | null
 }
@@ -58,6 +60,7 @@ export function DiagnosisTab({
   running,
   sessionInView,
   onAsk,
+  onInvestigate,
   onOpenSession,
   repositoryPath,
 }: Props) {
@@ -91,7 +94,14 @@ export function DiagnosisTab({
           icon={ScanSearch}
           title="No diagnosis yet"
           description="Investigate opens a harness session beside this page with the frozen evidence and read-only access to the mapped repository. You watch it work and can steer it; when it has a probable cause it records it with sentinel::diagnosis::record, and the cards land here."
-          action={onAsk ? { label: 'Ask for a diagnosis', onClick: onAsk } : undefined}
+          // The way forward from here: ask the session that exists, or start one.
+          action={
+            onAsk
+              ? { label: 'Ask for a diagnosis', onClick: onAsk }
+              : onInvestigate
+                ? { label: 'Investigate', onClick: onInvestigate }
+                : undefined
+          }
         />
       ) : null}
 

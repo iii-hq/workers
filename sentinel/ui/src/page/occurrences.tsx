@@ -84,6 +84,10 @@ export function OccurrencesTable({
   }
 
   const snapshots = rows.filter((row) => row.has_evidence).length
+  // A failure outside any conversation has no session or turn to show; the
+  // columns would be dashes top to bottom. Its own message says more — the
+  // concrete values the group's title normalized away.
+  const conversational = rows.some((row) => row.session_id)
   return (
     <div className="sentinel-ui-stack">
       <Card>
@@ -102,8 +106,14 @@ export function OccurrencesTable({
                   <TableRow>
                     <TableHead>When</TableHead>
                     <TableHead>Worker version</TableHead>
-                    <TableHead className="sentinel-ui-grow">Session</TableHead>
-                    <TableHead>Turn</TableHead>
+                    {conversational ? (
+                      <>
+                        <TableHead className="sentinel-ui-grow">Session</TableHead>
+                        <TableHead>Turn</TableHead>
+                      </>
+                    ) : (
+                      <TableHead className="sentinel-ui-grow">Message</TableHead>
+                    )}
                     <TableHead>Evidence</TableHead>
                     <TableHead className="sentinel-ui-chevron">
                       <span className="sentinel-ui-visually-hidden">Open</span>
@@ -121,12 +131,22 @@ export function OccurrencesTable({
                         {ago(row.at_ms, now)}
                       </TableCell>
                       <TableCell className="sentinel-ui-mono">{row.worker_version ?? '—'}</TableCell>
-                      <TableCell className="sentinel-ui-grow">
-                        <SessionLink host={host} occurrence={row} />
-                      </TableCell>
-                      <TableCell className="sentinel-ui-mono sentinel-ui-quiet">
-                        {row.turn_id ? row.turn_id.slice(0, 10) : '—'}
-                      </TableCell>
+                      {conversational ? (
+                        <>
+                          <TableCell className="sentinel-ui-grow">
+                            <SessionLink host={host} occurrence={row} />
+                          </TableCell>
+                          <TableCell className="sentinel-ui-mono sentinel-ui-quiet">
+                            {row.turn_id ? row.turn_id.slice(0, 10) : '—'}
+                          </TableCell>
+                        </>
+                      ) : (
+                        <TableCell className="sentinel-ui-grow">
+                          <span className="sentinel-ui-occurrence-message" title={row.message}>
+                            {row.message}
+                          </span>
+                        </TableCell>
+                      )}
                       <TableCell>
                         {row.has_evidence ? (
                           <Chip tone={row.settled ? 'neutral' : 'warning'}>{row.settled ? 'snapshot' : 'partial'}</Chip>

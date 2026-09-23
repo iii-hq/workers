@@ -903,3 +903,29 @@
   gap: 6px;
   margin-top: 6px;
 }
+
+/* Worker names as tokens, and the picker that adds one under them. */
+[data-iii-ui="sentinel"] .sentinel-ui-tokens {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-token-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-occurrence-message {
+  display: block;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

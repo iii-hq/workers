@@ -328,9 +328,11 @@ export function GroupDetailView({
               <span className="sentinel-ui-quiet-mono">{ago(group.regressed_at_ms, now)}</span>
             ) : null}
             <Chip>{spaced(group.occurrence_count)} occurrences</Chip>
-            <Chip>
-              {spaced(group.sessions_affected)} {group.sessions_affected === 1 ? 'session' : 'sessions'}
-            </Chip>
+            {group.sessions_affected > 0 ? (
+              <Chip>
+                {spaced(group.sessions_affected)} {group.sessions_affected === 1 ? 'session' : 'sessions'}
+              </Chip>
+            ) : null}
             <span className="sentinel-ui-quiet-mono">{versionRange(group.first_version, group.last_version)}</span>
             {repository ? (
               <Chip tone={repository.exists ? 'neutral' : 'warning'} title={repository.path}>
@@ -557,6 +559,7 @@ export function GroupDetailView({
               running={Boolean(running)}
               sessionInView={sessionInView}
               onAsk={session ? askForDiagnosis : undefined}
+              onInvestigate={actions.includes('investigate') ? () => investigate('assisted') : undefined}
               onOpenSession={session ? openSession : undefined}
               repositoryPath={repositoryPath}
             />

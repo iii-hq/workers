@@ -57,3 +57,30 @@ test('a second checkout with the same folder name gets its own id', () => {
     ['workers', 'workers-2'],
   )
 })
+
+import { repositoryAt, setRepositoryPath, setRepositoryWorkers } from './form-model.js'
+
+const mapped = {
+  repositories: [
+    { id: 'workers', path: '/w', workers: ['harness', 'queue'] },
+    { id: 'iii', path: '/iii/', workers: ['iii'] },
+  ],
+}
+
+test('picking a folder that is already mapped finds that repository', () => {
+  assert.equal(repositoryAt(mapped, '/iii')?.id, 'iii', 'a trailing slash is the same folder')
+  assert.equal(repositoryAt(mapped, '/w/')?.id, 'workers')
+  assert.equal(repositoryAt(mapped, '/elsewhere'), undefined)
+})
+
+test('a repository can move to another folder and keep its workers', () => {
+  const next = setRepositoryPath(mapped, 'workers', '/home/w')
+  assert.deepEqual(next.repositories[0], { id: 'workers', path: '/home/w', workers: ['harness', 'queue'] })
+  assert.deepEqual(next.repositories[1], mapped.repositories[1])
+})
+
+test('a worker given to one repository leaves the other', () => {
+  const next = setRepositoryWorkers(mapped, 'iii', ['iii', 'queue', ' queue '])
+  assert.deepEqual(next.repositories[1].workers, ['iii', 'queue'], 'trimmed, once')
+  assert.deepEqual(next.repositories[0].workers, ['harness'], 'queue moved, it is not mapped twice')
+})

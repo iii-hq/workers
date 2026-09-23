@@ -22,7 +22,7 @@ import type { GroupStatus, GroupSummary, StatusResponse } from '../api'
 import { EVENT, PAGE_ID } from '../shared'
 import { GroupDetailView } from './detail'
 import { GroupsListView } from './list'
-import { OPEN_STATES, ago, bulkOutcome, sinceMs } from './present.js'
+import { OPEN_STATES, PAGE_SIZE, ago, bulkOutcome, sinceMs } from './present.js'
 
 type Props = { host: Host } & PageRenderProps
 
@@ -90,6 +90,8 @@ export function SentinelPage({
 
   // Settled, so a filter is a query rather than one query per keystroke.
   const search = useDebounce(filters.search, 250)
+  // A page of groups, and more on request; a new filter starts from one page.
+  const [limit, setLimit] = useState(PAGE_SIZE)
   const statuses = filters.statuses.join(',')
 
   const groups = useWorkerLive({
@@ -103,9 +105,9 @@ export function SentinelPage({
           service_name: filters.service || undefined,
           since_ms: sinceMs(filters.window, Date.now()) ?? undefined,
           search: search || undefined,
-          limit: 50,
+          limit,
         }),
-      [api, filters.statuses, filters.service, filters.window, search],
+      [api, filters.statuses, filters.service, filters.window, search, limit],
     ),
   })
 
@@ -116,7 +118,8 @@ export function SentinelPage({
   refresh.current = groups.refresh
   useEffect(() => {
     refresh.current()
-  }, [statuses, filters.service, filters.window, search])
+  }, [statuses, filters.service, filters.window, search, limit])
+  useEffect(() => setLimit(PAGE_SIZE), [statuses, filters.service, filters.window, search])
 
   // Every worker the list has shown, so narrowing to one does not make the
   // others vanish from the menu that would widen it again.
@@ -147,8 +150,15 @@ export function SentinelPage({
   // Opening a group, or going back, starts at the top rather than wherever
   // the other view was scrolled to.
   const scroller = useRef<HTMLDivElement | null>(null)
+  // …except the list, which comes back to where it was left: the row a
+  // person opened is the row they return to.
+  const listTop = useRef(0)
+  const openGroup = useCallback((groupId: string) => {
+    listTop.current = scroller.current?.scrollTop ?? 0
+    setSelected(groupId)
+  }, [])
   useEffect(() => {
-    scroller.current?.scrollTo({ top: 0 })
+    scroller.current?.scrollTo({ top: selected ? 0 : listTop.current })
   }, [selected])
 
   const [opened, setOpened] = useState<GroupSummary | null>(null)
@@ -302,7 +312,8 @@ export function SentinelPage({
               narrow={narrow}
               now={now}
               onFilters={setFilters}
-              onOpen={setSelected}
+              onOpen={openGroup}
+              onMore={() => setLimit((previous) => previous + PAGE_SIZE)}
               total={groups.data?.total ?? 0}
               workers={workers}
             />

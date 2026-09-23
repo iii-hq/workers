@@ -28,6 +28,7 @@ import type { GroupSummary, StatusResponse } from '../api'
 import type { Filters } from './index'
 import { Dot, Sparkline, StatusBadge } from './marks'
 import {
+  PAGE_SIZE,
   SCOPES,
   SCOPE_STATES,
   WINDOWS,
@@ -51,6 +52,7 @@ interface Props {
   now: number
   onFilters: (next: Filters) => void
   onOpen: (groupId: string) => void
+  onMore: () => void
   total: number
   workers: string[]
 }
@@ -72,6 +74,7 @@ export function GroupsListView({
   now,
   onFilters,
   onOpen,
+  onMore,
   total,
   workers,
 }: Props) {
@@ -309,10 +312,17 @@ export function GroupsListView({
       {groups.length > 0 ? (
         <div className="sentinel-ui-foot">
           <span>
-            {shown}
-            {total > groups.length ? ` · showing ${groups.length} of ${spaced(total)}` : ''} · sorted
-            by priority (regressions first, then last seen)
+            {total > groups.length
+              ? `${groups.length} of ${spaced(total)} groups${within ? ` ${within}` : ''}`
+              : shown}{' '}
+            · sorted by priority (regressions first, then last seen)
           </span>
+          {total > groups.length ? (
+            // Without this every group past the first page was unreachable.
+            <Button size="sm" variant="pill" disabled={loading} onClick={onMore}>
+              Show {Math.min(PAGE_SIZE, total - groups.length)} more
+            </Button>
+          ) : null}
           {hidden ? <span className="sentinel-ui-quiet">{hidden}</span> : null}
         </div>
       ) : null}
