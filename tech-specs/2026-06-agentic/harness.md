@@ -248,6 +248,12 @@ that wants every call human-gated instead allows broadly (`allow: ["*"]`) and le
 [approval-gate](approval-gate.md) hook hold or deny per its policy (see
 [Out of scope](#out-of-scope-future-sibling-workers)).
 
+Within one turn, a call that already failed twice with the identical error (same `function_id` and
+arguments, same result content) is answered locally with an `is_error` function_result
+(`details.error: "repeated_failure"`): the target and its hooks do not run again, since re-running
+would only return the error the model has already seen. A success clears the count, a different
+error restarts it, and every new turn starts clean.
+
 `engine::functions::list` is how the **model** discovers what's callable — by triggering it through
 `agent_trigger` at runtime — not how the harness builds a schema list at turn start. The harness
 post-filters `engine::functions::list` / `engine::functions::info` results through the same

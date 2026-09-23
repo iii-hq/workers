@@ -1298,6 +1298,8 @@ pub(crate) async fn seed_new(
         display_parent_session_id: lineage.display_parent_session_id.clone(),
         functions_generation,
         function_contract_ledger,
+        // Per turn: a new message may have changed what failed before.
+        failed_calls: Default::default(),
         skill_ack,
         skills_started,
         context_snapshot: None,
@@ -1836,6 +1838,7 @@ mod tests {
             display_parent_session_id: None,
             functions_generation: Some(generation),
             function_contract_ledger: Default::default(),
+            failed_calls: Default::default(),
             skill_ack: Some(crate::types::turn::SkillAck {
                 generation,
                 fingerprint: Some(format!("sha256:{generation}")),

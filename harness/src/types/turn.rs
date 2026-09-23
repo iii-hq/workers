@@ -286,6 +286,15 @@ pub struct FunctionContractLedgerEntry {
     pub eligible: bool,
 }
 
+/// Consecutive identical failures of one call (same function and arguments)
+/// within the current turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FailedCall {
+    /// Digest of the failing result's model-visible content.
+    pub error_digest: String,
+    pub count: u32,
+}
+
 /// The durable loop record (`harness_turn/<session_id>`). Seeded by CAS from
 /// `harness::send` / `spawn`, advanced one step per `harness::turn`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -329,6 +338,12 @@ pub struct TurnRecord {
     /// most recently assembled model context for this session.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub function_contract_ledger: BTreeMap<String, FunctionContractLedgerEntry>,
+    /// Identical failures this turn, keyed by the digest of
+    /// `[function_id, arguments]`: an entry that reaches the repeat limit makes
+    /// the next identical call fail locally instead of re-running the target.
+    /// A success clears its entry; every new turn starts empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub failed_calls: BTreeMap<String, FailedCall>,
     /// Last effective names-only skill view admitted to the transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_ack: Option<SkillAck>,
@@ -456,6 +471,7 @@ mod tests {
             display_parent_session_id: None,
             functions_generation: None,
             function_contract_ledger: Default::default(),
+            failed_calls: Default::default(),
             skill_ack: None,
             skills_started: false,
             context_snapshot: None,
@@ -480,6 +496,15 @@ mod tests {
 
         let decoded: TurnRecord = serde_json::from_value(value).unwrap();
         assert!(decoded.function_contract_ledger.is_empty());
+    }
+
+    #[test]
+    fn failed_calls_are_omitted_when_empty_and_default_on_legacy_records() {
+        let value = serde_json::to_value(record()).unwrap();
+        assert!(value.get("failed_calls").is_none());
+
+        let decoded: TurnRecord = serde_json::from_value(value).unwrap();
+        assert!(decoded.failed_calls.is_empty());
     }
 
     #[test]

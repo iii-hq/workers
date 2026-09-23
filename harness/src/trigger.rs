@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::clients::EngineClient;
 use crate::policy::CompiledPolicy;
 use crate::types::content::ContentBlock;
-use crate::types::turn::FunctionContractLedgerEntry;
+use crate::types::turn::{FailedCall, FunctionContractLedgerEntry};
 
 /// A normalised function result ready to become a `function_result` entry.
 #[derive(Debug, Clone, PartialEq)]
@@ -541,6 +541,72 @@ fn digest_value(value: &Value) -> Option<String> {
         "{:x}",
         Sha256::digest(serde_json::to_vec(value).ok()?)
     ))
+}
+
+/// Identical failures of one call after which the next identical call is
+/// answered locally instead of re-running the target.
+pub(crate) const REPEATED_FAILURE_LIMIT: u32 = 2;
+
+/// The repeated-failure key of a call: its target and model-authored arguments.
+pub(crate) fn call_digest(function_id: &str, arguments: &Value) -> Option<String> {
+    digest_value(&json!([function_id, arguments]))
+}
+
+/// Track a target result: an error identical to the previous one for this
+/// call counts up, any other error restarts at one, a success clears it.
+pub(crate) fn note_call_result(
+    failed: &mut BTreeMap<String, FailedCall>,
+    key: &str,
+    data: &ResultData,
+) {
+    if !data.is_error {
+        failed.remove(key);
+        return;
+    }
+    let Some(error_digest) = digest_content(&data.content) else {
+        failed.remove(key);
+        return;
+    };
+    match failed.get_mut(key) {
+        Some(entry) if entry.error_digest == error_digest => entry.count += 1,
+        _ => {
+            failed.insert(
+                key.to_string(),
+                FailedCall {
+                    error_digest,
+                    count: 1,
+                },
+            );
+        }
+    }
+}
+
+/// The local `is_error` answer for a call that already failed identically
+/// [`REPEATED_FAILURE_LIMIT`] times this turn; `None` lets it run.
+pub(crate) fn repeated_failure_result(
+    failed: &BTreeMap<String, FailedCall>,
+    key: &str,
+    function_id: &str,
+) -> Option<ResultData> {
+    let count = failed
+        .get(key)
+        .filter(|entry| entry.count >= REPEATED_FAILURE_LIMIT)?
+        .count;
+    let msg = format!(
+        "This exact call to {function_id} (same arguments) already failed {count} times this \
+         turn with the identical error shown above. It was not run again. Change the arguments \
+         or the approach, or report the blocker."
+    );
+    Some(ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({
+            "error": "repeated_failure",
+            "function_id": function_id,
+            "count": count,
+            "message": msg,
+        }),
+    })
 }
 
 /// The outcome of triggering one call.
@@ -2059,5 +2125,93 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 100, "only {checked} real payloads checked");
+    }
+
+    fn failure(text: &str) -> ResultData {
+        ResultData {
+            content: vec![ContentBlock::text(text)],
+            is_error: true,
+            details: Value::Null,
+        }
+    }
+
+    fn success(text: &str) -> ResultData {
+        ResultData {
+            is_error: false,
+            ..failure(text)
+        }
+    }
+
+    #[test]
+    fn identical_failures_trip_the_breaker_at_the_limit() {
+        let key = call_digest("shell::exec", &json!({ "command": "make" })).unwrap();
+        let mut failed = BTreeMap::new();
+
+        note_call_result(&mut failed, &key, &failure("exit 2: no rule"));
+        assert!(repeated_failure_result(&failed, &key, "shell::exec").is_none());
+
+        note_call_result(&mut failed, &key, &failure("exit 2: no rule"));
+        let refused = repeated_failure_result(&failed, &key, "shell::exec").unwrap();
+        assert!(refused.is_error);
+        assert_eq!(refused.details["error"], "repeated_failure");
+        assert_eq!(refused.details["count"], REPEATED_FAILURE_LIMIT);
+        assert!(matches!(
+            &refused.content[..],
+            [ContentBlock::Text { text }] if text.contains("shell::exec") && text.contains("not run again")
+        ));
+    }
+
+    #[test]
+    fn a_success_clears_the_count_and_the_next_failure_restarts_it() {
+        let key = call_digest("state::get", &json!({ "key": "k" })).unwrap();
+        let mut failed = BTreeMap::new();
+
+        note_call_result(&mut failed, &key, &failure("not found"));
+        note_call_result(&mut failed, &key, &success("found"));
+        assert!(failed.is_empty());
+
+        note_call_result(&mut failed, &key, &failure("not found"));
+        assert_eq!(failed[&key].count, 1);
+        assert!(repeated_failure_result(&failed, &key, "state::get").is_none());
+    }
+
+    #[test]
+    fn a_different_error_restarts_the_count() {
+        let key = call_digest("http::fetch", &json!({ "url": "https://x" })).unwrap();
+        let mut failed = BTreeMap::new();
+
+        note_call_result(&mut failed, &key, &failure("timeout request_id=1"));
+        note_call_result(&mut failed, &key, &failure("timeout request_id=2"));
+        note_call_result(&mut failed, &key, &failure("timeout request_id=3"));
+
+        assert_eq!(failed[&key].count, 1);
+        assert!(repeated_failure_result(&failed, &key, "http::fetch").is_none());
+    }
+
+    #[test]
+    fn successful_repeats_never_create_an_entry() {
+        let key = call_digest("harness::status", &json!({})).unwrap();
+        let mut failed = BTreeMap::new();
+
+        for _ in 0..5 {
+            note_call_result(&mut failed, &key, &success("running"));
+        }
+
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn the_call_digest_distinguishes_function_and_arguments() {
+        let base = call_digest("coder::read-file", &json!({ "path": "a" }));
+
+        assert_eq!(
+            base,
+            call_digest("coder::read-file", &json!({ "path": "a" }))
+        );
+        assert_ne!(
+            base,
+            call_digest("coder::read-file", &json!({ "path": "b" }))
+        );
+        assert_ne!(base, call_digest("coder::search", &json!({ "path": "a" })));
     }
 }

@@ -1411,6 +1411,33 @@ async fn finish_step(
                 continue;
             }
 
+            // A call that already failed identically this turn is answered
+            // locally before any hook or approval runs: re-running it would
+            // only return the error the model has already seen.
+            let failure_key = trigger::call_digest(&call.function_id, &call.arguments);
+            if let Some(data) = failure_key.as_deref().and_then(|key| {
+                trigger::repeated_failure_result(&record.failed_calls, key, &call.function_id)
+            }) {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin(&record.turn_id),
+                )
+                .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
@@ -1622,6 +1649,9 @@ async fn finish_step(
                 ),
                 None => (data, Vec::new()),
             };
+            if let Some(key) = &failure_key {
+                trigger::note_call_result(&mut record.failed_calls, key, &data);
+            }
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
