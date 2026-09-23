@@ -2297,6 +2297,11 @@ mod tests {
                 json!({"function_id":id,"error":"not available"})
             );
         }
+        // Only the two intercepted controls own a wrapper response.
+        assert!(
+            crate::functions::subscribe::control_response_schema("engine::functions::info")
+                .is_none()
+        );
     }
 
     #[tokio::test]

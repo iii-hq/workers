@@ -368,6 +368,9 @@ mod tests {
         assert_eq!(snap.generation, 1);
         assert_eq!(snap.internal_ids, info);
         assert_eq!(snap.functions.len(), 1);
+        // The same set again is a no-op: no new snapshot, nothing to invalidate.
+        apply_internal_ids(&cell, info.clone()).await;
+        assert!(Arc::ptr_eq(&snap, &*cell.read().await));
         // A public reload keeps the internal set; internal churn keeps the generation.
         apply(&cell, vec![desc("a::c", Some(json!({ "type": "object" })))]).await;
         assert_eq!(cell.read().await.internal_ids, info);
