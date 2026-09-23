@@ -205,8 +205,6 @@ max_transient_resumes: 1         # recovery generations after a partial stream f
 max_result_bytes: 262144         # function-result byte cap at capture; oversized results become an elision marker (0 = off)
 prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
 call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
-call_reconciliation_judge_threshold: 0.8   # minimum judge probability for a rename / enum / drop repair
-call_reconciliation_judge_timeout_ms: 2000 # judge budget per reconciled call; failures fall back to coerce
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```

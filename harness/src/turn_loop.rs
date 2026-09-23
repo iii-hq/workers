@@ -219,27 +219,6 @@ fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'
     })
 }
 
-/// Tell the model which arguments the harness repaired before the call ran
-/// (MOT-4847) and keep the repair on the entry origin. An
-/// `engine::functions::info` result stays byte-identical to its contract,
-/// because the contract ledger digests it.
-fn note_reconciled(
-    data: &mut trigger::ResultData,
-    annotations: &mut serde_json::Map<String, Value>,
-    reconciled: Option<&crate::reconcile::Reconciled>,
-    function_id: &str,
-) {
-    let Some(reconciled) = reconciled else {
-        return;
-    };
-    annotations.insert("reconciled".into(), json!(reconciled.changes));
-    if function_id != "engine::functions::info" {
-        data.content.push(ContentBlock::text(crate::reconcile::note(
-            &reconciled.changes,
-        )));
-    }
-}
-
 fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("turn_id".to_string(), json!(turn_id));
@@ -1587,12 +1566,14 @@ async fn finish_step(
                     Err(data) => (data, None),
                 };
                 let mut spawn_annotations = serde_json::Map::new();
-                note_reconciled(
-                    &mut data,
-                    &mut spawn_annotations,
-                    reconciled.as_ref(),
-                    &call.function_id,
-                );
+                if let Some(r) = &reconciled {
+                    crate::reconcile::note_result(
+                        &mut data,
+                        &mut spawn_annotations,
+                        &r.changes,
+                        &call.function_id,
+                    );
+                }
                 if crate::reconcile::looks_like_argument_error(&data) {
                     if let Some(diagnosis) =
                         crate::reconcile::diagnose(deps, &cfg, &call.function_id, call_args).await
@@ -1728,12 +1709,14 @@ async fn finish_step(
             if let Some(key) = &failure_key {
                 trigger::note_call_result(&mut record.failed_calls, key, &data);
             }
-            note_reconciled(
-                &mut data,
-                &mut annotations,
-                reconciled.as_ref(),
-                &call.function_id,
-            );
+            if let Some(r) = &reconciled {
+                crate::reconcile::note_result(
+                    &mut data,
+                    &mut annotations,
+                    &r.changes,
+                    &call.function_id,
+                );
+            }
             // A call the target rejected as malformed, whose arguments still
             // violate the schema: name the violations (the target's serde
             // error names no field).

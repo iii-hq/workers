@@ -85,18 +85,6 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub call_reconciliation: CallReconciliation,
 
-    /// Minimum judge probability for a `judge` repair (renaming a misnamed
-    /// argument, replacing an off-enum value, dropping unknown arguments) to
-    /// be applied. Repairs are also only applied when the result validates.
-    #[serde(default = "default_call_reconciliation_judge_threshold")]
-    pub call_reconciliation_judge_threshold: f64,
-
-    /// Budget for one reconciliation `judge::evaluate`, in ms. It runs only
-    /// for calls whose arguments fail validation; a slower or failing judge
-    /// leaves the call as written and is skipped for 30 s.
-    #[serde(default = "default_call_reconciliation_judge_timeout_ms")]
-    pub call_reconciliation_judge_timeout_ms: u64,
-
     /// TTL for `harness_idem` webhook-dedupe rows. Seconds.
     #[serde(default = "default_idem_ttl_secs")]
     pub idem_ttl_secs: u64,
@@ -283,12 +271,6 @@ fn default_max_transient_resumes() -> u32 {
 fn default_max_result_bytes() -> usize {
     262_144
 }
-fn default_call_reconciliation_judge_threshold() -> f64 {
-    0.8
-}
-fn default_call_reconciliation_judge_timeout_ms() -> u64 {
-    2_000
-}
 fn default_prompt_cache_sections() -> bool {
     true
 }
@@ -368,8 +350,6 @@ impl Default for WorkerConfig {
             max_result_bytes: default_max_result_bytes(),
             prompt_cache_sections: default_prompt_cache_sections(),
             call_reconciliation: CallReconciliation::default(),
-            call_reconciliation_judge_threshold: default_call_reconciliation_judge_threshold(),
-            call_reconciliation_judge_timeout_ms: default_call_reconciliation_judge_timeout_ms(),
             idem_ttl_secs: default_idem_ttl_secs(),
             session_timeout_ms: default_session_timeout_ms(),
             context_timeout_ms: default_context_timeout_ms(),

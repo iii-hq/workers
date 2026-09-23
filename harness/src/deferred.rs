@@ -377,11 +377,7 @@ pub async fn resolve(
             // Repairs applied before the hold (MOT-4847) ride on the
             // checkpoint: note them exactly as the turn loop would have.
             if let Some(changes) = checkpoint.reconciled.as_deref() {
-                origin.insert("reconciled".into(), json!(changes));
-                if function_id != "engine::functions::info" {
-                    data.content
-                        .push(ContentBlock::text(crate::reconcile::note(changes)));
-                }
+                crate::reconcile::note_result(&mut data, &mut origin, changes, &function_id);
             }
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,

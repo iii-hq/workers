@@ -19,17 +19,17 @@
 //! - arguments the schema does not accept with nothing missing → `noul`
 //!   "does dropping them keep the call's intent?".
 //!
-//! A decision is applied only above `call_reconciliation_judge_threshold`,
-//! and the judge's repairs are kept only when the result validates: a
-//! partial repair would still fail at the target.
+//! A decision is applied only above [`JUDGE_THRESHOLD`], and the judge's
+//! repairs are kept only when the result validates: a partial repair would
+//! still fail at the target.
 //!
 //! Fail-open throughout: no known schema, valid arguments, an unavailable or
 //! failing judge, or a call nothing here can fix dispatch exactly as the
 //! model wrote them (after any lossless layer-A repair).
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
 use iii_sdk::protocol::TriggerRequest;
 use jsonschema::error::ValidationErrorKind;
@@ -40,6 +40,9 @@ use serde_json::{json, Map, Value};
 
 use crate::config::{CallReconciliation, WorkerConfig};
 use crate::deps::Deps;
+use crate::trigger::ResultData;
+use crate::types::content::ContentBlock;
+use crate::types::message::AgentMessage;
 
 /// Validator passes; each pass can unwrap one more nesting level (a parsed
 /// object whose own fields are stringified).
@@ -47,8 +50,13 @@ const MAX_PASSES: usize = 4;
 /// Longest value preview in the note shown to the model.
 const PREVIEW_CHARS: usize = 60;
 const JUDGE_FUNCTION_ID: &str = "judge::evaluate";
+/// Minimum judge probability for a rename, enum or drop repair.
+const JUDGE_THRESHOLD: f64 = 0.8;
+/// Budget for one reconciliation `judge::evaluate`; it runs only for calls
+/// whose arguments fail validation.
+const JUDGE_TIMEOUT_MS: u64 = 2_000;
 /// After a judge failure, skip it for this long (the directory's policy).
-const JUDGE_PAUSE_MS: u64 = 30_000;
+const JUDGE_PAUSE_MS: i64 = 30_000;
 /// The `choice` key meaning "none of these".
 const NONE_OPTION: &str = "none";
 /// Enum values a `choice` question may list (the contract caps criteria at
@@ -60,7 +68,7 @@ const MAX_JUDGE_STRING_CHARS: usize = 512;
 const MAX_EVALUATION_BYTES: usize = 48 * 1024;
 
 /// Epoch ms until which the judge is skipped after a failure.
-static JUDGE_PAUSED_UNTIL: AtomicU64 = AtomicU64::new(0);
+static JUDGE_PAUSED_UNTIL: AtomicI64 = AtomicI64::new(0);
 
 /// One repair applied to the arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -114,16 +122,8 @@ pub async fn reconcile(
     let coerced = coerce_compiled(&compiled, arguments);
     let current = coerced.as_ref().map_or(arguments, |r| &r.arguments);
     if cfg.call_reconciliation == CallReconciliation::Judge && !compiled.is_valid(current) {
-        if let Some(judged) = judge_layer(
-            deps,
-            cfg,
-            &compiled,
-            &schema,
-            function_id,
-            current,
-            description,
-        )
-        .await
+        if let Some(judged) =
+            judge_layer(deps, &compiled, &schema, function_id, current, description).await
         {
             let mut changes = coerced.map(|r| r.changes).unwrap_or_default();
             changes.extend(judged.changes);
@@ -225,7 +225,7 @@ fn violations(schema: &JSONSchema, value: &Value) -> Vec<(String, Value)> {
 /// Whether a failed result is the target rejecting the arguments themselves
 /// (SDK deserialization, harness request validation, an explicit
 /// invalid-argument error), as opposed to failing for another reason.
-pub fn looks_like_argument_error(data: &crate::trigger::ResultData) -> bool {
+pub fn looks_like_argument_error(data: &ResultData) -> bool {
     const MARKERS: [&str; 7] = [
         "serialization error",
         "invalid type",
@@ -236,20 +236,24 @@ pub fn looks_like_argument_error(data: &crate::trigger::ResultData) -> bool {
         "invalid spawn arguments",
     ];
     data.is_error && {
-        let text = text_of(&data.content).to_ascii_lowercase();
+        let text = ContentBlock::join_text(&data.content).to_ascii_lowercase();
         MARKERS.iter().any(|marker| text.contains(marker))
     }
 }
 
-fn text_of(blocks: &[crate::types::content::ContentBlock]) -> String {
-    blocks
-        .iter()
-        .filter_map(|block| match block {
-            crate::types::content::ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Note applied repairs on the result (so the model learns) and on the
+/// entry origin. An `engine::functions::info` result stays byte-identical to
+/// its contract, because the contract ledger digests it.
+pub fn note_result(
+    data: &mut ResultData,
+    annotations: &mut Map<String, Value>,
+    changes: &[Change],
+    function_id: &str,
+) {
+    annotations.insert("reconciled".into(), json!(changes));
+    if function_id != "engine::functions::info" {
+        data.content.push(ContentBlock::text(note(changes)));
+    }
 }
 
 /// A string that parses as JSON of a non-string type.
@@ -575,23 +579,16 @@ fn option_index(key: &str) -> Option<usize> {
     key.strip_prefix('o')?.parse().ok()
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
-}
-
 /// Layer B: ask the judge about the violations layer A could not repair.
 async fn judge_layer(
     deps: &Deps,
-    cfg: &WorkerConfig,
     compiled: &JSONSchema,
     schema: &Value,
     function_id: &str,
     arguments: &Value,
     description: Option<&str>,
 ) -> Option<Reconciled> {
-    if now_ms() < JUDGE_PAUSED_UNTIL.load(Ordering::Relaxed) {
+    if AgentMessage::now_ms() < JUDGE_PAUSED_UNTIL.load(Ordering::Relaxed) {
         return None;
     }
     // No RPC, and no question building, when the judge is not deployed:
@@ -607,12 +604,10 @@ async fn judge_layer(
     }
     let asked = questions(compiled, schema, arguments);
     let evaluation = evaluation(function_id, description, arguments, schema, &asked)?;
-    // The contract wants timeout_ms >= 1; a misconfigured 0 is not an outage.
-    let timeout_ms = cfg.call_reconciliation_judge_timeout_ms.max(1);
-    let wait = timeout_ms.saturating_add(1_000);
+    let wait = JUDGE_TIMEOUT_MS + 1_000;
     let call = deps.iii.trigger(TriggerRequest {
         function_id: JUDGE_FUNCTION_ID.into(),
-        payload: json!({ "timeout_ms": timeout_ms, "evaluations": [evaluation] }),
+        payload: json!({ "timeout_ms": JUDGE_TIMEOUT_MS, "evaluations": [evaluation] }),
         action: None,
         timeout_ms: Some(wait),
     });
@@ -630,18 +625,14 @@ async fn judge_layer(
                 tracing::warn!(function_id, "judge rejected the reconciliation request");
             } else {
                 tracing::debug!(function_id, %reason, "judge unavailable for call reconciliation");
-                JUDGE_PAUSED_UNTIL.store(now_ms() + JUDGE_PAUSE_MS, Ordering::Relaxed);
+                JUDGE_PAUSED_UNTIL
+                    .store(AgentMessage::now_ms() + JUDGE_PAUSE_MS, Ordering::Relaxed);
             }
             return None;
         }
     };
     let answers = &reply["results"]["reconcile"]["answers"];
-    let judged = apply_answers(
-        arguments,
-        &asked,
-        answers,
-        cfg.call_reconciliation_judge_threshold.clamp(0.0, 1.0),
-    )?;
+    let judged = apply_answers(arguments, &asked, answers, JUDGE_THRESHOLD)?;
     compiled.is_valid(&judged.arguments).then_some(judged)
 }
 
@@ -702,8 +693,8 @@ pub fn note(changes: &[Change]) -> String {
             match change.kind {
                 ChangeKind::Parsed | ChangeKind::Replaced => format!(
                     "`{path}` {} → {}",
-                    preview(&change.from),
-                    preview(&change.to)
+                    ellipsis(&change.from.to_string(), PREVIEW_CHARS),
+                    ellipsis(&change.to.to_string(), PREVIEW_CHARS)
                 ),
                 ChangeKind::Renamed => format!(
                     "`{path}` renamed to `{}`",
@@ -725,10 +716,6 @@ fn display_path(path: &str) -> String {
         "" => "arguments".to_string(),
         rest => rest.replace("~1", "/").replace("~0", "~"),
     }
-}
-
-fn preview(value: &Value) -> String {
-    ellipsis(&value.to_string(), PREVIEW_CHARS)
 }
 
 /// The first `max` chars, with an ellipsis when something was cut.
@@ -878,17 +865,17 @@ mod tests {
     /// stringified-JSON mistake is repaired, nothing else is touched.
     #[test]
     fn replays_the_corpus_argument_mistakes() {
-        let corpus: Vec<Value> = serde_json::from_str(include_str!(
+        let corpus: Value = serde_json::from_str(include_str!(
             "../tests/support/call_reconciliation_corpus.json"
         ))
         .expect("corpus fixture parses");
         let mut repaired = 0;
-        for case in &corpus {
+        for case in corpus["cases"].as_array().expect("cases") {
             let function_id = case["function_id"].as_str().expect("function_id");
             let schema = if function_id == crate::functions::SPAWN_ID {
                 crate::surface::schema_value::<crate::functions::spawn::SpawnRequest>()
             } else {
-                case["schema"].clone()
+                corpus["schemas"][function_id].clone()
             };
             let result = coerce(&schema, &case["arguments"]);
             if case["stringified"] == json!(true) {
@@ -1027,63 +1014,6 @@ mod tests {
         let schema = search_schema();
         assert!(questions(&compile(&schema), &schema, &json!({ "query": "x" })).is_empty());
         assert_eq!(evaluation("f", None, &json!({}), &schema, &[]), None);
-    }
-
-    /// Live check of layer B's questions against a deployed judge: every
-    /// corpus case layer A cannot repair is put to `judge::evaluate`, and the
-    /// verdicts are printed with whether the repaired call validates. Needs
-    /// `III_URL`/`III_NAMESPACE` pointing at an engine with the judge hub.
-    #[tokio::test]
-    #[ignore = "calls a live judge::evaluate"]
-    async fn probes_the_live_judge_with_the_corpus_questions() {
-        use iii_sdk::{register_worker_from_env, InitOptions};
-
-        let iii = register_worker_from_env(InitOptions::default());
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let corpus: Vec<Value> = serde_json::from_str(include_str!(
-            "../tests/support/call_reconciliation_corpus.json"
-        ))
-        .expect("corpus fixture parses");
-        for case in &corpus {
-            let function_id = case["function_id"].as_str().expect("function_id");
-            let schema = if function_id == crate::functions::SPAWN_ID {
-                crate::surface::schema_value::<crate::functions::spawn::SpawnRequest>()
-            } else {
-                case["schema"].clone()
-            };
-            let compiled = compile(&schema);
-            let arguments = coerce(&schema, &case["arguments"])
-                .map_or_else(|| case["arguments"].clone(), |r| r.arguments);
-            let asked = questions(&compiled, &schema, &arguments);
-            let Some(evaluation) = evaluation(
-                function_id,
-                case["description"].as_str(),
-                &arguments,
-                &schema,
-                &asked,
-            ) else {
-                continue;
-            };
-            let reply = iii
-                .trigger(TriggerRequest {
-                    function_id: JUDGE_FUNCTION_ID.into(),
-                    payload: json!({ "timeout_ms": 10_000, "evaluations": [evaluation] }),
-                    action: None,
-                    timeout_ms: Some(15_000),
-                })
-                .await
-                .expect("judge reachable");
-            let answers = &reply["results"]["reconcile"]["answers"];
-            let judged = apply_answers(&arguments, &asked, answers, 0.8);
-            println!(
-                "{function_id}: asked={asked:?}\n  answers={answers}\n  applied={:?} valid={}",
-                judged.as_ref().map(|r| &r.changes),
-                judged
-                    .as_ref()
-                    .is_some_and(|r| compiled.is_valid(&r.arguments))
-            );
-        }
-        iii.shutdown_async().await;
     }
 
     #[test]

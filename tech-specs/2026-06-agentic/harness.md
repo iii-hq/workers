@@ -270,8 +270,8 @@ layers:
   - arguments the schema does not accept (a `noul` on whether dropping them keeps the call's
     intent).
 
-  A judge repair is applied only above `call_reconciliation_judge_threshold`, and only if the
-  result validates.
+  A judge repair is applied only above a fixed probability (0.8), and only if the result
+  validates.
 
 Every applied repair is recorded in the entry origin (`reconciled`) and noted in the
 `function_result` ("the arguments were reconciled…"). Approvers and hooks review the repaired
