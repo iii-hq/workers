@@ -112,7 +112,9 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
                         (inject_hint, hint_min_workers, registry_search, function_search_mode, \
                         function_search_model_path, function_search_judge_timeout_ms, \
                         function_search_judge_min_relevance, \
-                        function_search_judge_side_lane_min_relevance) for the \
+                        function_search_judge_side_lane_min_relevance, \
+                        function_search_judge_question, \
+                        function_search_judge_choice_min_probability) for the \
                         iii-directory worker.",
         "schema": SkillsConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },

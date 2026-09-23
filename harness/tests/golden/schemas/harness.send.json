@@ -194,7 +194,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Omitting both reasoning fields on an existing session inherits the prior turn's; naming either resolves fresh (`provider_options: {}` resets to the provider default)."
           }
         },
         "type": "object"

@@ -2949,6 +2949,7 @@ fn with_runtime_context(
         &record.session_id,
         record.options.filesystem_root(),
         record.options.functions.as_ref(),
+        record.options.seeded_contracts.as_deref(),
     );
     let baseline = record
         .options
@@ -2962,10 +2963,13 @@ fn with_runtime_context(
 
 /// The deterministic session context appended to every model-facing prompt.
 /// Kept separate so read-only previews use the same construction as a turn.
+/// A spawned child's seeded `<preloaded_functions>` block closes it: after the
+/// cache seam, so it never forks the stable prefix sessions share.
 pub(crate) fn runtime_context_aid(
     session_id: &str,
     filesystem_root: Option<&str>,
     functions: Option<&FunctionPolicy>,
+    seeded_contracts: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("Your session id is {session_id}.")];
     if let Some(dir) = filesystem_root {
@@ -2974,7 +2978,11 @@ pub(crate) fn runtime_context_aid(
     if let Some(aid) = policy_aid(functions) {
         lines.push(aid);
     }
-    lines.join("\n")
+    let aid = lines.join("\n");
+    match seeded_contracts {
+        Some(block) => format!("{aid}\n\n{block}"),
+        None => aid,
+    }
 }
 
 /// The dispatch-policy aid line for a narrowed turn, `None` when the surface
@@ -3734,6 +3742,34 @@ mod tests {
             super::compose_system_prompt(Some("identity"), Some("skill index"), None),
             "identity\n\nskill index"
         );
+    }
+
+    /// Prevents: a child's seeded contracts forking the stable prefix every
+    /// default-identity session shares (MOT-4851) — they ride after the seam.
+    #[test]
+    fn seeded_contracts_ride_after_the_cache_seam() {
+        let record = |seeded: Option<&str>| -> crate::types::turn::TurnRecord {
+            serde_json::from_value(serde_json::json!({
+                "turn_id": "t_1", "session_id": "s_1", "status": "running",
+                "step": 0, "turn_count": 0, "depth": 1,
+                "options": { "model": "m", "max_turns": 16, "seeded_contracts": seeded },
+                "created_at": 1, "updated_at": 1
+            }))
+            .unwrap()
+        };
+        let block = "<preloaded_functions>\n### `state::get`\n</preloaded_functions>";
+        let (plain_stable, plain_full) =
+            super::with_runtime_context(Some("identity".into()), &record(None));
+        let (stable, full) =
+            super::with_runtime_context(Some("identity".into()), &record(Some(block)));
+        let full = full.unwrap();
+
+        assert_eq!(stable, plain_stable);
+        assert!(!plain_full.unwrap().contains("preloaded_functions"));
+        let (head, rest) = super::split_prompt_sections(&full, &stable).unwrap();
+        assert_eq!(head, "identity");
+        assert!(rest.starts_with("Your session id is s_1."));
+        assert!(rest.ends_with(&format!("\n\n{block}")));
     }
 
     #[test]

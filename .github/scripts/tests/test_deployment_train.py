@@ -269,6 +269,48 @@ def test_rust_build_uses_deterministic_target_native_archive(
             assert extracted is not None and extracted.read() == binary.read_bytes()
 
 
+@pytest.mark.parametrize(
+    ("target", "archive_name", "binary_name", "library", "module"),
+    [
+        ("x86_64-unknown-linux-gnu", "smoke-x86_64-unknown-linux-gnu.tar.gz", "smoke", "libggml.so.0", "libggml-cpu-x64.so"),
+        ("x86_64-pc-windows-msvc", "smoke-x86_64-pc-windows-msvc.zip", "smoke.exe", "ggml.dll", "ggml-cpu-x64.dll"),
+    ],
+)
+def test_rust_companions_ship_beside_the_binary_as_plain_files(
+    tmp_path: Path, monkeypatch, target: str, archive_name: str, binary_name: str, library: str, module: str
+) -> None:
+    source_sha = "a" * 40
+    release = tmp_path / "smoke" / "target" / target / "release"
+    release.mkdir(parents=True)
+    (tmp_path / "smoke" / "Cargo.toml").write_text("[package]\nname='smoke'\n", encoding="utf-8")
+    for name in (binary_name, library, module):
+        (release / name).write_bytes(name.encode())
+        (release / name).chmod(0o755)
+    # The unversioned link name the build leaves beside the real library.
+    (release / "libggml.so").symlink_to(library)
+    selected = rust_descriptor("smoke", source_sha, [target])
+    selected["artifact"]["companions"] = ["libggml.so.0", "libggml.so", "libggml-cpu-*.so", "*.dll", "absent-*.so"]
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(seal_descriptor(selected)), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(deployment_train.subprocess, "check_output", lambda *args, **kwargs: source_sha + "\n")
+    monkeypatch.setattr(deployment_train, "run", lambda *command, cwd=None: None)
+
+    build(argparse.Namespace(descriptor=descriptor_path, unit=f"smoke-{target}", out=tmp_path / "out"))
+
+    archive_path = tmp_path / "out" / archive_name
+    if archive_name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as archive:
+            assert archive.namelist() == sorted([binary_name, library, module])
+            modes = {info.filename: (info.external_attr >> 16) & 0o777 for info in archive.infolist()}
+    else:
+        with tarfile.open(archive_path, mode="r:gz") as archive:
+            assert archive.getnames() == sorted([binary_name, library, module])
+            modes = {member.name: member.mode for member in archive.getmembers()}
+    # Only the binary is executable: the installer runs the first executable.
+    assert modes == {binary_name: 0o755, library: 0o644, module: 0o644}
+
+
 def test_javascript_bundle_preserves_compiler_owned_include_path(tmp_path: Path, monkeypatch) -> None:
     source_sha = "a" * 40
     source = tmp_path / "worker"

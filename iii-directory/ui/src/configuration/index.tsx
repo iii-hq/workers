@@ -29,6 +29,9 @@ import {
   FUNCTION_SEARCH_MODE_OPTIONS,
   type FunctionSearchMode,
   functionSearchModeWithDefault,
+  JUDGE_QUESTION_OPTIONS,
+  type JudgeQuestion,
+  judgeQuestionWithDefault,
   semanticModeNeedsModel,
   withFunctionSearchMode,
   withoutRetiredKeys,
@@ -74,6 +77,8 @@ const INLINE_ERROR_POINTERS = new Set([
   '/function_search_judge_timeout_ms',
   '/function_search_judge_min_relevance',
   '/function_search_judge_side_lane_min_relevance',
+  '/function_search_judge_question',
+  '/function_search_judge_choice_min_probability',
   '/function_search_model_path',
   '/function_search_model_download',
 ])
@@ -297,6 +302,23 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             step="any"
             inputMode="decimal"
             value={value.function_search_judge_side_lane_min_relevance}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <JudgeQuestionField
+            value={judgeQuestionWithDefault(value.function_search_judge_question)}
+            onChange={(question) => commit({ ...value, function_search_judge_question: question })}
+            errors={props.errors}
+          />
+          <NumberField
+            field="function_search_judge_choice_min_probability"
+            label="Choice minimum probability"
+            placeholder="0.1"
+            hint="With one choice per capability, the best function is always kept and every other one needs this probability. Measured: 0.05–0.1 kept a correct function in every test search with both JEV and SemIf."
+            max={1}
+            step="any"
+            inputMode="decimal"
+            value={value.function_search_judge_choice_min_probability}
             onChange={setNumber}
             errors={props.errors}
           />
@@ -570,6 +592,45 @@ function SearchModeField({
           aria-describedby={describedBy(presentation.describedBy, noticeId)}
           sheetTitle="Function search mode"
           sheetDescription="Choose the ranking lane used by directory::search_functions."
+          onChange={onChange}
+        />
+      }
+    />
+  )
+}
+
+function JudgeQuestionField({
+  value,
+  onChange,
+  errors,
+}: {
+  value: JudgeQuestion
+  onChange: (question: JudgeQuestion) => void
+  errors?: ConfigFormProps['errors']
+}) {
+  const field = 'function_search_judge_question'
+  const hint =
+    'How the judge is asked about each capability\'s shortlist. One choice per capability sends 16× fewer questions and lets functions compete; local judges (SemIf, laya) need it to fit the timeout.'
+  const presentation = fieldPresentation(field, hint, errors)
+  return (
+    <SettingsRow
+      data-field={field}
+      label={<FieldLabel field={field} htmlFor={presentation.id} label="Judge question" />}
+      description={presentation.description}
+      meta={presentation.meta}
+      control={
+        <Select<JudgeQuestion>
+          id={presentation.id}
+          name={field}
+          data-field={field}
+          className="dir-ui-config-control dir-ui-config-select"
+          value={value}
+          options={[...JUDGE_QUESTION_OPTIONS]}
+          aria-label="Judge question"
+          aria-invalid={presentation.invalid || undefined}
+          aria-describedby={presentation.describedBy}
+          sheetTitle="Judge question"
+          sheetDescription="Choose how directory::search_functions asks the judge."
           onChange={onChange}
         />
       }

@@ -369,7 +369,9 @@ def build_metadata(args: argparse.Namespace) -> int:
     return 0
 
 
-def normalized_tar(entries: list[tuple[Path, str]], destination: Path) -> None:
+def normalized_tar(
+    entries: list[tuple[Path, str]], destination: Path, executables: set[str] | None = None
+) -> None:
     seen: set[str] = set()
     for source, arcname in entries:
         try:
@@ -390,12 +392,17 @@ def normalized_tar(entries: list[tuple[Path, str]], destination: Path) -> None:
                     info.uid = info.gid = 0
                     info.uname = info.gname = ""
                     info.mtime = 0
-                    info.mode = 0o755 if source.stat().st_mode & 0o111 else 0o644
+                    executable = (
+                        arcname in executables if executables is not None else source.stat().st_mode & 0o111
+                    )
+                    info.mode = 0o755 if executable else 0o644
                     with source.open("rb") as handle:
                         archive.addfile(info, handle)
 
 
-def normalized_zip(entries: list[tuple[Path, str]], destination: Path) -> None:
+def normalized_zip(
+    entries: list[tuple[Path, str]], destination: Path, executables: set[str] | None = None
+) -> None:
     seen: set[str] = set()
     for source, arcname in entries:
         try:
@@ -413,7 +420,8 @@ def normalized_zip(entries: list[tuple[Path, str]], destination: Path) -> None:
             info = zipfile.ZipInfo(arcname, date_time=(1980, 1, 1, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
-            info.external_attr = (stat.S_IFREG | 0o755) << 16
+            executable = executables is None or arcname in executables
+            info.external_attr = (stat.S_IFREG | (0o755 if executable else 0o644)) << 16
             archive.writestr(info, source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
 
@@ -494,12 +502,22 @@ def build(args: argparse.Namespace) -> int:
         binary_path = source_dir / "target" / target / "release" / binary_filename
         if not binary_path.is_file():
             raise SystemExit(f"built binary not found at {binary_path}")
+        # Companions ship beside the binary as plain (non-executable) files, so
+        # the installer still picks the binary as the archive's program. A
+        # pattern may match nothing on targets that link statically; symlinks
+        # (unversioned library names left by the build) are never shipped.
+        entries = [(binary_path, binary_filename)]
+        for pattern in artifact.get("companions") or []:
+            for path in sorted(binary_path.parent.glob(str(pattern))):
+                if path.is_file() and not path.is_symlink() and path != binary_path:
+                    if all(path.name != name for _, name in entries):
+                        entries.append((path, path.name))
         if is_windows:
             archive = args.out / f"{binary}-{target}.zip"
-            normalized_zip([(binary_path, binary_filename)], archive)
+            normalized_zip(entries, archive, executables={binary_filename})
         else:
             archive = args.out / f"{binary}-{target}.tar.gz"
-            normalized_tar([(binary_path, binary)], archive)
+            normalized_tar(entries, archive, executables={binary})
         role = "binary"
     elif kind in {"javascript-bundle", "python-bundle"}:
         workspace_root = Path(str(artifact["workspace_root"]))
