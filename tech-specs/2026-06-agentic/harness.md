@@ -254,6 +254,34 @@ arguments, same result content) is answered locally with an `is_error` function_
 would only return the error the model has already seen. A success clears the count, a different
 error restarts it, and every new turn starts clean.
 
+**Argument reconciliation** (`call_reconciliation`, default `judge`). After the dispatch policy
+passes and before the `pre_trigger` chain, the harness validates the call's arguments against the
+target's request schema: the discovery snapshot's schema, the local `SpawnRequest` schema for
+`harness::spawn`, and the intercept contracts for the subscription controls. Valid arguments, and
+targets with no known schema, dispatch unchanged. Invalid arguments are repaired in up to two
+layers:
+
+- **`coerce`** parses a string that holds JSON of the type the schema wants (`"true"`, `"5"`,
+  `"[…]"`, `"{…}"`). The repair is lossless, and a parse is kept only when that violation clears.
+- **`judge`** runs only when `judge::evaluate` is in the snapshot. The judge classifies and never
+  writes arguments. It settles, with typed questions:
+  - a misnamed key (`choice` over the missing required parameters);
+  - an off-enum value (`choice` over the allowed values);
+  - arguments the schema does not accept (a `noul` on whether dropping them keeps the call's
+    intent).
+
+  A judge repair is applied only above `call_reconciliation_judge_threshold`, and only if the
+  result validates.
+
+Every applied repair is recorded in the entry origin (`reconciled`) and noted in the
+`function_result` ("the arguments were reconciled…"). Approvers and hooks review the repaired
+arguments. History is never rewritten.
+
+A call that still fails and still violates the schema gets the violations named by path in its
+error result. The target's deserialization error names no field.
+
+Any failure fails open: the call dispatches as written. A failing judge is skipped for 30 s.
+
 `engine::functions::list` is how the **model** discovers what's callable — by triggering it through
 `agent_trigger` at runtime — not how the harness builds a schema list at turn start. The harness
 post-filters `engine::functions::list` / `engine::functions::info` results through the same
@@ -1060,6 +1088,8 @@ pattern [approval-gate](approval-gate.md#state-lifecycle) mandates for its own s
   `expose: "native"` schema mapping; custom trigger-type registration (`registerTriggerType`) for
   the [turn events](#trigger-types-emitted) and the [hook points](#hooks), with subscriber sets
   rebuilt from the engine after a restart.
+- `judge` (`judge::evaluate`) — optional. Settles the argument repairs that need judgement in
+  `call_reconciliation: judge` mode. When it is absent, only the lossless repairs run.
 
 ## Out of scope (future sibling workers)
 

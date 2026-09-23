@@ -1,0 +1,2160 @@
+[
+ {
+  "function_id": "coder::search",
+  "stringified": true,
+  "error": "coder::search: remote error (invocation_failed): serialization error: invalid type: string \"true\", expected a boolean",
+  "arguments": {
+   "path": "/repo/specs/mario-game-auto-mode.md",
+   "query": "^## |^### ",
+   "regex": "true",
+   "search_paths": "false"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "examples": [
+    {
+     "context_lines_after": 2,
+     "context_lines_before": 2,
+     "include_globs": [
+      "**/*.rs"
+     ],
+     "path": "src",
+     "query": "fn handle",
+     "search_content": true,
+     "search_paths": false
+    }
+   ],
+   "properties": {
+    "context_lines_after": {
+     "default": null,
+     "description": "Lines of context after each content match; same rules as `context_lines_before`.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "context_lines_before": {
+     "default": null,
+     "description": "Lines of context before each content match (max 10, C210 above); truncated to max_line_bytes and counted in the budget. Default 0.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "exclude_globs": {
+     "default": [],
+     "description": "Glob patterns (same relative-to-root matching) that exclude paths.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "fuzzy_paths": {
+     "default": false,
+     "description": "Rank path matches by fuzzy subsequence score (quick-open style) instead of substring/regex matching; `path_matches` then comes back best first. Content matching is unaffected.",
+     "type": "boolean"
+    },
+    "ignore_case": {
+     "default": false,
+     "type": "boolean"
+    },
+    "include_globs": {
+     "default": [],
+     "description": "Root-relative glob patterns paths must match; empty = everything.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "include_hidden": {
+     "default": true,
+     "description": "Walk dot-files and dot-folders (`.github`, `.env`, …); default true. `false` leaves them out, the way an editor's quick open does.",
+     "type": "boolean"
+    },
+    "max_line_bytes": {
+     "default": null,
+     "description": "Bytes per line to consider when scanning content; longer lines are truncated for the match snippet.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "max_matches": {
+     "default": null,
+     "description": "Optional explicit cap. Falls back to config when unset.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "path": {
+     "default": ".",
+     "description": "Folder to search (default `.`); globs match relative to its root, result paths are absolute.",
+     "type": "string"
+    },
+    "query": {
+     "description": "Pattern to search for. Treated as a regex when `regex: true`, otherwise as a literal substring. May be empty only when `search_content` is false: a path-only search with no query lists every path (with `fuzzy_paths`, shallow and short paths first).",
+     "type": "string"
+    },
+    "regex": {
+     "default": false,
+     "type": "boolean"
+    },
+    "respect_gitignore": {
+     "default": false,
+     "description": "Honour `.gitignore`/`.ignore` rules (inside a Git repository) while walking, the way an editor's search does; default false keeps every non-excluded file searchable.",
+     "type": "boolean"
+    },
+    "search_content": {
+     "default": true,
+     "description": "Search file contents (default true).",
+     "type": "boolean"
+    },
+    "search_paths": {
+     "default": true,
+     "description": "Search file paths (default true).",
+     "type": "boolean"
+    },
+    "use_default_excludes": {
+     "default": true,
+     "description": "Skip paths matching default_exclude_globs (.git, node_modules, …; see coder::info) in content and path results; false searches inside them.",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "title": "SearchInput",
+   "type": "object"
+  },
+  "description": ""
+ },
+ {
+  "function_id": "coder::search",
+  "stringified": true,
+  "error": "coder::search: remote error (invocation_failed): serialization error: invalid type: string \"true\", expected a boolean",
+  "arguments": {
+   "path": "/repo/specs/mario-game-auto-mode.md",
+   "query": "^##+ ",
+   "regex": "true",
+   "search_paths": "false"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "examples": [
+    {
+     "context_lines_after": 2,
+     "context_lines_before": 2,
+     "include_globs": [
+      "**/*.rs"
+     ],
+     "path": "src",
+     "query": "fn handle",
+     "search_content": true,
+     "search_paths": false
+    }
+   ],
+   "properties": {
+    "context_lines_after": {
+     "default": null,
+     "description": "Lines of context after each content match; same rules as `context_lines_before`.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "context_lines_before": {
+     "default": null,
+     "description": "Lines of context before each content match (max 10, C210 above); truncated to max_line_bytes and counted in the budget. Default 0.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "exclude_globs": {
+     "default": [],
+     "description": "Glob patterns (same relative-to-root matching) that exclude paths.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "fuzzy_paths": {
+     "default": false,
+     "description": "Rank path matches by fuzzy subsequence score (quick-open style) instead of substring/regex matching; `path_matches` then comes back best first. Content matching is unaffected.",
+     "type": "boolean"
+    },
+    "ignore_case": {
+     "default": false,
+     "type": "boolean"
+    },
+    "include_globs": {
+     "default": [],
+     "description": "Root-relative glob patterns paths must match; empty = everything.",
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "include_hidden": {
+     "default": true,
+     "description": "Walk dot-files and dot-folders (`.github`, `.env`, …); default true. `false` leaves them out, the way an editor's quick open does.",
+     "type": "boolean"
+    },
+    "max_line_bytes": {
+     "default": null,
+     "description": "Bytes per line to consider when scanning content; longer lines are truncated for the match snippet.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "max_matches": {
+     "default": null,
+     "description": "Optional explicit cap. Falls back to config when unset.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "path": {
+     "default": ".",
+     "description": "Folder to search (default `.`); globs match relative to its root, result paths are absolute.",
+     "type": "string"
+    },
+    "query": {
+     "description": "Pattern to search for. Treated as a regex when `regex: true`, otherwise as a literal substring. May be empty only when `search_content` is false: a path-only search with no query lists every path (with `fuzzy_paths`, shallow and short paths first).",
+     "type": "string"
+    },
+    "regex": {
+     "default": false,
+     "type": "boolean"
+    },
+    "respect_gitignore": {
+     "default": false,
+     "description": "Honour `.gitignore`/`.ignore` rules (inside a Git repository) while walking, the way an editor's search does; default false keeps every non-excluded file searchable.",
+     "type": "boolean"
+    },
+    "search_content": {
+     "default": true,
+     "description": "Search file contents (default true).",
+     "type": "boolean"
+    },
+    "search_paths": {
+     "default": true,
+     "description": "Search file paths (default true).",
+     "type": "boolean"
+    },
+    "use_default_excludes": {
+     "default": true,
+     "description": "Skip paths matching default_exclude_globs (.git, node_modules, …; see coder::info) in content and path results; false searches inside them.",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "title": "SearchInput",
+   "type": "object"
+  },
+  "description": ""
+ },
+ {
+  "function_id": "coder::read-file",
+  "stringified": true,
+  "error": "coder::read-file: remote error (invocation_failed): serialization error: invalid type: string \"[\\\"/repo/x\",\\\"/repo/x\",\\\"/repo/x\"]\", expected a sequence",
+  "arguments": {
+   "paths": "[\"/repo/mario-game/src/auto-judge.ts\",\"/repo/mario-game/src/auto-contract.ts\",\"/repo/mario-game/src/game.ts\"]"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "ReadEncoding": {
+     "description": "Wire encoding for returned `content`.",
+     "oneOf": [
+      {
+       "description": "UTF-8 text; invalid bytes replaced by U+FFFD.",
+       "enum": [
+        "text"
+       ],
+       "type": "string"
+      },
+      {
+       "description": "Exact file bytes, base64-encoded (standard alphabet, padded).",
+       "enum": [
+        "base64"
+       ],
+       "type": "string"
+      }
+     ]
+    },
+    "ReadTarget": {
+     "anyOf": [
+      {
+       "description": "Bare path string: read the whole file.",
+       "type": "string"
+      },
+      {
+       "description": "Object form: path plus optional window and flags.",
+       "properties": {
+        "line_from": {
+         "default": null,
+         "description": "First line of the window, 1-based inclusive (>= 1); defaults to 1 when only `line_to` is set.",
+         "format": "uint64",
+         "minimum": 1.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "line_to": {
+         "default": null,
+         "description": "Last line of the window, 1-based inclusive, >= `line_from`; omit to read to EOF.",
+         "format": "uint64",
+         "minimum": 1.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "numbered": {
+         "default": false,
+         "description": "Prefix this entry's lines with their absolute 1-based line numbers (`N→`); prefix bytes count toward the batch budget.",
+         "type": "boolean"
+        },
+        "path": {
+         "description": "File to read.",
+         "type": "string"
+        },
+        "stat": {
+         "default": false,
+         "description": "Metadata probe for this entry: size/mode/mtime plus total_lines, content null, no budget consumed; C210 with a window or `numbered`.",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "type": "object"
+      }
+     ],
+     "description": "One batch entry: a bare path string (whole-file read) or an object with a per-entry window, stat or numbered flag."
+    }
+   },
+   "examples": [
+    {
+     "line_from": 10,
+     "line_to": 50,
+     "path": "src/main.rs"
+    },
+    {
+     "paths": [
+      "src/lib.rs",
+      {
+       "line_from": 1,
+       "line_to": 30,
+       "path": "src/config.rs"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "encoding": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/ReadEncoding"
+      }
+     ],
+     "description": "Content encoding for full reads; `base64` returns the exact file bytes (encoded length is budgeted). C210 with stat/window/numbered."
+    },
+    "line_from": {
+     "default": null,
+     "description": "First line (1-based, >= 1) of a windowed read; windows keep files over max_read_bytes readable slice by slice. `path` mode only.",
+     "format": "uint64",
+     "minimum": 1.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "line_to": {
+     "default": null,
+     "description": "Last line of the window, 1-based inclusive, >= `line_from`; omit to read from `line_from` to EOF. `path` mode only.",
+     "format": "uint64",
+     "minimum": 1.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "max_output_bytes": {
+     "default": null,
+     "description": "Full-read byte budget (returned bytes, clamped to max_read_bytes); over budget fails C218 naming size/total_lines. C210 with a window.",
+     "format": "uint64",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "numbered": {
+     "default": false,
+     "description": "Prefix each line with its absolute 1-based file line number (`N→`), matching coder::update-file line ops; C210 with `stat`. `path` mode only.",
+     "type": "boolean"
+    },
+    "path": {
+     "default": null,
+     "description": "Single file to read; XOR with `paths` (C210 if both or neither is set).",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "paths": {
+     "description": "Batch of files to read in one call (bare path strings or window objects), processed in order against batch_read_budget_bytes; XOR with `path`.",
+     "items": {
+      "$ref": "#/definitions/ReadTarget"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "stat": {
+     "default": false,
+     "description": "Metadata probe: size/mode/mtime plus total_lines/is_utf8, no content; C210 with line_from/line_to/numbered/max_output_bytes.",
+     "type": "boolean"
+    }
+   },
+   "title": "ReadFileInput",
+   "type": "object"
+  },
+  "description": ""
+ },
+ {
+  "function_id": "harness::spawn",
+  "stringified": true,
+  "error": "invalid spawn arguments: invalid type: string \"{\\\"name\\\": \\\"Backend · mario judge context\\\", \\\"icon\\\": \\\"terminal\\\", \\\"color\\\": \\\"blue\\\"}\", expected struct Suba",
+  "arguments": {
+   "agent": "backend-engineer",
+   "display": "{\"name\": \"Backend · mario judge context\", \"icon\": \"terminal\", \"color\": \"blue\"}",
+   "session_id": "mario-judge-ctx-backend-8d21",
+   "task": "You are extending the existing mario-game worker backend so every Auto-mode judge::evaluate call carries Mario's immediate situation (threats, opportunities, priority, predicted effect of each of the six movements in the 700 ms window), a new read-only mario-game::auto::situation function exists, and AutoStatus.action carries the predicted effect of the chosen move.\n\nRead first; it is the contract: /repo/specs/mario-game-auto-judge-context.md — especially `## Architecture` (subsections Pure simulation seam, Situation data shape, Functions, Triggers/data/scheduling, Delivery/ownership/checks) and `Project context`. Safety invariants that must keep holding: /repo/specs/mario-game-auto-mode.md sections 'Judge contract and scheduling', 'Reactive surface and data home', 'Targeted correction B-AC5-01'.\nProject root: /repo Worker directory: /repo/mario-game (existing package; do not re-scaffold; `pnpm dev` watcher may already be running — keep it working).\n\nBuild: src/situation.ts (pure port of ui/src/game.ts::step + situation computation per the architecture), changes in src/auto-judge.ts (state.situation from the same report, rewritten criteria/instructions explaining dodge-jump vs coin-jump and priority; questions stay exactly {movement}, six choices), src/auto.ts (compute situation at decide(), latency from previous decision, previous-report vy estimate, attach predicted to action, auto::situation handler), src/auto-contract.ts (action.predicted exact schema, MarioSituation schema), src/game.ts (NO_REPORTED_STATE error code only), src/index.ts (register mario-game::auto::situation), tests.\nAllowed writes: mario-game/src/**, mario-game tests/scripts, and the evidence file below. Do NOT edit mario-game/ui/** (the frontend owns it; the live UI parser will temporarily reject the new action.predicted key — expected), level/physics, package deps unless strictly required, compose, Judge/TypeSafe.\nOut of scope: any policy that chooses or overrides the Judge's move; changing 700 ms / 5 s / stale 1000 ms / report cadence; persistence, config, forms, renderers; deleting files, workers or state; git commits.\n\nDone means (child checks, each recorded with inputs/observations): BJ1–BJ6 exactly as listed in the Architecture's 'Delivery, ownership and checks' subsection (schemas + invalid args + NO_REPORTED_STATE; sim parity vs ui/src/game.ts step over ≥300 starts × 6 inputs; AC1/AC2/spawn fixtures incl. replay of the predicted coin-b collector; judge request carries situation from same report; predicted == situation.moves[choice]; all prior tests + typecheck + build green; live: 10 functions registered, real auto::situation calls, one real Auto decision through judge::evaluate provider typesafe showing predicted in auto::state and mario-game:change — service-driven reports labelled service-only). Also record measured situation/request JSON byte size, and SHA-256 of each changed src file.\nNote: engine::functions::info may be reported removed; use directory::engine::functions::info {\"function_id\":\"...\"} for live contracts.\n\nParent checks, performed by the Tech Lead after this result: live schemas and invalid args, AC1/AC2 positions in the live page, real Auto trace consistency, stop/restart safety, manifest.\n\nDetailed evidence: /repo/specs/mario-game-auto-judge-context-backend-evidence.md (check ids, inputs, observations, file hashes, runtime times).\n\nWhen finished, write your result with state::set to scope \"results\", key \"mario-judge-ctx-backend-8d21\", as the report skill (harness/orchestration/report) describes, then stop. If blocked, write outcome \"blocked\" with the question, then stop."
+  },
+  "schema": null,
+  "description": ""
+ },
+ {
+  "function_id": "directory::engine::functions::info",
+  "stringified": false,
+  "error": "directory::engine::functions::info: remote error (invocation_failed): serialization error: missing field `function_id`",
+  "arguments": {
+   "function_ids": [
+    "mario-game::auto::situation",
+    "mario-game::auto::state"
+   ]
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "properties": {
+    "function_id": {
+     "description": "Fully-qualified function id on the bus (e.g. `sandbox::create`).",
+     "type": "string"
+    }
+   },
+   "required": [
+    "function_id"
+   ],
+   "title": "FunctionInfoInput",
+   "type": "object"
+  },
+  "description": "Conferir esquemas ao vivo da função de situação e do status"
+ },
+ {
+  "function_id": "mario-game::auto::situation",
+  "stringified": false,
+  "error": "mario-game::auto::situation: remote error (invocation_failed): INVALID_ARGUMENT: Expected an empty object; no fields are accepted.",
+  "arguments": {
+   "x": 1
+  },
+  "schema": {
+   "additionalProperties": false,
+   "properties": {},
+   "required": [],
+   "type": "object"
+  },
+  "description": "Chamar a situação com argumento inválido"
+ },
+ {
+  "function_id": "coder::tree",
+  "stringified": true,
+  "error": "coder::tree: remote error (invocation_failed): serialization error: invalid type: string \"2\", expected u32",
+  "arguments": {
+   "max_depth": "2",
+   "path": "/repo/mario-game"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "examples": [
+    {
+     "max_depth": 3,
+     "path": "."
+    }
+   ],
+   "properties": {
+    "include_hidden": {
+     "default": true,
+     "description": "List dot-prefixed entries; false omits them at every level (they then don't count toward per_folder_limit). The requested root is exempt.",
+     "type": "boolean"
+    },
+    "max_depth": {
+     "default": null,
+     "description": "Maximum depth to descend; the root node is depth 0.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "path": {
+     "default": ".",
+     "description": "Base folder for the snapshot (default `.`).",
+     "type": "string"
+    },
+    "per_folder_limit": {
+     "default": null,
+     "description": "Maximum children listed per folder. When more exist, the folder is flagged `truncated` and callers should switch to `coder::list-folder`.",
+     "format": "uint32",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "use_default_excludes": {
+     "default": true,
+     "description": "Prune directories matching default_exclude_globs (see coder::info) into childless `truncated` stubs; false lists everything.",
+     "type": "boolean"
+    }
+   },
+   "title": "TreeInput",
+   "type": "object"
+  },
+  "description": "Listar estrutura do worker"
+ },
+ {
+  "function_id": "shell::exec",
+  "stringified": true,
+  "error": "shell::exec: remote error (invocation_failed): serialization error: 'args' must be an array of strings (got \"[\\\"-lc\\\",\\\"cd /repo/x && find . -path ./node_module",
+  "arguments": {
+   "args": "[\"-lc\",\"cd /repo/mario-game && find . -path ./node_modules -prune -o -path ./dist -prune -o -type f -print | sort && cat package.json && wc -l src/*.ts ui/src/*.ts test*/* 2>/dev/null\"]",
+   "command": "bash"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "Target": {
+     "oneOf": [
+      {
+       "properties": {
+        "kind": {
+         "enum": [
+          "host"
+         ],
+         "type": "string"
+        }
+       },
+       "required": [
+        "kind"
+       ],
+       "type": "object"
+      },
+      {
+       "properties": {
+        "kind": {
+         "enum": [
+          "sandbox"
+         ],
+         "type": "string"
+        },
+        "sandbox_id": {
+         "format": "uuid",
+         "type": "string"
+        }
+       },
+       "required": [
+        "kind",
+        "sandbox_id"
+       ],
+       "type": "object"
+      }
+     ]
+    }
+   },
+   "description": "Wire request for `shell::exec`.",
+   "properties": {
+    "args": {
+     "default": null,
+     "description": "Arguments, in order (all strings). Omit/null to tokenize `command` shell-words style; pass an array (even empty) to use it verbatim.",
+     "items": {
+      "type": "string"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "command": {
+     "description": "Program name (PATH-resolved) or path to an executable, as a string; put arguments in `args`.",
+     "type": "string"
+    },
+    "cwd": {
+     "default": null,
+     "description": "Working directory (host only, S210 on sandbox); jail-confined like shell::fs::* paths (S215 on escape), must be an existing directory.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "env": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "default": null,
+     "description": "Per-call env values (host only, S210 on sandbox); exec-hijacking keys (PATH, IFS, HOME, LD_*/DYLD_*, …) reject the whole call S210.",
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "stdin": {
+     "default": null,
+     "description": "Bytes written to the program's stdin, then EOF (host only, S210 on sandbox); omit to leave stdin at /dev/null.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "target": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/Target"
+      }
+     ],
+     "default": {
+      "kind": "host"
+     },
+     "description": "Where to run the command. Defaults to the host worker; pass `{ kind: \"sandbox\", sandbox_id }` to forward the call to a microVM."
+    },
+    "timeout_ms": {
+     "default": null,
+     "description": "Per-call timeout in milliseconds, capped at the configured max; negative or fractional values fall back to the default.",
+     "format": "uint64",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "command"
+   ],
+   "title": "ExecRequest",
+   "type": "object"
+  },
+  "description": "List the worker files"
+ },
+ {
+  "function_id": "coder::read-file",
+  "stringified": true,
+  "error": "coder::read-file: remote error (invocation_failed): serialization error: invalid type: string \"[\\\"/repo/x\",\\\"/repo/x\",\\\"/repo/x\",\\\"/repo/x\",\\\"/repo/x\",\\\"/repo/x",
+  "arguments": {
+   "paths": "[\"/repo/mario-game/src/auto-contract.ts\",\"/repo/mario-game/src/auto-judge.ts\",\"/repo/mario-game/src/auto.ts\",\"/repo/mario-game/src/contracts.ts\",\"/repo/mario-game/src/game.ts\",\"/repo/mario-game/src/index.ts\",\"/repo/mario-game/ui/src/game.ts\",\"/repo/mario-game/scripts/test.mjs\",\"/repo/mario-game/tsconfig.json\"]"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "ReadEncoding": {
+     "description": "Wire encoding for returned `content`.",
+     "oneOf": [
+      {
+       "description": "UTF-8 text; invalid bytes replaced by U+FFFD.",
+       "enum": [
+        "text"
+       ],
+       "type": "string"
+      },
+      {
+       "description": "Exact file bytes, base64-encoded (standard alphabet, padded).",
+       "enum": [
+        "base64"
+       ],
+       "type": "string"
+      }
+     ]
+    },
+    "ReadTarget": {
+     "anyOf": [
+      {
+       "description": "Bare path string: read the whole file.",
+       "type": "string"
+      },
+      {
+       "description": "Object form: path plus optional window and flags.",
+       "properties": {
+        "line_from": {
+         "default": null,
+         "description": "First line of the window, 1-based inclusive (>= 1); defaults to 1 when only `line_to` is set.",
+         "format": "uint64",
+         "minimum": 1.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "line_to": {
+         "default": null,
+         "description": "Last line of the window, 1-based inclusive, >= `line_from`; omit to read to EOF.",
+         "format": "uint64",
+         "minimum": 1.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "numbered": {
+         "default": false,
+         "description": "Prefix this entry's lines with their absolute 1-based line numbers (`N→`); prefix bytes count toward the batch budget.",
+         "type": "boolean"
+        },
+        "path": {
+         "description": "File to read.",
+         "type": "string"
+        },
+        "stat": {
+         "default": false,
+         "description": "Metadata probe for this entry: size/mode/mtime plus total_lines, content null, no budget consumed; C210 with a window or `numbered`.",
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "path"
+       ],
+       "type": "object"
+      }
+     ],
+     "description": "One batch entry: a bare path string (whole-file read) or an object with a per-entry window, stat or numbered flag."
+    }
+   },
+   "examples": [
+    {
+     "line_from": 10,
+     "line_to": 50,
+     "path": "src/main.rs"
+    },
+    {
+     "paths": [
+      "src/lib.rs",
+      {
+       "line_from": 1,
+       "line_to": 30,
+       "path": "src/config.rs"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "encoding": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/ReadEncoding"
+      }
+     ],
+     "description": "Content encoding for full reads; `base64` returns the exact file bytes (encoded length is budgeted). C210 with stat/window/numbered."
+    },
+    "line_from": {
+     "default": null,
+     "description": "First line (1-based, >= 1) of a windowed read; windows keep files over max_read_bytes readable slice by slice. `path` mode only.",
+     "format": "uint64",
+     "minimum": 1.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "line_to": {
+     "default": null,
+     "description": "Last line of the window, 1-based inclusive, >= `line_from`; omit to read from `line_from` to EOF. `path` mode only.",
+     "format": "uint64",
+     "minimum": 1.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "max_output_bytes": {
+     "default": null,
+     "description": "Full-read byte budget (returned bytes, clamped to max_read_bytes); over budget fails C218 naming size/total_lines. C210 with a window.",
+     "format": "uint64",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "numbered": {
+     "default": false,
+     "description": "Prefix each line with its absolute 1-based file line number (`N→`), matching coder::update-file line ops; C210 with `stat`. `path` mode only.",
+     "type": "boolean"
+    },
+    "path": {
+     "default": null,
+     "description": "Single file to read; XOR with `paths` (C210 if both or neither is set).",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "paths": {
+     "description": "Batch of files to read in one call (bare path strings or window objects), processed in order against batch_read_budget_bytes; XOR with `path`.",
+     "items": {
+      "$ref": "#/definitions/ReadTarget"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "stat": {
+     "default": false,
+     "description": "Metadata probe: size/mode/mtime plus total_lines/is_utf8, no content; C210 with line_from/line_to/numbered/max_output_bytes.",
+     "type": "boolean"
+    }
+   },
+   "title": "ReadFileInput",
+   "type": "object"
+  },
+  "description": "Read the backend sources and the UI physics"
+ },
+ {
+  "function_id": "coder::create-file",
+  "stringified": true,
+  "error": "coder::create-file: remote error (invocation_failed): serialization error: coder::create-file: invalid `files` entry: invalid type: string \"[{\\\"path\\\":\\\"/repo/x",
+  "arguments": {
+   "files": "[{\"path\":\"/repo/mario-game/src/situation.ts\",\"content\":\"import { choices, type Choice, type MarioSituation, type MovePrediction, type SituationEffect, type Threat, type Opportunity, type PredictedEffect } from './auto-contract.js'\\nimport type { ReportedState } from './contracts.js'\\nimport type { Enemy, Level, Rect } from './game.js'\\n\\n/* Pure situation module: no clock, IO or globals. The simulation below is a line-for-line port of\\n * ui/src/game.ts::step (the gameplay authority); test/situation.test.ts enforces parity. */\\nexport const STEP = 1 / 120\\nexport const ACTION_TICKS = 84 // 700 ms\\nexport const TAIL_MS = 400\\nexport const TAIL_TICKS = 48\\nexport const DEFAULT_LATENCY_MS = 1500\\nexport const HORIZON_AHEAD = 480\\nexport const HORIZON_BEHIND = 240\\nexport type Input = { left: boolean; right: boolean; jump: boolean }\\nexport interface Sim { level: Level; x: number; y: number; vy: number; grounded: boolean; jumpHeld: boolean; facing: number; lives: number; score: number; collected: Set<string>; enemies: (Enemy & { direction: number })[]; status: 'running' | 'paused' | 'won' | 'lost'; ticks: number; immunity: number; coinPoints: number }\\nexport type StepEvent = { kind: 'fell'; x: number; y: number } | { kind: 'enemy'; id: string; x: number; y: number } | null\\nconst overlap = (x: number, y: number, w: number, h: number, r: Rect) => x < r.x + r.width && x + w > r.x && y < r.y + r.height && y + h > r.y\\nfunction damage(g: Sim) { g.lives--; g.vy = 0; g.jumpHeld = false; if (!g.lives) { g.status = 'lost'; return } g.x = g.level.spawn.x; g.y = g.level.spawn.y; g.grounded = true; g.immunity = 0.8; g.enemies = g.level.enemies.map(e => ({ ...e, direction: 1 })) }\\n/** One fixed tick, same order as ui/src/game.ts::step; returns the damage cause (pre-respawn position). */\\nexport function step(g: Sim, input: Input): StepEvent {\\n  if (g.status !== 'running') return null\\n  g.ticks++; g.immunity = Math.max(0, g.immunity - STEP)\\n  const { level: l } = g; const dx = (Number(input.right) - Number(input.left)) * l.physics.moveSpeed * STEP\\n  if (dx) g.facing = Math.sign(dx)\\n  if (input.jump && !g.jumpHeld && g.grounded) { g.vy = -l.physics.jumpSpeed; g.grounded = false }\\n  g.jumpHeld = input.jump\\n  g.x = Math.max(0, Math.min(l.width - 24, g.x + dx))\\n  for (const p of l.platforms) if (overlap(g.x, g.y, 24, 32, p)) { if (dx > 0) g.x = p.x - 24; else if (dx < 0) g.x = p.x + p.width }\\n  const oldY = g.y; g.vy += l.physics.gravity * STEP; g.y += g.vy * STEP; g.grounded = false\\n  for (const p of l.platforms) if (overlap(g.x, g.y, 24, 32, p)) {\\n    if (g.vy >= 0 && oldY + 32 <= p.y + 0.001) { g.y = p.y - 32; g.vy = 0; g.grounded = true }\\n    else if (g.vy < 0 && oldY >= p.y + p.height - 0.001) { g.y = p.y + p.height; g.vy = 0 }\\n  }\\n  for (const e of g.enemies) { e.x += e.direction * e.speed * STEP; if (e.x >= e.maxX) { e.x = e.maxX; e.direction = -1 } if (e.x <= e.minX) { e.x = e.minX; e.direction = 1 } }\\n  if (g.y > l.height + 32) { const at = { kind: 'fell' as const, x: g.x, y: g.y }; damage(g); return at }\\n  if (!g.immunity) { const hit = g.enemies.find(e => overlap(g.x, g.y, 24, 32, e)); if (hit) { const at = { kind: 'enemy' as const, id: hit.id, x: g.x, y: g.y }; damage(g); return at } }\\n  for (const c of l.coins) if (!g.collected.has(c.id) && Math.hypot(c.x - Math.max(g.x, Math.min(c.x, g.x + 24)), c.y - Math.max(g.y, Math.min(c.y, g.y + 32))) <= c.radius) { g.collected.add(c.id); g.score += g.coinPoints }\\n  if (overlap(g.x, g.y, 24, 32, l.goal)) g.status = 'won'\\n  return null\\n}\\nexport const inputFor = (choice: Choice): Input => ({ left: choice === 'left' || choice === 'left_jump', right: choice === 'right' || choice === 'right_jump', jump: choice === 'jump' || choice === 'left_jump' || choice === 'right_jump' })\\nconst idle: Input = { left: false, right: false, jump: false }\\nconst r1 = (n: number) => Math.round(n * 10) / 10\\nconst clone = (g: Sim): Sim => ({ ...g, collected: new Set(g.collected), enemies: g.enemies.map(e => ({ ...e })) })\\n\\nexport interface Pit { id: string; x0: number; x1: number; top: number }\\n/** Gaps between ground platforms (those sharing the lowest top). */\\nexport function pits(level: Level): Pit[] {\\n  const top = Math.max(...level.platforms.map(p => p.y))\\n  const ground = level.platforms.filter(p => p.y === top).sort((a, b) => a.x - b.x)\\n  const out: Pit[] = []\\n  for (let i = 1; i < ground.length; i++) { const x0 = ground[i - 1]!.x + ground[i - 1]!.width, x1 = ground[i]!.x; if (x1 > x0) out.push({ id: `pit-${x0}-${x1}`, x0, x1, top }) }\\n  return out\\n}\\nfunction support(level: Level, x: number, y: number, exact: boolean): Rect | null {\\n  const under = level.platforms.filter(p => x < p.x + p.width && x + 24 > p.x && (exact ? Math.abs(p.y - (y + 32)) < 0.01 : p.y >= y + 32 - 0.01)).sort((a, b) => a.y - b.y)\\n  return under[0] ?? null\\n}\\nconst inPit = (ps: Pit[], g: Sim) => g.y + 32 > ps[0]!.top + 0.001 ? ps.find(p => g.x + 24 > p.x0 && g.x < p.x1) ?? null : null\\n\\nexport interface SituationInput {\\n  level: Level; report: ReportedState; received_at_unix_ms: number\\n  before: { report: ReportedState; received_at_unix_ms: number } | null\\n  latency_ms: number | null\\n}\\nexport function estimateVy(input: SituationInput): { vy: number; vy_source: 'grounded' | 'previous_report' | 'assumed_zero' } {\\n  const { report, before, level } = input\\n  if (report.grounded) return { vy: 0, vy_source: 'grounded' }\\n  const dt = before ? (input.received_at_unix_ms - before.received_at_unix_ms) / 1000 : 0\\n  if (before && dt > 0 && dt <= 0.3 && (before.report.session_id ?? null) === (report.session_id ?? null))\\n    return { vy: r1((report.y - before.report.y) / dt + level.physics.gravity * dt / 2), vy_source: 'previous_report' }\\n  return { vy: 0, vy_source: 'assumed_zero' }\\n}\\nexport function startSim(level: Level, report: ReportedState, vy: number): Sim {\\n  return { level, x: report.x, y: report.y, vy, grounded: report.grounded, jumpHeld: false, facing: report.facing, lives: Math.max(1, report.lives), score: report.score, collected: new Set(report.collected), status: 'running', ticks: 0, immunity: 0, coinPoints: 100,\\n    enemies: level.enemies.map(s => { const d = report.enemies.find(e => e.id === s.id); return { ...s, x: d?.x ?? s.x, direction: d?.direction ?? 1 } }) }\\n}\\ntype Timed = { effect: SituationEffect; tick: number }\\ninterface Run { outcome: MovePrediction['outcome']; effects: Timed[]; end: Sim; terminal: Timed | null }\\n/** Run `ticks` with `input`; stops at the first contact or pit fall. `threats` gates clears_enemy. */\\nfunction run(start: Sim, input: Input, ticks: number, pitList: Pit[], threats: Set<string>, offset: number): Run {\\n  const g = clone(start), effects: Timed[] = []\\n  const mc = (s: Sim) => s.x + 12\\n  const order = new Map(g.enemies.map(e => [e.id, Math.sign(mc(g) - (e.x + e.width / 2))]))\\n  const cleared = new Set<string>()\\n  for (let i = 1; i <= ticks; i++) {\\n    const coins = new Set(g.collected)\\n    const event = step(g, input)\\n    if (event) {\\n      const pit = event.kind === 'fell' ? pitList.find(p => event.x + 24 > p.x0 && event.x < p.x1) ?? null : null\\n      const t = { effect: event.kind === 'enemy' ? { kind: 'hits_enemy' as const, target_id: event.id } : { kind: 'falls_in_pit' as const, target_id: pit?.id ?? null }, tick: offset + i }\\n      const kept = effects.filter(e => !(e.effect.kind === 'clears_enemy' && e.effect.target_id === t.effect.target_id))\\n      g.x = event.x; g.y = event.y\\n      return { outcome: event.kind === 'enemy' ? 'collision' : 'fall', effects: [...kept, t], end: g, terminal: t }\\n    }\\n    for (const id of g.collected) if (!coins.has(id)) effects.push({ effect: { kind: 'collects_coin', target_id: id }, tick: offset + i })\\n    const pit = inPit(pitList, g)\\n    if (pit) { const t = { effect: { kind: 'falls_in_pit' as const, target_id: pit.id }, tick: offset + i }; return { outcome: 'fall', effects: [...effects, t], end: g, terminal: t } }\\n    for (const e of g.enemies) {\\n      if (!threats.has(e.id) || cleared.has(e.id)) continue\\n      const under = g.x < e.x + e.width && g.x + 24 > e.x && g.y + 32 <= e.y\\n      const side = Math.sign(mc(g) - (e.x + e.width / 2))\\n      if (under || (side !== 0 && order.get(e.id) !== 0 && side !== order.get(e.id))) { cleared.add(e.id); effects.push({ effect: { kind: 'clears_enemy', target_id: e.id }, tick: offset + i }) }\\n    }\\n    if (g.status !== 'running') break\\n  }\\n  return { outcome: 'safe', effects, end: g, terminal: null }\\n}\\nconst names: Record<SituationEffect['kind'], string> = { hits_enemy: 'colide com o guardião', falls_in_pit: 'cai no buraco', collects_coin: 'pega a moeda', lands_on_platform: 'sobe na plataforma', clears_enemy: 'livra o guardião', safe: 'seguro' }\\nexport function label(effects: SituationEffect[], dx: number): string {\\n  if (effects.length === 1 && effects[0]!.kind === 'safe') { const n = Math.round(Math.abs(dx)); return n === 0 ? 'seguro · parado' : dx > 0 ? `seguro · avança ${n} px` : `seguro · recua ${n} px` }\\n  return effects.map(e => e.target_id ? `${names[e.kind]} ${e.target_id}` : names[e.kind]).join(' e ')\\n}\\n\\nexport interface SituationResult { situation: MarioSituation; contactTicks: Map<string, number> }\\n/** Deterministic situation for one snapshot. Never ranks or chooses a move. */\\nexport function computeSituation(input: SituationInput): MarioSituation {\\n  const { level, report } = input\\n  const ph = level.physics\\n  const { vy, vy_source } = estimateVy(input)\\n  const latency_ms = input.latency_ms === null ? DEFAULT_LATENCY_MS : Math.round(Math.max(0, Math.min(5000, input.latency_ms)))\\n  const pitList = pits(level)\\n  const x = report.x, y = report.y\\n  // Threats from the snapshot (Mario idle, enemies at their reported x/direction).\\n  const s0 = startSim(level, report, vy)\\n  const latencyTicks = Math.round(latency_ms / 1000 / STEP)\\n  const allIds = new Set(level.enemies.map(e => e.id))\\n  const pre = run(s0, idle, latencyTicks, pitList, new Set(), 0)\\n  const at = pre.end\\n  const enemyThreats: (Threat & { kind: 'enemy' })[] = []\\n  for (const e of s0.enemies) {\\n    if (!report.enemies.some(d => d.id === e.id)) continue\\n    const side = e.x >= x + 24 ? 'ahead' : e.x + e.width <= x ? 'behind' : 'overlap'\\n    const distance = side === 'ahead' ? e.x - (x + 24) : side === 'behind' ? x - (e.x + e.width) : 0\\n    if (side === 'ahead' ? distance > HORIZON_AHEAD : side === 'behind' ? distance > HORIZON_BEHIND : false) continue\\n    const approaching = side === 'overlap' || (side === 'ahead' ? e.direction < 0 : e.direction > 0)\\n    // Idle contact requires the patrol range to reach Mario's box.\\n    const reachable = side === 'overlap' || (side === 'ahead' ? e.minX < x + 24 : e.maxX + e.width > x)\\n    const later = at.enemies.find(n => n.id === e.id)!\\n    const ax = pre.terminal ? x : at.x\\n    const startDistance = side === 'behind' ? ax - (later.x + later.width) : side === 'ahead' ? later.x - (ax + 24) : 0\\n    enemyThreats.push({ kind: 'enemy', id: e.id, side, distance_px: r1(distance), dy_px: r1(e.y + e.height - (y + 32)), approaching,\\n      closing_speed_px_s: side === 'overlap' ? 0 : approaching ? e.speed : -e.speed,\\n      time_to_contact_ms: side === 'overlap' ? 0 : approaching && reachable ? Math.round(distance / e.speed * 1000) : null,\\n      distance_at_action_start_px: r1(startDistance) })\\n  }\\n  const pitThreats: Threat[] = []\\n  for (const p of pitList) {\\n    const side = p.x0 >= x + 24 ? 'ahead' : p.x1 <= x ? 'behind' : 'overlap'\\n    const distance = side === 'ahead' ? p.x0 - (x + 24) : side === 'behind' ? x - p.x1 : 0\\n    if (side === 'ahead' ? distance > HORIZON_AHEAD : side === 'behind' ? distance > HORIZON_BEHIND : false) continue\\n    pitThreats.push({ kind: 'pit', id: p.id, side, distance_px: r1(distance), width_px: p.x1 - p.x0 })\\n  }\\n  const threats: Threat[] = [...enemyThreats, ...pitThreats].sort((a, b) => a.distance_px - b.distance_px || a.id.localeCompare(b.id)).slice(0, 6)\\n  const threatIds = new Set(threats.filter(t => t.kind === 'enemy').map(t => t.id))\\n  // Opportunities: remaining coins within the horizon.\\n  const standing = support(level, x, y, false)\\n  const sy = (standing ? standing.y : pitList[0]?.top ?? level.height) - 32\\n  const apex = ph.jumpSpeed ** 2 / (2 * ph.gravity)\\n  const opportunities: Opportunity[] = []\\n  for (const c of level.coins) {\\n    if (report.collected.includes(c.id)) continue\\n    const side = c.x - c.radius >= x + 24 ? 'ahead' : c.x + c.radius <= x ? 'behind' : 'overlap'\\n    const distance = side === 'ahead' ? c.x - c.radius - (x + 24) : side === 'behind' ? x - (c.x + c.radius) : 0\\n    if (side === 'ahead' ? distance > HORIZON_AHEAD : side === 'behind' ? distance > HORIZON_BEHIND : false) continue\\n    const ledge = level.platforms.find(p => p !== standing && c.x >= p.x && c.x <= p.x + p.width && c.y < p.y && p.y - c.y <= 40) ?? null\\n    const walkBand = c.y >= sy - c.radius && c.y <= sy + 32 + c.radius\\n    const onSupport = standing !== null && c.x + c.radius >= standing.x && c.x - c.radius <= standing.x + standing.width\\n    const requires = walkBand && onSupport ? 'walk' : c.y >= sy - apex - c.radius && c.y <= sy + 32 + c.radius ? 'jump' : 'platform'\\n    opportunities.push({ kind: 'coin', id: c.id, side, distance_px: r1(distance), dy_px: r1(c.y - (y + 32)), requires, platform_id: ledge?.id ?? null })\\n  }\\n  opportunities.sort((a, b) => a.distance_px - b.distance_px || a.id.localeCompare(b.id)); opportunities.splice(6)\\n  // Moves: latency idle (shared), then 700 ms of each choice, then a 400 ms idle tail.\\n  const startSupport = support(level, at.x, at.y, true)\\n  const contact = new Map<string, number>()\\n  const moves = {} as Record<Choice, MovePrediction>\\n  for (const choice of choices) {\\n    let r: Run\\n    if (pre.terminal) r = { ...pre, effects: [pre.terminal] }\\n    else r = run(at, inputFor(choice), ACTION_TICKS, pitList, threatIds, 0)\\n    const effects = r.effects.map(t => t.effect)\\n    if (r.outcome === 'safe' && r.end.grounded) { const end = support(level, r.end.x, r.end.y, true); if (end && end.id !== startSupport?.id) effects.push({ kind: 'lands_on_platform', target_id: end.id }) }\\n    let risk: SituationEffect | null = null\\n    let riskTick: number | null = null\\n    if (r.outcome === 'safe') { const tail = run(r.end, idle, TAIL_TICKS, pitList, new Set(), ACTION_TICKS); if (tail.terminal) { risk = tail.terminal.effect; riskTick = tail.terminal.tick } }\\n    if (!effects.length) effects.push({ kind: 'safe', target_id: null })\\n    const dx = r1(r.end.x - x)\\n    if (choice === 'idle' || choice === 'left' || choice === 'right') {\\n      const hit = r.terminal ?? (risk ? { effect: risk, tick: riskTick! } : null)\\n      if (hit?.effect.target_id && (!contact.has(hit.effect.target_id) || contact.get(hit.effect.target_id)! > hit.tick)) contact.set(hit.effect.target_id, hit.tick)\\n    }\\n    moves[choice] = { outcome: r.outcome, effects: effects.slice(0, 6), risk_after: risk, end: { x: r1(r.end.x), y: r1(r.end.y), grounded: r.end.grounded }, dx_px: dx, label: label(effects.slice(0, 6), dx) }\\n  }\\n  void allIds\\n  const tier0 = [...contact].sort((a, b) => a[1] - b[1]).map(([id]) => id)\\n  const priority = [...tier0, ...opportunities.map(o => o.id), ...threats.map(t => t.id).filter(id => !tier0.includes(id))].slice(0, 12)\\n  return {\\n    version: 1, level_id: level.id, session_id: report.session_id ?? null, report_seq: report.report_seq ?? null, received_at_unix_ms: input.received_at_unix_ms,\\n    mario: { x: report.x, y: report.y, grounded: report.grounded, facing: report.facing, vy, vy_source },\\n    timing: { latency_ms, latency_source: input.latency_ms === null ? 'default' : 'previous_decision', action_ms: 700, tail_ms: TAIL_MS },\\n    jump: { apex_px: Math.round(apex), air_ms: Math.round(2 * ph.jumpSpeed / ph.gravity * 1000), reach_px: Math.round(ph.moveSpeed * 2 * ph.jumpSpeed / ph.gravity), walk_px_in_action: Math.round(ph.moveSpeed * 0.7) },\\n    threats, opportunities, priority, moves,\\n  }\\n}\\nconst kinds: Record<SituationEffect['kind'], PredictedEffect['target_kind']> = { hits_enemy: 'enemy', clears_enemy: 'enemy', falls_in_pit: 'pit', collects_coin: 'coin', lands_on_platform: 'platform', safe: null }\\n/** Predicted effect of the chosen move, copied from the same situation sent to the Judge. */\\nexport function predictedFor(situation: MarioSituation, choice: Choice): PredictedEffect {\\n  const m = situation.moves[choice]\\n  const primary = m.effects.find(e => e.kind !== 'safe') ?? null\\n  return { outcome: m.outcome, effects: structuredClone(m.effects), risk_after: m.risk_after === null ? null : { ...m.risk_after }, label: m.label,\\n    target_id: primary?.target_id ?? null, target_kind: primary ? kinds[primary.kind] : null, report_seq: situation.report_seq }\\n}\\n\"}]"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "CreateFileSpec": {
+     "properties": {
+      "content": {
+       "type": "string"
+      },
+      "expected_revision": {
+       "default": null,
+       "description": "Optimistic-concurrency guard for an overwrite: the `revision` from coder::read-file; if the content changed the entry fails C221 unwritten.",
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "mode": {
+       "default": "0644",
+       "description": "Octal permission bits as a string, e.g. \"0644\". Defaults to \"0644\".",
+       "type": "string"
+      },
+      "overwrite": {
+       "default": false,
+       "description": "When false (the default), refuse to write if `path` already exists.",
+       "type": "boolean"
+      },
+      "parents": {
+       "default": true,
+       "description": "Create missing parent directories. Defaults to true so a single `coder::create-file` call can scaffold a fresh subtree.",
+       "type": "boolean"
+      },
+      "path": {
+       "description": "File to create.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "content",
+      "path"
+     ],
+     "type": "object"
+    }
+   },
+   "examples": [
+    {
+     "files": [
+      {
+       "content": "pub mod utils;\n",
+       "overwrite": false,
+       "path": "src/lib.rs"
+      },
+      {
+       "content": "# scratch notes\n",
+       "overwrite": true,
+       "path": "/tmp/scratch/notes.md"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "files": {
+     "items": {
+      "$ref": "#/definitions/CreateFileSpec"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "files"
+   ],
+   "title": "CreateFileInput",
+   "type": "object"
+  },
+  "description": "Create src/situation.ts (pure simulation and situation)"
+ },
+ {
+  "function_id": "mario-game::auto::situation",
+  "stringified": false,
+  "error": "mario-game::auto::situation: remote error (invocation_failed): INVALID_ARGUMENT: Expected an empty object; no fields are accepted.",
+  "arguments": {
+   "session_id": "x"
+  },
+  "schema": {
+   "additionalProperties": false,
+   "properties": {},
+   "required": [],
+   "type": "object"
+  },
+  "description": "Call auto::situation with an invalid field"
+ },
+ {
+  "function_id": "compose::logs",
+  "stringified": true,
+  "error": "compose::logs: remote error (invocation_failed): serialization error: invalid type: string \"60\", expected usize",
+  "arguments": {
+   "container": "mario-game",
+   "tail": "60"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "LogCursor": {
+     "properties": {
+      "generation": {
+       "description": "Opaque identity of the active or archived log segment.",
+       "type": "string"
+      },
+      "offset": {
+       "description": "Byte offset after the last record returned from that segment.",
+       "format": "uint64",
+       "minimum": 0.0,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "generation",
+      "offset"
+     ],
+     "type": "object"
+    },
+    "LogStream": {
+     "enum": [
+      "stdout",
+      "stderr"
+     ],
+     "type": "string"
+    }
+   },
+   "description": "Request fields used by `compose::logs`.",
+   "properties": {
+    "container": {
+     "description": "Container whose process output should be read. Omit for every worker.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "cursors": {
+     "additionalProperties": {
+      "$ref": "#/definitions/LogCursor"
+     },
+     "description": "Last cursor returned for each selected worker.",
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "file": {
+     "description": "Compose file on the daemon host. Defaults to `worker-compose.yaml` in the daemon working directory.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "namespace": {
+     "description": "Optional daemon guard. Use the trigger `--namespace` flag to route.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "stream": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/LogStream"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Restrict output to stdout or stderr."
+    },
+    "tail": {
+     "description": "Recent line count for the first request. Default 100, maximum 1000.",
+     "format": "uint",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "wait_ms": {
+     "description": "Wait this many milliseconds for new output. Maximum 5000.",
+     "format": "uint64",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "worker": {
+     "description": "Alias for `container`.",
+     "type": [
+      "string",
+      "null"
+     ]
+    }
+   },
+   "title": "LogsOptions",
+   "type": "object"
+  },
+  "description": "Read the worker logs for the Judge request"
+ },
+ {
+  "function_id": "mario-game::game::start",
+  "stringified": false,
+  "error": "mario-game::game::start: remote error (invocation_failed): INVALID_ARGUMENT: Expected an empty object; no fields are accepted.",
+  "arguments": {
+   "seed": 1
+  },
+  "schema": {
+   "additionalProperties": false,
+   "properties": {},
+   "required": [],
+   "type": "object"
+  },
+  "description": "Confirmar rejeição de parâmetros de início não permitidos"
+ },
+ {
+  "function_id": "mario-game::game::describe",
+  "stringified": false,
+  "error": "mario-game::game::describe: remote error (invocation_failed): INVALID_ARGUMENT: Expected an empty object; no fields are accepted.",
+  "arguments": {},
+  "schema": {
+   "additionalProperties": false,
+   "properties": {},
+   "required": [],
+   "type": "object"
+  },
+  "description": "Call game description through the engine"
+ },
+ {
+  "function_id": "mario-game::ui::content",
+  "stringified": false,
+  "error": "mario-game::ui::content: remote error (invocation_failed): INVALID_ARGUMENT: Expected exactly {path: string}.",
+  "arguments": {},
+  "schema": {
+   "additionalProperties": false,
+   "properties": {
+    "path": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  },
+  "description": "Verify missing asset path failure"
+ },
+ {
+  "function_id": "mario-game::game::start",
+  "stringified": false,
+  "error": "mario-game::game::start: remote error (invocation_failed): INVALID_ARGUMENT: Expected an empty object; no fields are accepted.",
+  "arguments": {
+   "seed": 1
+  },
+  "schema": {
+   "additionalProperties": false,
+   "properties": {},
+   "required": [],
+   "type": "object"
+  },
+  "description": "Verify game start rejects unexpected fields"
+ },
+ {
+  "function_id": "mario-game::game::describe",
+  "stringified": false,
+  "error": "mario-game::game::describe: remote error (invocation_failed): INVALID_ARGUMENT: Expected an empty object; no fields are accepted.",
+  "arguments": {
+   "extra": true
+  },
+  "schema": {
+   "additionalProperties": false,
+   "properties": {},
+   "required": [],
+   "type": "object"
+  },
+  "description": "Verify game description rejects unexpected fields"
+ },
+ {
+  "function_id": "engine::register_trigger",
+  "stringified": false,
+  "error": "invalid subscribe arguments: missing field `function_id`",
+  "arguments": {
+   "conditions": [
+    {
+     "op": "in",
+     "path": "refresh.status",
+     "value": [
+      "success",
+      "error"
+     ]
+    }
+   ],
+   "config": {
+    "selectionKey": "todas"
+   },
+   "lifecycle": {
+    "expires_in_ms": 360000
+   },
+   "once": true,
+   "trigger_type": "noticias-brasil:change"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "properties": {
+    "_caller_worker_id": {
+     "default": null,
+     "description": "Injected by the engine from the calling worker. Its connection namespace is where the binding is at home: the target `function_id` resolves there and the provider lookup starts there. Not an owner — the binding outlives the connection. Absent for in-process callers, whose home is `default`.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "config": {
+     "default": null,
+     "description": "Trigger-type-specific configuration, passed through verbatim."
+    },
+    "function_id": {
+     "description": "The function the fire is delivered to. The trigger binds directly to it; `metadata` is delivered alongside the payload as a distinct argument.",
+     "type": "string"
+    },
+    "metadata": {
+     "default": null,
+     "description": "Arbitrary metadata delivered to the target handler as a distinct argument (not folded into the payload) so a (possibly shared) target function can recover per-trigger context the engine routing otherwise drops."
+    },
+    "trigger_namespace": {
+     "default": null,
+     "description": "Namespace to find the trigger type's provider in. Absent asks the engine to resolve it: the caller's connection namespace first, then [`crate::protocol::DEFAULT_NAMESPACE`].",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "trigger_type": {
+     "description": "Trigger type to bind (e.g. `cron`, `state`, `stream`, or a custom worker trigger type).",
+     "type": "string"
+    }
+   },
+   "required": [
+    "function_id",
+    "trigger_type"
+   ],
+   "title": "RegisterTriggerInput",
+   "type": "object"
+  },
+  "description": "Armar observação de conclusão real antes de solicitar a coleta"
+ },
+ {
+  "function_id": "shell::exec",
+  "stringified": false,
+  "error": "shell::exec: remote error (invocation_failed): serialization error: missing field `command`",
+  "arguments": {
+   "args": [
+    "-rn",
+    "-E",
+    "rusqlite|libsqlite3-sys|tantivy|sqlx|better-sqlite3|node:sqlite",
+    "--include=Cargo.toml",
+    "--include=package.json",
+    "/repo"
+   ]
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "Target": {
+     "oneOf": [
+      {
+       "properties": {
+        "kind": {
+         "enum": [
+          "host"
+         ],
+         "type": "string"
+        }
+       },
+       "required": [
+        "kind"
+       ],
+       "type": "object"
+      },
+      {
+       "properties": {
+        "kind": {
+         "enum": [
+          "sandbox"
+         ],
+         "type": "string"
+        },
+        "sandbox_id": {
+         "format": "uuid",
+         "type": "string"
+        }
+       },
+       "required": [
+        "kind",
+        "sandbox_id"
+       ],
+       "type": "object"
+      }
+     ]
+    }
+   },
+   "description": "Wire request for `shell::exec`.",
+   "properties": {
+    "args": {
+     "default": null,
+     "description": "Arguments, in order (all strings). Omit/null to tokenize `command` shell-words style; pass an array (even empty) to use it verbatim.",
+     "items": {
+      "type": "string"
+     },
+     "type": [
+      "array",
+      "null"
+     ]
+    },
+    "command": {
+     "description": "Program name (PATH-resolved) or path to an executable, as a string; put arguments in `args`.",
+     "type": "string"
+    },
+    "cwd": {
+     "default": null,
+     "description": "Working directory (host only, S210 on sandbox); jail-confined like shell::fs::* paths (S215 on escape), must be an existing directory.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "env": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "default": null,
+     "description": "Per-call env values (host only, S210 on sandbox); exec-hijacking keys (PATH, IFS, HOME, LD_*/DYLD_*, …) reject the whole call S210.",
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "stdin": {
+     "default": null,
+     "description": "Bytes written to the program's stdin, then EOF (host only, S210 on sandbox); omit to leave stdin at /dev/null.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "target": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/Target"
+      }
+     ],
+     "default": {
+      "kind": "host"
+     },
+     "description": "Where to run the command. Defaults to the host worker; pass `{ kind: \"sandbox\", sandbox_id }` to forward the call to a microVM."
+    },
+    "timeout_ms": {
+     "default": null,
+     "description": "Per-call timeout in milliseconds, capped at the configured max; negative or fractional values fall back to the default.",
+     "format": "uint64",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    }
+   },
+   "required": [
+    "command"
+   ],
+   "title": "ExecRequest",
+   "type": "object"
+  },
+  "description": "Verificando dependências de SQLite/FTS5 no monorepo"
+ },
+ {
+  "function_id": "mario-game::auto::start",
+  "stringified": false,
+  "error": "mario-game::auto::start: remote error (invocation_failed): INVALID_ARGUMENT: Expected {model?: string(1..128)}.",
+  "arguments": {
+   "model": ""
+  },
+  "schema": {
+   "additionalProperties": false,
+   "properties": {
+    "model": {
+     "maxLength": 128,
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "description": "Exercitar argumento inválido sem efeitos no estado"
+ },
+ {
+  "function_id": "coder::update-file",
+  "stringified": false,
+  "error": "coder::update-file: remote error (invocation_failed): serialization error: coder::update-file: invalid `files` entry: missing field `path`",
+  "arguments": {
+   "files": [
+    {
+     "ops": [
+      {
+       "at_line": 96,
+       "content": "\n/// How the worker resolved (or failed to resolve) Chromium: the config values\n/// behind it and every path it probed, in order.\n#[derive(Debug, Clone, Serialize, JsonSchema)]\npub struct ChromiumDetection {\n    /// The configured `executable`; empty means auto-detection.\n    pub executable: String,\n    /// The configured `browser.scrapling.chromium_executable`; empty means the\n    /// scrapling paths fall back to this same detection.\n    pub scrapling_executable: String,\n    /// The path detection settled on: the first candidate that is a regular,\n    /// executable file.\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub resolved: Option<String>,\n    /// `$PLAYWRIGHT_BROWSERS_PATH` as this process saw it, when set.\n    #[serde(skip_serializing_if = \"Option::is_none\")]\n    pub playwright_browsers_path: Option<String>,\n    /// Chrome versions the scrapling compat path certifies. The interactive\n    /// `browser::*` functions launch any build; compat mode rejects one that\n    /// is not in this list.\n    pub certified_versions: Vec<String>,\n    /// Every path probed, in the order they were tried. Probing stops at the\n    /// first accepted path.\n    pub candidates: Vec<ChromiumCandidate>,\n}\n\nimpl ChromiumDetection {\n    /// The `issues[]` line for a detection that resolved nothing: the\n    /// configured path and why it is unusable, or every path probed with the\n    /// reason a launch would refuse it.\n    pub fn failure_summary(&self) -> String {\n        if !self.executable.is_empty() {\n            let reason = self\n                .candidates\n                .first()\n                .map(|candidate| candidate.detail.as_str())\n                .unwrap_or(\"unusable\");\n            return format!(\"configured executable '{}' is {reason}\", self.executable);\n        }\n        if self.candidates.is_empty() {\n            return \"no Chromium/Chrome install found: no candidate path was testable\".to_string();\n        }\n        let probed: Vec<String> = self\n            .candidates\n            .iter()\n            .map(|candidate| format!(\"{} ({})\", candidate.path, candidate.detail))\n            .collect();\n        format!(\"no Chromium/Chrome install found: {}\", probed.join(\"; \"))\n    }\n}\n\n/// Candidate system installs, checked before the Playwright caches when the\n/// configured `executable` is empty, in order.\n#[cfg(target_os = \"macos\")]\nconst CANDIDATES: &[&str] = &[\n    \"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\",\n    \"/Applications/Chromium.app/Contents/MacOS/Chromium\",\n    \"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge\",\n];\n\n#[cfg(target_os = \"linux\")]\nconst CANDIDATES: &[&str] = &[\n    \"/usr/bin/google-chrome\",\n    \"/usr/bin/google-chrome-stable\",\n    \"/usr/bin/chromium\",\n    \"/usr/bin/chromium-browser\",\n    \"/usr/bin/microsoft-edge\",\n];\n\n#[cfg(target_os = \"windows\")]\nconst CANDIDATES: &[&str] = &[\n    \"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\",\n    \"C:\\\\Program Files (x86)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\",\n    \"C:\\\\Program Files (x86)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe\",\n];\n\n/// Where the binary sits inside a Playwright `chromium-<build>` directory.\n#[cfg(target_os = \"macos\")]\nconst PLAYWRIGHT_LEAVES: &[&str] = &[\"chrome-mac/Chromium.app/Contents/MacOS/Chromium\"];\n\n#[cfg(target_os = \"windows\")]\nconst PLAYWRIGHT_LEAVES: &[&str] = &[\"chrome-win64/chrome.exe\", \"chrome-win/chrome.exe\"];\n\n#[cfg(not(any(target_os = \"macos\", target_os = \"windows\")))]\nconst PLAYWRIGHT_LEAVES: &[&str] = &[\"chrome-linux64/chrome\", \"chrome-linux/chrome\"];\n\n/// How far below a Playwright root to look for `chromium-*` builds:\n/// `ms-playwright-go` nests one driver-version directory in between.\nconst PLAYWRIGHT_SCAN_DEPTH: u32 = 3;\n\n/// The environment the detection reads, injected so a test can pin it instead\n/// of mutating the process environment.\n#[derive(Debug, Clone, Default)]\nstruct DetectionEnv {\n    playwright_browsers_path: Option<OsString>,\n    home: Option<PathBuf>,\n}\n\nimpl DetectionEnv {\n    fn from_process() -> Self {\n        Self {\n            playwright_browsers_path: std::env::var_os(\"PLAYWRIGHT_BROWSERS_PATH\"),\n            home: home_dir(),\n        }\n    }\n}\n\n#[cfg(target_os = \"windows\")]\nfn home_dir() -> Option<PathBuf> {\n    std::env::var_os(\"USERPROFILE\").map(PathBuf::from)\n}\n\n#[cfg(not(target_os = \"windows\"))]\nfn home_dir() -> Option<PathBuf> {\n    std::env::var_os(\"HOME\").map(PathBuf::from)\n}\n\n/// Resolve the Chromium binary the worker would launch, reporting every path\n/// probed on the way. Blocking on filesystem metadata only; never launches the\n/// candidate.\npub fn diagnose_chromium(cfg: &WorkerConfig) -> ChromiumDetection {\n    diagnose_chromium_with(cfg, &DetectionEnv::from_process(), CANDIDATES)\n}\n\n/// Resolve the Chromium binary the worker would launch: the configured\n/// `executable` when set, otherwise the first usable system install, otherwise\n/// the newest Playwright build in the caches.\npub fn detect_chromium(cfg: &WorkerConfig) -> Option<PathBuf> {\n    diagnose_chromium(cfg).resolved.map(PathBuf::from)\n}\n\nfn diagnose_chromium_with(\n    cfg: &WorkerConfig,\n    env: &DetectionEnv,\n    system: &[&str],\n) -> ChromiumDetection {\n    let mut candidates = Vec::new();\n\n    if !cfg.executable.is_empty() {\n        // A configured path is the operator's answer: report it, never\n        // second-guess it with a fallback.\n        consider(\n            &mut candidates,\n            PathBuf::from(&cfg.executable),\n            \"config executable\".to_string(),\n        );\n    } else {\n        let mut accepted = false;\n        for install in system {\n            accepted = consider(\n                &mut candidates,\n                PathBuf::from(install),\n                \"system install\".to_string(),\n            );\n            if accepted {\n                break;\n            }\n        }\n        if !accepted {\n            for (root, label) in playwright_roots(env) {\n                let mut builds = Vec::new();\n                collect_playwright_chromium(&root, PLAYWRIGHT_SCAN_DEPTH, &mut builds);\n                builds.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));\n                if builds.is_empty() {\n                    let mut candidate = probe_candidate(root, label.to_string());\n                    candidate.detail = if candidate.status == ChromiumStatus::Missing {\n                        \"Playwright cache not found here\".to_string()\n                    } else {\n                        \"no chromium-* build under this Playwright root\".to_string()\n                    };\n                    candidates.push(candidate);\n                    continue;\n                }\n                for (_, binary) in builds {\n                    accepted = consider(&mut candidates, binary, label.to_string());\n                    if accepted {\n                        break;\n                    }\n                }\n                if accepted {\n                    break;\n                }\n            }\n        }\n    }\n\n    let resolved = candidates\n        .iter()\n        .rev()\n        .find(|candidate| candidate.status == ChromiumStatus::Accepted)\n        .map(|candidate| candidate.path.clone());\n\n    ChromiumDetection {\n        executable: cfg.executable.clone(),\n        scrapling_executable: cfg.scrapling.chromium_executable.clone(),\n        resolved,\n        playwright_browsers_path: env\n            .playwright_browsers_path\n            .as_ref()\n            .map(|value| value.to_string_lossy().into_owned()),\n        certified_versions: CERTIFIED_CHROME_VERSIONS\n            .iter()\n            .map(|version| version.to_string())\n            .collect(),\n        candidates,\n    }\n}\n",
+       "op": "insert"
+      }
+     ]
+    }
+   ]
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "UpdateFileSpec": {
+     "properties": {
+      "ops": {
+       "items": {
+        "$ref": "#/definitions/UpdateOp"
+       },
+       "type": "array"
+      },
+      "path": {
+       "description": "File to edit.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "ops",
+      "path"
+     ],
+     "type": "object"
+    },
+    "UpdateOp": {
+     "oneOf": [
+      {
+       "description": "Insert `content` before line `at_line` (1-based). `at_line = lines+1` appends to end of file.",
+       "properties": {
+        "at_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "content": {
+         "type": "string"
+        },
+        "op": {
+         "enum": [
+          "insert"
+         ],
+         "type": "string"
+        }
+       },
+       "required": [
+        "at_line",
+        "content",
+        "op"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Delete lines `from_line..=to_line` (1-based, inclusive).",
+       "properties": {
+        "from_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "op": {
+         "enum": [
+          "remove"
+         ],
+         "type": "string"
+        },
+        "to_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "from_line",
+        "op",
+        "to_line"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Overwrite lines `from_line..=to_line` with `content`.",
+       "properties": {
+        "content": {
+         "type": "string"
+        },
+        "from_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "op": {
+         "enum": [
+          "update_lines"
+         ],
+         "type": "string"
+        },
+        "to_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "content",
+        "from_line",
+        "op",
+        "to_line"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Replace all regex matches in the file body (after line ops).",
+       "properties": {
+        "dot_matches_newline": {
+         "default": false,
+         "description": "When true `.` also matches newline, so a short pattern like `start.*?end` spans lines; by default a multi-line pattern matches nothing.",
+         "type": "boolean"
+        },
+        "expect_matches": {
+         "default": null,
+         "description": "Expected match count; a mismatch fails this file with C210 and writes nothing (0 asserts absence). Omit to replace all matches.",
+         "format": "uint64",
+         "minimum": 0.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "ignore_case": {
+         "default": false,
+         "type": "boolean"
+        },
+        "op": {
+         "enum": [
+          "replace"
+         ],
+         "type": "string"
+        },
+        "pattern": {
+         "type": "string"
+        },
+        "replacement": {
+         "description": "Substitution text; $1/${1}/$name/${name} expand captures ($0 = whole match), a literal $ is written $$ (`$${name}`). Unknown references fail C210.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "op",
+        "pattern",
+        "replacement"
+       ],
+       "type": "object"
+      }
+     ]
+    }
+   },
+   "examples": [
+    {
+     "files": [
+      {
+       "ops": [
+        {
+         "at_line": 1,
+         "content": "// generated by coder\n",
+         "op": "insert"
+        },
+        {
+         "content": "pub fn hello() {\n    println!(\"hello\");\n}\n",
+         "from_line": 5,
+         "op": "update_lines",
+         "to_line": 7
+        },
+        {
+         "dot_matches_newline": true,
+         "expect_matches": 1,
+         "op": "replace",
+         "pattern": "// BEGIN legacy.*?// END legacy",
+         "replacement": "// removed"
+        }
+       ],
+       "path": "src/lib.rs"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "files": {
+     "items": {
+      "$ref": "#/definitions/UpdateFileSpec"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "files"
+   ],
+   "title": "UpdateFileInput",
+   "type": "object"
+  },
+  "description": "Anexando a detecção e as constantes do doctor"
+ },
+ {
+  "function_id": "coder::create-file",
+  "stringified": false,
+  "error": "coder::create-file: remote error (invocation_failed): serialization error: missing field `files`",
+  "arguments": {
+   "content": "#!/usr/bin/env python3\n\"\"\"A small, dependency-free arithmetic expression calculator.\"\"\"\n\nimport argparse\nimport sys\n\n\nclass ParseError(ValueError):\n    \"\"\"Raised when an expression is not valid calculator syntax.\"\"\"\n\n\nclass Parser:\n    def __init__(self, text):\n        self.text = text\n        self.pos = 0\n\n    def parse(self):\n        value = self.expression()\n        self.skip_whitespace()\n        if self.pos != len(self.text):\n            raise ParseError(f\"unexpected character {self.text[self.pos]!r}\")\n        return value\n\n    def skip_whitespace(self):\n        while self.pos < len(self.text) and self.text[self.pos].isspace():\n            self.pos += 1\n\n    def expression(self):\n        value = self.term()\n        while True:\n            self.skip_whitespace()\n            if self.consume(\"+\"):\n                value += self.term()\n            elif self.consume(\"-\"):\n                value -= self.term()\n            else:\n                return value\n\n    def term(self):\n        value = self.factor()\n        while True:\n            self.skip_whitespace()\n            if self.consume(\"*\"):\n                value *= self.factor()\n            elif self.consume(\"/\"):\n                divisor = self.factor()\n                if divisor == 0:\n                    raise ParseError(\"division by zero\")\n                value /= divisor\n            else:\n                return value\n\n    def factor(self):\n        self.skip_whitespace()\n        if self.consume(\"+\"):\n            return self.factor()\n        if self.consume(\"-\"):\n            return -self.factor()\n        if self.consume(\"(\"):\n            value = self.expression()\n            self.skip_whitespace()\n            if not self.consume(\")\"):\n                raise ParseError(\"missing closing parenthesis\")\n            return value\n\n        start = self.pos\n        digits = False\n        while self.pos < len(self.text) and self.text[self.pos].isdigit():\n            self.pos += 1\n            digits = True\n        if self.pos < len(self.text) and self.text[self.pos] == \".\":\n            self.pos += 1\n            while self.pos < len(self.text) and self.text[self.pos].isdigit():\n                self.pos += 1\n                digits = True\n        if not digits:\n            if self.pos >= len(self.text):\n                raise ParseError(\"expected a number\")\n            raise ParseError(f\"unexpected character {self.text[self.pos]!r}\")\n        return float(self.text[start:self.pos])\n\n    def consume(self, character):\n        if self.pos < len(self.text) and self.text[self.pos] == character:\n            self.pos += 1\n            return True\n        return False\n\n\ndef format_result(value):\n    if value.is_integer():\n        return str(int(value))\n    return str(value)\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(\n        description=\"Safely evaluate an arithmetic expression using +, -, *, /, and parentheses.\"\n    )\n    parser.add_argument(\"expression\", help=\"arithmetic expression to evaluate\")\n    args = parser.parse_args(argv)\n\n    if not args.expression.strip():\n        parser.error(\"expression must not be empty\")\n    try:\n        result = Parser(args.expression).parse()\n    except ParseError as error:\n        parser.error(str(error))\n    print(format_result(result))\n    return 0\n\n\nif __name__ == \"__main__\":\n    try:\n        sys.exit(main())\n    except (BrokenPipeError, KeyboardInterrupt):\n        sys.exit(1)\n",
+   "path": "/tmp/agents-demo-calc/calc.py"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "CreateFileSpec": {
+     "properties": {
+      "content": {
+       "type": "string"
+      },
+      "expected_revision": {
+       "default": null,
+       "description": "Optimistic-concurrency guard for an overwrite: the `revision` from coder::read-file; if the content changed the entry fails C221 unwritten.",
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "mode": {
+       "default": "0644",
+       "description": "Octal permission bits as a string, e.g. \"0644\". Defaults to \"0644\".",
+       "type": "string"
+      },
+      "overwrite": {
+       "default": false,
+       "description": "When false (the default), refuse to write if `path` already exists.",
+       "type": "boolean"
+      },
+      "parents": {
+       "default": true,
+       "description": "Create missing parent directories. Defaults to true so a single `coder::create-file` call can scaffold a fresh subtree.",
+       "type": "boolean"
+      },
+      "path": {
+       "description": "File to create.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "content",
+      "path"
+     ],
+     "type": "object"
+    }
+   },
+   "examples": [
+    {
+     "files": [
+      {
+       "content": "pub mod utils;\n",
+       "overwrite": false,
+       "path": "src/lib.rs"
+      },
+      {
+       "content": "# scratch notes\n",
+       "overwrite": true,
+       "path": "/tmp/scratch/notes.md"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "files": {
+     "items": {
+      "$ref": "#/definitions/CreateFileSpec"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "files"
+   ],
+   "title": "CreateFileInput",
+   "type": "object"
+  },
+  "description": "Create the calculator script"
+ },
+ {
+  "function_id": "engine::register_trigger",
+  "stringified": false,
+  "error": "invalid subscribe arguments: unknown field `expires_at`, expected one of `once`, `max_fires`, `expires_in_ms`",
+  "arguments": {
+   "config": {
+    "scope": "calc-build-console-27508908-39e0-4419-af31-4e187aa130d5"
+   },
+   "label": "Calculator follow-up completion",
+   "lifecycle": {
+    "expires_at": 4102444800000
+   },
+   "metadata": {
+    "action": "Calculator follow-up specialist completed"
+   },
+   "once": true,
+   "trigger_type": "state"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "properties": {
+    "_caller_worker_id": {
+     "default": null,
+     "description": "Injected by the engine from the calling worker. Its connection namespace is where the binding is at home: the target `function_id` resolves there and the provider lookup starts there. Not an owner — the binding outlives the connection. Absent for in-process callers, whose home is `default`.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "config": {
+     "default": null,
+     "description": "Trigger-type-specific configuration, passed through verbatim."
+    },
+    "function_id": {
+     "description": "The function the fire is delivered to. The trigger binds directly to it; `metadata` is delivered alongside the payload as a distinct argument.",
+     "type": "string"
+    },
+    "metadata": {
+     "default": null,
+     "description": "Arbitrary metadata delivered to the target handler as a distinct argument (not folded into the payload) so a (possibly shared) target function can recover per-trigger context the engine routing otherwise drops."
+    },
+    "trigger_namespace": {
+     "default": null,
+     "description": "Namespace to find the trigger type's provider in. Absent asks the engine to resolve it: the caller's connection namespace first, then [`crate::protocol::DEFAULT_NAMESPACE`].",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "trigger_type": {
+     "description": "Trigger type to bind (e.g. `cron`, `state`, `stream`, or a custom worker trigger type).",
+     "type": "string"
+    }
+   },
+   "required": [
+    "function_id",
+    "trigger_type"
+   ],
+   "title": "RegisterTriggerInput",
+   "type": "object"
+  },
+  "description": "Arming follow-up completion wake"
+ },
+ {
+  "function_id": "coder::update-file",
+  "stringified": false,
+  "error": "coder::update-file: remote error (invocation_failed): serialization error: coder::update-file: invalid `files` entry: missing field `op`",
+  "arguments": {
+   "files": [
+    {
+     "ops": [
+      {
+       "at_line": 5,
+       "content": "import time\n"
+      },
+      {
+       "content": "def initialize_schema() -> None:\n    \"\"\"Create analytics storage without making a transient dependency fatal.\"\"\"\n    while not stopped.is_set():\n        try:\n            worker.trigger(\n                {\n                    \"function_id\": \"database::execute\",\n                    \"payload\": {\n                        \"db\": DATABASE,\n                        \"sql\": \"\"\"\n                            CREATE TABLE IF NOT EXISTS daily_link_counts (\n                                day TEXT PRIMARY KEY,\n                                count INTEGER NOT NULL DEFAULT 0\n                            )\n                        \"\"\",\n                        \"params\": [],\n                    },\n                }\n            )\n            return\n        except Exception as error:\n            print(f\"analytics database not ready; retrying: {error}\", flush=True)\n            time.sleep(1)\n",
+       "from_line": 62,
+       "op": "update_lines",
+       "to_line": 77
+      }
+     ],
+     "path": "/tmp/scratch"
+    },
+    {
+     "ops": [
+      {
+       "at_line": 83,
+       "content": "initialize_schema()\n\n"
+      }
+     ],
+     "path": "/tmp/scratch"
+    }
+   ]
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "UpdateFileSpec": {
+     "properties": {
+      "ops": {
+       "items": {
+        "$ref": "#/definitions/UpdateOp"
+       },
+       "type": "array"
+      },
+      "path": {
+       "description": "File to edit.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "ops",
+      "path"
+     ],
+     "type": "object"
+    },
+    "UpdateOp": {
+     "oneOf": [
+      {
+       "description": "Insert `content` before line `at_line` (1-based). `at_line = lines+1` appends to end of file.",
+       "properties": {
+        "at_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "content": {
+         "type": "string"
+        },
+        "op": {
+         "enum": [
+          "insert"
+         ],
+         "type": "string"
+        }
+       },
+       "required": [
+        "at_line",
+        "content",
+        "op"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Delete lines `from_line..=to_line` (1-based, inclusive).",
+       "properties": {
+        "from_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "op": {
+         "enum": [
+          "remove"
+         ],
+         "type": "string"
+        },
+        "to_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "from_line",
+        "op",
+        "to_line"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Overwrite lines `from_line..=to_line` with `content`.",
+       "properties": {
+        "content": {
+         "type": "string"
+        },
+        "from_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "op": {
+         "enum": [
+          "update_lines"
+         ],
+         "type": "string"
+        },
+        "to_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "content",
+        "from_line",
+        "op",
+        "to_line"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Replace all regex matches in the file body (after line ops).",
+       "properties": {
+        "dot_matches_newline": {
+         "default": false,
+         "description": "When true `.` also matches newline, so a short pattern like `start.*?end` spans lines; by default a multi-line pattern matches nothing.",
+         "type": "boolean"
+        },
+        "expect_matches": {
+         "default": null,
+         "description": "Expected match count; a mismatch fails this file with C210 and writes nothing (0 asserts absence). Omit to replace all matches.",
+         "format": "uint64",
+         "minimum": 0.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "ignore_case": {
+         "default": false,
+         "type": "boolean"
+        },
+        "op": {
+         "enum": [
+          "replace"
+         ],
+         "type": "string"
+        },
+        "pattern": {
+         "type": "string"
+        },
+        "replacement": {
+         "description": "Substitution text; $1/${1}/$name/${name} expand captures ($0 = whole match), a literal $ is written $$ (`$${name}`). Unknown references fail C210.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "op",
+        "pattern",
+        "replacement"
+       ],
+       "type": "object"
+      }
+     ]
+    }
+   },
+   "examples": [
+    {
+     "files": [
+      {
+       "ops": [
+        {
+         "at_line": 1,
+         "content": "// generated by coder\n",
+         "op": "insert"
+        },
+        {
+         "content": "pub fn hello() {\n    println!(\"hello\");\n}\n",
+         "from_line": 5,
+         "op": "update_lines",
+         "to_line": 7
+        },
+        {
+         "dot_matches_newline": true,
+         "expect_matches": 1,
+         "op": "replace",
+         "pattern": "// BEGIN legacy.*?// END legacy",
+         "replacement": "// removed"
+        }
+       ],
+       "path": "src/lib.rs"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "files": {
+     "items": {
+      "$ref": "#/definitions/UpdateFileSpec"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "files"
+   ],
+   "title": "UpdateFileInput",
+   "type": "object"
+  },
+  "description": "Making analytics schema startup resilient"
+ },
+ {
+  "function_id": "coder::update-file",
+  "stringified": false,
+  "error": "coder::update-file: remote error (invocation_failed): serialization error: coder::update-file: invalid file entry: missing field `ops`",
+  "arguments": {
+   "content": "#!/usr/bin/env python3\n\"\"\"Small, dependency-free command-line expression calculator.\"\"\"\n\nimport math\nimport re\nimport sys\n\nMAX_EXPRESSION_LENGTH = 100000\nMAX_TOKENS = 50000\nNUMBER = re.compile(r\"(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?\")\n\n\nclass CalculatorError(Exception):\n    \"\"\"An expected user-input or arithmetic error.\"\"\"\n\n\ndef tokenize(text):\n    tokens = []\n    position = 0\n    while position < len(text):\n        if text[position].isspace():\n            position += 1\n            continue\n        match = NUMBER.match(text, position)\n        if match:\n            tokens.append((\"number\", match.group()))\n            position = match.end()\n        elif text[position] in \"+-*/()\":\n            tokens.append((text[position], text[position]))\n            position += 1\n        else:\n            raise CalculatorError(\"invalid character\")\n        if len(tokens) > MAX_TOKENS:\n            raise CalculatorError(\"expression is too long\")\n    return tokens\n\n\ndef evaluate(text):\n    if not text.strip():\n        raise CalculatorError(\"expression is empty\")\n    if len(text) > MAX_EXPRESSION_LENGTH:\n        raise CalculatorError(\"expression is too long\")\n\n    output = []\n    operators = []\n    expect_operand = True\n    precedence = {\"u+\": 3, \"u-\": 3, \"*\": 2, \"/\": 2, \"+\": 1, \"-\": 1}\n    right_associative = {\"u+\", \"u-\"}\n\n    for kind, value in tokenize(text):\n        if kind == \"number\":\n            if not expect_operand:\n                raise CalculatorError(\"missing operator\")\n            output.append((kind, value))\n            expect_operand = False\n        elif kind == \"(\":\n            if not expect_operand:\n                raise CalculatorError(\"missing operator\")\n            operators.append(kind)\n        elif kind == \")\":\n            if expect_operand:\n                raise CalculatorError(\"unexpected closing parenthesis\")\n            while operators and operators[-1] != \"(\":\n                output.append((\"operator\", operators.pop()))\n            if not operators:\n                raise CalculatorError(\"unmatched closing parenthesis\")\n            operators.pop()\n            expect_operand = False\n        else:\n            operator = kind\n            if expect_operand:\n                if operator not in \"+-\":\n                    raise CalculatorError(\"operator needs a number\")\n                operator = \"u\" + operator\n            while (operators and operators[-1] != \"(\" and\n                   (precedence[operators[-1]] > precedence[operator] or\n                    (precedence[operators[-1]] == precedence[operator] and\n                     operator not in right_associative))):\n                output.append((\"operator\", operators.pop()))\n            operators.append(operator)\n            expect_operand = True\n\n    if expect_operand:\n        raise CalculatorError(\"expression ends with an operator\")\n    while operators:\n        if operators[-1] == \"(\":\n            raise CalculatorError(\"unmatched opening parenthesis\")\n        output.append((\"operator\", operators.pop()))\n\n    values = []\n    for kind, value in output:\n        if kind == \"number\":\n            try:\n                number = float(value)\n            except ValueError:\n                raise CalculatorError(\"invalid number\")\n            if not math.isfinite(number):\n                raise CalculatorError(\"number is not finite\")\n            values.append(number)\n            continue\n        if value in (\"u+\", \"u-\"):\n            if not values:\n                raise CalculatorError(\"invalid expression\")\n            operand = values.pop()\n            values.append(operand if value == \"u+\" else -operand)\n            continue\n        if len(values) < 2:\n            raise CalculatorError(\"invalid expression\")\n        right = values.pop()\n        left = values.pop()\n        if value == \"+\":\n            result = left + right\n        elif value == \"-\":\n            result = left - right\n        elif value == \"*\":\n            result = left * right\n        else:\n            if right == 0:\n                raise CalculatorError(\"division by zero\")\n            result = left / right\n        if not math.isfinite(result):\n            raise CalculatorError(\"result is not finite\")\n        values.append(result)\n    if len(values) != 1:\n        raise CalculatorError(\"invalid expression\")\n    return values[0]\n\n\ndef main(argv):\n    if len(argv) != 2:\n        print(\"usage: calc.py EXPR\", file=sys.stderr)\n        return 2\n    try:\n        result = evaluate(argv[1])\n    except CalculatorError as error:\n        print(f\"error: {error}\", file=sys.stderr)\n        return 2\n    if result == int(result):\n        print(int(result))\n    else:\n        print(result)\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main(sys.argv))\n",
+   "path": "/tmp/agents-demo-calc/calc.py"
+  },
+  "schema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "UpdateFileSpec": {
+     "properties": {
+      "ops": {
+       "items": {
+        "$ref": "#/definitions/UpdateOp"
+       },
+       "type": "array"
+      },
+      "path": {
+       "description": "File to edit.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "ops",
+      "path"
+     ],
+     "type": "object"
+    },
+    "UpdateOp": {
+     "oneOf": [
+      {
+       "description": "Insert `content` before line `at_line` (1-based). `at_line = lines+1` appends to end of file.",
+       "properties": {
+        "at_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "content": {
+         "type": "string"
+        },
+        "op": {
+         "enum": [
+          "insert"
+         ],
+         "type": "string"
+        }
+       },
+       "required": [
+        "at_line",
+        "content",
+        "op"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Delete lines `from_line..=to_line` (1-based, inclusive).",
+       "properties": {
+        "from_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "op": {
+         "enum": [
+          "remove"
+         ],
+         "type": "string"
+        },
+        "to_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "from_line",
+        "op",
+        "to_line"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Overwrite lines `from_line..=to_line` with `content`.",
+       "properties": {
+        "content": {
+         "type": "string"
+        },
+        "from_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "op": {
+         "enum": [
+          "update_lines"
+         ],
+         "type": "string"
+        },
+        "to_line": {
+         "format": "uint32",
+         "minimum": 0.0,
+         "type": "integer"
+        }
+       },
+       "required": [
+        "content",
+        "from_line",
+        "op",
+        "to_line"
+       ],
+       "type": "object"
+      },
+      {
+       "description": "Replace all regex matches in the file body (after line ops).",
+       "properties": {
+        "dot_matches_newline": {
+         "default": false,
+         "description": "When true `.` also matches newline, so a short pattern like `start.*?end` spans lines; by default a multi-line pattern matches nothing.",
+         "type": "boolean"
+        },
+        "expect_matches": {
+         "default": null,
+         "description": "Expected match count; a mismatch fails this file with C210 and writes nothing (0 asserts absence). Omit to replace all matches.",
+         "format": "uint64",
+         "minimum": 0.0,
+         "type": [
+          "integer",
+          "null"
+         ]
+        },
+        "ignore_case": {
+         "default": false,
+         "type": "boolean"
+        },
+        "op": {
+         "enum": [
+          "replace"
+         ],
+         "type": "string"
+        },
+        "pattern": {
+         "type": "string"
+        },
+        "replacement": {
+         "description": "Substitution text; $1/${1}/$name/${name} expand captures ($0 = whole match), a literal $ is written $$ (`$${name}`). Unknown references fail C210.",
+         "type": "string"
+        }
+       },
+       "required": [
+        "op",
+        "pattern",
+        "replacement"
+       ],
+       "type": "object"
+      }
+     ]
+    }
+   },
+   "examples": [
+    {
+     "files": [
+      {
+       "ops": [
+        {
+         "at_line": 1,
+         "content": "// generated by coder\n",
+         "op": "insert"
+        },
+        {
+         "content": "pub fn hello() {\n    println!(\"hello\");\n}\n",
+         "from_line": 5,
+         "op": "update_lines",
+         "to_line": 7
+        },
+        {
+         "dot_matches_newline": true,
+         "expect_matches": 1,
+         "op": "replace",
+         "pattern": "// BEGIN legacy.*?// END legacy",
+         "replacement": "// removed"
+        }
+       ],
+       "path": "src/lib.rs"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "files": {
+     "items": {
+      "$ref": "#/definitions/UpdateFileSpec"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "files"
+   ],
+   "title": "UpdateFileInput",
+   "type": "object"
+  },
+  "description": "Minimaal aanpassen van numerieke validatie"
+ }
+]

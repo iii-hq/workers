@@ -202,6 +202,38 @@ fn origin(turn_id: &str) -> Value {
 
 /// `{ turn_id }` with hook annotations merged in (audit trail — harness.md §
 /// Cautions: mutations are silent; annotations record what ran).
+/// The `description` the model gave an `agent_trigger` call (dropped by
+/// `plan_calls`): the call's stated purpose, used as reconciliation intent.
+fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
+    content.iter().find_map(|block| match block {
+        ContentBlock::FunctionCall { id, arguments, .. } if id == call_id => {
+            arguments.get("description").and_then(Value::as_str)
+        }
+        _ => None,
+    })
+}
+
+/// Tell the model which arguments the harness repaired before the call ran
+/// (MOT-4847) and keep the repair on the entry origin. An
+/// `engine::functions::info` result stays byte-identical to its contract,
+/// because the contract ledger digests it.
+fn note_reconciled(
+    data: &mut trigger::ResultData,
+    annotations: &mut serde_json::Map<String, Value>,
+    reconciled: Option<&crate::reconcile::Reconciled>,
+    function_id: &str,
+) {
+    let Some(reconciled) = reconciled else {
+        return;
+    };
+    annotations.insert("reconciled".into(), json!(reconciled.changes));
+    if function_id != "engine::functions::info" {
+        data.content.push(ContentBlock::text(crate::reconcile::note(
+            &reconciled.changes,
+        )));
+    }
+}
+
 fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("turn_id".to_string(), json!(turn_id));
@@ -1438,13 +1470,31 @@ async fn finish_step(
                 continue;
             }
 
+            // Reconcile malformed arguments against the target's schema
+            // (MOT-4847) before hooks and approvers see them, so they review
+            // what will actually run. Fail-open: `None` dispatches the
+            // model's arguments unchanged. The breaker above keys on the
+            // model's original arguments, so a repaired call that still fails
+            // the same way is still counted.
+            let reconciled = crate::reconcile::reconcile(
+                deps,
+                &cfg,
+                &call.function_id,
+                &call.arguments,
+                call_description(&outcome.message.content, &call.id),
+            )
+            .await;
+            let call_args = reconciled
+                .as_ref()
+                .map_or(&call.arguments, |r| &r.arguments);
+
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
             let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
-                call.arguments.clone(),
+                call_args.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
                 deps.hooks.filesystem_boundary(&call.function_id),
@@ -1521,7 +1571,7 @@ async fn finish_step(
             // Guard failures skip post_trigger.
             if call.function_id == crate::functions::SPAWN_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                let (data, child) = match crate::subagent::spawn_from_turn(
+                let (mut data, child) = match crate::subagent::spawn_from_turn(
                     deps, &record, &call.id, &eff_args,
                 )
                 .await
@@ -1529,13 +1579,20 @@ async fn finish_step(
                     Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
                     Err(data) => (data, None),
                 };
+                let mut spawn_annotations = serde_json::Map::new();
+                note_reconciled(
+                    &mut data,
+                    &mut spawn_annotations,
+                    reconciled.as_ref(),
+                    &call.function_id,
+                );
                 append_function_result(
                     &session,
                     &record,
                     call,
                     &data,
                     &entry_id,
-                    &origin(&record.turn_id),
+                    &origin_with(&record.turn_id, &spawn_annotations),
                 )
                 .await?;
                 trigger::apply_contract_updates_after_append(
@@ -1639,7 +1696,7 @@ async fn finish_step(
             for (k, v) in post_ann {
                 annotations.insert(k, v);
             }
-            let (data, contract_updates) = match info_raw {
+            let (mut data, contract_updates) = match info_raw {
                 Some(raw) => trigger::prepare_info_result(
                     &call.id,
                     &eff_args,
@@ -1649,8 +1706,25 @@ async fn finish_step(
                 ),
                 None => (data, Vec::new()),
             };
+            // The breaker digests the target's own result, before the harness
+            // adds its reconciliation note or schema diagnosis.
             if let Some(key) = &failure_key {
                 trigger::note_call_result(&mut record.failed_calls, key, &data);
+            }
+            note_reconciled(
+                &mut data,
+                &mut annotations,
+                reconciled.as_ref(),
+                &call.function_id,
+            );
+            // A failed call whose arguments still violate the schema: name
+            // the violations (the target's serde error names no field).
+            if data.is_error && call.function_id != "engine::functions::info" {
+                if let Some(diagnosis) =
+                    crate::reconcile::diagnose(deps, &cfg, &call.function_id, call_args).await
+                {
+                    data.content.push(ContentBlock::text(diagnosis));
+                }
             }
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);

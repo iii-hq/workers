@@ -40,6 +40,7 @@ No provider key or network access is required.
 | INT-030 | `oversized-function-result` | direct | a function result over the capture-time byte cap (`max_result_bytes`) reaches the model as an elision marker and the turn completes with the stack still connected |
 | INT-031 | `agent-shared-prompt-prefix` | direct | two sessions running as the same directory profile (a send and a spawned peer) send the router byte-identical `system_sections[0]` and `cache_intent.surface_digest`, differ only in the per-session tail, and keep the flat `system_prompt` equal to the sections joined |
 | INT-032 | `repeated-failed-call-breaker` | direct | after a function fails twice with the identical error (same function and arguments), the third identical call is answered locally with `is_error` and `details.error: "repeated_failure"`; the target runs exactly twice and the turn completes |
+| INT-033 | `call-argument-reconciliation` | direct | a call whose arguments carry stringified JSON the schema rejects (`"true"`, `"5"`) is repaired before dispatch: the target receives typed values, the call succeeds first time, and the result notes the repair (MOT-4847) |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |

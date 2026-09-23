@@ -17,6 +17,19 @@ use serde_json::Value;
 
 use crate::types::turn::FunctionPolicy;
 
+/// How [`WorkerConfig::call_reconciliation`] repairs malformed call arguments.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CallReconciliation {
+    /// Dispatch arguments exactly as the model wrote them.
+    Off,
+    /// Lossless repairs only: parse stringified JSON the schema rejects.
+    Coerce,
+    /// `coerce`, then ask the judge worker (when deployed) about the rest.
+    #[default]
+    Judge,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
@@ -62,6 +75,27 @@ pub struct WorkerConfig {
     /// sends the flat string only.
     #[serde(default = "default_prompt_cache_sections")]
     pub prompt_cache_sections: bool,
+
+    /// Repair malformed function-call arguments against the target's request
+    /// schema before dispatch (MOT-4847). `coerce` parses values the model
+    /// sent as stringified JSON (`"true"`, `"[...]"`, `"{...}"`) where the
+    /// schema wants another type; `judge` also asks `judge::evaluate`, when
+    /// it is deployed, to settle renamed keys, off-enum values and unknown
+    /// fields; `off` dispatches arguments exactly as written.
+    #[serde(default)]
+    pub call_reconciliation: CallReconciliation,
+
+    /// Minimum judge probability for a `judge` repair (renaming a misnamed
+    /// argument, replacing an off-enum value, dropping unknown arguments) to
+    /// be applied. Repairs are also only applied when the result validates.
+    #[serde(default = "default_call_reconciliation_judge_threshold")]
+    pub call_reconciliation_judge_threshold: f64,
+
+    /// Budget for one reconciliation `judge::evaluate`, in ms. It runs only
+    /// for calls whose arguments fail validation; a slower or failing judge
+    /// leaves the call as written and is skipped for 30 s.
+    #[serde(default = "default_call_reconciliation_judge_timeout_ms")]
+    pub call_reconciliation_judge_timeout_ms: u64,
 
     /// TTL for `harness_idem` webhook-dedupe rows. Seconds.
     #[serde(default = "default_idem_ttl_secs")]
@@ -249,6 +283,12 @@ fn default_max_transient_resumes() -> u32 {
 fn default_max_result_bytes() -> usize {
     262_144
 }
+fn default_call_reconciliation_judge_threshold() -> f64 {
+    0.8
+}
+fn default_call_reconciliation_judge_timeout_ms() -> u64 {
+    2_000
+}
 fn default_prompt_cache_sections() -> bool {
     true
 }
@@ -327,6 +367,9 @@ impl Default for WorkerConfig {
             max_transient_resumes: default_max_transient_resumes(),
             max_result_bytes: default_max_result_bytes(),
             prompt_cache_sections: default_prompt_cache_sections(),
+            call_reconciliation: CallReconciliation::default(),
+            call_reconciliation_judge_threshold: default_call_reconciliation_judge_threshold(),
+            call_reconciliation_judge_timeout_ms: default_call_reconciliation_judge_timeout_ms(),
             idem_ttl_secs: default_idem_ttl_secs(),
             session_timeout_ms: default_session_timeout_ms(),
             context_timeout_ms: default_context_timeout_ms(),
