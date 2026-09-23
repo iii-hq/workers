@@ -37,6 +37,7 @@ packages:
   - github/ui
   - llm-router/ui
   - provider-openai-codex/ui
+  - provider-openai/ui
   - tailscale/ui
   - voice/ui
   - vscode/ui

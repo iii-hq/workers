@@ -1,5 +1,5 @@
 {
-  "name": "@iii-workers/provider-openai-codex-ui",
+  "name": "@iii-workers/provider-openai-ui",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -7,7 +7,8 @@
     "build": "tsc --noEmit && node build.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm dlx @biomejs/biome@2.4.10 ci .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "watch": "node build.mjs --watch"
   },
   "dependencies": {
     "@iii-dev/console-ui": "workspace:*"

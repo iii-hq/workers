@@ -2,6 +2,9 @@
 //! ids, display names, context/output limits, capability flags — comes live
 //! from `GET /v1/models` (see discovery.rs); the API does not expose pricing,
 //! so this table fills that one gap.
+//!
+//! Missing prices leave cost enrichment unavailable and prevent
+//! `max_cost_usd` budgets; they never hide a model from the live catalog.
 use llm_router::types::model::Pricing;
 
 /// Cache reads are priced per model (0.1x input on most, deeper on newer
@@ -22,9 +25,8 @@ fn price(input: f64, output: f64, cache_read: f64) -> Pricing {
 pub fn pricing_for(model_id: &str) -> Option<Pricing> {
     match base_id(model_id) {
         "claude-opus-5-5" => Some(price(4.0, 20.0, 0.20)),
-        "claude-opus-5" | "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6" => {
-            Some(price(5.0, 25.0, 0.50))
-        }
+        "claude-opus-5" | "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6"
+        | "claude-opus-4-5" => Some(price(5.0, 25.0, 0.50)),
         "claude-sonnet-5" => Some(price(2.0, 10.0, 0.20)),
         "claude-sonnet-4-6" | "claude-sonnet-4-5" => Some(price(3.0, 15.0, 0.30)),
         "claude-haiku-4-5" => Some(price(1.0, 5.0, 0.10)),
@@ -75,9 +77,13 @@ mod tests {
             ("claude-opus-5-5", expect(4.0, 20.0, 0.20, 5.0)),
             ("claude-opus-5-5-20260901", expect(4.0, 20.0, 0.20, 5.0)),
             ("claude-opus-5", expect(5.0, 25.0, 0.50, 6.25)),
+            ("claude-opus-4-5", expect(5.0, 25.0, 0.50, 6.25)),
+            ("claude-sonnet-4-6", expect(3.0, 15.0, 0.30, 3.75)),
             ("claude-sonnet-5", expect(2.0, 10.0, 0.20, 2.5)),
             ("claude-fable-5-1", expect(10.0, 50.0, 0.25, 12.5)),
             ("claude-fable-5", expect(10.0, 50.0, 1.0, 12.5)),
+            ("claude-mythos-5-1", expect(10.0, 50.0, 0.25, 12.5)),
+            ("claude-mythos-5", expect(10.0, 50.0, 1.0, 12.5)),
         ] {
             assert_eq!(pricing_for(id), Some(pricing), "{id}");
         }
@@ -88,5 +94,7 @@ mod tests {
         assert_eq!(base_id("claude-sonnet-4-6-20260115"), "claude-sonnet-4-6");
         assert_eq!(base_id("claude-sonnet-4-6"), "claude-sonnet-4-6");
         assert_eq!(base_id("claude-haiku-4-5"), "claude-haiku-4-5");
+        assert_eq!(base_id("claude-opus-5-5"), "claude-opus-5-5");
+        assert_eq!(base_id("claude-opus-5-5-20260901"), "claude-opus-5-5");
     }
 }

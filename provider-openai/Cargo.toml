@@ -23,17 +23,31 @@ llm-router = { path = "../llm-router", default-features = false }
 # Must match llm-router's pin (one iii-sdk per graph). The SDK provides the
 # live span-start push used to render `provider::openai::stream` output.
 iii-sdk = "=0.22.1-alpha.25"
+# Injected console UI (the image::generate chat card); see src/ui.rs.
+iii-console-ui = { path = "../crates/console-ui", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Must stay on the same schemars major as iii-sdk so the derived
 # request/response schemas match what the SDK emits at registration.
 schemars = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "fs"] }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+# provider::openai::image::generate: decode the Images API's b64_json, name
+# the persisted file uniquely, and resolve data/ against III_COMPOSE_DIR.
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+iii-worker-paths = { path = "../crates/worker-paths" }
+# Inline preview: the harness counts a result's base64 twice against its
+# 256 KiB cap, so the chat gets a downscaled JPEG while data/ keeps the original.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 [dev-dependencies]
-uuid = { version = "1", features = ["v4"] }
+
+[features]
+# The injectable console UI (ui.rs + the pnpm bundle in build.rs).
+default = ["console-ui"]
+console-ui = ["dep:iii-console-ui"]
