@@ -249,11 +249,11 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      # judge-semif compiles llama.cpp (cmake) and its bindings (bindgen needs
-      # libclang); Linux x86_64 always builds the Vulkan module (loader
-      # headers, SPIR-V headers, glslc).
-      - name: Provision llama.cpp build tools (judge-semif)
-        if: matrix.worker == 'judge-semif'
+      # judge-semif and judge-laya compile llama.cpp (cmake) and its bindings
+      # (bindgen needs libclang) through crates/llama-runtime; Linux x86_64
+      # always builds the Vulkan module (loader headers, SPIR-V headers, glslc).
+      - name: Provision llama.cpp build tools (llama-runtime workers)
+        if: matrix.worker == 'judge-semif' || matrix.worker == 'judge-laya'
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
 
       - name: Run clippy
@@ -706,8 +706,8 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      - name: Provision llama.cpp build tools (judge-semif)
-        if: steps.optout.outputs.skip != 'true' && matrix.worker == 'judge-semif'
+      - name: Provision llama.cpp build tools (llama-runtime workers)
+        if: steps.optout.outputs.skip != 'true' && (matrix.worker == 'judge-semif' || matrix.worker == 'judge-laya')
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
 
       # Build with default features so we boot the same artifact that ships
@@ -788,10 +788,13 @@ jobs:
             echo "Using interface-collection config: $WORKER/config.collect.yaml"
             collect_args+=(--config ./config.collect.yaml)
           fi
-          # judge-semif registers its functions only once a GGUF loads: boot it
-          # on the committed tiny fixture instead of downloading 3 GB.
+          # The llama.cpp workers register their functions only once a model
+          # loads: boot them on their committed tiny fixtures instead of
+          # downloading gigabytes.
           if [[ "$WORKER" == judge-semif ]]; then
             export III_SEMIF_GGUF="$PWD/judge-semif/tests/fixtures/tiny-qwen3.gguf"
+          elif [[ "$WORKER" == judge-laya ]]; then
+            export III_LAYA_CHECKPOINT_DIR="$PWD/judge-laya/tests/fixtures/tiny"
           fi
           # Run from inside the worker dir — this is what makes a relative
           # default db path (sqlite:./data/iii.db) resolve against a clean

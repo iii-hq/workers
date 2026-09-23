@@ -26,7 +26,7 @@ const limitFields = [
   { field: 'max_request_bytes', label: 'Maximum request bytes', fallback: 8388608, description: 'Maximum encoded request size. Clear to use 8388608 (8 MiB).' },
   { field: 'max_timeout_ms', label: 'Maximum timeout (ms)', fallback: 300000, description: 'Maximum caller timeout. Clear to use 300000 (5 minutes).' },
 ]
-const knownFields = ['model', 'revision', 'threads', 'preload', 'shortlist_k', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
+const knownFields = ['model', 'revision', 'threads', 'gpu_layers', 'preload', 'shortlist_k', ...routingFlags.map(({ field }) => field), ...limitFields.map(({ field }) => field)]
 
 interface ModelCard {
   name: string
@@ -89,12 +89,12 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
     else next[field] = raw
     props.onChange(next)
   }
-  const setNumber = (field: string, raw: string) => {
+  const setNumber = (field: string, raw: string, allowZero = false) => {
     const next = { ...value }
     if (raw === '') delete next[field]
     else {
       const number = Number(raw)
-      if (!Number.isSafeInteger(number) || number <= 0) return
+      if (!Number.isSafeInteger(number) || number < (allowZero ? 0 : 1)) return
       next[field] = number
     }
     props.onChange(next)
@@ -192,6 +192,25 @@ export function LayaConfigForm({ iii, ...props }: ConfigFormProps & { iii: Engin
                 placeholder="8"
                 value={typeof value.threads === 'number' ? String(value.threads) : ''}
                 onChange={(next) => setNumber('threads', next)}
+              />
+            )}
+          />
+          <SettingsField
+            id="laya-cfg-gpu_layers"
+            field="gpu_layers"
+            label="GPU layers"
+            description="Encoder layers offloaded to the GPU in Vulkan or Metal builds, applied at the next start. Clear to offload every layer when a GPU is present; 0 keeps the encoder on the CPU."
+            error={props.errors?.get('/gpu_layers')}
+            renderControl={(controlProps) => (
+              <Input
+                {...controlProps}
+                type="number"
+                min={0}
+                step={1}
+                aria-label="GPU layers"
+                placeholder="all"
+                value={typeof value.gpu_layers === 'number' ? String(value.gpu_layers) : ''}
+                onChange={(next) => setNumber('gpu_layers', next, true)}
               />
             )}
           />

@@ -211,8 +211,9 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "lsp",
         "sandbox-code-runner",
         "ide",
-        # New worker, never published for Windows: llama.cpp from source.
+        # New workers, never published for Windows: llama.cpp from source.
         "judge-semif",
+        "judge-laya",
         "voice",
         "workflow",
     }

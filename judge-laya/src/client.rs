@@ -6,6 +6,7 @@ use crate::{
     cancellation::{CallGuard, CancellationRegistry},
     download::Checkpoint,
     encode::{render_options, serialize_state, Encoder, QType, Question as Rendered},
+    engine::{self, Engine, States, Stop},
     lang,
     model::LayaModel,
 };
@@ -20,13 +21,13 @@ use judge_contract::{
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{
-    sync::Semaphore,
-    time::{timeout_at, Instant},
-};
+use tokio::time::{timeout_at, Instant};
 
 /// Operator limits. `max_request_bytes` bounds the encoded request; the model
 /// itself truncates each sequence to its context window.
@@ -76,15 +77,24 @@ struct Loaded {
     revision: Arc<str>,
     model: Arc<LayaModel>,
     encoder: Arc<Encoder>,
+    /// The checkpoint's encoder in llama.cpp.
+    engine: Engine,
 }
 
-/// Clone per handler; clones share the checkpoints, the forward permit and the
+/// Cancels the engine job when the call ends or its future is dropped.
+struct CancelOnDrop(Arc<AtomicBool>);
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Clone per handler; clones share the checkpoints, their engines and the
 /// cancellation registry.
 #[derive(Clone)]
 pub struct LayaClient {
     /// Loaded checkpoints; the first is the default.
     models: Arc<Vec<Loaded>>,
-    permit: Arc<Semaphore>,
     limits: Limits,
     routing: Routing,
     calls: Arc<CancellationRegistry>,
@@ -105,12 +115,14 @@ struct Row {
 }
 
 impl LayaClient {
-    /// Load checkpoints synchronously (seconds each: the weights are mmapped);
-    /// the first one is the default.
-    pub fn load(checkpoints: &[Checkpoint], device: Device) -> Result<Self> {
+    /// Load checkpoints synchronously (seconds each: the head is mmapped, the
+    /// encoder GGUF loads on its runtime thread); the first one is the default.
+    pub fn load(checkpoints: &[Checkpoint], options: engine::Options) -> Result<Self> {
         let mut models = Vec::with_capacity(checkpoints.len());
         for checkpoint in checkpoints {
-            let model = LayaModel::load(checkpoint, device.clone())?;
+            // The head is small: it stays on the CPU whatever runs the encoder.
+            let model = LayaModel::load(checkpoint, Device::Cpu)?;
+            let engine = Engine::spawn(&checkpoint.encoder_gguf, model.agent.max_len, options)?;
             let tokenizer = tokenizers::Tokenizer::from_file(&checkpoint.tokenizer)
                 .map_err(|e| anyhow!("tokenizer: {e}"))?;
             let encoder = Encoder::new(tokenizer, model.agent.max_len, model.agent.head_max_len)?;
@@ -119,6 +131,7 @@ impl LayaClient {
                 revision: checkpoint.revision.as_str().into(),
                 model: Arc::new(model),
                 encoder: Arc::new(encoder),
+                engine,
             });
         }
         if models.is_empty() {
@@ -126,8 +139,6 @@ impl LayaClient {
         }
         Ok(Self {
             models: Arc::new(models),
-            // One forward at a time: candle already uses every core for a batch.
-            permit: Arc::new(Semaphore::new(1)),
             limits: Limits::default(),
             routing: Routing::default(),
             calls: Arc::new(CancellationRegistry::default()),
@@ -154,6 +165,11 @@ impl LayaClient {
             caller_id: caller_id.map(Arc::from),
             ..self.clone()
         }
+    }
+
+    /// The device running the default checkpoint's encoder.
+    pub fn device(&self) -> &str {
+        &self.models[0].engine.device
     }
 
     /// The default checkpoint's name.
@@ -238,8 +254,8 @@ impl LayaClient {
             let mut per_row = Duration::ZERO;
             for group in rows.chunk_by(|a, b| a.model == b.model) {
                 let loaded = &self.models[group[0].model];
-                for batch in group.chunks(self.limits.batch_questions) {
-                    let model = loaded.model.clone();
+                let rows_per_batch = self.limits.batch_questions.min(loaded.engine.batch_rows);
+                for batch in group.chunks(rows_per_batch) {
                     let inputs: Vec<(Vec<u32>, Vec<usize>, u32)> = batch
                         .iter()
                         .map(|row| (row.ids.clone(), row.markers.clone(), row.qtype as u32))
@@ -247,11 +263,12 @@ impl LayaClient {
                     stats.attempts += 1;
                     let batch_started = Instant::now();
                     let logits = self
-                        .blocking(
+                        .forward(
+                            loaded,
+                            inputs,
                             deadline,
                             &mut guard,
                             per_row * batch.len() as u32,
-                            move || model.logits(&inputs),
                         )
                         .await?;
                     per_row = batch_started.elapsed() / batch.len() as u32;
@@ -378,34 +395,57 @@ impl LayaClient {
         0
     }
 
-    /// Run `work` on the blocking pool under the forward permit. The permit is
-    /// acquired within the deadline and travels with the work, so a timed-out
-    /// forward keeps the CPU but never overlaps the next caller's. Results are
-    /// atomic: work predicted (`estimate`) to miss the deadline is skipped.
-    async fn blocking<T: Send + 'static>(
+    /// Encode `rows` on the checkpoint's engine within the deadline. Results
+    /// are atomic: work predicted (`estimate`) to miss the deadline is skipped,
+    /// and the engine job is cancelled when this future ends or is dropped.
+    async fn states(
         &self,
+        loaded: &Loaded,
+        rows: Vec<Vec<u32>>,
         deadline: Instant,
         guard: &mut CallGuard,
         estimate: Duration,
-        work: impl FnOnce() -> Result<T> + Send + 'static,
-    ) -> Result<T, ErrorCode> {
-        let permit = timeout_at(deadline, self.permit.clone().acquire_owned())
-            .await
-            .map_err(|_| ErrorCode::Deadline)?
-            .map_err(|_| ErrorCode::Transport)?;
+    ) -> Result<States, ErrorCode> {
         if Instant::now() + estimate >= deadline {
             return Err(ErrorCode::Deadline);
         }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let _stop = CancelOnDrop(cancel.clone());
+        let reply = loaded.engine.states(rows, deadline.into_std(), cancel);
         tokio::select! {
             biased;
             _ = guard.cancelled() => Err(ErrorCode::Cancelled),
-            joined = timeout_at(deadline, tokio::task::spawn_blocking(move || { let _permit = permit; work() })) => {
-                joined
-                    .map_err(|_| ErrorCode::Deadline)?
-                    .map_err(|_| ErrorCode::Transport)?
-                    .map_err(|_| ErrorCode::InvalidResponse)
-            }
+            joined = timeout_at(deadline, reply) => match joined {
+                Err(_) => Err(ErrorCode::Deadline),
+                Ok(Err(_)) => Err(ErrorCode::Transport),
+                Ok(Ok(Ok(states))) => Ok(states),
+                Ok(Ok(Err(Stop::Deadline))) => Err(ErrorCode::Deadline),
+                Ok(Ok(Err(Stop::Cancelled))) => Err(ErrorCode::Cancelled),
+                Ok(Ok(Err(Stop::Failed))) => Err(ErrorCode::InvalidResponse),
+            },
         }
+    }
+
+    /// Option logits for `rows`: encoder states, then the head on the blocking pool.
+    async fn forward(
+        &self,
+        loaded: &Loaded,
+        rows: Vec<(Vec<u32>, Vec<usize>, u32)>,
+        deadline: Instant,
+        guard: &mut CallGuard,
+        estimate: Duration,
+    ) -> Result<Vec<Vec<f32>>, ErrorCode> {
+        let ids = rows.iter().map(|row| row.0.clone()).collect();
+        let states = self.states(loaded, ids, deadline, guard, estimate).await?;
+        let model = loaded.model.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mask, _) = LayaModel::mask(rows.iter().map(|row| row.0.as_slice()));
+            let h = model.states(states)?;
+            model.logits_from_states(&h, &mask, &rows)
+        })
+        .await
+        .map_err(|_| ErrorCode::Transport)?
+        .map_err(|_| ErrorCode::InvalidResponse)
     }
 
     /// laya's `predict_shortlist` ranking: cosine similarity between the
@@ -439,10 +479,20 @@ impl LayaClient {
             .map(|text| loaded.encoder.encode_text(&text, SHORTLIST_MAX_TOKENS))
             .collect::<Result<Vec<_>>>()
             .map_err(|_| ErrorCode::InvalidRequest)?;
-        let model = loaded.model.clone();
-        let vectors = self
-            .blocking(deadline, guard, Duration::ZERO, move || model.embed(&texts))
-            .await?;
+        let mut vectors = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(loaded.engine.batch_rows) {
+            let (mask, _) = LayaModel::mask(chunk.iter().map(Vec::as_slice));
+            let states = self
+                .states(loaded, chunk.to_vec(), deadline, guard, Duration::ZERO)
+                .await?;
+            let model = loaded.model.clone();
+            vectors.extend(
+                tokio::task::spawn_blocking(move || model.pooled(&model.states(states)?, &mask))
+                    .await
+                    .map_err(|_| ErrorCode::Transport)?
+                    .map_err(|_| ErrorCode::InvalidResponse)?,
+            );
+        }
         let (query, docs) = vectors.split_first().ok_or(ErrorCode::InvalidResponse)?;
         let norm = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
         let qn = norm(query);

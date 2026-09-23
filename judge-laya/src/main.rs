@@ -1,8 +1,7 @@
 //! Boot the laya provider: fetch the checkpoint, load it, register on the bus.
-use candle_core::Device;
 use clap::Parser;
 use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_laya::{configuration, download, register, LayaClient};
+use judge_laya::{configuration, download, engine, register, LayaClient};
 use std::{path::PathBuf, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -19,6 +18,9 @@ struct Cli {
     /// rl_agent_config.json, tokenizer.json) instead of the Hugging Face Hub.
     #[arg(long, env = "III_LAYA_CHECKPOINT_DIR")]
     checkpoint_dir: Option<PathBuf>,
+    /// Use a local encoder GGUF for the default model instead of the Hub.
+    #[arg(long, env = "III_LAYA_ENCODER_GGUF")]
+    encoder_gguf: Option<PathBuf>,
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,7 +55,12 @@ async fn main() -> anyhow::Result<()> {
         initial.revision.clone(),
         initial.preload.clone(),
     );
-    // candle reads RAYON_NUM_THREADS per call; an operator export wins.
+    let options = engine::Options {
+        threads: initial.threads,
+        gpu_layers: initial.gpu_layers,
+        batch_rows: initial.batch_questions,
+    };
+    // candle (the head) reads RAYON_NUM_THREADS per call; an operator export wins.
     if std::env::var_os("RAYON_NUM_THREADS").is_none() {
         std::env::set_var("RAYON_NUM_THREADS", initial.threads.to_string());
     }
@@ -75,7 +82,11 @@ async fn main() -> anyhow::Result<()> {
                         model = name,
                         "fetching laya checkpoint from the Hugging Face Hub"
                     );
-                    download::fetch(name, revision.as_deref())?
+                    download::fetch(
+                        name,
+                        revision.as_deref(),
+                        cli.encoder_gguf.as_deref().filter(|_| i == 0),
+                    )?
                 }
             };
             tracing::info!(
@@ -85,15 +96,7 @@ async fn main() -> anyhow::Result<()> {
             );
             checkpoints.push(checkpoint);
         }
-        // Metal is compiled in on macOS only (Cargo target table); elsewhere
-        // new_metal fails at runtime and the CPU path stays. CUDA is deliberately
-        // out: candle's cuda feature breaks --all-features builds without a toolkit.
-        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
-        tracing::info!(
-            device = if device.is_metal() { "metal" } else { "cpu" },
-            "selected inference device"
-        );
-        LayaClient::load(&checkpoints, device)
+        LayaClient::load(&checkpoints, options)
     })
     .await??;
     register(&iii, config.clone(), client);

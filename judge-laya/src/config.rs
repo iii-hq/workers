@@ -35,6 +35,11 @@ pub struct LayaConfig {
     /// worker start. Hybrid CPUs run faster below their logical core count.
     #[schemars(range(min = 1, max = 256))]
     pub threads: usize,
+    /// Encoder layers offloaded to the GPU (Vulkan or Metal builds), applied at
+    /// the next start. Null offloads every layer when a GPU is present; 0 keeps
+    /// the encoder on the CPU.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_layers: Option<u32>,
     /// Questions per forward pass; cancellation and deadlines are checked between batches.
     #[schemars(range(min = 1, max = 256))]
     pub batch_questions: usize,
@@ -65,6 +70,7 @@ impl Default for LayaConfig {
             shortlist_k: None,
             revision: None,
             threads: default_threads(),
+            gpu_layers: None,
             batch_questions: limits.batch_questions,
             max_request_bytes: limits.max_request_bytes,
             max_timeout_ms: limits.max_timeout_ms,

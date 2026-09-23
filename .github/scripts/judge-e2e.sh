@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# judge hub + judge-typesafe + judge-semif over an isolated real engine (TypeSafe mocks, tiny GGUF).
+# judge hub + judge-typesafe + judge-semif + judge-laya over an isolated real engine (TypeSafe mocks, tiny GGUFs).
 # Build the workers' UIs first (or let their build scripts do so). No inference key is needed.
 set -euo pipefail
 

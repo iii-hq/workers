@@ -942,7 +942,24 @@ workers:
         name: rust
         version: 1.97.1
       binary: judge-laya
-      targets: *id001
+      # The encoder runs through llama.cpp (crates/llama-runtime, compiled from
+      # source with cmake + bindgen/libclang): glibc Linux and macOS only, like
+      # judge-semif.
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      windows_exception: llama.cpp is built from source with cmake and bindgen (libclang); the MSVC runners are not provisioned or verified for it yet.
+      # Linux x86_64 loads llama.cpp's backends at runtime: the shared libraries
+      # and the backend modules (per-CPU variants, Vulkan) ship beside the binary.
+      companions:
+      - libggml-base.so.0
+      - libggml.so.0
+      - libllama.so.0
+      - libggml-cpu-*.so
+      - libggml-vulkan.so
+      - '*.dll'
       frontends:
       - workspace_root: .
         source_path: judge-laya/ui

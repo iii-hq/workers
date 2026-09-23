@@ -6,6 +6,7 @@ pub mod config;
 pub mod configuration;
 pub mod download;
 pub mod encode;
+pub mod engine;
 pub mod lang;
 pub mod model;
 pub mod register;

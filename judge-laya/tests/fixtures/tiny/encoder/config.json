@@ -46,5 +46,6 @@
   "sparse_prediction": false,
   "tie_word_embeddings": true,
   "transformers_version": "5.17.0",
-  "vocab_size": 50368
+  "vocab_size": 50368,
+  "layer_norm_eps": 1e-05
 }

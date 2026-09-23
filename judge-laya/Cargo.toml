@@ -22,7 +22,7 @@ schemars = "0.8"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 candle-core = "0.11"
 candle-nn = "0.11"
-candle-transformers = "0.11"
+iii-llama-runtime = { path = "../crates/llama-runtime" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -31,15 +31,7 @@ hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustl
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 tracing = "0.1"
 
-# macOS: Metal GPU when one is present, Accelerate (AMX) for the CPU path.
-[target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.11", features = ["metal", "accelerate"] }
-candle-nn = { version = "0.11", features = ["metal", "accelerate"] }
-candle-transformers = { version = "0.11", features = ["metal", "accelerate"] }
-
 [dev-dependencies]
-# Spike only: laya's encoder through llama.cpp (examples/llama_parity.rs).
-llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["vulkan"] }
 futures-util = "0.3"
 tempfile = "3"
 tokio-tungstenite = "0.28"

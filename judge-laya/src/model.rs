@@ -1,15 +1,13 @@
-//! laya `DecisionModel`: ModernBERT encoder → +type embedding → 2 pre-LN
-//! transformer layers → scorer on the `[MASK]` marker positions.
-use crate::download::Checkpoint;
-use anyhow::{anyhow, Result};
+//! laya `DecisionModel` head: encoder states (from `engine`) → +type embedding
+//! → 2 pre-LN transformer layers → scorer on the `[MASK]` marker positions.
+use crate::{download::Checkpoint, engine::States};
+use anyhow::Result;
 use candle_core::{DType, Device, IndexOp, Module, Tensor, D};
 use candle_nn::{
     embedding, layer_norm, linear, Embedding, LayerNorm, LayerNormConfig, Linear, VarBuilder,
 };
-use candle_transformers::models::modernbert::{Config as EncoderConfig, ModernBert};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
 
 /// `rl_agent_config.json` — only what inference needs.
 #[derive(Debug, Clone, Deserialize)]
@@ -36,58 +34,11 @@ fn d192() -> usize {
     192
 }
 
-/// transformers v5 `encoder/config.json` → candle's v4-style config.
+/// What the head needs from `encoder/config.json`.
 #[derive(Debug, Deserialize)]
-struct HfEncoderConfig {
-    vocab_size: usize,
+struct EncoderShape {
     hidden_size: usize,
-    num_hidden_layers: usize,
-    num_attention_heads: usize,
-    intermediate_size: usize,
-    max_position_embeddings: usize,
-    #[serde(default = "eps")]
-    layer_norm_eps: f64,
     pad_token_id: u32,
-    global_attn_every_n_layers: usize,
-    local_attention: usize,
-    #[serde(default)]
-    global_rope_theta: Option<f64>,
-    #[serde(default)]
-    local_rope_theta: Option<f64>,
-    #[serde(default)]
-    rope_parameters: Option<HashMap<String, HashMap<String, serde_json::Value>>>,
-}
-fn eps() -> f64 {
-    1e-5
-}
-
-pub fn encoder_config(path: &Path) -> Result<EncoderConfig> {
-    let hf: HfEncoderConfig = serde_json::from_slice(&std::fs::read(path)?)?;
-    let theta = |kind: &str, flat: Option<f64>, fallback: f64| {
-        flat.or_else(|| {
-            hf.rope_parameters
-                .as_ref()?
-                .get(kind)?
-                .get("rope_theta")?
-                .as_f64()
-        })
-        .unwrap_or(fallback)
-    };
-    Ok(EncoderConfig {
-        vocab_size: hf.vocab_size,
-        hidden_size: hf.hidden_size,
-        num_hidden_layers: hf.num_hidden_layers,
-        num_attention_heads: hf.num_attention_heads,
-        intermediate_size: hf.intermediate_size,
-        max_position_embeddings: hf.max_position_embeddings,
-        layer_norm_eps: hf.layer_norm_eps,
-        pad_token_id: hf.pad_token_id,
-        global_attn_every_n_layers: hf.global_attn_every_n_layers,
-        global_rope_theta: theta("full_attention", hf.global_rope_theta, 160_000.0),
-        local_attention: hf.local_attention,
-        local_rope_theta: theta("sliding_attention", hf.local_rope_theta, 10_000.0),
-        classifier_config: None,
-    })
 }
 
 /// `nn.TransformerEncoderLayer(d, nhead, 4d, norm_first=True)` with relu.
@@ -149,7 +100,6 @@ impl HeadLayer {
 }
 
 pub struct LayaModel {
-    encoder: ModernBert,
     head: Vec<HeadLayer>,
     type_emb: Embedding,
     scorer_norm: LayerNorm,
@@ -157,22 +107,21 @@ pub struct LayaModel {
     scorer_3: Linear,
     pub agent: AgentConfig,
     pub pad: u32,
+    pub hidden: usize,
     device: Device,
 }
 
 impl LayaModel {
     pub fn load(checkpoint: &Checkpoint, device: Device) -> Result<Self> {
         let agent: AgentConfig = serde_json::from_slice(&std::fs::read(&checkpoint.agent_config)?)?;
-        let cfg = encoder_config(&checkpoint.encoder_config)?;
+        let shape: EncoderShape =
+            serde_json::from_slice(&std::fs::read(&checkpoint.encoder_config)?)?;
+        // The file also holds the encoder (run by llama.cpp): mmapped, only the
+        // head's tensors are read.
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[&checkpoint.weights], DType::F32, &device)?
         };
-        // The checkpoint stores the encoder under `encoder.`; candle expects `model.`.
-        let enc_vb = vb.clone().rename_f(|name: &str| {
-            format!("encoder.{}", name.strip_prefix("model.").unwrap_or(name))
-        });
-        let encoder = ModernBert::load(enc_vb, &cfg)?;
-        let d = cfg.hidden_size;
+        let d = shape.hidden_size;
         let heads = (d / 64).max(1);
         let head = (0..agent.head_layers)
             .map(|i| HeadLayer::load(vb.pp(format!("head.layers.{i}")), d, heads))
@@ -182,47 +131,53 @@ impl LayaModel {
             ..Default::default()
         };
         Ok(Self {
-            encoder,
             head,
             type_emb: embedding(3, d, vb.pp("type_emb"))?,
             scorer_norm: layer_norm(d, ln, vb.pp("scorer.0"))?,
             scorer_1: linear(d, d, vb.pp("scorer.1"))?,
             scorer_3: linear(d, 1, vb.pp("scorer.3"))?,
             agent,
-            pad: cfg.pad_token_id,
+            pad: shape.pad_token_id,
+            hidden: d,
             device,
         })
     }
 
-    /// Raw option logits per row (before temperature), one Vec per sequence.
-    pub fn logits(&self, rows: &[(Vec<u32>, Vec<usize>, u32)]) -> Result<Vec<Vec<f32>>> {
-        let (ids, mask, mask_t) = self.pad(rows)?;
-        let h = self.encoder_states(&ids, &mask_t)?;
-        self.logits_from_states(&h, &mask, rows)
-    }
-
-    /// Right-padded token ids (b, s), the flat 0/1 mask and its tensor (b, s).
-    pub fn pad(&self, rows: &[(Vec<u32>, Vec<usize>, u32)]) -> Result<(Tensor, Vec<u8>, Tensor)> {
-        let b = rows.len();
-        let s = rows
-            .iter()
-            .map(|r| r.0.len())
-            .max()
-            .ok_or_else(|| anyhow!("empty batch"))?;
-        let mut ids = vec![self.pad; b * s];
-        let mut mask = vec![0u8; b * s];
-        for (i, (seq, _, _)) in rows.iter().enumerate() {
-            ids[i * s..i * s + seq.len()].copy_from_slice(seq);
+    /// Right-padded 0/1 key mask (rows × width) for `rows`, and the width.
+    pub fn mask<'a>(rows: impl IntoIterator<Item = &'a [u32]>) -> (Vec<u8>, usize) {
+        let rows: Vec<&[u32]> = rows.into_iter().collect();
+        let s = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let mut mask = vec![0u8; rows.len() * s];
+        for (i, seq) in rows.iter().enumerate() {
             mask[i * s..i * s + seq.len()].fill(1);
         }
-        let ids = Tensor::from_vec(ids, (b, s), &self.device)?;
-        let mask_t = Tensor::from_vec(mask.clone(), (b, s), &self.device)?;
-        Ok((ids, mask, mask_t))
+        (mask, s)
     }
 
-    /// Final encoder states (b, s, d) for padded `ids` under `mask`.
-    pub fn encoder_states(&self, ids: &Tensor, mask: &Tensor) -> Result<Tensor> {
-        Ok(self.encoder.forward(ids, mask)?)
+    /// Encoder states from the engine as a (b, s, d) tensor on this device.
+    pub fn states(&self, states: States) -> Result<Tensor> {
+        Ok(Tensor::from_vec(
+            states.flat,
+            (states.rows, states.width, states.hidden),
+            &self.device,
+        )?)
+    }
+
+    /// Mean-pooled states per row, laya's `embed_fn_from_agent` (the
+    /// shortlist's embedding when no separate bi-encoder is configured).
+    pub fn pooled(&self, h: &Tensor, mask: &[u8]) -> Result<Vec<Vec<f32>>> {
+        let (b, s, _) = h.dims3()?;
+        let weights = Tensor::from_vec(
+            mask.iter().map(|&m| f32::from(m)).collect::<Vec<_>>(),
+            (b, s),
+            &self.device,
+        )?
+        .unsqueeze(2)?;
+        let pooled = h
+            .broadcast_mul(&weights)?
+            .sum(1)?
+            .broadcast_div(&weights.sum(1)?.clamp(1f32, f32::MAX)?)?;
+        Ok(pooled.to_vec2::<f32>()?)
     }
 
     /// Type embedding, head layers and scorer over encoder states `h` (b, s, d);
@@ -271,32 +226,6 @@ impl LayaModel {
             out.push(z.to_vec1::<f32>()?);
         }
         Ok(out)
-    }
-
-    /// Mean-pooled encoder states per token row, laya's `embed_fn_from_agent`
-    /// (the shortlist's embedding when no separate bi-encoder is configured).
-    pub fn embed(&self, rows: &[Vec<u32>]) -> Result<Vec<Vec<f32>>> {
-        let b = rows.len();
-        let s = rows
-            .iter()
-            .map(Vec::len)
-            .max()
-            .ok_or_else(|| anyhow!("empty batch"))?;
-        let mut ids = vec![self.pad; b * s];
-        let mut mask = vec![0u8; b * s];
-        for (i, seq) in rows.iter().enumerate() {
-            ids[i * s..i * s + seq.len()].copy_from_slice(seq);
-            mask[i * s..i * s + seq.len()].fill(1);
-        }
-        let ids = Tensor::from_vec(ids, (b, s), &self.device)?;
-        let mask = Tensor::from_vec(mask, (b, s), &self.device)?;
-        let h = self.encoder.forward(&ids, &mask)?;
-        let weights = mask.to_dtype(DType::F32)?.unsqueeze(2)?;
-        let pooled = h
-            .broadcast_mul(&weights)?
-            .sum(1)?
-            .broadcast_div(&weights.sum(1)?.clamp(1f32, f32::MAX)?)?;
-        Ok(pooled.to_vec2::<f32>()?)
     }
 
     /// laya's `temp_bucket` lookup, clamped to [0.5, 5] like `clamp_temperature`.

@@ -7,6 +7,9 @@ use std::path::PathBuf;
 
 pub const LAYA_REPO: &str = "convaiinnovations/laya";
 const ENGLISH_TOKENIZER_REPO: &str = "answerdotai/ModernBERT-large";
+/// The checkpoints' encoders converted to GGUF (scripts/convert-encoder.py):
+/// `<model>-encoder-f16.gguf`.
+pub const ENCODER_REPO: &str = "iii-dev/laya-encoder-gguf";
 
 /// The checkpoints the `model` setting accepts.
 pub const MODELS: [&str; 3] = ["laya", "laya-multilingual", "laya-typed-decisions"];
@@ -19,13 +22,19 @@ pub struct Checkpoint {
     pub encoder_config: PathBuf,
     pub agent_config: PathBuf,
     pub tokenizer: PathBuf,
+    /// The encoder as a GGUF (f16) for llama.cpp; the head stays in `weights`.
+    pub encoder_gguf: PathBuf,
 }
 
 /// `laya` (English, ModernBERT-large), `laya-multilingual` (mmBERT-base) or
 /// `laya-typed-decisions` (ModernBERT-large fine-tuned for laya's four
 /// workflows, 1024-token window). Only the English checkpoint ships no
 /// tokenizer; it uses ModernBERT-large's.
-pub fn fetch(model: &str, revision: Option<&str>) -> Result<Checkpoint> {
+pub fn fetch(
+    model: &str,
+    revision: Option<&str>,
+    encoder_gguf: Option<&std::path::Path>,
+) -> Result<Checkpoint> {
     let subdir = match model {
         "laya" => "",
         "laya-multilingual" => "multilingual/",
@@ -60,11 +69,18 @@ pub fn fetch(model: &str, revision: Option<&str>) -> Result<Checkpoint> {
         encoder_config: get("encoder/config.json")?,
         agent_config: get("rl_agent_config.json")?,
         tokenizer,
+        encoder_gguf: match encoder_gguf {
+            Some(path) if path.is_file() => path.to_path_buf(),
+            Some(path) => return Err(anyhow!("encoder GGUF {} does not exist", path.display())),
+            None => api
+                .model(ENCODER_REPO.into())
+                .get(&format!("{model}-encoder-f16.gguf"))?,
+        },
     })
 }
 
 /// A checkpoint already on disk (air-gapped installs, tests): `model.safetensors`,
-/// `encoder/config.json`, `rl_agent_config.json`, `tokenizer.json`.
+/// `encoder/config.json`, `rl_agent_config.json`, `tokenizer.json`, `encoder.gguf`.
 pub fn local(model: &str, dir: &std::path::Path) -> Result<Checkpoint> {
     let file = |name: &str| {
         let path = dir.join(name);
@@ -79,5 +95,6 @@ pub fn local(model: &str, dir: &std::path::Path) -> Result<Checkpoint> {
         encoder_config: file("encoder/config.json")?,
         agent_config: file("rl_agent_config.json")?,
         tokenizer: file("tokenizer.json")?,
+        encoder_gguf: file("encoder.gguf")?,
     })
 }
