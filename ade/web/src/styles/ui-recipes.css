@@ -1127,8 +1127,16 @@ a.iii-ui-tree-item {
     border-color var(--motion-duration-control) var(--motion-ease-standard);
 }
 
+/* A checked box keeps its accent fill under the pointer: this selector
+   outranks the checked rule below, so it has to step aside itself. */
 .iii-ui-checkbox:hover
-  .iii-ui-checkbox__control:not(:has(.iii-ui-checkbox__input:disabled)) {
+  .iii-ui-checkbox__control:not(
+    :has(
+      .iii-ui-checkbox__input:disabled,
+      .iii-ui-checkbox__input:checked,
+      .iii-ui-checkbox__input:indeterminate
+    )
+  ) {
   background: var(--color-surface-hover);
 }
 
