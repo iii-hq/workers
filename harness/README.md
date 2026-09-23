@@ -258,6 +258,12 @@ too). Naming either field resolves fresh — an explicit bare
 hatch. The inherited string is frozen at its original resolution — resend
 the prompt fields to re-resolve.
 
+Reasoning is sticky the same way: a send that names neither
+`thinking_level` nor `provider_options` keeps the prior turn's pair, so an
+omitted field never silently resets the effort (which would also bust the
+provider's messages cache). Naming either field replaces the pair —
+`provider_options: {}` resets to the provider default.
+
 The prompt reaches `router::chat` in two forms: the flat `system_prompt`,
 and `system_sections` — the STABLE prefix (the frozen profile or identity
 prompt plus the frozen skills index, `cache_boundary: true`) followed by the
