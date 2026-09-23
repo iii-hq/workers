@@ -477,6 +477,17 @@ export interface AgentProfileSnapshot {
   reasoningEffort?: ThinkingLevel
   icon?: SubagentIcon
   color?: SubagentColor
+  /** The profile's example for the empty composer — a hint, never sent. */
+  composerPlaceholder?: string
+}
+
+/** How a profile selection reached the session. */
+export interface AgentProfileChangeOptions {
+  /**
+   * An automatic selection (the new-session default) must not rewrite the
+   * user's reasoning-effort preference when the profile has none of its own.
+   */
+  keepThinkingLevel?: boolean
 }
 
 export interface Conversation {

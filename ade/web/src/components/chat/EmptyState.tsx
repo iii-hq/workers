@@ -1,5 +1,5 @@
-import { Bot, Check, Plus } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Bot, Check, Settings2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
@@ -11,11 +11,13 @@ import { requestPanelOpen } from '@/lib/panel-context'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
 import type {
+  AgentProfileChangeOptions,
   AgentProfileSnapshot,
   SubagentColor,
   SubagentIcon,
 } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
+import { agentProfileFromEntry, agentToPreselect } from './agent-defaults'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import {
   agentIdFromSystemPrompt,
@@ -76,7 +78,17 @@ export interface EmptyStateProps {
   agentEntries?: AgentEntry[] | null
   /** Frozen identity/configuration for the selected Directory agent. */
   agentProfile?: AgentProfileSnapshot
-  onAgentProfileChange?: (next: AgentProfileSnapshot | undefined) => void
+  /**
+   * Select the Directory `default` profile when nothing is chosen yet. Only
+   * for a conversation created here (a local draft): a session another
+   * surface created keeps its creator's setup, and its metadata is never
+   * written just because it was opened.
+   */
+  preselectDefaultAgent?: boolean
+  onAgentProfileChange?: (
+    next: AgentProfileSnapshot | undefined,
+    options?: AgentProfileChangeOptions,
+  ) => void
 }
 
 const HARNESS_INSTALL_COMMAND = 'iii trigger compose::add worker=harness'
@@ -103,6 +115,7 @@ export function EmptyState({
   agentEntries,
   agentProfile,
   onAgentProfileChange,
+  preselectDefaultAgent = false,
 }: EmptyStateProps) {
   const emptyPad =
     density === 'dock' ? 'px-3 @2xl:px-4' : 'px-3 @2xl:px-6 @5xl:px-9'
@@ -135,6 +148,7 @@ export function EmptyState({
             agentEntries={agentEntries}
             agentProfile={agentProfile}
             onAgentProfileChange={onAgentProfileChange}
+            preselectDefaultAgent={preselectDefaultAgent}
           />
         ) : (
           <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
@@ -173,7 +187,9 @@ function ReadyBody({
   agentEntries,
   agentProfile,
   onAgentProfileChange,
+  preselectDefaultAgent,
 }: {
+  preselectDefaultAgent: boolean
   workingDir?: string | null
   onWorkingDirChange?: (next: string) => void
   workingDirError?: string | null
@@ -183,7 +199,10 @@ function ReadyBody({
   onSystemPromptChange?: (next: SystemPromptState) => void
   agentEntries?: AgentEntry[] | null
   agentProfile?: AgentProfileSnapshot
-  onAgentProfileChange?: (next: AgentProfileSnapshot | undefined) => void
+  onAgentProfileChange?: (
+    next: AgentProfileSnapshot | undefined,
+    options?: AgentProfileChangeOptions,
+  ) => void
 }) {
   const projectName = workingDir
     ? (workingDir.split('/').filter(Boolean).at(-1) ?? workingDir)
@@ -218,6 +237,7 @@ function ReadyBody({
             agentEntries={agentEntries}
             agentProfile={agentProfile}
             onAgentProfileChange={onAgentProfileChange}
+            preselectDefaultAgent={preselectDefaultAgent}
           />
         ) : null}
       </div>
@@ -231,17 +251,43 @@ function SessionSetupControls({
   agentEntries,
   agentProfile,
   onAgentProfileChange,
+  preselectDefaultAgent,
 }: {
+  preselectDefaultAgent: boolean
   systemPrompt: SystemPromptState
   onSystemPromptChange: (next: SystemPromptState) => void
   agentEntries?: AgentEntry[] | null
   agentProfile?: AgentProfileSnapshot
-  onAgentProfileChange?: (next: AgentProfileSnapshot | undefined) => void
+  onAgentProfileChange?: (
+    next: AgentProfileSnapshot | undefined,
+    options?: AgentProfileChangeOptions,
+  ) => void
 }) {
   const selectedAgentId =
     agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
   const catalog = useAgentCatalog(agentEntries)
   const agents = (catalog.entries ?? []).filter((entry) => !entry.hidden)
+
+  const select = (entry: AgentEntry, options?: AgentProfileChangeOptions) => {
+    if (onAgentProfileChange) {
+      onAgentProfileChange(agentProfileFromEntry(entry), options)
+    } else {
+      onSystemPromptChange(withAgentChoice(systemPrompt, entry.id))
+    }
+  }
+
+  // A conversation created here starts on the Default profile, visibly
+  // selected, so the card the gallery marks is the profile the first send
+  // runs. Only an untouched local draft is preselected (see `agentToPreselect`), and the
+  // user's reasoning-effort preference survives the automatic pick.
+  const preselect = preselectDefaultAgent
+    ? agentToPreselect(agents, selectedAgentId, systemPrompt)
+    : null
+  const selectRef = useRef(select)
+  selectRef.current = select
+  useEffect(() => {
+    if (preselect) selectRef.current(preselect, { keepThinkingLevel: true })
+  }, [preselect])
 
   return (
     <section aria-label="session setup" className="w-full max-w-[40rem]">
@@ -249,21 +295,8 @@ function SessionSetupControls({
         entries={agents}
         loading={catalog.entries === null}
         error={catalog.error}
-        selectedId={selectedAgentId}
-        onSelect={(entry) => {
-          const profile: AgentProfileSnapshot = {
-            id: entry.id,
-            name: entry.name.trim() || entry.id,
-            ...(entry.model ? { model: entry.model } : {}),
-            ...(entry.reasoning_effort
-              ? { reasoningEffort: entry.reasoning_effort }
-              : {}),
-            ...(entry.icon ? { icon: entry.icon as SubagentIcon } : {}),
-            ...(entry.color ? { color: entry.color as SubagentColor } : {}),
-          }
-          if (onAgentProfileChange) onAgentProfileChange(profile)
-          else onSystemPromptChange(withAgentChoice(systemPrompt, entry.id))
-        }}
+        selectedId={selectedAgentId ?? preselect?.id ?? null}
+        onSelect={(entry) => select(entry)}
       />
     </section>
   )
@@ -356,11 +389,16 @@ function AgentGallery({
   )
 }
 
+/**
+ * The manual path: opens the Directory's profile editor (a form), not a
+ * conversation. Secondary on purpose — the assisted path is the
+ * "Create a custom agent" profile card, which starts a chat.
+ */
 function CreateAgentCard() {
   return (
     <button
       type="button"
-      aria-label="Create a new agent profile"
+      aria-label="Configure an agent manually in the profile editor"
       onClick={() =>
         requestPanelOpen({
           pageId: 'directory',
@@ -371,15 +409,15 @@ function CreateAgentCard() {
     >
       <div className="flex min-w-0 flex-col gap-1">
         <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
-          Create a new agent
+          Configure an agent manually
         </div>
         <p className="text-pretty font-sans text-base/6 text-ink-ghost sm:text-sm/5">
-          Save a reusable set of instructions, a model, and skills.
+          Opens a form to set instructions, a model, and skills yourself.
         </p>
       </div>
       <div className="flex items-center gap-1.5 font-sans text-base font-medium text-ink-faint group-hover/create:text-ink sm:text-sm">
-        <Plus aria-hidden className="size-4 h-lh shrink-0" />
-        <span>Create agent profile</span>
+        <Settings2 aria-hidden className="size-4 h-lh shrink-0" />
+        <span>Open profile editor</span>
       </div>
     </button>
   )

@@ -1872,8 +1872,11 @@ function resolveEmptyState(
       ? (next: SystemPromptState) => ctx.setSystemPrompt(active.id, next)
       : undefined,
     agentProfile: active?.agentProfile,
+    // Only a chat created here (still a local draft) starts on Default; a
+    // session another surface created is shown as its creator left it.
+    preselectDefaultAgent: active?.draft === true,
     onAgentProfileChange: active
-      ? (next) => ctx.setAgentProfile(active.id, next)
+      ? (next, options) => ctx.setAgentProfile(active.id, next, options)
       : undefined,
     ...directory,
   }
