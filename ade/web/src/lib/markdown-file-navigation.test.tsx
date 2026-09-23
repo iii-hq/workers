@@ -238,6 +238,25 @@ describe('chat file navigation', () => {
     expectFile('/new/a.ts')
   })
 
+  it('opens an unchanged conversation directly once its history is complete', async () => {
+    const messages: Message[] = [{ id: 'initial', role: 'assistant', createdAt: 0, content: '[file](a.ts)' }]
+    await render(<ChatFileNavigation workingDir="/repo" enabled messages={messages} historyComplete><MessageList messages={messages} /></ChatFileNavigation>)
+    await click('button[title^="open a.ts"]')
+    expectFile('/repo/a.ts')
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+  })
+
+  it.each([false, true])('keeps confirmation for compacted history (complete=%s)', async (historyComplete) => {
+    const messages: Message[] = [
+      { id: 'compact', role: 'system', kind: 'compaction', content: 'summary', createdAt: 0 },
+      { id: 'unknown', role: 'assistant', createdAt: 1, content: '[file](a.ts)' },
+    ]
+    await render(<ChatFileNavigation workingDir="/repo" enabled messages={messages} historyComplete={historyComplete}><MessageList messages={messages} /></ChatFileNavigation>)
+    await click('button[title^="open a.ts"]')
+    expect(opened).not.toHaveBeenCalled()
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull()
+  })
+
   it('asks before resolving legacy messages and allows cancelling', async () => {
     const messages: Message[] = [{ id: 'legacy', role: 'assistant', createdAt: 0, content: '[file](a.ts)' }]
     await render(<ChatFileNavigation workingDir="/repo" enabled messages={messages}><MessageList messages={messages} /></ChatFileNavigation>)

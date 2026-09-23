@@ -32,6 +32,20 @@ describe('historical file directories', () => {
   })
 })
 
+describe('initial folder provenance', () => {
+  it('trusts the unchanged folder only with complete, uncompacted history', () => {
+    expect(messageFileDirectories([message('initial')], '/repo', true).get('initial'))
+      .toEqual({ path: '/repo', recorded: true })
+    expect(messageFileDirectories([message('paged')], '/repo', false).get('paged'))
+      .toEqual({ path: '/repo', recorded: false })
+    const compacted: Message = { id: 'compact', role: 'system', kind: 'compaction', content: '', createdAt: 0 }
+    expect(messageFileDirectories([compacted, message('summary')], '/repo', true).get('summary'))
+      .toEqual({ path: '/repo', recorded: false })
+    expect(messageFileDirectories([compacted, scope('change', '/known', '/before'), message('known')], '/repo', true).get('known'))
+      .toEqual({ path: '/known', recorded: true })
+  })
+})
+
 describe('resolveChatFile', () => {
   it('accepts absolute files without a workspace and leaves canonicalization to the worker', () => {
     expect(resolveChatFile({ path: '/other/file.ts' }, null)).toBe('/other/file.ts')

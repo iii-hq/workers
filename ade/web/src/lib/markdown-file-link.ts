@@ -1,5 +1,6 @@
 import { type FileMentionRef, normalizeLineRange } from './file-mention-token'
 
+/** Recognize file-like basenames while avoiding extensionless application routes. */
 function fileShaped(path: string): boolean {
   const basename = path.slice(path.lastIndexOf('/') + 1)
   return /\.[\w-]+$/.test(basename) || /^(?:README|LICENSE|COPYING|NOTICE|Dockerfile|Containerfile|Makefile|Justfile|Procfile)$/i.test(basename)

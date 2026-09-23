@@ -2624,6 +2624,7 @@ export function ChatView({
 
       <ChatFileNavigation
         messages={conversation.messages}
+        historyComplete={conversation.hydrated !== false && conversation.history?.hasMore !== true}
         workingDir={conversation.workingDir ?? null}
         enabled={workingDirEnabled}
       >

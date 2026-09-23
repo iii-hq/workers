@@ -139,6 +139,7 @@ function splitMention(value: string): Array<Text | Element> {
 const linkClassName =
   'text-ink underline decoration-rule decoration-1 underline-offset-2 hover:text-accent hover:decoration-accent transition-colors'
 
+/** Open a validated local reference and announce recoverable failures beside its label. */
 function FileReferenceButton({
   reference,
   problem,
@@ -179,6 +180,7 @@ function FileReferenceButton({
   )
 }
 
+/** Route local file destinations to the originating chat's IDE; preserve ordinary web links. */
 function MarkdownLink({ href, className, children, title }: ComponentPropsWithoutRef<'a'>) {
   const openFile = useOpenMessageFile()
   const ref = href ? parseMarkdownFileLink(href) : null
@@ -202,6 +204,7 @@ function MarkdownLink({ href, className, children, title }: ComponentPropsWithou
   )
 }
 
+/** Make transcript file mentions actionable without turning folder pills into file opens. */
 function MarkdownFileMention({ path, range }: FileMentionRef) {
   const openFile = useOpenMessageFile()
   const pill = <FileMentionPill path={path} range={range} />

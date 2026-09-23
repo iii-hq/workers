@@ -16,10 +16,12 @@ function asRecord(value: JsonValue): Record<string, JsonValue> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
 }
 
+/** Accept only positive, exactly representable one-based coordinates. */
 function asLine(value: JsonValue | undefined): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : undefined
 }
 
+/** Parse an untrusted panel-open payload, dropping unsupported or invalid coordinates. */
 export function parseShellPanelContext(value: JsonValue): ShellPanelContext | null {
   const record = asRecord(value)
   if (!record) return null

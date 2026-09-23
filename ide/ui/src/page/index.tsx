@@ -311,6 +311,12 @@ export function ShellExplorerPage({
     endLine?: number
     seq: number
   } | null>(null)
+  const revealSeqRef = useRef(0)
+  const onRevealHandled = useCallback((path: string, seq: number) => {
+    setRevealLineRequest((pending) =>
+      pending?.path === path && pending.seq === seq ? null : pending,
+    )
+  }, [])
   const historyRef = useRef<NavHistory>(EMPTY_HISTORY)
   const [historyState, setHistoryState] = useState({ back: false, forward: false })
   const navigatingRef = useRef(false)
@@ -580,13 +586,13 @@ export function ShellExplorerPage({
       showTab((s) => (options.pin ? openPinned(s, fileTarget(relPath)) : openPreview(s, fileTarget(relPath))))
       if (options.line !== undefined) {
         const line = options.line
-        setRevealLineRequest((previous) => ({
+        setRevealLineRequest({
           path: relPath,
           line,
           column: options.column,
           endLine: options.endLine,
-          seq: (previous?.seq ?? 0) + 1,
-        }))
+          seq: ++revealSeqRef.current,
+        })
       }
     },
     [showTab],
@@ -605,6 +611,7 @@ export function ShellExplorerPage({
   const dropFileCache = useCallback((path: string) => {
     objectUrlsRef.current.release(cacheRef.current.get(path)?.image)
     cacheRef.current.delete(path)
+    setRevealLineRequest((pending) => pending?.path === path ? null : pending)
   }, [])
 
   const closeTabIds = useCallback(
@@ -1183,6 +1190,7 @@ export function ShellExplorerPage({
         objectUrlsRef.current.releaseAll()
         cacheRef.current.clear()
         diffCacheRef.current.clear()
+        setRevealLineRequest(null)
         historyRef.current = EMPTY_HISTORY
         setHistoryState({ back: false, forward: false })
         // The folder being left keeps what was open in it; the one being
@@ -2194,6 +2202,7 @@ export function ShellExplorerPage({
                 createObjectUrl={objectUrlsRef.current.create}
                 wordWrap={diffOptions.wordWrap}
                 reveal={revealLineRequest?.path === activeFilePath ? revealLineRequest : null}
+                onRevealHandled={onRevealHandled}
                 goToLineSeq={goToLineSeq}
                 onSaved={afterDiskChange}
                 onDirtyChange={onDirtyChange}

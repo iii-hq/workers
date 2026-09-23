@@ -83,6 +83,7 @@ export interface SpawnTaskContext {
   appearance?: SubagentAppearance
 }
 
+/** Preserve this transcript entry's identity for nested file-reference navigation. */
 export function Message(props: MessageProps) {
   return (
     <FileMessageContext.Provider value={props.message.id}>
@@ -91,6 +92,7 @@ export function Message(props: MessageProps) {
   )
 }
 
+/** Render a message's role-specific content within the originating entry context. */
 function MessageBody({
   message,
   onResolveApproval,

@@ -28,18 +28,23 @@ export interface FileDirectory {
 
 /** Scope markers are durable transcript facts, unlike the current chat folder.
  * A paged transcript can recover its first segment from previousPath. Missing
- * provenance is kept explicit and requires confirmation, not silent rebasing. */
+ * provenance is kept explicit and requires confirmation, not silent rebasing.
+ * Only a complete, uncompacted history proves an unchanged initial folder. */
 export function messageFileDirectories(
   messages: readonly Message[],
   currentDir: string | null,
+  historyComplete = false,
 ): Map<string, FileDirectory> {
   const first = messages.find(
     (m) => m.role === 'system' && m.kind === 'working-dir' && m.scope,
   )
+  const compacted = messages.some(
+    (message) => message.role === 'system' && message.kind === 'compaction',
+  )
   let directory: FileDirectory =
     first?.role === 'system' && first.scope
       ? { path: first.scope.previousPath ?? null, recorded: true }
-      : { path: currentDir, recorded: false }
+      : { path: currentDir, recorded: historyComplete && !compacted }
   const result = new Map<string, FileDirectory>()
   for (const message of messages) {
     if (message.role === 'system' && message.kind === 'working-dir' && message.scope) {
@@ -50,6 +55,7 @@ export function messageFileDirectories(
   return result
 }
 
+/** Validate a local path and its coordinates without bypassing worker-side authorization. */
 export function resolveChatFile(ref: FileMentionRef, workingDir: string | null): string {
   if (
     !ref.path ||
@@ -91,15 +97,19 @@ export function openChatFile(ref: FileMentionRef, workingDir: string | null) {
   })
 }
 
+/** Provide message-scoped opening with explicit provenance checks and cancellable confirmation. */
 export function ChatFileNavigation({
   workingDir,
   enabled,
   messages,
+  historyComplete = false,
   children,
 }: {
   workingDir: string | null
   enabled: boolean
   messages?: readonly Message[]
+  /** True only after all transcript pages have loaded. Compaction still invalidates inference. */
+  historyComplete?: boolean
   children: ReactNode
 }) {
   const { confirm, dialog } = useConfirm()
@@ -110,8 +120,8 @@ export function ChatFileNavigation({
     return () => { requestSeq.current += 1 }
   }, [workingDir, enabled])
   const directories = useMemo(
-    () => messageFileDirectories(messages ?? [], workingDir),
-    [messages, workingDir],
+    () => messageFileDirectories(messages ?? [], workingDir, historyComplete),
+    [messages, workingDir, historyComplete],
   )
   const open = useCallback(
     async (ref: FileMentionRef, messageId?: string) => {
