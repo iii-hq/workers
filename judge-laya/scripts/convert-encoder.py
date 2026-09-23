@@ -7,6 +7,11 @@ llama.cpp's converter (the decision head stays in the worker).
 
 Only f16 keeps laya's calibrated probabilities (Q8_0 moved them by up to 0.04
 and flipped one fixture's answer at 512 tokens).
+
+The worker tokenizes with the checkpoint's own tokenizer and feeds ids, so the
+GGUF's tokenizer metadata is only there to satisfy the loader: for mmBERT
+(laya-multilingual) run the converter through convert-gguf.py, which accepts
+its unrecognized pre-tokenizer.
 """
 import json, os, shutil, struct, sys
 
@@ -36,7 +41,10 @@ with open(os.path.join(out, "model.safetensors"), "wb") as f:
         f.write(blob)
 cfg = json.load(open(os.path.join(snap, "encoder/config.json")))
 cfg["architectures"] = ["ModernBertForMaskedLM"]
+# llama.cpp requires the layer-norm epsilon; the converter reads only these keys.
+cfg.setdefault("layer_norm_eps", cfg.get("norm_eps", 1e-5))
 json.dump(cfg, open(os.path.join(out, "config.json"), "w"), indent=1)
 for name in ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"):
-    shutil.copy(os.path.join(tok, name), out)
+    if os.path.exists(os.path.join(tok, name)):
+        shutil.copy(os.path.join(tok, name), out)
 print(f"{len(new_header)} encoder tensors, {off} bytes -> {out}")
