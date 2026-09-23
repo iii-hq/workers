@@ -1,3 +1,6 @@
+#[path = "lifecycle_review_tests.rs"]
+mod review;
+
 use super::*;
 use std::{collections::VecDeque, sync::Mutex as StdMutex};
 
@@ -130,11 +133,7 @@ async fn tunnel_callback_is_durable_without_waiting_for_operations_or_network() 
     drop(s);
     // Read committed bytes without reclaiming the installation lock: parallel
     // subprocess tests can transiently inherit its flock between fork and exec.
-    let connection = rusqlite::Connection::open(dir.path().join("store.sqlite3")).unwrap();
-    let bytes: String = connection
-        .query_row("SELECT value FROM state WHERE id=1", [], |row| row.get(0))
-        .unwrap();
-    let persisted: Data = serde_json::from_str(&bytes).unwrap();
+    let persisted = Store::inspect(&dir.path().join("store.sqlite3")).unwrap();
     assert_eq!(persisted.jobs.len(), 1);
 }
 

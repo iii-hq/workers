@@ -43,6 +43,8 @@ pub enum Failure {
     Oversize,
     #[error("pending inbox/outbox capacity reached")]
     Capacity,
+    #[error("blocking storage task failed: {0}")]
+    StorageTask(#[from] tokio::task::JoinError),
     #[error("storage lock poisoned")]
     StoragePoisoned,
     #[error("storage failure: {0}")]
@@ -116,6 +118,20 @@ impl Service {
         })
     }
     async fn api(&self, method: &str, endpoint: &str, body: Option<Value>) -> Result<Value> {
+        let output = self.api_output(method, endpoint, body, false).await?;
+        if output.trim().is_empty() {
+            Ok(Value::Null)
+        } else {
+            Ok(serde_json::from_str(&output)?)
+        }
+    }
+    async fn api_output(
+        &self,
+        method: &str,
+        endpoint: &str,
+        body: Option<Value>,
+        include_headers: bool,
+    ) -> Result<String> {
         let cfg = self.cell.read().await.clone();
         let mut args = vec![
             "api".into(),
@@ -123,6 +139,9 @@ impl Service {
             method.into(),
             endpoint.into(),
         ];
+        if include_headers {
+            args.push("--include".into());
+        }
         if body.is_some() {
             args.extend(["--input".into(), "-".into()]);
         }
@@ -136,11 +155,7 @@ impl Service {
                 out.exit_code, out.timed_out
             )));
         }
-        if out.stdout.trim().is_empty() {
-            Ok(Value::Null)
-        } else {
-            Ok(serde_json::from_str(&out.stdout)?)
-        }
+        Ok(out.stdout)
     }
     pub fn status(&self, id: &str) -> Result<WatchResponse> {
         let d = self.store()?.read()?;
@@ -270,7 +285,7 @@ impl Service {
             .keys()
             .filter(|id| {
                 data.publications
-                    .get(*id)
+                    .get(id)
                     .is_none_or(|(at, attempts)| *attempts < 5 && now - at >= 60)
             })
             .take(100)
@@ -366,7 +381,7 @@ impl Service {
             Ok(true)
         })
     }
-    async fn receive(&self, req: ReceiveRequest) -> HttpResponse {
+    async fn receive(self: &Arc<Self>, req: ReceiveRequest) -> HttpResponse {
         let result = tokio::time::timeout(std::time::Duration::from_secs(7), async {
             self.store()?;
             if header(&req.headers, "content-length")
@@ -384,13 +399,17 @@ impl Service {
                 }
                 raw.extend_from_slice(&chunk);
             }
-            self.accept(
-                req.path_params
-                    .get("endpoint_id")
-                    .ok_or(Failure::Signature)?,
-                &req.headers,
-                &raw,
-            )?;
+            let service = self.clone();
+            tokio::task::spawn_blocking(move || {
+                service.accept(
+                    req.path_params
+                        .get("endpoint_id")
+                        .ok_or(Failure::Signature)?,
+                    &req.headers,
+                    &raw,
+                )
+            })
+            .await??;
             // Durable acceptance is enough for 202. Queue publication runs outside
             // the HTTP budget; startup/maintenance/new ingress all drain the outbox.
             Ok::<_, Failure>(())

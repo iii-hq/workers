@@ -6,6 +6,36 @@ use iii_sdk::{
 };
 
 use super::*;
+/// The SDK dispatches callbacks on a current-thread runtime. Drive service
+/// futures on the blocking pool while the original runtime keeps driving I/O.
+/// Store::read/change stay synchronous for lifecycle compatibility; no disk I/O
+/// or SQLite mutex wait runs on the SDK executor, including detached recovery.
+pub(super) async fn storage_task<T: Send + 'static>(
+    future: impl std::future::Future<Output = Result<T>> + Send + 'static,
+) -> Result<T> {
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || runtime.block_on(future)).await?
+}
+
+// The engine adds this transport field before typed SDK deserialization.
+// Strip only that field, keeping strict business requests and their public schemas.
+#[derive(JsonSchema)]
+#[schemars(transparent)]
+struct EngineRequest<T>(T);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for EngineRequest<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let mut payload = Value::deserialize(deserializer)?;
+        if let Some(fields) = payload.as_object_mut() {
+            fields.remove("_caller_worker_id");
+        }
+        T::deserialize(payload)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 struct EventHandler(Arc<Service>);
 #[async_trait]
@@ -19,38 +49,48 @@ impl TriggerHandler for EventHandler {
         if let Some(repo) = &filter.repo {
             validate_repo(repo)?;
         }
-        if let Some(store) = &self.0.store {
-            store.change(|d| {
-                d.subscribers.insert(
-                    config.id.clone(),
-                    Subscriber {
-                        id: config.id,
-                        function_id: config.function_id,
-                        filter,
-                        metadata: config.metadata,
-                        namespace: config.namespace,
-                    },
-                );
-                Ok(())
-            })?;
-        }
-        Ok(())
+        let service = self.0.clone();
+        storage_task(async move {
+            if let Some(store) = &service.store {
+                store.change(|d| {
+                    d.subscribers.insert(
+                        config.id.clone(),
+                        Subscriber {
+                            id: config.id,
+                            function_id: config.function_id,
+                            filter,
+                            metadata: config.metadata,
+                            namespace: config.namespace,
+                        },
+                    );
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(iii_sdk::Error::from)
     }
     async fn unregister_trigger(
         &self,
         config: TriggerConfig,
     ) -> std::result::Result<(), iii_sdk::Error> {
-        if let Some(store) = &self.0.store {
-            store.change(|d| {
-                d.subscribers.remove(&config.id);
-                // Explicit cancellation means no further callback to this binding.
-                d.jobs.retain(
-                    |_, j| !matches!(j, Job::Notify { target, .. } if target.id == config.id),
-                );
-                Ok(())
-            })?;
-        }
-        Ok(())
+        let service = self.0.clone();
+        storage_task(async move {
+            if let Some(store) = &service.store {
+                store.change(|d| {
+                    d.subscribers.remove(&config.id);
+                    // Explicit cancellation means no further callback to this binding.
+                    d.jobs.retain(
+                        |_, j| !matches!(j, Job::Notify { target, .. } if target.id == config.id),
+                    );
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(iii_sdk::Error::from)
     }
 }
 
@@ -59,7 +99,13 @@ impl TriggerHandler for EventHandler {
 pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str) {
     let config = cell.read().await.webhooks.clone();
     let store = if config.enabled {
-        match validate_config(&config).and_then(|()| Store::open(Path::new(&config.storage_path))) {
+        let storage_config = config.clone();
+        match storage_task(async move {
+            validate_config(&storage_config)?;
+            Store::open(Path::new(&storage_config.storage_path))
+        })
+        .await
+        {
             Ok(s) => Some(s),
             Err(e) => {
                 tracing::error!(error = %e, "webhook storage unavailable; mutations disabled");
@@ -83,10 +129,10 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
     macro_rules! function {
         ($id:expr, $desc:expr, $req:ty, $resp:ty, $method:ident $(, $field:ident)?) => {{
             let service = service.clone();
-            iii.register_function($id, RegisterFunction::new_async(move |req: $req| {
+            iii.register_function($id, RegisterFunction::new_async(move |EngineRequest(req): EngineRequest<$req>| {
                 let service = service.clone();
                 async move {
-                    let result: Result<$resp> = service.$method(req $(.$field)?).await;
+                    let result: Result<$resp> = storage_task(async move { service.$method(req $(.$field)?).await }).await;
                     result.map_err(iii_sdk::Error::from)
                 }
             }).description($desc));
@@ -100,20 +146,25 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         watch
     );
     let s = service.clone();
-    iii.register_function("github::pr::unwatch", RegisterFunction::new_async(move |req: WatchId| {
-        let s = s.clone(); async move { s.unwatch(&req.watch_id).await.map_err(iii_sdk::Error::from) }
+    iii.register_function("github::pr::unwatch", RegisterFunction::new_async(move |EngineRequest(req): EngineRequest<WatchId>| {
+        let s = s.clone(); async move { storage_task(async move { s.unwatch(&req.watch_id).await }).await.map_err(iii_sdk::Error::from) }
     }).description("Stop a watch and clean up only installation-owned resources; failures remain cleanup_pending."));
     let s = service.clone();
     iii.register_function(
         "github::pr::watch-status",
-        RegisterFunction::new(move |req: WatchId| {
-            s.status(&req.watch_id).map_err(iii_sdk::Error::from)
+        RegisterFunction::new_async(move |EngineRequest(req): EngineRequest<WatchId>| {
+            let s = s.clone();
+            async move {
+                storage_task(async move { s.status(&req.watch_id) })
+                    .await
+                    .map_err(iii_sdk::Error::from)
+            }
         })
         .description("Read persisted snapshot and health without secrets or polling GitHub."),
     );
     let s = service.clone();
-    iii.register_function("github::pr::recover", RegisterFunction::new_async(move |req: RecoverRequest| {
-        let s = s.clone(); async move { s.recover(req.repo.as_deref()).await.map_err(iii_sdk::Error::from) }
+    iii.register_function("github::pr::recover", RegisterFunction::new_async(move |EngineRequest(req): EngineRequest<RecoverRequest>| {
+        let s = s.clone(); async move { storage_task(async move { s.recover(req.repo.as_deref()).await }).await.map_err(iii_sdk::Error::from) }
     }).description("Manually reconcile watches and request bounded redelivery of failed owned-hook deliveries."));
     let s = service.clone();
     iii.register_function("github::webhooks::receive", RegisterFunction::new_async(move |req: ReceiveRequest| {
@@ -121,7 +172,7 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
             let response = s.receive(req).await;
             if response.status_code == 202 {
                 let drain = s.clone();
-                tokio::spawn(async move { if let Err(e) = drain.publish_pending().await { tracing::error!(error = %e, "outbox publication failed; durable jobs retained"); } });
+                tokio::spawn(async move { if let Err(e) = storage_task(async move { drain.publish_pending().await }).await { tracing::error!(error = %e, "outbox publication failed; durable jobs retained"); } });
             }
             Ok::<_, iii_sdk::Error>(response)
         }
@@ -131,7 +182,11 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         "github::webhooks::process",
         RegisterFunction::new_async(move |req: JobRequest| {
             let s = s.clone();
-            async move { s.process(&req.job_id).await.map_err(iii_sdk::Error::from) }
+            async move {
+                storage_task(async move { s.process(&req.job_id).await })
+                    .await
+                    .map_err(iii_sdk::Error::from)
+            }
         })
         .description("Internal durable job consumer; commit effects before queue ack."),
     );
@@ -141,11 +196,13 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         RegisterFunction::new_async(move |req: TunnelSnapshot| {
             let s = s.clone();
             async move {
-                let response = s.tunnel_changed(req).await?;
+                let task_service = s.clone();
+                let response =
+                    storage_task(async move { task_service.tunnel_changed(req).await }).await?;
                 // The durable acceptance precedes return. Queue failure/crash is
                 // recovered by maintenance/startup, not a lossy detached task.
                 tokio::spawn(async move {
-                    if let Err(e) = s.publish_pending().await {
+                    if let Err(e) = storage_task(async move { s.publish_pending().await }).await {
                         tracing::error!(error = %e, "tunnel lifecycle job retained for retry");
                     }
                 });
@@ -161,7 +218,11 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         "github::webhooks::maintain",
         RegisterFunction::new_async(move |_req: MaintenanceRequest| {
             let s = s.clone();
-            async move { s.maintain().await.map_err(iii_sdk::Error::from) }
+            async move {
+                storage_task(async move { s.maintain().await })
+                    .await
+                    .map_err(iii_sdk::Error::from)
+            }
         })
         .description("Internal bounded cleanup, expiry and outbox recovery; never polls PRs."),
     );
@@ -169,7 +230,9 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         match activate(&service).await {
             Ok(()) => tracing::info!("webhook bindings submitted; SDK reports asynchronous registration failures in logs"),
             Err(e) => {
-                if let Err(storage_error) = service.record_failure(&e) {
+                let task_service = service.clone();
+                let error = e.to_string();
+                if let Err(storage_error) = storage_task(async move { task_service.store()?.change(|d| { d.last_error = Some(error); Ok(()) }) }).await {
                     tracing::error!(error = %storage_error, "cannot persist activation failure");
                 }
                 tracing::error!(error = %e, "webhook activation/recovery failed; inspect watch health and recover")
@@ -231,12 +294,48 @@ async fn activate(s: &Arc<Service>) -> Result<()> {
     }
     let service = s.clone();
     tokio::spawn(async move {
-        if let Err(e) = service.recover(None).await {
-            if let Err(storage_error) = service.record_failure(&e) {
+        let task_service = service.clone();
+        if let Err(e) = storage_task(async move { task_service.recover(None).await }).await {
+            let error = e.to_string();
+            if let Err(storage_error) = storage_task(async move {
+                service.store()?.change(|d| {
+                    d.last_error = Some(error);
+                    Ok(())
+                })
+            })
+            .await
+            {
                 tracing::error!(error = %storage_error, "cannot persist startup recovery failure");
             }
             tracing::error!(error = %e, "webhook startup recovery failed; durable work retained");
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn engine_metadata_keeps_strict_requests_and_schemas() {
+        fn check<T: serde::de::DeserializeOwned + JsonSchema>(payload: Value) {
+            let expected = serde_json::to_value(schemars::schema_for!(T)).unwrap();
+            let actual = serde_json::to_value(schemars::schema_for!(EngineRequest<T>)).unwrap();
+            assert_eq!(
+                actual, expected,
+                "transport must not change the public schema"
+            );
+            serde_json::from_value::<EngineRequest<T>>(payload.clone()).unwrap();
+            let mut routed = payload;
+            routed["_caller_worker_id"] = json!("harness");
+            serde_json::from_value::<EngineRequest<T>>(routed.clone()).unwrap();
+            routed["unexpected"] = json!(true);
+            assert!(serde_json::from_value::<EngineRequest<T>>(routed).is_err());
+        }
+        check::<WatchRequest>(json!({"watch_id":"test", "repo":"owner/repo", "number":1,
+            "expires_at":"2030-01-01T00:00:00Z"}));
+        check::<WatchId>(json!({"watch_id":"test"}));
+        check::<RecoverRequest>(json!({}));
+    }
 }

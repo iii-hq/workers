@@ -257,19 +257,48 @@ async fn corrupt_persistence_fails_closed_and_expired_leases_do_not_restart() {
     manager.shutdown().await;
 }
 
+// Keep a failed regression test from leaving a worker or tunnel running.
+struct ProcessGroupCleanup(u32);
+impl Drop for ProcessGroupCleanup {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{}", self.0)])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 #[tokio::test]
-async fn worker_sigterm_and_ctrl_c_reap_even_an_uncooperative_child() {
-    for signal in ["-TERM", "-INT"] {
-        let (dir, config) = fixture("ignore-term");
+async fn worker_startup_signals_reap_children_from_persisted_leases() {
+    for signal in ["TERM", "INT"] {
+        let (dir, mut config) = fixture("ignore-term");
+        // Neither startup timeout nor lease expiry may stop the child for us.
+        config.startup_timeout_ms = 30_000;
         let lease = Lease {
             lease_id: uuid::Uuid::new_v4().to_string(),
             consumer_id: "github".into(),
             tunnel_id: "webhooks".into(),
-            expires_at: Utc::now() + chrono::Duration::seconds(10),
+            expires_at: Utc::now() + chrono::Duration::seconds(60),
         };
         std::fs::write(
             &config.state_path,
             serde_json::to_vec(&vec![lease]).unwrap(),
+        )
+        .unwrap();
+        // Shell builtins send the signal immediately after publishing the PID:
+        // no polling delay, readiness event or engine registration to wait for.
+        // The child ignores both signals and exec preserves its PID.
+        std::fs::write(
+            &config.cloudflared,
+            format!(
+                r#"#!/bin/sh
+trap '' TERM INT
+printf '%s\n' "$$" >> "${{0%/*}}/pids"
+kill -{signal} "$PPID"
+exec /usr/bin/python3 -c 'import signal; signal.alarm(10); signal.pause()'
+"#
+            ),
         )
         .unwrap();
         let yaml = dir.path().join("worker.yaml");
@@ -278,28 +307,22 @@ async fn worker_sigterm_and_ctrl_c_reap_even_an_uncooperative_child() {
             .args(["--local-config", "--url", "ws://127.0.0.1:1", "--config"])
             .arg(yaml)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .process_group(0)
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while pids(dir.path()).is_empty() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        let status = tokio::process::Command::new("/bin/kill")
-            .args([signal, &child.id().unwrap().to_string()])
-            .status()
+        let _cleanup = ProcessGroupCleanup(child.id().unwrap());
+        let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
             .await
+            .unwrap_or_else(|_| panic!("worker did not shut down on SIG{signal}"))
             .unwrap();
-        assert!(status.success());
-        assert!(tokio::time::timeout(Duration::from_secs(5), child.wait())
-            .await
-            .unwrap()
-            .unwrap()
-            .success());
+        assert!(status.success(), "worker exited on SIG{signal}: {status}");
+        assert_eq!(
+            pids(dir.path()).len(),
+            1,
+            "restored lease must spawn a child"
+        );
         reaped(dir.path());
     }
 }

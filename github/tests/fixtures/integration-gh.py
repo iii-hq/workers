@@ -7,11 +7,13 @@ import fcntl
 import json
 import os
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 assert sys.argv[1:3] == ['api', '--method'], sys.argv
 method, endpoint = sys.argv[3:5]
 path = urlsplit(endpoint).path
+query = parse_qs(urlsplit(endpoint).query)
+next_link = None
 body = json.load(sys.stdin) if '--input' in sys.argv else None
 with open(os.environ['GH_TOKEN'], 'r+', encoding='utf-8') as stream:
     fcntl.flock(stream, fcntl.LOCK_EX)
@@ -26,7 +28,16 @@ with open(os.environ['GH_TOKEN'], 'r+', encoding='utf-8') as stream:
         answer = state['prs'][path.rsplit('/', 1)[1]]
     # Specific deliveries route MUST precede the generic owned-hook route.
     elif path == prefix + 'hooks/42/deliveries' and method == 'GET':
-        answer = state.get('deliveries', [])
+        assert 'page' not in query, 'GitHub deliveries reject numeric page offsets'
+        assert '--include' in sys.argv, 'delivery pagination requires Link headers'
+        assert set(query) <= {'per_page', 'cursor'}
+        assert query.get('per_page') == ['100']
+        pages = state.get('delivery_pages', [state.get('deliveries', [])])
+        cursor = query.get('cursor', [''])[0]
+        index = 0 if not cursor else int(cursor.removeprefix('opaque-').removesuffix('='))
+        answer = pages[index]
+        if index + 1 < len(pages):
+            next_link = f'https://api.github.com/{path}?per_page=100&cursor=opaque-{index + 1}%3D'
     elif path.startswith(prefix + 'hooks/42/deliveries/') and path.endswith('/attempts') and method == 'POST':
         answer = {}
     elif path == prefix + 'hooks' and method == 'POST':
@@ -65,4 +76,9 @@ with open(os.environ['GH_TOKEN'], 'r+', encoding='utf-8') as stream:
 if failed:
     print(f'unsupported or injected failure: {method} {endpoint}', file=sys.stderr)
     sys.exit(1)
+if '--include' in sys.argv:
+    print('HTTP/2.0 200 OK')
+    if next_link:
+        print(f'Link: <{next_link}>; rel="next"')
+    print()
 print(json.dumps(answer, ensure_ascii=False))

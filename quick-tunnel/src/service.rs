@@ -13,6 +13,23 @@ use tokio::{
 
 use crate::{api::*, manager::Manager};
 
+// Accept engine transport metadata without weakening the strict public API.
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+struct EngineRequest<T>(T);
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for EngineRequest<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut payload = serde_json::Value::deserialize(deserializer)?;
+        if let Some(fields) = payload.as_object_mut() {
+            fields.remove("_caller_worker_id");
+        }
+        T::deserialize(payload)
+            .map(Self)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 pub const ACQUIRE: &str = "quick-tunnel::acquire";
 pub const RELEASE: &str = "quick-tunnel::release";
 pub const STATUS: &str = "quick-tunnel::status";
@@ -115,22 +132,24 @@ pub fn register(iii: Arc<IIIClient>, manager: Manager, targets: Vec<String>) -> 
     iii.register_trigger_type(RegisterTriggerType::new(CHANGED, "Tunnel lifecycle snapshot changed; subscribe before acquire, then read status to close races", changes.clone())
         .trigger_request_format::<ChangedConfig>().call_request_format::<Snapshot>());
     let acquire = manager.clone();
-    iii.register_function(ACQUIRE, RegisterFunction::new_async(move |request: AcquireRequest| {
+    iii.register_function(ACQUIRE, RegisterFunction::new_async(move |EngineRequest(request): EngineRequest<AcquireRequest>| {
         let manager = acquire.clone();
         async move { manager.acquire(request).await.map_err(|e| Error::Handler(e.to_string())) }
     }).description("Acquire or extend an expiring durable lease for an operator-authorized local target; returns immediately, possibly starting"));
     let release = manager.clone();
     iii.register_function(
         RELEASE,
-        RegisterFunction::new_async(move |request: ReleaseRequest| {
-            let manager = release.clone();
-            async move {
-                manager
-                    .release(request)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))
-            }
-        })
+        RegisterFunction::new_async(
+            move |EngineRequest(request): EngineRequest<ReleaseRequest>| {
+                let manager = release.clone();
+                async move {
+                    manager
+                        .release(request)
+                        .await
+                        .map_err(|e| Error::Handler(e.to_string()))
+                }
+            },
+        )
         .description(
             "Release one lease idempotently; the last lease stops and reaps the tunnel child",
         ),
@@ -138,15 +157,17 @@ pub fn register(iii: Arc<IIIClient>, manager: Manager, targets: Vec<String>) -> 
     let status = manager.clone();
     iii.register_function(
         STATUS,
-        RegisterFunction::new_async(move |request: StatusRequest| {
-            let manager = status.clone();
-            async move {
-                manager
-                    .status(request)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))
-            }
-        })
+        RegisterFunction::new_async(
+            move |EngineRequest(request): EngineRequest<StatusRequest>| {
+                let manager = status.clone();
+                async move {
+                    manager
+                        .status(request)
+                        .await
+                        .map_err(|e| Error::Handler(e.to_string()))
+                }
+            },
+        )
         .description(
             "Read the latest tunnel generation, connection state, public URL and non-secret leases",
         ),

@@ -308,15 +308,15 @@ pub enum Job {
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Data {
     #[serde(default)]
-    pub publications: BTreeMap<String, (i64, u32)>,
+    pub publications: super::store::rows::Rows<(i64, u32)>,
     #[serde(default)]
     pub last_error: Option<String>,
     pub installation: String,
-    pub watches: BTreeMap<String, Watch>,
-    pub repos: BTreeMap<String, RepoHook>,
-    pub subscribers: BTreeMap<String, Subscriber>,
-    pub jobs: BTreeMap<String, Job>,
-    pub deliveries: BTreeSet<String>,
+    pub watches: super::store::rows::Rows<Watch>,
+    pub repos: super::store::rows::Rows<RepoHook>,
+    pub subscribers: super::store::rows::Rows<Subscriber>,
+    pub jobs: super::store::rows::Rows<Job>,
+    pub deliveries: super::store::rows::Keys,
     pub tunnel_status: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

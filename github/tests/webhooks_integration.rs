@@ -171,16 +171,8 @@ impl Fixture {
         serde_json::from_slice(&std::fs::read(&self.gh_path).unwrap()).unwrap()
     }
     fn database(&self) -> Value {
-        let db = rusqlite::Connection::open_with_flags(
-            &self.db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
-        db.busy_timeout(Duration::from_secs(2)).unwrap();
-        let text: String = db
-            .query_row("SELECT value FROM state WHERE id=1", [], |r| r.get(0))
-            .unwrap();
-        serde_json::from_str(&text).unwrap()
+        let data = github::webhooks::store::Store::inspect(&self.db_path).unwrap();
+        serde_json::to_value(data).unwrap()
     }
     fn calls(&self, method: &str) -> Vec<Value> {
         self.gh()["calls"]
@@ -318,6 +310,65 @@ impl Fixture {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn recovery_follows_delivery_cursors_and_stops_after_five_pages() {
+    let fixture = Fixture::start().await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        fixture.two_watches_ready().await;
+        let mut state = fixture.gh();
+        state["delivery_pages"] = json!([
+            [{"id": 11, "status_code": 502}, {"id": 12, "status_code": 202}],
+            [{"id": 13, "status_code": 500}]
+        ]);
+        std::fs::write(&fixture.gh_path, state.to_string()).unwrap();
+        call(
+            &fixture.iii,
+            "github::pr::recover",
+            json!({"repo":"owner/repo"}),
+        )
+        .await;
+        let calls = fixture.calls("GET");
+        assert!(calls.iter().any(|call| {
+            call["endpoint"]
+                == "repos/owner/repo/hooks/42/deliveries?per_page=100&cursor=opaque-1%3D"
+        }));
+        let posts = fixture.calls("POST");
+        for id in [11, 13] {
+            assert!(posts.iter().any(|call| {
+                call["endpoint"] == format!("repos/owner/repo/hooks/42/deliveries/{id}/attempts")
+            }));
+        }
+        assert!(!posts.iter().any(|call| {
+            call["endpoint"] == "repos/owner/repo/hooks/42/deliveries/12/attempts"
+        }));
+        let mut state = fixture.gh();
+        state["delivery_pages"] = json!([[], [], [], [], [], []]);
+        state["calls"] = json!([]);
+        std::fs::write(&fixture.gh_path, state.to_string()).unwrap();
+        let error = fixture
+            .iii
+            .trigger(mocks::request(
+                "github::pr::recover",
+                json!({"repo":"owner/repo"}),
+            ))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("five pages"), "{error}");
+        let count = fixture
+            .calls("GET")
+            .iter()
+            .filter(|call| call["endpoint"].as_str().unwrap().contains("/deliveries?"))
+            .count();
+        assert_eq!(count, 5);
+    })
+    .catch_unwind()
+    .await;
+    fixture.shutdown().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn local_raw_webhooks_preserve_events_isolate_routes_and_cleanup_shared_hook() {
     let fixture = Fixture::start().await;
     let outcome = std::panic::AssertUnwindSafe(async {
@@ -365,7 +416,9 @@ async fn local_raw_webhooks_preserve_events_isolate_routes_and_cleanup_shared_ho
             && f["function_id"] == CALLBACK && f["data"]["entity"] == "9001").unwrap();
         assert_eq!(frame["namespace"], CONSUMER);
         assert_eq!(frame["metadata"], metadata());
-        assert_eq!(frame["data"], *event);
+        let mut delivered = frame["data"].clone();
+        delivered["_caller_worker_id"] = json!("test-worker");
+        assert_eq!(delivered, *event);
         let published = fixture.queue.published.load(Ordering::SeqCst);
         assert_eq!(fixture.post("issue_comment", "comment-1", &raw, &raw).await, 202);
         fixture.flush().await;

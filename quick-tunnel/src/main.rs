@@ -105,21 +105,22 @@ async fn run(
         serde_json::from_value(value)?
     };
     let targets = config.targets.keys().cloned().collect();
+    // Restored leases can spawn children immediately, before we start waiting.
+    #[cfg(unix)]
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(unix)]
+    let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let manager = Manager::open(config)?;
     let delivery = service::register(iii.clone(), manager.clone(), targets);
-    let signal_result = shutdown_signal().await;
+    #[cfg(unix)]
+    let signal_result: std::io::Result<()> = {
+        tokio::select! { _ = term.recv() => {}, _ = int.recv() => {} }
+        Ok(())
+    };
+    #[cfg(not(unix))]
+    let signal_result = tokio::signal::ctrl_c().await;
     manager.shutdown().await;
     delivery.abort();
     let _ = delivery.await;
     signal_result.context("waiting for shutdown signal")
-}
-
-async fn shutdown_signal() -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! { result = tokio::signal::ctrl_c() => result, _ = term.recv() => Ok(()) }
-    }
-    #[cfg(not(unix))]
-    tokio::signal::ctrl_c().await
 }

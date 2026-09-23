@@ -3,14 +3,41 @@ use std::time::Duration;
 use std::{fs, path::Path, sync::Mutex};
 
 use rand::RngCore;
-use rusqlite::{params, Connection, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+
+#[cfg(test)]
+mod persistence_tests;
+pub mod rows;
+#[cfg(test)]
+mod runtime_tests;
+mod sql;
+
+struct Database {
+    connection: Connection,
+    data: Data,
+    next_prune: i64,
+}
+
+/// Synchronous compatibility for lifecycle callers on the production multi-thread
+/// runtime. Tokio hands off the executor core before disk I/O or mutex waits.
+/// Current-thread callers must use wiring::storage_task/spawn_blocking; plain
+/// synchronous callers and unit tests can call directly without a Tokio runtime.
+fn blocking<T>(f: impl FnOnce() -> T) -> T {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
 
 use super::{types::Data, Failure, Result};
 
 /// SQLite is a transactional inbox/outbox, not an execution queue. Execution is
 /// delegated to the installed queue worker. FULL sync precedes every HTTP ack.
 pub struct Store {
-    connection: Mutex<Connection>,
+    database: Mutex<Database>,
     _lock: fs::File,
 }
 impl Store {
@@ -23,6 +50,10 @@ impl Store {
     }
     #[cfg(unix)]
     pub fn open(path: &Path) -> Result<Self> {
+        blocking(|| Self::open_blocking(path))
+    }
+    #[cfg(unix)]
+    fn open_blocking(path: &Path) -> Result<Self> {
         let parent = path
             .parent()
             .ok_or_else(|| Failure::Invalid("storage_path needs a parent".into()))?;
@@ -67,46 +98,70 @@ impl Store {
                 ));
             }
         }
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_secs(2))?;
-        conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);")?;
-        let data = Data {
-            installation: random_id(),
-            ..Default::default()
-        };
-        conn.execute(
-            "INSERT OR IGNORE INTO state VALUES(1, ?1)",
-            [serde_json::to_string(&data)?],
-        )?;
+        conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")?;
+        let data = sql::initialize(&mut conn)?;
         Ok(Self {
-            connection: Mutex::new(conn),
+            database: Mutex::new(Database {
+                connection: conn,
+                data,
+                next_prune: 0,
+            }),
             _lock: lock,
         })
     }
+    /// Cheap immutable snapshot. Payloads are shared, not cloned/deserialized.
     pub fn read(&self) -> Result<Data> {
-        let conn = self
-            .connection
-            .lock()
-            .map_err(|_| Failure::StoragePoisoned)?;
-        let text: String =
-            conn.query_row("SELECT value FROM state WHERE id=1", [], |r| r.get(0))?;
-        Ok(serde_json::from_str(&text)?)
+        blocking(|| {
+            Ok(self
+                .database
+                .lock()
+                .map_err(|_| Failure::StoragePoisoned)?
+                .data
+                .clone())
+        })
+    }
+    /// Read-only, transaction-consistent inspection for integration tests/tools.
+    /// Does not acquire installation ownership, migrate, or write to the database.
+    /// Contains secrets: never expose this snapshot as a public function response.
+    pub fn inspect(path: &Path) -> Result<Data> {
+        blocking(|| {
+            let mut conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            conn.busy_timeout(std::time::Duration::from_secs(2))?;
+            let tx = conn.transaction()?;
+            let data = sql::load(&tx)?;
+            tx.commit()?;
+            Ok(data)
+        })
     }
     pub fn change<T>(&self, f: impl FnOnce(&mut Data) -> Result<T>) -> Result<T> {
-        let mut conn = self
-            .connection
-            .lock()
-            .map_err(|_| Failure::StoragePoisoned)?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let text: String = tx.query_row("SELECT value FROM state WHERE id=1", [], |r| r.get(0))?;
-        let mut data: Data = serde_json::from_str(&text)?;
-        let out = f(&mut data)?;
-        tx.execute(
-            "UPDATE state SET value=?1 WHERE id=1",
-            params![serde_json::to_string(&data)?],
-        )?;
-        tx.commit()?;
-        Ok(out)
+        blocking(|| {
+            let mut db = self.database.lock().map_err(|_| Failure::StoragePoisoned)?;
+            // Copy-on-write row indexes provide rollback without cloning payloads.
+            // Cache replacement only follows successful FULL-sync commit.
+            let mut data = db.data.clone();
+            let out = f(&mut data)?;
+            let now = chrono::Utc::now().timestamp();
+            let prune = now >= db.next_prune;
+            let Database {
+                connection,
+                data: old,
+                ..
+            } = &mut *db;
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            sql::persist(&tx, old, &mut data, now)?;
+            if prune {
+                sql::prune(&tx, &mut data, now)?;
+            }
+            tx.commit()?;
+            sql::clean(&mut data);
+            db.data = data;
+            if prune {
+                db.next_prune = now.saturating_add(60);
+            }
+            Ok(out)
+        })
     }
 }
 pub fn random_id() -> String {

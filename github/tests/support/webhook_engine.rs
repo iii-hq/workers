@@ -311,6 +311,11 @@ fn route(frame: Value, namespace: &str, tx: &Sender, state: &State) {
                         .unwrap()
                         .insert(text("invocation_id"), tx.clone());
                 }
+                // Mirror the engine's transport metadata injection before SDK dispatch.
+                let mut frame = frame;
+                if let Some(data) = frame["data"].as_object_mut() {
+                    data.insert("_caller_worker_id".into(), json!("test-worker"));
+                }
                 let _ = target.send(frame);
             } else {
                 let _ = tx.send(error(&frame, "unregistered test function/namespace"));

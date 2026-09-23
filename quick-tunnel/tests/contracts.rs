@@ -148,13 +148,29 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
         assert_eq!(registration["request_format"]["type"], "object");
         assert_eq!(registration["response_format"]["type"], "object");
     }
+    for (function, expected) in [
+        (
+            service::ACQUIRE,
+            serde_json::to_value(schemars::schema_for!(AcquireRequest)).unwrap(),
+        ),
+        (
+            service::RELEASE,
+            serde_json::to_value(schemars::schema_for!(ReleaseRequest)).unwrap(),
+        ),
+        (
+            service::STATUS,
+            serde_json::to_value(schemars::schema_for!(StatusRequest)).unwrap(),
+        ),
+    ] {
+        assert_eq!(functions[function]["request_format"], expected);
+    }
     let trigger = trigger.unwrap();
     assert_eq!(trigger["id"], service::CHANGED);
     assert!(trigger["trigger_request_format"]["properties"]["tunnel_id"].is_object());
     assert!(trigger["call_request_format"]["properties"]["generation"].is_object());
 
     // Exercise the registered handlers, not a parallel placeholder catalog.
-    for (function, data, expect_error) in [
+    for (function, mut data, expect_error) in [
         (service::STATUS, json!({}), false),
         (
             service::ACQUIRE,
@@ -168,6 +184,7 @@ async fn interface_registers_without_cloudflared_and_sdk_preserves_namespace_met
         ),
         (service::RELEASE, json!({"lease_id":"unknown"}), false),
     ] {
+        data["_caller_worker_id"] = json!("github-worker");
         let id = uuid::Uuid::new_v4();
         wire_tx
             .send(Message::InvokeFunction {

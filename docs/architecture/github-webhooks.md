@@ -87,6 +87,44 @@ Quick Tunnels are temporary and have no SLA. Production monitoring with stronger
 availability requirements should use a stable hostname and an appropriate
 recovery/audit policy.
 
+## Storage migration and retention
+
+Watches, repository hooks, inbox/outbox jobs, subscribers, publication claims,
+delivery IDs and entity fingerprints use keyed SQLite tables. Mutations commit
+only touched rows with `synchronous=FULL`. Copy-on-write snapshots share queued
+payloads; accepting a delivery does not serialize the entire pending inbox.
+Storage work runs outside the SDK's current-thread executor.
+
+The first enabled start migrates the legacy `state` document atomically,
+preserving installation identity, secrets, leases and pending work. Before
+upgrading an existing installation, take a consistent SQLite backup, protect it
+like the original database, and rehearse the migration on a copy. Allow disk space
+for both the old document and the new tables during the transaction. **Downgrade
+is not automatic:** old binaries are deliberately blocked from writing to a
+migrated database. Restoring an older backup also requires reconciling GitHub
+hooks and tunnel leases; do not run old and new installations concurrently.
+
+Retention runs on the first mutation and then at most once per minute:
+
+- Completed delivery IDs: up to seven days and the newest 100,000 entries;
+  pending inbox jobs pin their delivery IDs until processing completes.
+- Entity fingerprints: up to seven days and the newest 4,096 per watch.
+- Cleaned-up terminal snapshots: up to seven days and the newest 1,000 eligible
+  watches, with at least five minutes before capacity eviction. Pending outbox
+  jobs, cleanup or tunnel leases prevent eviction.
+
+Jobs are never removed by retention. These are periodic retention bounds, not
+instantaneous hard caps: bursts and pinned work can exceed them. After snapshot
+retention, `watch-status` returns not found. Redelivery beyond the deduplication
+window may produce another notification, so consumers must remain idempotent.
+
+Pending payloads are still cached in memory once; `max_pending` limits job count,
+not total bytes. Size this setting together with `max_body_bytes` and available
+memory. Copy-on-write index updates scale with key count rather than total queued
+payload bytes. An HTTP timeout can occur while an already-started transaction
+finishes: a retry is safe through delivery deduplication, but no exactly-once
+guarantee is implied.
+
 ## Integration acceptance checklist
 
 - Two watches in a repository share one managed hook.

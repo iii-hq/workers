@@ -26,7 +26,7 @@ remains watched until expiry when stop_on is merged.
 Operator setup requires persistent SQLite, queue builtin file_based (current
 Redis adapter is NOT durable), HTTP dedicated public listener, Quick Tunnel,
 cron, and gh auth with Webhooks write plus repository reads. Default enabled
-is false. See ../WEBHOOKS.md. Quick Tunnels are not zero-loss; recovery lists
+is false. See [the webhook guide](../../docs/architecture/github-webhooks.md). Quick Tunnels are not zero-loss; recovery lists
 failed deliveries and requests bounded redelivery, reconciling current state.
 Do not enable merely because a public repository can be read.
 

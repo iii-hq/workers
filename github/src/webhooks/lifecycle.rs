@@ -101,21 +101,27 @@ impl Service {
             Ok(())
         })
     }
+    async fn acquire_lease(&self, id: &str) -> Result<()> {
+        let data = self.store()?.read()?;
+        let w = data.watches.get(id).ok_or(Failure::NotFound)?;
+        let lease = self.invoke("quick-tunnel::acquire", json!({"consumer_id": consumer_id(&data.installation, id), "tunnel_id": self.config.tunnel_id, "expires_at": w.spec.expires_at.to_rfc3339()})).await?;
+        let lease_id = lease["lease_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| Failure::Invalid("tunnel response missing lease_id".into()))?
+            .to_owned();
+        // Keep the previous lease reachable for cleanup until acquire succeeds.
+        self.store()?.change(|d| {
+            let w = d.watches.get_mut(id).ok_or(Failure::NotFound)?;
+            w.lease_id = Some(lease_id);
+            Ok(())
+        })
+    }
     async fn prepare_watch(&self, id: &str) -> Result<()> {
         let data = self.store()?.read()?;
         let w = data.watches.get(id).ok_or(Failure::NotFound)?;
         if w.lease_id.is_none() {
-            let lease = self.invoke("quick-tunnel::acquire", json!({"consumer_id": consumer_id(&data.installation, id), "tunnel_id": self.config.tunnel_id, "expires_at": w.spec.expires_at.to_rfc3339()})).await?;
-            let lease_id = lease["lease_id"]
-                .as_str()
-                .ok_or_else(|| Failure::Invalid("tunnel response missing lease_id".into()))?
-                .to_owned();
-            self.store()?.change(|d| {
-                if let Some(w) = d.watches.get_mut(id) {
-                    w.lease_id = Some(lease_id);
-                }
-                Ok(())
-            })?;
+            self.acquire_lease(id).await?;
         }
         // Registration was submitted before acquire; the SDK does not expose
         // binding acknowledgement. One status read closes the ready-event race.
@@ -271,6 +277,7 @@ impl Service {
         public_url: &str,
         generation: &str,
     ) -> Result<bool> {
+        self.reconcile_create(repo).await?;
         let data = self.store()?.read()?;
         let h = data.repos.get(repo).ok_or(Failure::NotFound)?;
         let url = format!(
@@ -297,16 +304,15 @@ impl Service {
             .await?;
             id
         } else {
-            // A timed-out create is deliberately NOT retried/adopted. Its durable
-            // intent remains visible; an operator must resolve the ambiguity.
-            if h.create_started {
-                return Err(Failure::AmbiguousHook);
-            }
             self.store()?.change(|d| {
                 let h = d.repos.get_mut(repo).ok_or(Failure::NotFound)?;
                 if h.create_started {
                     return Err(Failure::AmbiguousHook);
                 }
+                // Commit the exact random endpoint BEFORE the side effect. A
+                // crash or a rejected/lost response must be reconcilable later.
+                h.url = Some(url.clone());
+                h.generation = None;
                 h.create_started = true;
                 Ok(())
             })?;
@@ -318,8 +324,27 @@ impl Service {
                         json!({"name":"web","active":true,"events":hook_events(),"config":config}),
                     ),
                 )
-                .await?;
-            created["id"].as_u64().ok_or(Failure::AmbiguousHook)?
+                .await
+                .and_then(|created| created["id"].as_u64().ok_or(Failure::AmbiguousHook));
+            match created {
+                Ok(id) => id,
+                Err(error) => {
+                    self.reconcile_create(repo).await?;
+                    let data = self.store()?.read()?;
+                    let h = data.repos.get(repo).ok_or(Failure::NotFound)?;
+                    let id = h.hook_id.ok_or(error)?;
+                    self.verify_owned(repo, h).await?;
+                    // GitHub masks secrets in GET/list. Exact URL ownership
+                    // permits PATCHing our own secret, never trusting the mask.
+                    self.api(
+                        "PATCH",
+                        &format!("repos/{repo}/hooks/{id}"),
+                        Some(json!({"active":true,"config":config,"events":hook_events()})),
+                    )
+                    .await?;
+                    id
+                }
+            }
         };
         self.store()?.change(|d| {
             let h = d.repos.get_mut(repo).ok_or(Failure::NotFound)?;
@@ -330,6 +355,63 @@ impl Service {
             Ok(())
         })?;
         Ok(true)
+    }
+    async fn reconcile_create(&self, repo: &str) -> Result<()> {
+        let data = self.store()?.read()?;
+        let hook = data.repos.get(repo).ok_or(Failure::NotFound)?;
+        if hook.hook_id.is_some() || !hook.create_started {
+            return Ok(());
+        }
+        // Legacy intents lack the original tunnel URL. Neither the current URL
+        // nor an endpoint suffix proves their absence/ownership: fail closed.
+        let url = hook
+            .url
+            .as_deref()
+            .filter(|url| {
+                !hook.endpoint_id.is_empty()
+                    && url.starts_with("https://")
+                    && !url.contains(['?', '#', '@'])
+                    && url.ends_with(&format!("/webhooks/github/{}", hook.endpoint_id))
+            })
+            .ok_or(Failure::AmbiguousHook)?;
+        let base = format!("repos/{repo}/hooks");
+        let mut endpoint = format!("{base}?per_page=100");
+        let mut seen = std::collections::BTreeSet::new();
+        let mut owned = std::collections::BTreeSet::new();
+        for _ in 0..5 {
+            if !seen.insert(endpoint.clone()) {
+                return Err(Failure::AmbiguousHook);
+            }
+            let output = self.api_output("GET", &endpoint, None, true).await?;
+            let (hooks, next) = hook_page(&output, &base)?;
+            let hooks = hooks.as_array().ok_or(Failure::AmbiguousHook)?;
+            for actual in hooks {
+                if actual.pointer("/config/url").and_then(Value::as_str) == Some(url) {
+                    owned.insert(actual["id"].as_u64().ok_or(Failure::AmbiguousHook)?);
+                }
+            }
+            if let Some(next) = next {
+                endpoint = next;
+                continue;
+            }
+            if owned.len() > 1 {
+                return Err(Failure::AmbiguousHook);
+            }
+            // Only a COMPLETE listing establishes absence or a unique match.
+            return self.store()?.change(|d| {
+                let h = d.repos.get_mut(repo).ok_or(Failure::NotFound)?;
+                if let Some(id) = owned.first() {
+                    h.hook_id = Some(*id);
+                    h.generation = None;
+                    h.error = Some("recovered hook requires secret/configuration PATCH".into());
+                } else {
+                    h.create_started = false;
+                    h.error = None;
+                }
+                Ok(())
+            });
+        }
+        Err(Failure::AmbiguousHook)
     }
     async fn verify_owned(&self, repo: &str, hook: &RepoHook) -> Result<()> {
         let id = hook.hook_id.ok_or(Failure::Ownership)?;
@@ -425,6 +507,9 @@ impl Service {
                 continue;
             }
             let result = async {
+                self.reconcile_create(repo).await?;
+                let current = self.store()?.read()?;
+                let hook = current.repos.get(repo).ok_or(Failure::NotFound)?;
                 if let Some(id) = hook.hook_id {
                     self.verify_owned(repo, hook).await?;
                     self.api("DELETE", &format!("repos/{repo}/hooks/{id}"), None)
@@ -547,13 +632,7 @@ impl Service {
             }
             Ok(())
         })?;
-        let maintenance = self.maintain_locked().await;
-        if let Err(e) = &maintenance {
-            self.store()?.change(|d| {
-                d.last_error = Some(e.to_string());
-                Ok(())
-            })?;
-        }
+        let mut first_error = self.maintain_locked().await.err();
         let data = self.store()?.read()?;
         let ids: Vec<_> = data
             .watches
@@ -562,31 +641,47 @@ impl Service {
             .map(|w| w.spec.watch_id.clone())
             .collect();
         for id in ids {
-            // Acquire is idempotent per consumer and expiry. Also repairs a lost
-            // tunnel backend after restart; per-watch leases protect the latest expiry.
-            self.store()?.change(|d| {
-                if let Some(w) = d.watches.get_mut(&id) {
-                    w.lease_id = None;
-                }
-                Ok(())
-            })?;
-            if let Err(e) = self.prepare_watch(&id).await {
+            // Force the idempotent acquire to repair a restarted backend, but
+            // do not discard the old lease if that call fails or is malformed.
+            let result = async {
+                self.acquire_lease(&id).await?;
+                self.prepare_watch(&id).await
+            }
+            .await;
+            if let Err(e) = result {
                 self.watch_error(&id, &e)?;
-                return Err(e);
+                first_error.get_or_insert(e);
             }
         }
+        let data = self.store()?.read()?;
         for name in data
             .repos
             .keys()
             .filter(|r| repo.is_none_or(|x| x.eq_ignore_ascii_case(r)))
         {
-            self.redeliver(name).await?;
+            let result = async {
+                self.reconcile_create(name).await?;
+                self.redeliver(name).await
+            }
+            .await;
+            if let Err(e) = result {
+                self.repo_error(name, &e)?;
+                first_error.get_or_insert(e);
+            }
         }
-        self.publish_pending().await?;
-        maintenance?;
+        // Both phases run even after any watch/repository failed.
+        for result in [self.publish_pending().await, self.cleanup().await] {
+            if let Err(e) = result {
+                first_error.get_or_insert(e);
+            }
+        }
+        if let Some(e) = first_error {
+            self.record_failure(&e)?;
+            return Err(e);
+        }
         self.operation_response()
     }
-    async fn redeliver(&self, repo: &str) -> Result<()> {
+    pub(super) async fn redeliver(&self, repo: &str) -> Result<()> {
         let data = self.store()?.read()?;
         let Some(h) = data.repos.get(repo) else {
             return Ok(());
@@ -595,40 +690,197 @@ impl Service {
             return Ok(());
         };
         self.verify_owned(repo, h).await?;
-        // Bounded recovery: oldest retained failures beyond 500 need manual action.
-        for page in 1..=5 {
-            let deliveries = self
-                .api(
-                    "GET",
-                    &format!("repos/{repo}/hooks/{id}/deliveries?per_page=100&page={page}"),
-                    None,
-                )
-                .await?;
-            let rows = deliveries
-                .as_array()
-                .ok_or_else(|| Failure::Invalid("invalid delivery list".into()))?;
-            for row in rows {
-                let failed = row["status_code"]
-                    .as_u64()
-                    .is_none_or(|s| !(200..300).contains(&s));
-                if failed {
-                    if let Some(delivery_id) = row["id"].as_u64() {
-                        self.api(
-                            "POST",
-                            &format!("repos/{repo}/hooks/{id}/deliveries/{delivery_id}/attempts"),
-                            None,
-                        )
-                        .await?;
-                    }
+        // GitHub deliveries use opaque Link cursors, not numeric page offsets.
+        // Follow at most five pages, and only within this owned hook's endpoint.
+        let base = format!("repos/{repo}/hooks/{id}/deliveries");
+        let mut endpoint = format!("{base}?per_page=100");
+        let mut seen = std::collections::BTreeSet::new();
+        let mut rows = Vec::new();
+        let mut complete = false;
+        for _ in 0..5 {
+            if !seen.insert(endpoint.clone()) {
+                return Err(Failure::Invalid("repeated delivery cursor".into()));
+            }
+            let output = self.api_output("GET", &endpoint, None, true).await?;
+            let (deliveries, next) = delivery_page(&output, &base)?;
+            rows.extend(
+                deliveries
+                    .as_array()
+                    .ok_or_else(|| Failure::Invalid("invalid delivery list".into()))?
+                    .iter()
+                    .cloned(),
+            );
+            match next {
+                Some(next) => endpoint = next,
+                None => {
+                    complete = true;
+                    break;
                 }
             }
-            if rows.len() < 100 {
-                break;
+        }
+        // A successful retry can appear after an older failure, even on a later
+        // page. Gather the bounded history before selecting failed GUIDs.
+        let mut guids = std::collections::BTreeSet::new();
+        let mut ids = std::collections::BTreeSet::new();
+        for row in &rows {
+            if row["status_code"]
+                .as_u64()
+                .is_some_and(|s| (200..300).contains(&s))
+            {
+                if let Some(guid) = row["guid"].as_str().filter(|g| !g.is_empty()) {
+                    guids.insert(guid.to_owned());
+                }
+                if let Some(id) = row["id"].as_u64() {
+                    ids.insert(id);
+                }
             }
         }
-        Ok(())
+        for row in rows {
+            let Some(delivery_id) = row["id"].as_u64() else {
+                continue;
+            };
+            let guid = row["guid"].as_str().filter(|g| !g.is_empty());
+            if ids.contains(&delivery_id) || guid.is_some_and(|g| guids.contains(g)) {
+                continue;
+            }
+            // Ingress can durably accept deliveries while the history is being
+            // fetched (or a prior POST runs). Never reuse the initial snapshot.
+            if let Some(guid) = guid {
+                if self
+                    .store()?
+                    .read()?
+                    .deliveries
+                    .contains(&format!("{id}:{guid}"))
+                {
+                    guids.insert(guid.to_owned());
+                    continue;
+                }
+            }
+            self.api(
+                "POST",
+                &format!("repos/{repo}/hooks/{id}/deliveries/{delivery_id}/attempts"),
+                None,
+            )
+            .await?;
+            ids.insert(delivery_id);
+            if let Some(guid) = guid {
+                guids.insert(guid.to_owned());
+            }
+        }
+        if complete {
+            Ok(())
+        } else {
+            Err(Failure::Invalid(
+                "delivery recovery exceeds five pages; inspect older deliveries manually".into(),
+            ))
+        }
     }
 }
+
+// Parse gh --include without ever forwarding credentials to a Link-provided host.
+fn delivery_page(output: &str, base: &str) -> Result<(Value, Option<String>)> {
+    let (headers, body) = output
+        .split_once("\r\n\r\n")
+        .or_else(|| output.split_once("\n\n"))
+        .ok_or_else(|| Failure::Invalid("delivery response lacks headers".into()))?;
+    let mut next = None;
+    for line in headers.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("link") {
+            continue;
+        }
+        for link in value.split(',') {
+            let mut parts = link.trim().split(';');
+            let url = parts.next().unwrap_or_default().trim();
+            if !parts.any(|part| part.trim() == "rel=\"next\"") {
+                continue;
+            }
+            let endpoint = url
+                .strip_prefix("<https://api.github.com/")
+                .and_then(|url| url.strip_suffix('>'))
+                .ok_or_else(|| Failure::Invalid("unsafe delivery pagination link".into()))?;
+            let (path, query) = endpoint
+                .split_once('?')
+                .ok_or_else(|| Failure::Invalid("delivery pagination lacks cursor".into()))?;
+            let mut keys = std::collections::BTreeSet::new();
+            let valid = query.split('&').all(|field| {
+                let Some((key, value)) = field.split_once('=') else {
+                    return false;
+                };
+                keys.insert(key)
+                    && match key {
+                        "per_page" => value == "100",
+                        "cursor" => {
+                            !value.is_empty()
+                                && value
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b"-._~%=+".contains(&b))
+                        }
+                        _ => false,
+                    }
+            });
+            if path != base || !valid || !keys.contains("cursor") || next.is_some() {
+                return Err(Failure::Invalid("unsafe delivery pagination link".into()));
+            }
+            next = Some(endpoint.to_owned());
+        }
+    }
+    Ok((serde_json::from_str(body)?, next))
+}
+
+// Repository hook lists use numeric pages; deliveries retain their separate
+// opaque-cursor parser above. Never let a Link change the host or repository.
+fn hook_page(output: &str, base: &str) -> Result<(Value, Option<String>)> {
+    let (headers, body) = output
+        .split_once("\r\n\r\n")
+        .or_else(|| output.split_once("\n\n"))
+        .ok_or(Failure::AmbiguousHook)?;
+    let mut next = None;
+    for line in headers.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("link") {
+            continue;
+        }
+        for link in value.split(',') {
+            let mut parts = link.trim().split(';');
+            let url = parts.next().unwrap_or_default().trim();
+            if !parts.any(|part| part.trim() == "rel=\"next\"") {
+                continue;
+            }
+            let endpoint = url
+                .strip_prefix("<https://api.github.com/")
+                .and_then(|url| url.strip_suffix('>'))
+                .ok_or(Failure::AmbiguousHook)?;
+            let (path, query) = endpoint.split_once('?').ok_or(Failure::AmbiguousHook)?;
+            let mut keys = std::collections::BTreeSet::new();
+            let valid = query.split('&').all(|field| {
+                let Some((key, value)) = field.split_once('=') else {
+                    return false;
+                };
+                keys.insert(key)
+                    && match key {
+                        "per_page" => value == "100",
+                        "page" => {
+                            !value.is_empty()
+                                && value.bytes().all(|b| b.is_ascii_digit())
+                                && value.parse::<u64>().is_ok_and(|p| p > 1)
+                        }
+                        _ => false,
+                    }
+            });
+            if path != base || !valid || !keys.contains("page") || next.is_some() {
+                return Err(Failure::AmbiguousHook);
+            }
+            next = Some(endpoint.to_owned());
+        }
+    }
+    Ok((serde_json::from_str(body)?, next))
+}
+
 fn hook_events() -> Value {
     json!([
         "pull_request",
@@ -639,4 +891,39 @@ fn hook_events() -> Value {
         "status",
         "workflow_run"
     ])
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    const BASE: &str = "repos/owner/repo/hooks/42/deliveries";
+
+    #[test]
+    fn follows_opaque_cursor_from_link_and_accepts_last_page() {
+        let endpoint = format!("{BASE}?per_page=100&cursor=opaque%3D");
+        let response = format!(
+            "HTTP/2.0 200 OK\r\nlink: <https://api.github.com/{endpoint}>; rel=\"next\"\r\n\r\n[]"
+        );
+        assert_eq!(delivery_page(&response, BASE).unwrap().1, Some(endpoint));
+        assert_eq!(
+            delivery_page("HTTP/2.0 200 OK\n\n[]", BASE).unwrap(),
+            (json!([]), None)
+        );
+    }
+
+    #[test]
+    fn rejects_links_outside_owned_hook_and_invalid_pagination() {
+        for url in [
+            format!("https://evil.example/{BASE}?cursor=a"),
+            "https://api.github.com/repos/other/repo/hooks/42/deliveries?cursor=a".into(),
+            format!("https://api.github.com/{BASE}?page=2"),
+            format!("https://api.github.com/{BASE}?cursor="),
+            format!("https://api.github.com/{BASE}?cursor=a&per_page=1000"),
+            format!("https://api.github.com/{BASE}?cursor=a&cursor=b"),
+        ] {
+            let response = format!("HTTP/2.0 200 OK\nLink: <{url}>; rel=\"next\"\n\n[]");
+            assert!(delivery_page(&response, BASE).is_err(), "{url}");
+        }
+    }
 }

@@ -1,4 +1,4 @@
-# Opt in only after reading WEBHOOKS.md. Parameters below require restart.
+# Opt in only after reading docs/architecture/github-webhooks.md. Parameters below require restart.
 webhooks:
   enabled: false
   storage_path: ./data/github-webhooks/store.sqlite3

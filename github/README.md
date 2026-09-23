@@ -3,7 +3,7 @@
 Além das APIs CLI existentes, `github::pr::watch`, `github::pr::unwatch`,
 `github::pr::watch-status`, `github::pr::recover` e o trigger `github::pr::event`
 implementam monitoramento por webhooks. Desabilitado por padrão; leia
-[WEBHOOKS.md](WEBHOOKS.md) para habilitação, permissões, recuperação e limitações.
+[guia de webhooks](../docs/architecture/github-webhooks.md) para habilitação, permissões, recuperação e limitações.
 Nenhum recurso externo é criado durante o registro da interface com defaults.
 
 # github
