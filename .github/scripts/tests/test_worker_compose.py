@@ -97,22 +97,18 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
     assert bundles == 14
 
 
-def test_claude_code_release_installs_its_shared_ui_workspace():
+def test_claude_code_release_builds_its_ui_from_the_root_workspace():
+    # A private claude-code workspace re-lists ../packages/console-ui, whose
+    # `catalog:` specifiers only the root workspace defines, and the frozen
+    # install then rejects the lockfile. The ui lives in the root workspace.
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
     artifact = document["workers"]["claude-code"]["artifact"]
-    workspace = yaml.safe_load(
-        (ROOT / "claude-code" / "pnpm-workspace.yaml").read_text(encoding="utf-8")
-    )
+    root_workspace = yaml.safe_load((ROOT / "pnpm-workspace.yaml").read_text(encoding="utf-8"))
 
     assert artifact["workspace_root"] == "claude-code"
-    assert artifact["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
-    assert set(workspace["packages"]) == {
-        ".",
-        "ui",
-        "../packages/agent-terminal-ui",
-        "../packages/console-ui",
-        "../packages/terminal-font",
-    }
+    assert artifact["install_command"] == ["pnpm", "install", "--ignore-workspace", "--frozen-lockfile"]
+    assert not (ROOT / "claude-code" / "pnpm-workspace.yaml").exists()
+    assert "claude-code/ui" in root_workspace["packages"]
 
 
 def test_worker_bundle_start_commands_target_packaged_entrypoints():
