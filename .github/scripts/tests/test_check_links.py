@@ -43,13 +43,13 @@ def run_check(tmp_path: Path, mitigation: str) -> subprocess.CompletedProcess[st
     check_links = scripts / "check-links.sh"
     shutil.copy2(CHECK_LINKS, check_links)
     (project / "README.md").write_text(
-        "https://iii.dev\nhttps://workers.iii.dev\n", encoding="utf-8"
+        "\n".join(("https://iii.dev", "https://workers.iii.dev", "")), encoding="utf-8"
     )
     for ignored in ("node_modules", ".git", "target", "dist"):
         directory = project / ignored
         directory.mkdir()
         (directory / "ignored.md").write_text(
-            "https://ignored.iii.dev\n", encoding="utf-8"
+            "https://ignored." + "iii.dev" + "\n", encoding="utf-8"
         )
     fake_curl(tmp_path, mitigation)
     env = os.environ.copy()
