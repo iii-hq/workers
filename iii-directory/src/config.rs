@@ -114,6 +114,13 @@ fn default_function_search_judge_min_relevance() -> f64 {
     0.5
 }
 
+/// Measured on 22 English capabilities over a 16-document shortlist: every
+/// search kept a correct function at 0.05-0.1 with JEV and SemIf, while 0.15+
+/// dropped SemIf's runner-up answers.
+fn default_function_search_judge_choice_min_probability() -> f64 {
+    0.1
+}
+
 fn default_function_search_judge_side_lane_min_relevance() -> f64 {
     0.3
 }
@@ -130,6 +137,20 @@ pub enum FunctionSearchMode {
     // comment here would turn the schema into a `oneOf`; keep it a comment.
     #[default]
     Judge,
+}
+
+/// How `judge` asks about a capability's shortlist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionSearchJudgeQuestion {
+    // One Noul per shortlisted document, admitted by the min_relevance
+    // settings. A doc comment would turn the schema into a oneOf.
+    Noul,
+    // The default: one Choice per capability over its shortlist; the
+    // documents compete, the best is always kept, the others need
+    // function_search_judge_choice_min_probability.
+    #[default]
+    Choice,
 }
 
 /// `hybrid`, and the Hybrid fallback `judge` uses whenever the judge worker
@@ -200,6 +221,13 @@ where
         deserializer,
         "function_search_judge_side_lane_min_relevance",
     )
+}
+
+fn deserialize_judge_choice_min_probability<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_unit_interval(deserializer, "function_search_judge_choice_min_probability")
 }
 
 fn deserialize_unit_interval<'de, D>(deserializer: D, field: &str) -> Result<f64, D::Error>
@@ -373,6 +401,25 @@ pub struct SkillsConfig {
     #[schemars(range(min = 0, max = 1))]
     pub function_search_judge_side_lane_min_relevance: f64,
 
+    /// `choice` (the default) asks one multiple-choice question per capability
+    /// over its shortlist: 16× fewer questions, and documents compete instead
+    /// of each being approved on its own. `noul` asks one yes/no question per
+    /// shortlisted document (up to 16 per capability) and admits them by the
+    /// min_relevance settings. Local judges (SemIf, laya) need `choice` to fit
+    /// the deadline. Hot-reloadable.
+    #[serde(default)]
+    pub function_search_judge_question: FunctionSearchJudgeQuestion,
+
+    /// With `choice`, the best document of each capability is always kept and
+    /// every other one needs at least this probability. Finite, between 0 and
+    /// 1. Applies to functions, skills and triggers. Hot-reloadable.
+    #[serde(
+        default = "default_function_search_judge_choice_min_probability",
+        deserialize_with = "deserialize_judge_choice_min_probability"
+    )]
+    #[schemars(range(min = 0, max = 1))]
+    pub function_search_judge_choice_min_probability: f64,
+
     /// Local semantic model directory: the pinned MiniLM bundle (embedding
     /// files at the root, reranker files under `reranker/`). Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
     /// `null` disables the local Hybrid lane, including the judge's Hybrid fallback.
@@ -427,6 +474,9 @@ impl Default for SkillsConfig {
             function_search_judge_min_relevance: default_function_search_judge_min_relevance(),
             function_search_judge_side_lane_min_relevance:
                 default_function_search_judge_side_lane_min_relevance(),
+            function_search_judge_question: FunctionSearchJudgeQuestion::default(),
+            function_search_judge_choice_min_probability:
+                default_function_search_judge_choice_min_probability(),
             function_search_model_path: default_function_search_model_path(),
             function_search_model_download: default_function_search_model_download(),
         }
@@ -673,6 +723,14 @@ mod tests {
                 "function_search_judge_side_lane_min_relevance",
                 serde_json::json!([-0.01, 1.01, null, "NaN", "Infinity", "0.3"]),
             ),
+            (
+                "function_search_judge_choice_min_probability",
+                serde_json::json!([-0.01, 1.01, null, "NaN", "0.1"]),
+            ),
+            (
+                "function_search_judge_question",
+                serde_json::json!(["yes_no", "Choice", 1, null]),
+            ),
         ] {
             for invalid in invalid.as_array().unwrap() {
                 // Validate even when Judge is not the selected mode.
@@ -696,6 +754,31 @@ mod tests {
                 .unwrap_err()
                 .contains("function_search_judge_min_relevance"));
         }
+    }
+
+    #[test]
+    fn judge_question_defaults_to_choice_with_its_threshold() {
+        let defaults = SkillsConfig::default().to_json();
+        assert_eq!(defaults["function_search_judge_question"], "choice");
+        assert_eq!(
+            defaults["function_search_judge_choice_min_probability"],
+            0.1
+        );
+        let noul = SkillsConfig::from_json(&serde_json::json!({
+            "function_search_judge_question": "noul",
+            "function_search_judge_choice_min_probability": 0.05
+        }))
+        .unwrap();
+        assert_eq!(
+            noul.function_search_judge_question,
+            FunctionSearchJudgeQuestion::Noul
+        );
+        assert_eq!(noul.function_search_judge_choice_min_probability, 0.05);
+        let schema = SkillsConfig::json_schema();
+        assert_eq!(
+            schema["definitions"]["FunctionSearchJudgeQuestion"]["enum"],
+            serde_json::json!(["noul", "choice"])
+        );
     }
 
     #[test]

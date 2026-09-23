@@ -28,6 +28,25 @@ export function functionSearchModeWithDefault(value: unknown): FunctionSearchMod
   return typeof value === 'string' && FUNCTION_SEARCH_MODES.has(value) ? (value as FunctionSearchMode) : 'judge'
 }
 
+export const JUDGE_QUESTION_OPTIONS = [
+  {
+    value: 'noul',
+    label: 'One yes/no per function',
+    description: 'Ask about every shortlisted function on its own (up to 16 per capability); admitted by the minimum relevance.',
+  },
+  {
+    value: 'choice',
+    label: 'One choice per capability',
+    description: 'Let the shortlisted functions compete in a single question; needed by local judges.',
+  },
+] as const
+
+export type JudgeQuestion = (typeof JUDGE_QUESTION_OPTIONS)[number]['value']
+
+export function judgeQuestionWithDefault(value: unknown): JudgeQuestion {
+  return value === 'noul' ? 'noul' : 'choice'
+}
+
 /** Keys the worker no longer reads. A stored config can still carry them,
  * including the old TypeSafe key, so every save drops them. */
 export function withoutRetiredKeys<T extends Record<string, unknown>>(draft: T): T {
