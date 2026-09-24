@@ -54,6 +54,24 @@ export function boundsFor(
   return { minX, maxX, minY, maxY }
 }
 
+/** The box once its width becomes `width`, before any move: it keeps its
+ * aspect ratio and grows (or shrinks) from the corner the pointer layout
+ * anchors it to, the bottom right. */
+export function resizedFromBottomRight(
+  rect: { left: number; top: number; right: number; bottom: number },
+  width: number,
+): { left: number; top: number; right: number; bottom: number } {
+  const current = rect.right - rect.left
+  if (current <= 0) return rect
+  const height = ((rect.bottom - rect.top) * width) / current
+  return {
+    left: rect.right - width,
+    top: rect.bottom - height,
+    right: rect.right,
+    bottom: rect.bottom,
+  }
+}
+
 export function clampPoint(p: Point, b: Bounds): Point {
   return {
     x: Math.min(b.maxX, Math.max(b.minX, p.x)),

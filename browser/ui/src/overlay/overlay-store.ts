@@ -1,17 +1,14 @@
 /**
  * Which sessions the live preview shows, in stacking order (last = front),
  * shared between the overlay (which subscribes) and the surfaces that
- * already show a tab on purpose (which dismiss). A tab the user opened
- * themselves — the page's own new-tab button, "Open in browser" on a scrape
- * result — never needs a thumbnail; and a session-started event may land
- * before or after the call that opened it resolves, so a dismissal both
- * removes the card and blocks a late event for that id.
+ * take a card over (the expand control, which hides it). A tab the user
+ * opened themselves never gets a card: its start event carries
+ * `preview: false`, so the overlay skips it in every console window.
  */
 
 import type { Host } from '@iii-dev/console-ui'
 
 let order: readonly string[] = []
-const dismissed = new Set<string>()
 const listeners = new Set<() => void>()
 
 function set(next: readonly string[]) {
@@ -31,9 +28,8 @@ export function browserOverlaySessions(): readonly string[] {
   return order
 }
 
-/** A session started: it lands on top, unless it was dismissed already. */
+/** A session started: it lands on top. */
 export function showBrowserOverlay(sessionId: string): void {
-  if (dismissed.has(sessionId)) return
   if (order[order.length - 1] === sessionId) return
   set([...order.filter((id) => id !== sessionId), sessionId])
 }
@@ -44,15 +40,8 @@ export function bringBrowserOverlayToFront(sessionId: string): void {
   showBrowserOverlay(sessionId)
 }
 
-/** Drop the card for this session and keep it away for its lifetime. */
-export function dismissBrowserOverlay(sessionId: string): void {
-  dismissed.add(sessionId)
-  if (order.includes(sessionId)) set(order.filter((id) => id !== sessionId))
-}
-
-/** A session ended: nothing to show, nothing left to remember. */
-export function forgetBrowserOverlay(sessionId: string): void {
-  dismissed.delete(sessionId)
+/** Drop the card for this session (hidden, expanded, or stopped). */
+export function hideBrowserOverlay(sessionId: string): void {
   if (order.includes(sessionId)) set(order.filter((id) => id !== sessionId))
 }
 
@@ -61,12 +50,11 @@ export function forgetBrowserOverlay(sessionId: string): void {
  * for it goes away since the page now shows it.
  */
 export function openBrowserPane(host: Host, sessionId: string): void {
-  dismissBrowserOverlay(sessionId)
+  hideBrowserOverlay(sessionId)
   host.panels?.open({ pageId: 'browser', context: { sessionId } })
 }
 
 /** Test seam. */
 export function resetBrowserOverlayStore(): void {
   order = []
-  dismissed.clear()
 }

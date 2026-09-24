@@ -1,0 +1,27 @@
+{
+  "name": "@iii-workers/provider-openai-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm dlx @biomejs/biome@2.4.10 ci .",
+    "test": "vitest run",
+    "watch": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "@iii-dev/console-ui": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "esbuild": "catalog:",
+    "jsdom": "^30.0.1",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

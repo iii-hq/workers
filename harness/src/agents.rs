@@ -103,6 +103,10 @@ pub struct ResolvedAgent {
     /// Harness display color; `None` when the profile uses the neutral
     /// default.
     pub color: Option<SubagentColor>,
+    /// Content digest of each preloaded contract as rendered into `prompt`
+    /// (declared id → `Some(digest)`, or `None` when unavailable), frozen onto
+    /// `TurnOptions.preloaded_contracts` for the per-step stale check.
+    pub contract_digests: BTreeMap<String, Option<String>>,
 }
 
 /// Fetch and normalize one agent profile. An unknown id or a profile whose
@@ -297,6 +301,35 @@ impl PreloadedContract {
     }
 }
 
+/// Content identity of one preloaded contract as the model sees it:
+/// whitespace-collapsed description + compacted request schema. The stale
+/// check builds the live registry's contract through the same constructor,
+/// so compaction alone can never read as a change.
+fn digest_of(contract: &PreloadedContract) -> String {
+    crate::skills::fingerprint(&format!(
+        "{}\n{}",
+        contract.description.as_deref().unwrap_or_default(),
+        contract
+            .request_schema
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_default()
+    ))
+}
+
+/// [`digest_of`] for a live registry descriptor (`turn_loop::preloaded_stale_notice`).
+pub(crate) fn contract_digest(
+    function_id: &str,
+    description: Option<&str>,
+    request_schema: Option<Value>,
+) -> String {
+    digest_of(&PreloadedContract::new(
+        function_id,
+        description,
+        request_schema,
+    ))
+}
+
 /// Freeze the profile's preloaded functions onto the prompt. Contracts come
 /// from the cached registry snapshot (already hydrated with schemas, no
 /// round-trip) and, for ids the snapshot cannot vouch for — not listed, or
@@ -311,10 +344,37 @@ async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
     if agent.functions.is_empty() {
         return;
     }
+    let (ordered, unavailable, digests) = preload_contracts(deps, &agent.functions).await;
+    agent.contract_digests = digests;
+    if !unavailable.is_empty() {
+        tracing::warn!(
+            agent = %agent.identity.id,
+            unavailable = ?unavailable,
+            "agent profile names preloaded functions the engine does not know"
+        );
+    }
+    agent.prompt = append_block(
+        &agent.prompt,
+        &render_preloaded_functions(&ordered, &unavailable, "this agent profile"),
+    );
+}
+
+/// The current contracts of `ids`, in order: from the cached registry
+/// snapshot, then one `engine::functions::info` batch per 32 ids the snapshot
+/// cannot vouch for. Returns the contracts found, the ids the engine does not
+/// know, and every id's digest (`None` when unavailable).
+pub(crate) async fn preload_contracts(
+    deps: &Deps,
+    ids: &[String],
+) -> (
+    Vec<PreloadedContract>,
+    Vec<String>,
+    BTreeMap<String, Option<String>>,
+) {
     let snapshot = deps.functions().await;
     let mut contracts: HashMap<String, PreloadedContract> = HashMap::new();
     let mut pending: Vec<String> = Vec::new();
-    for id in &agent.functions {
+    for id in ids {
         match snapshot
             .functions
             .iter()
@@ -351,31 +411,27 @@ async fn attach_preloaded_functions(deps: &Deps, agent: &mut ResolvedAgent) {
                 }
             }
             Err(error) => tracing::warn!(
-                agent = %agent.identity.id,
                 %error,
                 "preloaded function contracts could not be fetched; those ids render as unavailable"
             ),
         }
     }
-    let mut ordered = Vec::with_capacity(agent.functions.len());
+    let mut ordered = Vec::with_capacity(ids.len());
     let mut unavailable = Vec::new();
-    for id in &agent.functions {
+    let mut digests = BTreeMap::new();
+    for id in ids {
         match contracts.remove(id) {
-            Some(contract) => ordered.push(contract),
-            None => unavailable.push(id.clone()),
+            Some(contract) => {
+                digests.insert(id.clone(), Some(digest_of(&contract)));
+                ordered.push(contract);
+            }
+            None => {
+                digests.insert(id.clone(), None);
+                unavailable.push(id.clone());
+            }
         }
     }
-    if !unavailable.is_empty() {
-        tracing::warn!(
-            agent = %agent.identity.id,
-            unavailable = ?unavailable,
-            "agent profile names preloaded functions the engine does not know"
-        );
-    }
-    agent.prompt = append_block(
-        &agent.prompt,
-        &render_preloaded_functions(&ordered, &unavailable),
-    );
+    (ordered, unavailable, digests)
 }
 
 /// The contracts one `engine::functions::info { function_ids }` batch
@@ -421,13 +477,15 @@ fn append_block(prompt: &str, block: &str) -> String {
 /// schema — in the profile's declaration order, then the ids the engine does
 /// not know. Read against the doctrine's Step 1 / Step 2: a contract in this
 /// block is "pre-verified", so the model skips discovery and
-/// `engine::functions::info` for it and calls it on the first step.
+/// `engine::functions::info` for it and calls it on the first step. `scope`
+/// names who preloaded them ("this agent profile", "this sub-agent task").
 pub(crate) fn render_preloaded_functions(
     contracts: &[PreloadedContract],
     unavailable: &[String],
+    scope: &str,
 ) -> String {
     let mut body = format!(
-        "<preloaded_functions>\nThese functions are preloaded for this agent profile: the contracts below are \
+        "<preloaded_functions>\nThese functions are preloaded for {scope}: the contracts below are \
          pre-verified and already in context. Call each one directly through `{tool}` with a \
          `payload` object matching its request schema — skip `directory::search_functions` and \
          `engine::functions::info` for these ids (fetch a contract again only after an \
@@ -542,6 +600,7 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
         name,
         icon,
         color,
+        contract_digests: BTreeMap::new(),
     }
 }
 
@@ -901,8 +960,14 @@ mod tests {
             ),
             PreloadedContract::new("bare", None, None),
         ];
-        let block = render_preloaded_functions(&contracts, &["gone::away".to_string()]);
-        assert!(block.starts_with("<preloaded_functions>\n"));
+        let block = render_preloaded_functions(
+            &contracts,
+            &["gone::away".to_string()],
+            "this agent profile",
+        );
+        assert!(block.starts_with(
+            "<preloaded_functions>\nThese functions are preloaded for this agent profile: "
+        ));
         assert!(block.ends_with("\n</preloaded_functions>"));
         assert!(block.contains("pre-verified"));
         assert!(block.contains("through `agent_trigger`"));
@@ -916,12 +981,34 @@ mod tests {
         assert!(block.contains("NOT registered right now — do not call: `gone::away`."));
 
         // Nothing unavailable → no such paragraph.
-        let clean = render_preloaded_functions(&contracts, &[]);
+        let clean = render_preloaded_functions(&contracts, &[], "this sub-agent task");
         assert!(!clean.contains("NOT registered"));
+        assert!(clean.contains("preloaded for this sub-agent task: the contracts below"));
 
         // The block follows the identity after one blank line, or stands
         // alone for a prompt-less profile.
         assert_eq!(append_block("You lead.\n\n", "<b/>"), "You lead.\n\n<b/>");
         assert_eq!(append_block("", "<b/>"), "<b/>");
+
+        // The frozen digest is the rendered contract's identity: the same
+        // inputs through the live-descriptor path give the same digest, a
+        // schema edit a different one.
+        let same = contract_digest(
+            "coder::tree",
+            Some("Show a directory tree."),
+            Some(
+                serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+            ),
+        );
+        assert_eq!(same, digest_of(&contracts[0]));
+        assert!(same.starts_with("sha256:"));
+        assert_ne!(
+            same,
+            contract_digest(
+                "coder::tree",
+                Some("Show a directory tree."),
+                Some(serde_json::json!({ "type": "object" })),
+            )
+        );
     }
 }

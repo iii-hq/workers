@@ -5,6 +5,10 @@ import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
 import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
 import { SlashCommandPill } from '@/components/chat/lexical/SlashCommandNode'
 import {
+  MermaidDiagram,
+  MermaidStreamingContext,
+} from '@/components/ui/MermaidDiagram'
+import {
   Table,
   TableBody,
   TableCaption,
@@ -24,6 +28,7 @@ import { cn } from '@/lib/utils'
 interface MarkdownProps {
   children: string
   className?: string
+  streaming?: boolean
 }
 
 /* Matches `@fn(<id>)` (id excludes whitespace and `)`), `#file(<path>)`
@@ -74,10 +79,11 @@ function walk(node: Root | Element): void {
    depending on how it was parsed. Normalize both shapes to a single check.
    (Typed `unknown` on purpose: current @types/hast declares only the array
    shape, but the string shape still occurs at runtime.) */
-function hasLanguageJson(node: Element): boolean {
+function hasLanguage(node: Element, language: string): boolean {
   const cls: unknown = node.properties?.className
-  if (Array.isArray(cls)) return cls.includes('language-json')
-  if (typeof cls === 'string') return cls.split(/\s+/).includes('language-json')
+  const expected = `language-${language}`
+  if (Array.isArray(cls)) return cls.includes(expected)
+  if (typeof cls === 'string') return cls.split(/\s+/).includes(expected)
   return false
 }
 
@@ -245,25 +251,29 @@ const components: Components = {
     )
   },
   pre: ({ node, className, children, ...rest }) => {
-    /* Detect a JSON fenced block (`<pre><code class="language-json">`) and
-       route it to the Prism-driven highlighter. We read the raw text out of
-       the hast tree directly instead of leaning on the rendered `code`
-       output so the highlighter gets the unmodified source. */
+    // Read the unmodified source from hast, before code/mention rendering.
     const codeChild = node?.children?.[0]
     if (
       codeChild &&
       codeChild.type === 'element' &&
-      codeChild.tagName === 'code' &&
-      hasLanguageJson(codeChild)
+      codeChild.tagName === 'code'
     ) {
-      const text = codeChild.children?.[0]
-      const source = text && text.type === 'text' ? text.value : ''
-      return (
-        <JsonHighlight
-          code={source.replace(/\n$/, '')}
-          className="rounded-md border border-rule-2 my-4"
-        />
-      )
+      const source = codeChild.children
+        .filter((child) => child.type === 'text')
+        .map((child) => child.value)
+        .join('')
+        .replace(/\n$/, '')
+      if (hasLanguage(codeChild, 'mermaid')) {
+        return <MermaidDiagram source={source} />
+      }
+      if (hasLanguage(codeChild, 'json')) {
+        return (
+          <JsonHighlight
+            code={source}
+            className="rounded-md border border-rule-2 my-4"
+          />
+        )
+      }
     }
     return (
       <pre
@@ -330,16 +340,22 @@ const components: Components = {
   ),
 }
 
-export function Markdown({ children, className }: MarkdownProps) {
+export function Markdown({
+  children,
+  className,
+  streaming = false,
+}: MarkdownProps) {
   return (
-    <div className={cn('text-ink', className)}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeFnMention]}
-        components={components}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
+    <MermaidStreamingContext.Provider value={streaming}>
+      <div className={cn('text-ink', className)}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeFnMention]}
+          components={components}
+        >
+          {children}
+        </ReactMarkdown>
+      </div>
+    </MermaidStreamingContext.Provider>
   )
 }

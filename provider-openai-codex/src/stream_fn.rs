@@ -172,6 +172,7 @@ async fn run_stream_call(
     let system_prompt = input.system_prompt.unwrap_or_default();
     let (affinity_headers, prompt_cache_key) = resolve_cache_routing(
         input.provider_options.as_ref(),
+        input.cache_intent.as_ref(),
         input.session_id.as_deref(),
         input.resolution_key.as_deref(),
     );

@@ -49,6 +49,10 @@ rules:
   # safe read-only introspection. Mutations stay denied.
   - '!configuration::set'
   - '!configuration::register'
+  # configuration::ensure is the atomic register/seed twin (same schema/seed
+  # mutation power under a new name); deny it too so an agent cannot bypass the
+  # register deny above.
+  - '!configuration::ensure'
   - '!directory::pre-generate'
   - '!directory::on-functions-change'
   - '!directory::hint-preview'
@@ -123,6 +127,9 @@ rules:
   # change cannot inadvertently re-open the injection path.
   - '!storage::on-config-change'
   - '!database::on-config-change'
+  - '!judge::on-config-change'
+  - '!judge-semif::on-config-change'
+  - '!judge-typesafe::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell
   # worker, whose shell::on-config-change is already denied above.)
@@ -150,6 +157,12 @@ rules:
   - '!kanban::on-config-change'
   - '!kanban::ticket::delete'
   - '!kanban::ticket::restore'
+  # stories: console asset delivery, the /ui-files content function and the
+  # configuration reload sink are engine plumbing. Reads, comparisons,
+  # renders and line builds are allowlisted below.
+  - '!stories::ui-content'
+  - '!stories::ui-file'
+  - '!stories::on-config-change'
   # eval: durable orchestration internals are trigger/queue targets only.
   # Starting, cancelling, and deleting evaluations remain approval-gated by
   # the default. Status/result are read-only and the exact evaluator is pure.
@@ -350,6 +363,21 @@ rules:
   - kanban::comment::list
   - kanban::activity::list
   - kanban::agent::list
+  # stories: reads, comparisons and renders, plus building a line (git plus
+  # the project's own Vite inside data/stories) — see stories/skills/.
+  - stories::workspaces
+  - stories::lines
+  - stories::components::list
+  - stories::components::get
+  - stories::tree::fs
+  - stories::builds::create
+  - stories::builds::get
+  - stories::compare
+  - stories::diff::file
+  - stories::screenshot
+  - stories::tree
+  - stories::diff
+  - stories::history
   # vscode: the Console page starts a loopback-only VS Code Server per folder.
   # Stop/delete remain approval-gated; the config-reload callback and the
   # Console asset function are bus-internal.

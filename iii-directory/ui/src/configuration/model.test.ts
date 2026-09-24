@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   booleanWithDefault,
   functionSearchModeWithDefault,
+  judgeQuestionWithDefault,
   semanticModeNeedsModel,
   withFunctionSearchMode,
+  withoutRetiredKeys,
 } from './model'
 
 describe('booleanWithDefault', () => {
@@ -19,12 +21,19 @@ describe('booleanWithDefault', () => {
 })
 
 describe('function search configuration', () => {
-  it('uses hybrid when a migrated value omits or corrupts the mode', () => {
-    expect(functionSearchModeWithDefault(undefined)).toBe('hybrid')
-    expect(functionSearchModeWithDefault('remote')).toBe('hybrid')
+  it('defaults the judge question to choice unless noul is stored', () => {
+    expect(judgeQuestionWithDefault(undefined)).toBe('choice')
+    expect(judgeQuestionWithDefault('yes_no')).toBe('choice')
+    expect(judgeQuestionWithDefault('noul')).toBe('noul')
   })
 
-  it.each(['lexical', 'hybrid', 'jev'] as const)('preserves the supported %s mode', (mode) => {
+  it('uses judge when a migrated value omits or corrupts the mode', () => {
+    expect(functionSearchModeWithDefault(undefined)).toBe('judge')
+    expect(functionSearchModeWithDefault('remote')).toBe('judge')
+    expect(functionSearchModeWithDefault('jev')).toBe('judge')
+  })
+
+  it.each(['lexical', 'hybrid', 'judge'] as const)('preserves the supported %s mode', (mode) => {
     expect(functionSearchModeWithDefault(mode)).toBe(mode)
   })
 
@@ -48,13 +57,26 @@ describe('function search configuration', () => {
   it('requires a configured local model only for hybrid', () => {
     expect(semanticModeNeedsModel('lexical', undefined)).toBe(false)
     expect(semanticModeNeedsModel('lexical', null)).toBe(false)
-    expect(semanticModeNeedsModel('jev', undefined)).toBe(false)
-    expect(semanticModeNeedsModel('jev', null)).toBe(false)
-    expect(semanticModeNeedsModel('jev', '/models/minilm')).toBe(false)
+    expect(semanticModeNeedsModel('judge', undefined)).toBe(false)
+    expect(semanticModeNeedsModel('judge', null)).toBe(false)
+    expect(semanticModeNeedsModel('judge', '/models/minilm')).toBe(false)
     // Absent field = worker default bundle path + first-run download.
     expect(semanticModeNeedsModel('hybrid', undefined)).toBe(false)
     // Explicit null disables the semantic lane: that is the stranded case.
     expect(semanticModeNeedsModel('hybrid', null)).toBe(true)
     expect(semanticModeNeedsModel('hybrid', '/models/minilm')).toBe(false)
+  })
+})
+
+describe('withoutRetiredKeys', () => {
+  it('drops keys the worker no longer reads, including the old TypeSafe key', () => {
+    expect(
+      withoutRetiredKeys({
+        function_search_mode: 'judge',
+        function_search_jev_api_key: 'old-secret',
+        function_search_jev_model: 'jev-1.13.0',
+        function_search_judge_timeout_ms: 3000,
+      }),
+    ).toEqual({ function_search_mode: 'judge', function_search_judge_timeout_ms: 3000 })
   })
 })

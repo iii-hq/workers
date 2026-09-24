@@ -34,7 +34,6 @@ import {
   stopBrowserSession,
 } from '../lib/browser'
 import { cn } from '../lib/cn'
-import { dismissBrowserOverlay } from '../overlay/overlay-store'
 import { SavedSetsDialog } from './SavedSetsDialog'
 import { type SessionActions, SessionView } from './SessionView'
 import { TabStrip } from './TabStrip'
@@ -97,12 +96,14 @@ export function BrowserPage({
       startingRef.current = true
       setStarting(true)
       try {
-        const started = await startBrowserSession(host.iii, { incognito })
+        // Opened here on purpose: the page shows it, no preview needed.
+        const started = await startBrowserSession(host.iii, {
+          incognito,
+          preview: false,
+        })
         setStartError(null)
         refresh()
         if (started) {
-          // Opened here on purpose: the page shows it, no preview needed.
-          dismissBrowserOverlay(started.session_id)
           pendingIdRef.current = started.session_id
           setSelectedId(started.session_id)
         }

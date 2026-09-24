@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ConsoleConfigValue } from '@/lib/console-config'
+import type { WorkspaceLayoutValue } from '@/lib/workspace-layout'
 import {
   parseActivation,
   parseActiveTabId,
@@ -10,7 +10,7 @@ import {
 import { SerializedConfigWriter } from './lib/serialized-config-writer'
 import {
   type WorkspaceTransform,
-  workspaceConfigTransform,
+  workspaceLayoutTransform,
 } from './use-workspace-tabs'
 
 /** A pre-hydration write held by the hook: activate a second tab. It is
@@ -34,9 +34,9 @@ const openShellScreen: WorkspaceTransform = (state) => ({
   activeTabId: 'tab-shell',
 })
 
-function harness(initial: ConsoleConfigValue) {
-  let remote: ConsoleConfigValue = { ...initial }
-  let cache: ConsoleConfigValue | null = { ...initial }
+function harness(initial: WorkspaceLayoutValue) {
+  let remote: WorkspaceLayoutValue = { ...initial }
+  let cache: WorkspaceLayoutValue | null = { ...initial }
   const writer = new SerializedConfigWriter({
     readRemote: async () => ({ ...remote }),
     writeRemote: async (value) => {
@@ -67,7 +67,7 @@ describe('pending-layout replay vs a deep-linked screen', () => {
           ? [activateSecondTab, openShellScreen]
           : [openShellScreen, activateSecondTab]
       for (const update of transforms) {
-        stack.writer.enqueue(workspaceConfigTransform(update))
+        stack.writer.enqueue(workspaceLayoutTransform(update))
       }
       await stack.flush()
 
@@ -90,7 +90,7 @@ describe('pending-layout replay vs a deep-linked screen', () => {
     const stack = harness({})
     const composed: WorkspaceTransform = (state) =>
       openShellScreen(activateSecondTab(state))
-    stack.writer.enqueue(workspaceConfigTransform(composed))
+    stack.writer.enqueue(workspaceLayoutTransform(composed))
     await stack.flush()
 
     const ids = parseWorkspaceTabs(stack.remote()).map((tab) => tab.id)
@@ -100,16 +100,15 @@ describe('pending-layout replay vs a deep-linked screen', () => {
 })
 
 describe('pointer provenance on the server', () => {
-  const functionActivated: ConsoleConfigValue = {
-    workspace: {
-      tabs: [
-        { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },
-        { id: 'tab-shell', columns: 1, screens: ['ext:ide'] },
-      ],
-      activeTabId: 'tab-shell',
-      activatedAt: 500,
-      activatedBy: 'function',
-    },
+  // What `console::workspace::open` leaves in `<data_dir>/workspace.json`.
+  const functionActivated: WorkspaceLayoutValue = {
+    tabs: [
+      { id: 'tab-home', columns: 2, screens: ['chat', 'traces'] },
+      { id: 'tab-shell', columns: 1, screens: ['ext:ide'] },
+    ],
+    activeTabId: 'tab-shell',
+    activatedAt: 500,
+    activatedBy: 'function',
   }
 
   it('a write that leaves the pointer alone keeps the function activation', async () => {
@@ -120,7 +119,7 @@ describe('pointer provenance on the server', () => {
         tab.id === 'tab-shell' ? { ...tab, name: 'IDE' } : tab,
       ),
     })
-    stack.writer.enqueue(workspaceConfigTransform(rename, () => 900))
+    stack.writer.enqueue(workspaceLayoutTransform(rename, () => 900))
     await stack.flush()
     expect(parseActivation(stack.remote())).toEqual({
       tabId: 'tab-shell',
@@ -136,7 +135,7 @@ describe('pointer provenance on the server', () => {
       ...state,
       activeTabId: 'tab-home',
     })
-    stack.writer.enqueue(workspaceConfigTransform(activateHome, () => 900))
+    stack.writer.enqueue(workspaceLayoutTransform(activateHome, () => 900))
     await stack.flush()
     expect(parseActivation(stack.remote())).toEqual({
       tabId: 'tab-home',
@@ -147,17 +146,15 @@ describe('pointer provenance on the server', () => {
 
   it('closing the active tab on the server follows the neighbour rule', async () => {
     const stack = harness({
-      workspace: {
-        tabs: [
-          { id: 'a', screens: ['chat'] },
-          { id: 'b', screens: ['traces'] },
-          { id: 'c', screens: ['workers'] },
-        ],
-        activeTabId: 'b',
-      },
+      tabs: [
+        { id: 'a', screens: ['chat'] },
+        { id: 'b', screens: ['traces'] },
+        { id: 'c', screens: ['workers'] },
+      ],
+      activeTabId: 'b',
     })
     stack.writer.enqueue(
-      workspaceConfigTransform((state) => withTabClosed(state, 'b')),
+      workspaceLayoutTransform((state) => withTabClosed(state, 'b')),
     )
     await stack.flush()
     expect(parseWorkspaceTabs(stack.remote()).map((t) => t.id)).toEqual([

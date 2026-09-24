@@ -151,6 +151,20 @@ pub struct TurnOptions {
     /// naming an explicit prompt field sheds it (the escape hatch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentIdentity>,
+    /// The profile's preloaded function contracts as frozen into the prompt:
+    /// id → content digest, `None` for an id that was unavailable at
+    /// resolution. Travels with `agent`; the per-step stale check compares it
+    /// against the live registry (`turn_loop::preloaded_stale_notice`) since
+    /// the frozen block itself is the shared cache prefix and never changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preloaded_contracts: Option<BTreeMap<String, Option<String>>>,
+    /// A spawned child's `<preloaded_functions>` block, rendered once at spawn
+    /// from its narrowed allow-list and the function ids its task names
+    /// (`subagent::child_contract_ids`). It rides AFTER the cache seam, in the
+    /// runtime aid, so default-identity sessions keep sharing the stable
+    /// prefix; its digests are merged into `preloaded_contracts`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeded_contracts: Option<String>,
     /// Cap on output-contract validation retries before finalising with a
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
@@ -442,6 +456,8 @@ mod tests {
                 agent: None,
                 max_validation_retries: 2,
                 max_transient_resumes: 1,
+                preloaded_contracts: None,
+                seeded_contracts: None,
             },
             calls: Default::default(),
             parent: None,
@@ -615,6 +631,8 @@ mod tests {
         assert_eq!(r.skill_ack, None);
         assert!(!r.skills_started);
         assert_eq!(r.options.agent, None);
+        assert_eq!(r.options.preloaded_contracts, None);
+        assert_eq!(r.options.seeded_contracts, None);
     }
 
     #[test]

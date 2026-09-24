@@ -9,6 +9,7 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtx } from '@/lib/conversations-context'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 import { ChatView } from './ChatView'
+import { ConversationLoadNotice } from './ConversationLoadNotice'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -73,6 +74,10 @@ export function ChatPanel({
     modelOptions,
     catalogLoading,
     connectionState,
+    conversationsLoading,
+    conversationsError,
+    conversationLoadErrors,
+    retryConversations,
     missingConversationIds,
   } = useConversationsCtx()
   const pinned = conversationId !== undefined
@@ -165,92 +170,103 @@ export function ChatPanel({
         surfaceRef.current = node
         rootRef(node)
       }}
-      className={`chat-surface flex-1 flex min-h-0 min-w-0${
-        panelSide === 'right' ? ' flex-row-reverse' : ''
-      }`}
+      className="chat-surface flex-1 flex flex-col min-h-0 min-w-0"
     >
-      {showList ? (
-        <PageSidebar
-          // onboarding-conversations: tour anchor (workers/onboarding). Do not remove.
-          className="onboarding-conversations"
-          label="Conversations"
-          side={panelSide}
-          storageKey="console:chat:conversations"
-          defaultWidth={220}
-          minWidth={160}
-          maxWidth={420}
-          collapsible
-          resizable
-          narrow={narrow}
-          header={
-            <Button
-              type="button"
-              variant="primary"
-              size="md"
-              className="h-12 flex-1 justify-center px-3 font-sans text-base normal-case sm:h-9 sm:justify-start sm:text-sm"
-              onClick={handleCreate}
-            >
-              <Plus className="size-4 shrink-0" aria-hidden />
-              New chat
-            </Button>
-          }
-          collapsedActions={
-            <IconButton
-              label="New chat"
-              tooltipSide={panelSide === 'left' ? 'right' : 'left'}
-              onClick={handleCreate}
-              className="size-7"
-            >
-              <Plus aria-hidden />
-            </IconButton>
-          }
-        >
-          <ConversationSidebar
-            conversations={conversations}
-            activeId={activeId}
+      <ConversationLoadNotice
+        loading={conversationsLoading && connectionState === 'connected'}
+        error={
+          conversationsError ||
+          (displayedId ? conversationLoadErrors?.[displayedId] : null)
+        }
+        onRetry={retryConversations}
+      />
+      <div
+        className={`flex flex-1 min-h-0 min-w-0${panelSide === 'right' ? ' flex-row-reverse' : ''}`}
+      >
+        {showList ? (
+          <PageSidebar
+            // onboarding-conversations: tour anchor (workers/onboarding). Do not remove.
+            className="onboarding-conversations"
+            label="Conversations"
+            side={panelSide}
+            storageKey="console:chat:conversations"
+            defaultWidth={220}
+            minWidth={160}
+            maxWidth={420}
+            collapsible
+            resizable
             narrow={narrow}
-            onSelect={handleSelect}
-            onRename={rename}
-            onRemove={remove}
-          />
-        </PageSidebar>
-      ) : null}
+            header={
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                className="h-12 flex-1 justify-center px-3 font-sans text-base normal-case sm:h-9 sm:justify-start sm:text-sm"
+                onClick={handleCreate}
+              >
+                <Plus className="size-4 shrink-0" aria-hidden />
+                New chat
+              </Button>
+            }
+            collapsedActions={
+              <IconButton
+                label="New chat"
+                tooltipSide={panelSide === 'left' ? 'right' : 'left'}
+                onClick={handleCreate}
+                className="size-7"
+              >
+                <Plus aria-hidden />
+              </IconButton>
+            }
+          >
+            <ConversationSidebar
+              conversations={conversations}
+              activeId={activeId}
+              narrow={narrow}
+              onSelect={handleSelect}
+              onRename={rename}
+              onRemove={remove}
+            />
+          </PageSidebar>
+        ) : null}
 
-      {showChat && displayedConversation ? (
-        <ChatView
-          key={displayedConversation.id}
-          conversation={displayedConversation}
-          backend={backend}
-          modelOptions={modelOptions}
-          catalogLoading={catalogLoading}
-          density={density}
-          panelTitle={pinned ? displayedConversation.title : undefined}
-          onRequestClose={onRequestClose}
-          commands={commands}
-          onBack={narrow && !pinned ? handleBack : undefined}
-          onUpdateModel={setModel}
-          onUpdateThinkingLevel={setThinkingLevel}
-          onUpdateWorkingDir={setWorkingDir}
-          onAppendMessage={appendMessage}
-          onPatchMessage={updateMessage}
-          onCompactConversation={compactConversation}
-        />
-      ) : !narrow || pinned ? (
-        <section className="flex-1 flex flex-col min-w-0 min-h-0">
-          <PageHeader title="Chat" onClose={onRequestClose} />
-          <div className="flex-1 flex items-center justify-center">
-            <div className="font-sans text-base text-ink-faint">
-              {pinned
-                ? connectionState === 'connected'
-                  ? conversationId && missingConversationIds.has(conversationId)
-                    ? 'Conversation not found.'
-                    : 'Loading conversation…'
-                  : 'Waiting for the session connection…'
-                : 'No conversation selected.'}
+        {showChat && displayedConversation ? (
+          <ChatView
+            key={displayedConversation.id}
+            conversation={displayedConversation}
+            backend={backend}
+            modelOptions={modelOptions}
+            catalogLoading={catalogLoading}
+            density={density}
+            panelTitle={pinned ? displayedConversation.title : undefined}
+            onRequestClose={onRequestClose}
+            commands={commands}
+            onBack={narrow && !pinned ? handleBack : undefined}
+            onUpdateModel={setModel}
+            onUpdateThinkingLevel={setThinkingLevel}
+            onUpdateWorkingDir={setWorkingDir}
+            onAppendMessage={appendMessage}
+            onPatchMessage={updateMessage}
+            onCompactConversation={compactConversation}
+          />
+        ) : !narrow || pinned ? (
+          <section className="flex-1 flex flex-col min-w-0 min-h-0">
+            <PageHeader title="Chat" onClose={onRequestClose} />
+            <div className="flex-1 flex items-center justify-center">
+              <div className="font-sans text-base text-ink-faint">
+                {pinned
+                  ? connectionState === 'connected'
+                    ? conversationId &&
+                      missingConversationIds.has(conversationId)
+                      ? 'Conversation not found.'
+                      : 'Loading conversation…'
+                    : 'Waiting for the session connection…'
+                  : 'No conversation selected.'}
+              </div>
             </div>
-          </div>
-        </section>
-      ) : null}
+          </section>
+        ) : null}
+      </div>
     </div>
   )
 }

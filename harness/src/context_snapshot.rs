@@ -143,6 +143,17 @@ pub struct ContextSnapshotV1 {
     /// magnitude, so a chip showing it alone reads as a bouncing total.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_cost_usd: Option<f64>,
+    /// Identity of the shared prompt prefix this generation went out with
+    /// (`sha256:` of the stable section) — present only when the request
+    /// carried `system_sections`. A local identity, never a provider hit;
+    /// `usage.cache_read` is the reuse signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_surface_digest: Option<String>,
+    /// Why no shared prefix went out: `disabled` (config), `no_stable_prefix`
+    /// (empty identity prompt) or `prefix_rewritten` (a pre_generate hook
+    /// replaced the prompt head; its prompt still wins, it just shares nothing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_sections_fallback: Option<String>,
     pub timestamp: i64,
 }
 
@@ -481,6 +492,8 @@ mod tests {
             summarized_head_tokens: None,
             usage: None,
             session_cost_usd: None,
+            prompt_surface_digest: None,
+            prompt_sections_fallback: None,
             timestamp: 1,
         };
 
@@ -548,6 +561,8 @@ mod tests {
                 cost_usd: Some(0.42),
             }),
             session_cost_usd: Some(1.37),
+            prompt_surface_digest: None,
+            prompt_sections_fallback: None,
             timestamp: 1_722_700_000_000,
         };
         let mut value = serde_json::to_value(&snapshot).unwrap();

@@ -1,3 +1,111 @@
+/* provider::openai-codex::image::* chat cards — the saved picture, its
+   facts, and the path an agent hands to the next process. */
+[data-iii-ui='provider-openai-codex'] .oai-image-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-sans, sans-serif);
+  color: var(--color-ink);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  max-height: 360px;
+  overflow: hidden;
+  background: var(--color-surface, var(--color-panel));
+  border-radius: 6px;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-img {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-skeleton {
+  display: block;
+  width: 100%;
+  height: 220px;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-missing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 20px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-facts > span + span::before {
+  content: '·';
+  margin-right: 10px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-path-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-path-dir {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-path-name {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-revised {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-fn-ns {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .oai-image-fn-op {
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
 [data-iii-ui='provider-openai-codex'] .codex-provider-form {
   container-type: inline-size;
   display: flex;

@@ -205,6 +205,34 @@ pub async fn register_provider_with_auth(
         .description(surface::COUNT_TOKENS_DESC)
         .metadata(json!({ "internal": true })),
     );
+    {
+        // Agent-callable on purpose: images have no router front door, and
+        // this path never touches the router's token accounting or budgets.
+        let iii_image = iii.clone();
+        let http_image = http.clone();
+        let cache_image = cache.clone();
+        let auth_image = auth.clone();
+        iii.register_function(
+            surface::IMAGE_GENERATE_ID,
+            RegisterFunction::new_async(move |req: crate::image::ImageGenerateRequest| {
+                let (iii, http, cache, auth) = (
+                    iii_image.clone(),
+                    http_image.clone(),
+                    cache_image.clone(),
+                    auth_image.clone(),
+                );
+                async move { crate::image::handle(&iii, &http, &cache, &auth, req).await }
+            })
+            .description(surface::IMAGE_GENERATE_DESC),
+        );
+    }
+    iii.register_function(
+        surface::IMAGE_READ_ID,
+        RegisterFunction::new_async(|req: crate::image::ImageReadRequest| async move {
+            crate::image::read(req).await
+        })
+        .description(surface::IMAGE_READ_DESC),
+    );
 
     {
         let iii_ready = iii.clone();

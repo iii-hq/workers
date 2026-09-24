@@ -7,6 +7,9 @@
 # directory here only when it participates in the shared console-UI surface.
 packages:
   - iii-directory/ui
+  - judge/ui
+  - judge-semif/ui
+  - judge-typesafe/ui
   - packages/*
   - ade/web
   - ade/ui
@@ -35,12 +38,14 @@ packages:
   - github/ui
   - llm-router/ui
   - provider-openai-codex/ui
+  - provider-openai/ui
   - tailscale/ui
   - voice/ui
   - vscode/ui
   - compose-ui/ui
   - kanban/ui
   - onboarding/ui
+  - stories/ui
 
 # One pin per shared toolchain package; every worker UI and the shared
 # packages reference these as `"catalog:"` so a bump lands in one place.

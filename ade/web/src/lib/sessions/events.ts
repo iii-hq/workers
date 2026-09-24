@@ -44,11 +44,17 @@ function bind<P>(
     if (payload && typeof payload === 'object') onEvent(payload as P)
   })
   // `on()` registers under `<fn>::<browserId>`; the trigger must target that id.
-  const offTrigger = client.registerTrigger({
-    type: triggerType,
-    function_id: `${localFnId}::${client.browserId}`,
-    config,
-  })
+  let offTrigger: () => void
+  try {
+    offTrigger = client.registerTrigger({
+      type: triggerType,
+      function_id: `${localFnId}::${client.browserId}`,
+      config,
+    })
+  } catch (error) {
+    offHandler()
+    throw error
+  }
   return () => {
     offHandler()
     try {
@@ -125,22 +131,31 @@ export function subscribeSessionTranscript(
       // Defense-in-depth: the trigger filter is already session-scoped.
       if (event.session_id === sessionId) fn(event)
     }
-  const offs = [
-    bind(
-      client,
-      'session::message-added',
-      config,
-      guard(handlers.onMessageAdded),
-      scope,
-    ),
-    bind(
-      client,
-      'session::message-updated',
-      config,
-      guard(handlers.onMessageUpdated),
-      scope,
-    ),
-  ]
+  const offs: Array<() => void> = []
+  try {
+    offs.push(
+      bind(
+        client,
+        'session::message-added',
+        config,
+        guard(handlers.onMessageAdded),
+        scope,
+      ),
+    )
+    offs.push(
+      bind(
+        client,
+        'session::message-updated',
+        config,
+        guard(handlers.onMessageUpdated),
+        scope,
+      ),
+    )
+  } catch (error) {
+    // A failed second binding must not leak the first into every retry.
+    for (const off of offs) off()
+    throw error
+  }
   return () => {
     for (const off of offs) off()
   }

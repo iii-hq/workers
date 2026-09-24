@@ -1,0 +1,165 @@
+{
+  "description": "Read back an image saved by image::generate (its details.path or bare file name under data/provider-openai-codex/images/) as viewable content blocks: a JPEG preview (default, fits the harness result cap) or the full bytes. Refuses any path outside that folder.",
+  "function_id": "provider::openai-codex::image::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Read a generated image back. Callers pass the `details.path` a generate call returned (or just its file name); anything outside `IMAGE_DATA_DIR` is refused, symlinks included, so this never becomes a general file reader. The console renderer uses it for the chat preview; an agent uses it when it needs to look at a picture it generated without `inline`.",
+    "properties": {
+      "path": {
+        "description": "Absolute path returned by `image::generate`, or the bare file name inside `data/provider-openai-codex/images/`.",
+        "type": "string"
+      },
+      "variant": {
+        "default": null,
+        "description": "`preview` (default; a JPEG at most 512px / ~80 KB that fits the harness result cap) or `full` (the saved bytes as they are).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "title": "ImageReadRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ContentBlock": {
+        "description": "One block of a viewable response: an image block plus a text line — the shape the harness renders inline (same as `browser::screenshot`).",
+        "properties": {
+          "data": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "ImageReadDetails": {
+        "properties": {
+          "bytes": {
+            "description": "Saved file size in bytes.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mime": {
+            "description": "Mime of the saved file.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path of the file that was read.",
+            "type": "string"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PreviewDetails"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "variant": {
+            "description": "`preview` or `full`: what the image block carries.",
+            "type": "string"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "bytes",
+          "mime",
+          "path",
+          "variant"
+        ],
+        "type": "object"
+      },
+      "PreviewDetails": {
+        "description": "What the inline image block actually holds when it is a preview.",
+        "properties": {
+          "bytes": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bytes",
+          "height",
+          "mime",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "content": {
+        "description": "`[image block, text line]` — the same viewable envelope as generate.",
+        "items": {
+          "$ref": "#/definitions/ContentBlock"
+        },
+        "type": "array"
+      },
+      "details": {
+        "$ref": "#/definitions/ImageReadDetails"
+      }
+    },
+    "required": [
+      "content",
+      "details"
+    ],
+    "title": "ImageReadResponse",
+    "type": "object"
+  }
+}

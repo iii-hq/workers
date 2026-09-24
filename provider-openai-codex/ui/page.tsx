@@ -1,7 +1,8 @@
 import { Button, type Host, type ProviderConfigFormProps } from '@iii-dev/console-ui'
 import { copyText } from '@iii-dev/console-ui/format'
 import { useEffect, useState } from 'react'
-import { useCodexAuth, type LoginStartResponse } from './src/use-codex-auth'
+import { createImageRenderer } from './src/image-renderer'
+import { type LoginStartResponse, useCodexAuth } from './src/use-codex-auth'
 
 /** Replaced by the worker at serve time with its `CODEX_COMPAT_VERSION`. */
 const COMPAT_VERSION = '__CODEX_COMPAT_VERSION__'
@@ -208,4 +209,7 @@ function CodexProviderForm({ host }: ProviderConfigFormProps & { host: Host }) {
 
 export default function setup(host: Host) {
   host.providerConfigForms?.register('openai-codex', (props) => <CodexProviderForm host={host} {...props} />)
+  // A generated picture is a chat artifact: `image::generate` returns only
+  // the saved path, and this renderer fetches the preview from the worker.
+  host.functionTriggers.register(createImageRenderer(host))
 }

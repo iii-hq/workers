@@ -70,12 +70,32 @@ const FILESYSTEM_ACCESS_WATCH_FUNCTIONS: &[&str] = &["shell::*", "coder::*"];
 const FILESYSTEM_ACCESS_WATCH_TIMEOUT_MS: u64 = 5_000;
 const FILESYSTEM_ACCESS_WATCH_ON_ERROR: &str = "fail_open";
 
-/// Register the `approval-gate` configuration schema with the
-/// configuration worker. When `seed` is present, its value is installed
-/// as `initial_value`. Otherwise, the built-in default is seeded only
-/// when no stored value exists yet (re-registration preserves the stored
-/// value, so this is safe to call every boot).
+// Routed calls include engine metadata such as `_caller_worker_id`.
+// The payload never controls which configuration entry is returned.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ConfigurationIdentityRequest {}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ConfigurationIdentityResponse {
+    id: String,
+}
+
+/// Register the schema, seeding only when no stored value exists. Publish
+/// the instance's identity in its namespace so UI policy edits cannot target
+/// another project's configuration.
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
+    iii.register_function(
+        "approval-gate::configuration-id",
+        RegisterFunction::new(|_request: ConfigurationIdentityRequest| {
+            Ok::<_, Error>(ConfigurationIdentityResponse {
+                id: config_id().to_string(),
+            })
+        })
+        .description(
+            "Returns this approval-gate instance's configuration entry ID, without its value.",
+        )
+        .metadata(json!({ "internal": true })),
+    );
     let mut payload = json!({
         "id": config_id(),
         "name": "Approval Gate",
@@ -86,13 +106,12 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "schema": WorkerConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default_value(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
-    }
-    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+    // The candidate (seed, else the built-in default) is forwarded
+    // unconditionally: `configuration::ensure` installs it atomically ONLY
+    // against an absent/null entry, so a stored operator/Compose override is
+    // preserved without a client-side read-then-register race.
+    payload["initial_value"] = seed.cloned().unwrap_or_default().to_json();
+    ensure_configuration(iii, payload).await
 }
 
 /// Read the live `approval-gate` configuration (env-expanded by the
@@ -106,13 +125,16 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
     WorkerConfig::from_json(&value)
 }
 
-async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
-        None => Ok(true),
-        Some(value) if value.is_null() => Ok(true),
-        Some(_) => Ok(false),
-    }
+/// Initialize atomically when supported, otherwise use the warned legacy path.
+async fn ensure_configuration(iii: &IIIClient, payload: serde_json::Value) -> Result<(), String> {
+    initialization::ensure_with(payload, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload)
+    })
+    .await
 }
+
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     try_get_config_value(iii).await?.ok_or_else(|| {
@@ -123,15 +145,14 @@ async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
     })
 }
 
-/// Returns `Ok(None)` when the entry does not exist. The engine's
-/// missing-entry codes vary in case (`function_not_found`,
-/// `STATEMENT_NOT_FOUND`, `NOT_FOUND`), so match case-insensitively.
+/// Returns `Ok(None)` only for a missing entry. A missing service
+/// (`function_not_found`) must propagate rather than authorize seeding.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
         .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -333,6 +354,10 @@ async fn trigger_configuration_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tracing::warn!(
                         function_id,
@@ -353,8 +378,58 @@ async fn trigger_configuration_with_retry(
     ))
 }
 
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
+}
+
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
+    /// Engine-injected caller metadata must not prevent resolving this worker's entry ID.
+    #[test]
+    fn configuration_identity_accepts_engine_caller_metadata() {
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({
+                "_caller_worker_id": "00000000-0000-4000-8000-000000000002"
+            }),
+        ] {
+            serde_json::from_value::<super::ConfigurationIdentityRequest>(payload)
+                .expect("routed identity requests accept engine metadata");
+        }
+    }
+
     use super::*;
     use crate::types::PermissionMode;
 

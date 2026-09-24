@@ -14,9 +14,9 @@ export const FUNCTION_SEARCH_MODE_OPTIONS = [
     description: 'Fuse BM25 with the configured local semantic model.',
   },
   {
-    value: 'jev',
-    label: 'Jev',
-    description: 'Use TypeSafe Jev to evaluate function relevance remotely.',
+    value: 'judge',
+    label: 'Judge',
+    description: 'Rank with the judge worker; falls back to Hybrid while it is not running.',
   },
 ] as const
 
@@ -25,7 +25,32 @@ export type FunctionSearchMode = (typeof FUNCTION_SEARCH_MODE_OPTIONS)[number]['
 const FUNCTION_SEARCH_MODES = new Set<string>(FUNCTION_SEARCH_MODE_OPTIONS.map((option) => option.value))
 
 export function functionSearchModeWithDefault(value: unknown): FunctionSearchMode {
-  return typeof value === 'string' && FUNCTION_SEARCH_MODES.has(value) ? (value as FunctionSearchMode) : 'hybrid'
+  return typeof value === 'string' && FUNCTION_SEARCH_MODES.has(value) ? (value as FunctionSearchMode) : 'judge'
+}
+
+export const JUDGE_QUESTION_OPTIONS = [
+  {
+    value: 'noul',
+    label: 'One yes/no per function',
+    description: 'Ask about every shortlisted function on its own (up to 16 per capability); admitted by the minimum relevance.',
+  },
+  {
+    value: 'choice',
+    label: 'One choice per capability',
+    description: 'Let the shortlisted functions compete in a single question; needed by local judges.',
+  },
+] as const
+
+export type JudgeQuestion = (typeof JUDGE_QUESTION_OPTIONS)[number]['value']
+
+export function judgeQuestionWithDefault(value: unknown): JudgeQuestion {
+  return value === 'noul' ? 'noul' : 'choice'
+}
+
+/** Keys the worker no longer reads. A stored config can still carry them,
+ * including the old TypeSafe key, so every save drops them. */
+export function withoutRetiredKeys<T extends Record<string, unknown>>(draft: T): T {
+  return Object.fromEntries(Object.entries(draft).filter(([key]) => !key.startsWith('function_search_jev_'))) as T
 }
 
 export function withFunctionSearchMode<T extends Record<string, unknown>>(

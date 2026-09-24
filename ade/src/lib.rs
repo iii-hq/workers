@@ -12,6 +12,7 @@ pub mod server;
 pub mod ui;
 pub mod ui_assets;
 pub mod ui_files;
+pub mod workspace_store;
 
 pub fn worker_name() -> &'static str {
     "ade"

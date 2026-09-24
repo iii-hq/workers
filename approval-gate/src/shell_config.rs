@@ -15,7 +15,24 @@ use iii_sdk::IIIClient;
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 
-const SHELL_CONFIG_ID: &str = "shell";
+/// Resolve through the IDE in this worker's namespace. Never guess a global
+/// legacy entry when the intended worker is unavailable.
+async fn shell_config_id(iii: &IIIClient) -> Result<String, Error> {
+    let identity = iii
+        .trigger(TriggerRequest {
+            function_id: "ide::configuration-id".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+    identity
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Handler("IDE returned an invalid configuration identity".into()))
+}
 
 /// Serializes `add_host_root`'s get-modify-set cycle in-process: the
 /// `configuration` worker exposes no CAS/version guard, so two concurrent
@@ -52,28 +69,35 @@ pub fn with_host_root(value: &Value, requested_root: &str) -> Value {
     Value::Object(root)
 }
 
-/// `configuration::get {id:"shell"}` -> `with_host_root` -> `configuration::set`.
+/// Resolve the IDE instance's entry, then get -> `with_host_root` -> set.
 /// Every failure (missing `shell` config entry, transport error) is the
 /// caller's to log; this never blocks the resolve-execute it precedes.
 pub async fn add_host_root(iii: &IIIClient, requested_root: &str) -> Result<(), Error> {
     let _guard = host_root_lock().lock().await;
+    let config_id = shell_config_id(iii).await?;
     let reply = iii
         .trigger(
             TriggerRequest {
                 function_id: "configuration::get".into(),
-                payload: json!({ "id": SHELL_CONFIG_ID }),
+                payload: json!({ "id": config_id, "raw": true }),
                 action: None,
                 timeout_ms: None,
             }
             .namespace("default"),
         )
         .await?;
-    let current = reply.get("value").cloned().unwrap_or(Value::Null);
+    let current = reply
+        .get("value")
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or_else(|| {
+            Error::Handler("IDE configuration is not an object; refusing to replace it".into())
+        })?;
     let next = with_host_root(&current, requested_root);
     iii.trigger(
         TriggerRequest {
             function_id: "configuration::set".into(),
-            payload: json!({ "id": SHELL_CONFIG_ID, "value": next }),
+            payload: json!({ "id": config_id, "value": next }),
             action: None,
             timeout_ms: None,
         }

@@ -95,6 +95,12 @@ pub struct ChatParams {
     pub max_output_tokens: Option<u64>,
     pub thinking_level: Option<ThinkingLevel>,
     pub provider_options: Option<Value>,
+    /// Ordered `{text, cache_boundary}` sections behind `system_prompt`
+    /// (stable prefix first); the flat string stays the sections joined with
+    /// "\n\n" so legacy readers see the same prompt.
+    pub system_sections: Option<Value>,
+    /// `{surface_digest}` naming the stable prefix for provider cache routing.
+    pub cache_intent: Option<Value>,
 }
 
 /// Structured failure returned by `router::chat`.
@@ -282,6 +288,12 @@ impl RouterClient {
         }
         if let Some(sp) = &params.system_prompt {
             payload["system_prompt"] = json!(sp);
+        }
+        if let Some(sections) = &params.system_sections {
+            payload["system_sections"] = sections.clone();
+        }
+        if let Some(intent) = &params.cache_intent {
+            payload["cache_intent"] = intent.clone();
         }
         if let Some(rf) = &params.response_format {
             payload["response_format"] = rf.clone();

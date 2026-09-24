@@ -1,4 +1,8 @@
-"""Download every tracked entry in a template folder without executing its code."""
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["ruamel.yaml==0.18.16"]
+# ///
+"""Download a template and use matching workers from this source checkout."""
 
 import argparse
 from contextlib import contextmanager, ExitStack
@@ -9,6 +13,8 @@ import shlex
 import subprocess
 import tempfile
 import unicodedata
+
+from ruamel.yaml import YAML, YAMLError
 
 RESERVED_NAMES = {"agents", "config", "data", "scripts", "skills", "tests", "upstream"}
 
@@ -89,6 +95,56 @@ def check_destination(destination, paths):
             raise ValueError(f"Cannot overwrite a local directory with a file: {target}")
 
 
+def configure_local_workers(compose, destination, workers_root):
+    """Adapt a staged Compose file without changing other template files."""
+    # A template may have no Compose file, or may carry a link to another file.
+    # Never follow a downloaded link while preparing local configuration.
+    if compose.is_symlink() or not compose.is_file():
+        return []
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    document = yaml.load(compose)
+    containers = document.get("containers", {}) if isinstance(document, dict) else {}
+    if not isinstance(containers, dict):
+        return []
+    changed = []
+    for key, container in containers.items():
+        if not isinstance(container, dict):
+            continue
+        reference = container.get("worker")
+        if not isinstance(reference, str):
+            continue
+        match = re.fullmatch(r"package://([a-z0-9][a-z0-9_-]*)", reference)
+        if not match:
+            continue
+        name = match[1]
+        source = workers_root / name
+        manifest_path = source / "iii.worker.yaml"
+        if not manifest_path.is_file():
+            continue
+        manifest = yaml.load(manifest_path)
+        scripts = container.get("scripts") or {}
+        if not isinstance(manifest, dict) or not isinstance(scripts, dict):
+            raise ValueError(f"Invalid local worker manifest or scripts: {name}")
+        if not scripts.get("run") and manifest.get("language") == "rust":
+            if not (source / "Cargo.toml").is_file():
+                raise ValueError(f"Missing Cargo.toml for local worker: {name}")
+            binary = manifest.get("bin", name)
+            scripts["run"] = f"cargo run --bin {shlex.quote(binary)}"
+            container["scripts"] = scripts
+        elif not scripts.get("run") and not (manifest.get("scripts") or {}).get("start"):
+            # Keep published workers when the local checkout has no start command.
+            continue
+        container["worker"] = f"path://{Path(os.path.relpath(source, destination)).as_posix()}"
+        # Keep the version field and its attached comments. Compose ignores it
+        # for path:// sources; retaining it also preserves commented providers.
+        changed.append((key, container["worker"]))
+    if changed:
+        yaml.dump(document, compose)
+    return changed
+
+
 @contextmanager
 def open_directory(path, *, dir_fd=None):
     """Pin a real directory inode; never follow a symlink for this component."""
@@ -141,6 +197,9 @@ def apply(args):
         stage = Path(temporary) / "content"
         stage.mkdir()
         paths = stage_download(args, stage)
+        changed = configure_local_workers(
+            stage / "worker-compose.yaml", destination, args.root.parent,
+        )
         check_destination(destination, paths)
         overwrite = destination.exists()
         if overwrite and not args.dry_run:
@@ -153,6 +212,8 @@ def apply(args):
         print(f"{'Would download' if args.dry_run else 'Downloading'} {len(paths)} files")
         for relative in paths:
             print(f"  {relative}")
+        for key, source in changed:
+            print(f"  {'Would use' if args.dry_run else 'Using'} local worker {key}: {source}")
         if args.dry_run:
             return
         install_download(destination, stage, paths, overwrite=overwrite)
@@ -171,6 +232,9 @@ def main():
     args = parser.parse_args()
     try:
         apply(args)
+    except YAMLError:
+        # Parser errors can contain configuration values. Do not print them.
+        parser.exit(1, "Sync failed: invalid YAML in Compose or a local worker manifest.\n")
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Sync failed: {error}\n")
 

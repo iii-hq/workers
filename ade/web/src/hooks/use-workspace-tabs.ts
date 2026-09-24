@@ -1,29 +1,32 @@
 /**
  * Server-persisted workspace tabs (see `lib/workspace-tabs.ts` for the
- * model). Tabs live in the engine's `console` configuration entry, so the
+ * model). Tabs live in the console worker's layout store
+ * (`<data_dir>/workspace.json`, read and written through
+ * `console::workspace::get` / `set` — `lib/workspace-layout.ts`), so the
  * layout follows the engine, and the query polls on an interval — a tab
- * created in another browser shows up here within seconds without a
+ * created in another browser (or opened by an agent through
+ * `console::workspace::open`) shows up here within seconds without a
  * reload.
  *
- * Every mutation applies OPTIMISTICALLY to the shared `['consoleConfig']`
- * cache first (the strip must react to a close/create/rename in the same
- * frame as the click), then writes through the same read-modify-write
- * funnel the traces saved views use; the next poll reconciles with
- * whatever the server actually stored.
+ * Every mutation applies OPTIMISTICALLY to the `['workspaceLayout']` cache
+ * first (the strip must react to a close/create/rename in the same frame as
+ * the click), then writes through the serialized read-modify-write funnel;
+ * the next poll reconciles with whatever the server actually stored.
  *
- * When the configuration worker (or the `console` entry) is unreachable,
- * tabs degrade to localStorage so the strip keeps working offline.
+ * When the console worker's store is unreachable (an older worker without
+ * the functions, engine down), tabs degrade to localStorage so the strip
+ * keeps working offline.
  */
 
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  CONSOLE_CONFIG_QUERY_KEY,
-  consoleConfigWriter,
-} from '@/hooks/lib/console-config-writer'
 import type { ConfigTransform } from '@/hooks/lib/serialized-config-writer'
-import type { ConsoleConfigValue } from '@/lib/console-config'
+import {
+  WORKSPACE_LAYOUT_QUERY_KEY,
+  workspaceLayoutWriter,
+} from '@/hooks/lib/workspace-layout-writer'
 import { moveItem } from '@/lib/reorder'
+import type { WorkspaceLayoutValue } from '@/lib/workspace-layout'
 import {
   adjacentTabId,
   defaultTabs,
@@ -61,22 +64,22 @@ type LocalState = WorkspaceState
 
 export type WorkspaceTransform = (state: LocalState) => LocalState
 
-function workspaceState(value: ConsoleConfigValue): LocalState {
-  const parsedTabs = parseWorkspaceTabs(value)
+function workspaceState(layout: WorkspaceLayoutValue): LocalState {
+  const parsedTabs = parseWorkspaceTabs(layout)
   const tabs = parsedTabs.length > 0 ? parsedTabs : defaultTabs()
-  const activeTabId = resolveActiveTab(tabs, parseActiveTabId(value)).id
+  const activeTabId = resolveActiveTab(tabs, parseActiveTabId(layout)).id
   return { tabs, activeTabId }
 }
 
-/** Lift a transform onto the raw value; the pointer is re-stamped only when it moved. */
-export function workspaceConfigTransform(
+/** Lift a transform onto the raw layout document; the pointer is re-stamped only when it moved. */
+export function workspaceLayoutTransform(
   update: WorkspaceTransform,
   now: () => number = Date.now,
 ): ConfigTransform {
-  return (value) => {
-    const next = update(workspaceState(value))
-    const withTabs = withWorkspaceTabs(value, next.tabs)
-    if (parseActiveTabId(value) === next.activeTabId) return withTabs
+  return (layout) => {
+    const next = update(workspaceState(layout))
+    const withTabs = withWorkspaceTabs(layout, next.tabs)
+    if (parseActiveTabId(layout) === next.activeTabId) return withTabs
     return withActiveTabId(withTabs, next.activeTabId, 'browser', now())
   }
 }
@@ -147,9 +150,9 @@ function loadLocal(): LocalState {
     const raw = window.localStorage.getItem(LOCAL_KEY)
     if (!raw) return fallback
     const parsed = JSON.parse(raw) as Record<string, unknown>
-    const tabs = parseWorkspaceTabs({ workspace: parsed })
+    const tabs = parseWorkspaceTabs(parsed)
     if (tabs.length === 0) return fallback
-    const activeTabId = parseActiveTabId({ workspace: parsed })
+    const activeTabId = parseActiveTabId(parsed)
     return { tabs, activeTabId: resolveActiveTab(tabs, activeTabId).id }
   } catch {
     return fallback
@@ -170,8 +173,8 @@ function persistLocal(state: LocalState): void {
 
 export interface UseWorkspaceTabsReturn {
   /** `pending` until the first server answer; then `server`, or `local`
-      while the configuration entry is unreachable and `tabs` is the
-      localStorage copy. Flips `local` to `server` when a later poll succeeds. */
+      while the layout store is unreachable and `tabs` is the localStorage
+      copy. Flips `local` to `server` when a later poll succeeds. */
   layoutSource: WorkspaceLayoutSource
   tabs: WorkspaceTab[]
   activeTabId: string
@@ -205,12 +208,12 @@ export interface UseWorkspaceTabsReturn {
 
 export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   const qc = useQueryClient()
-  const writer = consoleConfigWriter(qc)
+  const writer = workspaceLayoutWriter(qc)
 
-  // Shares the traces saved-views cache entry; refetchInterval keeps the
-  // strip reactive to writes from other browsers/tabs.
-  const { data, isFetched } = useQuery<ConsoleConfigValue | null>({
-    queryKey: CONSOLE_CONFIG_QUERY_KEY,
+  // refetchInterval keeps the strip reactive to writes from other
+  // browsers/tabs and from agents (`console::workspace::open`).
+  const { data, isFetched } = useQuery<WorkspaceLayoutValue | null>({
+    queryKey: WORKSPACE_LAYOUT_QUERY_KEY,
     queryFn: () => writer.readForQuery(),
     staleTime: 3_000,
     refetchInterval: 5_000,
@@ -282,10 +285,10 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
         // Optimistic: the strip reflects the change in this frame; the
         // serialized server writes rebase it behind the UI.
         const optimistic = writer.enqueue(
-          workspaceConfigTransform(update),
+          workspaceLayoutTransform(update),
           data ?? {},
         )
-        qc.setQueryData(CONSOLE_CONFIG_QUERY_KEY, optimistic)
+        qc.setQueryData(WORKSPACE_LAYOUT_QUERY_KEY, optimistic)
       } else {
         setLocal((current) => {
           const next = update(current)
@@ -305,7 +308,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
   }, [layoutSource, persist])
 
   // The pointer write trails key repeats: only the last activation in a burst
-  // reaches the configuration worker.
+  // reaches the layout store.
   const pointerWriteRef = useRef<number | null>(null)
   useEffect(
     () => () => {

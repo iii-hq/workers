@@ -78,7 +78,10 @@ npx skills add iii-hq/iii --all
 | [`vscode`](vscode/) | Node | VS Code as an iii worker — `vscode::*` runs the VS Code Server through the `code` CLI per workspace, and a Console page embeds the Workbench for the working directory. |
 | [`compose-ui`](compose-ui/) | Rust | The compose daemon in the Console — a **Compose** page over `compose::*` with live container state, lifecycle actions, worker packages, and per-container log tails, plus a `compose-ui::changed` trigger type for supervisor changes. |
 | [`kanban`](kanban/) | Rust | File-backed kanban board — `kanban::*` tickets, threaded comments and agent assignment, the `kanban:change` / `kanban:comment` trigger types agents wake on, an injectable console board and ticket screen, and bundled Product Manager / Tech Lead / Backend / Frontend agent profiles with their skills. |
+| [`stories`](stories/) | Rust | Component stories for any React project — builds CSF story files with the project's own Vite (monorepo-aware), indexes components and their states per git line, compares the working tree with a branch, a commit or a chat turn, renders deterministic screenshots and DOM/React trees through `browser`, and injects an explorer and compare page into the console. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection, workers-registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus one-shot lexical function search — `directory::search_functions` returns compact candidates for the relevant functions (BM25 + coverage pruning, installed + installable-from-registry) and directs callers to batch selected ids through `engine::functions::info`; its search hint is injected at most once per turn. |
+| [`judge`](judge/) | Rust | Provider-neutral Noul, Choice and Score evaluations through `judge::evaluate`, model discovery through `judge::models::list`, and caller-scoped cancellation, forwarded to the selected `judge-<provider>` worker. |
+| [`judge-typesafe`](judge-typesafe/) | Rust | TypeSafe JEV provider for `judge`: worker-owned credentials, configurable limits, per-call retries and a Console configuration form behind `judge-typesafe::*`. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`lsp-vscode`](lsp-vscode/) | Node | VS Code extension package `iii-lsp`, embedding the `lsp` server. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O — JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |
@@ -152,20 +155,25 @@ deployment. GitHub Actions only executes its authenticated steps.
 See [`docs/sops/release.md`](docs/sops/release.md) for the sequence and recovery
 rules.
 
-Targets per build (Windows targets are skipped on POSIX-only workers such
-as `ide`):
+Default targets per build (workers with platform restrictions declare an
+explicit subset in `.deploy/workers.yaml`; for example, `ide` excludes Windows
+and `sandbox-code-runner` excludes Intel macOS):
 
 ```text
 aarch64-apple-darwin
 x86_64-apple-darwin
 x86_64-pc-windows-msvc
-i686-pc-windows-msvc
 aarch64-pc-windows-msvc
 x86_64-unknown-linux-gnu
 x86_64-unknown-linux-musl
 aarch64-unknown-linux-gnu
 armv7-unknown-linux-gnueabihf
 ```
+
+Intel macOS builds run natively on GitHub's `macos-15-intel` runner; Apple
+Silicon builds keep the dedicated `workers-release-macos-arm-5core` pool.
+Changes to this matrix take effect in newly built and published worker versions;
+existing Registry versions and immutable release assets are not retrofitted.
 
 ### Local binary matrix
 

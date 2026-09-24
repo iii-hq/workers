@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
     // build.rs); elsewhere Hybrid serves BM25 and neither a download
     // nor a missing-bundle warning helps.
     let minilm_supported = cfg!(minilm);
-    if !minilm_supported && cfg.function_search_mode == FunctionSearchMode::Hybrid {
+    if !minilm_supported && cfg.function_search_mode != FunctionSearchMode::Lexical {
         tracing::info!(
             mode = ?cfg.function_search_mode,
             target = env!("TARGET"),
@@ -168,13 +168,14 @@ async fn main() -> Result<()> {
         .as_deref()
         .is_some_and(functions::search_semantic::bundle_complete);
     let download_bundle = minilm_supported
-        && cfg.function_search_mode == FunctionSearchMode::Hybrid
+        && cfg.function_search_mode != FunctionSearchMode::Lexical
         && cfg.function_search_model_download
         && function_search_model_path.is_some()
         && !bundle_ready;
     if minilm_supported && !download_bundle {
         iii_directory::config::warn_if_search_mode_lacks_model(
             cfg.function_search_mode,
+            function_search_model_path.is_some(),
             bundle_ready,
         );
     }
@@ -204,8 +205,7 @@ async fn main() -> Result<()> {
         Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
     let semantic =
         functions::search_semantic::SemanticSearch::new(function_search_model_path.clone());
-    // Keep an installed model ready for Jev's Hybrid fallback as well.
-    // Only Hybrid mode downloads a missing bundle at startup.
+    // Keep an installed model ready for the judge's Hybrid fallback as well.
     semantic.set_enabled(cfg_handle.load().function_search_mode != FunctionSearchMode::Lexical);
     if functions::search::refresh_catalog(&iii, &search_catalog, &semantic)
         .await
@@ -219,7 +219,9 @@ async fn main() -> Result<()> {
         sessions: Arc::default(),
         registry_cache: registry_cache.clone(),
         semantic: semantic.clone(),
-        jev: functions::search_jev::JevSearch::new(std::env::var("TYPESAFE_API_KEY").ok()),
+        judge: functions::search_judge::JudgeSearch::new(iii.clone()),
+        registered_workers: Some(registered_cache.clone()),
+        iii: Some(iii.clone()),
     };
     functions::search::register(&iii, &search_deps);
     functions::search::bind_best_effort(&iii);

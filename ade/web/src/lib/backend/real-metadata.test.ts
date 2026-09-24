@@ -33,6 +33,7 @@ describe('fallback function policy', () => {
 
   it('allows configuration updates without exposing registration', () => {
     expect(FALLBACK_FUNCTION_POLICY.deny).toContain('configuration::register')
+    expect(FALLBACK_FUNCTION_POLICY.deny).toContain('configuration::ensure')
     expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::*')
     expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::get')
     expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::set')
@@ -40,9 +41,14 @@ describe('fallback function policy', () => {
 })
 
 describe('model reasoning effort forwarding', () => {
-  it('omits the generic level for default', () => {
+  it('omits the generic level and sends an explicit reset for default', () => {
     expect(toThinkingLevel('default')).toBeUndefined()
-    expect(toProviderOptions('openai-codex', 'default')).toBeUndefined()
+    expect(toProviderOptions('openai-codex', 'default')).toEqual({})
+  })
+
+  it('omits both fields when no effort was chosen', () => {
+    expect(toThinkingLevel(undefined)).toBeUndefined()
+    expect(toProviderOptions('openai-codex', undefined)).toBeUndefined()
   })
 
   it('forwards native efforts in the selected provider namespace', () => {

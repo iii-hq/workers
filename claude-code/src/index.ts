@@ -56,7 +56,7 @@ const iii = registerWorker(url, { workerName: 'claude-code' });
 try {
   await registerClaudeConfig(iii, bootConfig);
 } catch (err) {
-  console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
+  console.warn(`configuration initialization failed; continuing with the seed: ${String(err)}`);
 }
 
 // Live snapshot: start from the seed, then refresh from the configuration

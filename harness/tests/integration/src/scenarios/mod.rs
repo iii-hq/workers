@@ -4,6 +4,7 @@ mod adversarial_content_rendering;
 mod agent_identity;
 mod agent_preloaded_functions;
 mod agent_preloaded_skills;
+mod agent_shared_prompt_prefix;
 mod child_discovery_granted;
 mod condition_failure_notice;
 mod console_streamed_text;
@@ -51,6 +52,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         agent_identity::scenario(),
         agent_preloaded_functions::scenario(),
         agent_preloaded_skills::scenario(),
+        agent_shared_prompt_prefix::scenario(),
         child_discovery_granted::scenario(),
         condition_failure_notice::scenario(),
         console_streamed_text::scenario(),
@@ -88,7 +90,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 32);
+        assert_eq!(fixtures.len(), 33);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

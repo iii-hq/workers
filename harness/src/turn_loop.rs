@@ -542,10 +542,17 @@ async fn generate_step(
     // the provider's first input item, and a one-shot append-then-remove there
     // invalidates the whole prompt-cache prefix twice per event.
     let current_generation = functions.generation;
-    let assembly_system_prompt =
+    let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record);
     let registry_notice_message =
         registry_notice(record.functions_generation, current_generation).map(notice_message);
+    // Preloaded contracts that drifted from the live registry: named per id,
+    // every step while the drift lasts (the frozen block is never rewritten).
+    let preloaded_stale_message = preloaded_stale_notice(
+        record.options.preloaded_contracts.as_ref(),
+        &functions.functions,
+    )
+    .map(notice_message);
     record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
@@ -680,9 +687,12 @@ async fn generate_step(
         // The notice lands after the hooks ran (they must not read it as the
         // newest user message) and before their appends (hook messages stay
         // last, closest to the decision point).
-        let hook_appended = !appended.is_empty() || registry_notice_message.is_some();
+        let hook_appended = !appended.is_empty()
+            || registry_notice_message.is_some()
+            || preloaded_stale_message.is_some();
         let mut gen_messages = assembled.messages.clone();
         gen_messages.extend(registry_notice_message.iter().cloned());
+        gen_messages.extend(preloaded_stale_message.iter().cloned());
         gen_messages.extend(appended);
 
         // Post-assembly invariant guard: providers reject a context where an
@@ -879,6 +889,45 @@ async fn generate_step(
         entry_id: assistant_id.clone(),
         turn_id: record.turn_id.clone(),
     };
+    // Cache seam (MOT-4798): when the final prompt still starts with the
+    // stable prefix, it goes out as two sections plus the prefix digest so
+    // cache-aware providers keep one entry for every session on the same
+    // profile. Context assembly (summary) and hooks only append, so the split
+    // survives them; a hook that rewrote the head, an empty prefix, or the
+    // config switch falls back to the flat string alone.
+    let split = cfg
+        .prompt_cache_sections
+        .then_some(gen_system_prompt.as_deref())
+        .flatten()
+        .and_then(|prompt| split_prompt_sections(prompt, &stable_prompt));
+    let sections_fallback = match split {
+        Some(_) => None,
+        None if !cfg.prompt_cache_sections => Some("disabled"),
+        None if stable_prompt.is_empty() => Some("no_stable_prefix"),
+        None => Some("prefix_rewritten"),
+    };
+    let surface_digest = split.map(|(stable, _)| crate::skills::fingerprint(stable));
+    let system_sections = split.map(|(stable, rest)| {
+        json!([
+            { "text": stable, "cache_boundary": true },
+            { "text": rest, "cache_boundary": false },
+        ])
+    });
+    let cache_intent = surface_digest
+        .as_ref()
+        .map(|digest| json!({ "surface_digest": digest }));
+    tracing::info!(
+        session_id = %record.session_id,
+        turn_id = %record.turn_id,
+        step = payload.step,
+        surface_digest = surface_digest.as_deref().unwrap_or("-"),
+        fallback = sections_fallback.unwrap_or("-"),
+        "prompt cache sections"
+    );
+    if let Some(snapshot) = record.context_snapshot.as_mut() {
+        snapshot.prompt_surface_digest = surface_digest.clone();
+        snapshot.prompt_sections_fallback = sections_fallback.map(str::to_string);
+    }
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
         session_id: record.session_id.clone(),
@@ -903,6 +952,8 @@ async fn generate_step(
             .map(|_| generation_max_output_tokens),
         thinking_level: record.options.thinking_level,
         provider_options,
+        system_sections,
+        cache_intent,
     };
     record.stream_request_id = Some(params.request_id.clone());
     if record.options.skill_context.is_some() {
@@ -2844,6 +2895,8 @@ fn build_context_snapshot(
         compacted: assembled.applied.compacted,
         summarized_head_tokens: assembled.applied.summarized_head_tokens,
         usage: None,
+        prompt_surface_digest: None,
+        prompt_sections_fallback: None,
         timestamp: AgentMessage::now_ms(),
     }
 }
@@ -2869,43 +2922,54 @@ fn estimated_prompt_categories(
 /// are AIDs only — the real scoping control plane stamps `fs_scope` onto each
 /// call (`filesystem_scope::inject`) and the policy stays fail-closed at
 /// dispatch.
-fn compose_system_prompt(base: Option<&str>, skills: Option<&str>, runtime: &str) -> String {
-    [
-        base.filter(|value| !value.is_empty()),
-        skills,
-        Some(runtime),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|section| section.trim_end_matches('\n'))
-    .collect::<Vec<_>>()
-    .join("\n\n")
+fn compose_system_prompt(
+    base: Option<&str>,
+    skills: Option<&str>,
+    runtime: Option<&str>,
+) -> String {
+    [base.filter(|value| !value.is_empty()), skills, runtime]
+        .into_iter()
+        .flatten()
+        .map(|section| section.trim_end_matches('\n'))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-fn with_runtime_context(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
+/// The step's system prompt split at the cache seam: the STABLE prefix (the
+/// frozen profile/identity prompt + the frozen skills index — the same bytes
+/// for every session on the same profile) and the full prompt with the
+/// per-session runtime aid after it. The full prompt is exactly
+/// `stable + "\n\n" + aid`, which is what lets the router request carry both
+/// the flat string and the sections (MOT-4798).
+fn with_runtime_context(
+    system_prompt: Option<String>,
+    record: &TurnRecord,
+) -> (String, Option<String>) {
     let aid = runtime_context_aid(
         &record.session_id,
         record.options.filesystem_root(),
         record.options.functions.as_ref(),
+        record.options.seeded_contracts.as_deref(),
     );
     let baseline = record
         .options
         .skill_context
         .as_ref()
         .and_then(|context| context.baseline.as_deref());
-    Some(compose_system_prompt(
-        system_prompt.as_deref(),
-        baseline,
-        &aid,
-    ))
+    let stable = compose_system_prompt(system_prompt.as_deref(), baseline, None);
+    let full = compose_system_prompt(system_prompt.as_deref(), baseline, Some(&aid));
+    (stable, Some(full))
 }
 
 /// The deterministic session context appended to every model-facing prompt.
 /// Kept separate so read-only previews use the same construction as a turn.
+/// A spawned child's seeded `<preloaded_functions>` block closes it: after the
+/// cache seam, so it never forks the stable prefix sessions share.
 pub(crate) fn runtime_context_aid(
     session_id: &str,
     filesystem_root: Option<&str>,
     functions: Option<&FunctionPolicy>,
+    seeded_contracts: Option<&str>,
 ) -> String {
     let mut lines = vec![format!("Your session id is {session_id}.")];
     if let Some(dir) = filesystem_root {
@@ -2914,7 +2978,11 @@ pub(crate) fn runtime_context_aid(
     if let Some(aid) = policy_aid(functions) {
         lines.push(aid);
     }
-    lines.join("\n")
+    let aid = lines.join("\n");
+    match seeded_contracts {
+        Some(block) => format!("{aid}\n\n{block}"),
+        None => aid,
+    }
 }
 
 /// The dispatch-policy aid line for a narrowed turn, `None` when the surface
@@ -3039,6 +3107,19 @@ fn final_request_unchanged(
     assembled_system_prompt: &Option<String>,
 ) -> bool {
     !hook_appended && patched == 0 && gen_system_prompt == assembled_system_prompt
+}
+
+/// Split the final model-facing prompt at the cache seam: `Some((stable,
+/// rest))` when it still starts with the stable prefix followed by the
+/// "\n\n" join (context assembly and hook injections only append after it),
+/// `None` when the prefix is empty or a hook rewrote it — the request then
+/// goes out as the flat string only and shares no cache entry.
+fn split_prompt_sections<'a>(final_prompt: &'a str, stable: &'a str) -> Option<(&'a str, &'a str)> {
+    if stable.is_empty() {
+        return None;
+    }
+    let rest = final_prompt.strip_prefix(stable)?.strip_prefix("\n\n")?;
+    Some((stable, rest))
 }
 
 /// The reservation fold for the one-shot re-assembly: everything the final
@@ -3174,6 +3255,63 @@ pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<S
         Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
         _ => None,
     }
+}
+
+/// Name the profile's preloaded contracts that no longer match the live
+/// registry. The frozen `<preloaded_functions>` block in the prompt is never
+/// rewritten (it is the shared cache prefix), so the correction rides as a
+/// tail message on every step while the drift lasts — recomputed per request,
+/// it survives compaction by construction. Ids whose live descriptor carries
+/// no schema (`parameters: None`) are not judged.
+pub(crate) fn preloaded_stale_notice(
+    frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
+    live: &[crate::clients::FunctionDescriptor],
+) -> Option<String> {
+    let frozen = frozen?;
+    let (mut changed, mut removed, mut available) = (Vec::new(), Vec::new(), Vec::new());
+    for (id, digest) in frozen {
+        let descriptor = live.iter().find(|d| d.function_id == *id);
+        match (digest, descriptor) {
+            (Some(_), None) => removed.push(id.as_str()),
+            (Some(frozen_digest), Some(d)) if d.parameters.is_some() => {
+                let live_digest = crate::agents::contract_digest(
+                    id,
+                    d.description.as_deref(),
+                    d.parameters.clone(),
+                );
+                if live_digest != *frozen_digest {
+                    changed.push(id.as_str());
+                }
+            }
+            (None, Some(d)) if d.parameters.is_some() => available.push(id.as_str()),
+            _ => {}
+        }
+    }
+    if changed.is_empty() && removed.is_empty() && available.is_empty() {
+        return None;
+    }
+    let list = |ids: &[&str]| {
+        ids.iter()
+            .map(|id| format!("`{id}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !changed.is_empty() {
+        parts.push(format!("changed: {}", list(&changed)));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("no longer registered: {}", list(&removed)));
+    }
+    if !available.is_empty() {
+        parts.push(format!("now available: {}", list(&available)));
+    }
+    Some(format!(
+        "NOTE: preloaded function contracts in your instructions are out of date — {}. \
+         Re-fetch changed or newly available contracts with engine::functions::info before \
+         calling them; do not call the removed ones.",
+        parts.join("; ")
+    ))
 }
 
 /// The concrete tool schemas this turn's dispatch policy allows: one per
@@ -3588,17 +3726,117 @@ mod tests {
     #[test]
     fn skill_baseline_sits_between_identity_and_runtime_guidance() {
         assert_eq!(
-            super::compose_system_prompt(Some("identity"), Some("skill index"), "runtime"),
+            super::compose_system_prompt(Some("identity"), Some("skill index"), Some("runtime")),
             "identity\n\nskill index\n\nruntime"
         );
         assert_eq!(
-            super::compose_system_prompt(Some("identity\n"), None, "runtime"),
+            super::compose_system_prompt(Some("identity\n"), None, Some("runtime")),
             "identity\n\nruntime"
         );
         assert_eq!(
-            super::compose_system_prompt(None, None, "runtime"),
+            super::compose_system_prompt(None, None, Some("runtime")),
             "runtime"
         );
+        // The stable prefix is the same composition minus the runtime aid.
+        assert_eq!(
+            super::compose_system_prompt(Some("identity"), Some("skill index"), None),
+            "identity\n\nskill index"
+        );
+    }
+
+    /// Prevents: a child's seeded contracts forking the stable prefix every
+    /// default-identity session shares (MOT-4851) — they ride after the seam.
+    #[test]
+    fn seeded_contracts_ride_after_the_cache_seam() {
+        let record = |seeded: Option<&str>| -> crate::types::turn::TurnRecord {
+            serde_json::from_value(serde_json::json!({
+                "turn_id": "t_1", "session_id": "s_1", "status": "running",
+                "step": 0, "turn_count": 0, "depth": 1,
+                "options": { "model": "m", "max_turns": 16, "seeded_contracts": seeded },
+                "created_at": 1, "updated_at": 1
+            }))
+            .unwrap()
+        };
+        let block = "<preloaded_functions>\n### `state::get`\n</preloaded_functions>";
+        let (plain_stable, plain_full) =
+            super::with_runtime_context(Some("identity".into()), &record(None));
+        let (stable, full) =
+            super::with_runtime_context(Some("identity".into()), &record(Some(block)));
+        let full = full.unwrap();
+
+        assert_eq!(stable, plain_stable);
+        assert!(!plain_full.unwrap().contains("preloaded_functions"));
+        let (head, rest) = super::split_prompt_sections(&full, &stable).unwrap();
+        assert_eq!(head, "identity");
+        assert!(rest.starts_with("Your session id is s_1."));
+        assert!(rest.ends_with(&format!("\n\n{block}")));
+    }
+
+    #[test]
+    fn split_prompt_sections_rejoins_byte_exact_or_bails() {
+        let stable = "identity\n\nskill index";
+        let full = format!("{stable}\n\nYour session id is s_1.\n\n# Conversation summary\n\nold");
+        let (head, rest) = super::split_prompt_sections(&full, stable).unwrap();
+        assert_eq!(format!("{head}\n\n{rest}"), full);
+        assert!(rest.starts_with("Your session id"));
+        // A hook that rewrote the head, an empty prefix, or no join after the
+        // prefix: no sections.
+        assert!(super::split_prompt_sections("rewritten\n\nruntime", stable).is_none());
+        assert!(super::split_prompt_sections("runtime", "").is_none());
+        assert!(super::split_prompt_sections(stable, stable).is_none());
+    }
+
+    #[test]
+    fn preloaded_stale_notice_names_changed_removed_and_now_available_only() {
+        use crate::clients::FunctionDescriptor;
+        let schema =
+            serde_json::json!({ "type": "object", "properties": { "k": { "type": "string" } } });
+        let descriptor =
+            |id: &str, desc: &str, params: Option<serde_json::Value>| FunctionDescriptor {
+                function_id: id.into(),
+                description: Some(desc.into()),
+                parameters: params,
+            };
+        let digest = |id: &str, desc: &str| {
+            Some(crate::agents::contract_digest(
+                id,
+                Some(desc),
+                Some(schema.clone()),
+            ))
+        };
+        let frozen = std::collections::BTreeMap::from([
+            ("same::fn".to_string(), digest("same::fn", "unchanged")),
+            ("changed::fn".to_string(), digest("changed::fn", "old text")),
+            ("gone::fn".to_string(), digest("gone::fn", "was here")),
+            (
+                "unjudged::fn".to_string(),
+                digest("unjudged::fn", "no live schema"),
+            ),
+            ("late::fn".to_string(), None),
+            ("still_missing::fn".to_string(), None),
+        ]);
+        let live = vec![
+            descriptor("same::fn", "unchanged", Some(schema.clone())),
+            descriptor("changed::fn", "new text", Some(schema.clone())),
+            descriptor("unjudged::fn", "different but unhydrated", None),
+            descriptor("late::fn", "now registered", Some(schema.clone())),
+            descriptor("unrelated::fn", "never preloaded", Some(schema.clone())),
+        ];
+        let notice = super::preloaded_stale_notice(Some(&frozen), &live).unwrap();
+        assert_eq!(
+            notice,
+            "NOTE: preloaded function contracts in your instructions are out of date — \
+             changed: `changed::fn`; no longer registered: `gone::fn`; now available: `late::fn`. \
+             Re-fetch changed or newly available contracts with engine::functions::info before \
+             calling them; do not call the removed ones."
+        );
+        // Nothing frozen, or nothing drifted: no notice.
+        assert!(super::preloaded_stale_notice(None, &live).is_none());
+        let steady = std::collections::BTreeMap::from([(
+            "same::fn".to_string(),
+            digest("same::fn", "unchanged"),
+        )]);
+        assert!(super::preloaded_stale_notice(Some(&steady), &live).is_none());
     }
 
     #[test]

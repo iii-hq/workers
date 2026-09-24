@@ -60,19 +60,20 @@ describe('Cursor configuration', () => {
     process.env.III_CONFIG_NAME = 'cursor-team';
 
     await registerCursorConfig(iii.asClient());
+    expect(iii.triggerCalls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
     const runtime = await fetchRuntime(iii.asClient());
 
     expect(runtime.api_key).toBe('key_runtime');
     const registration = iii.triggerCalls.find(
-      (call) => call.function_id === 'configuration::register',
+      (call) => call.function_id === 'configuration::ensure',
     );
     expect(registration?.payload).toMatchObject({
       id: 'cursor-team',
       name: 'Cursor',
       metadata: { ui_form: 'cursor' },
-      initial_value: expect.objectContaining({ api_key: API_KEY_ENV_REFERENCE }),
       schema: expect.objectContaining({ type: 'object' }),
     });
+    expect(registration?.payload).toHaveProperty('initial_value', defaultConfig());
   });
 
   it('re-fetches persisted values on updates and retains the last good config on failure', async () => {
@@ -91,6 +92,48 @@ describe('Cursor configuration', () => {
     iii.configValue = { ...defaultConfig(), api_key: 123 };
     await expect(reload?.handler({ id: 'cursor' })).resolves.toEqual({ ok: false });
     expect(holder.current.api_key).toBe('key_second');
+  });
+
+  it('seeds a null entry but preserves a stored value even with an explicit seed', async () => {
+    const iii = new MockIII();
+    const seed = { ...defaultConfig(), workspace: '/seed' };
+    iii.configValue = null;
+    await registerCursorConfig(iii.asClient(), seed);
+    expect(
+      iii.triggerCalls.find((call) => call.function_id === 'configuration::ensure')?.payload,
+    ).toHaveProperty('initial_value', seed);
+    iii.triggerCalls.length = 0;
+    iii.configValue = { ...defaultConfig(), workspace: '/compose' };
+    await registerCursorConfig(iii.asClient(), seed);
+    expect(
+      iii.triggerCalls.find((call) => call.function_id === 'configuration::ensure')?.payload,
+    ).toHaveProperty('initial_value', seed);
+    expect(iii.configValue).toMatchObject({ workspace: '/compose' });
+    expect(iii.triggerCalls.map((call) => call.function_id)).toEqual(['configuration::ensure']);
+  });
+
+  it('uses legacy registration immediately when ensure is unavailable', async () => {
+    const iii = new MockIII();
+    iii.ensureError = { code: 'function_not_found' };
+    await registerCursorConfig(iii.asClient());
+    expect(iii.triggerCalls.map((call) => call.function_id)).toEqual([
+      'configuration::ensure',
+      'configuration::get',
+      'configuration::register',
+    ]);
+    expect(iii.triggerCalls[1]?.payload).toMatchObject({ raw: true });
+    expect(iii.triggerCalls[2]?.payload).not.toHaveProperty('initial_value');
+    expect(iii.configValue).toEqual(defaultConfig());
+  });
+
+  it('does not misclassify an unrelated message as a missing capability', async () => {
+    const iii = new MockIII();
+    const error = Object.assign(new Error('function_not_found'), { code: 'OTHER' });
+    iii.ensureError = error;
+    await expect(registerCursorConfig(iii.asClient())).rejects.toBe(error);
+    expect(iii.triggerCalls.every((call) => call.function_id === 'configuration::ensure')).toBe(
+      true,
+    );
   });
 
   it('validates configuration change events', () => {

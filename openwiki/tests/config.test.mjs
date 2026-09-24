@@ -31,7 +31,7 @@ test('registerConfig writes the schema in default', async () => {
       return {};
     },
   });
-  assert.equal(request.function_id, 'configuration::register');
+  assert.equal(request.function_id, 'configuration::ensure');
   assert.equal(request.namespace, 'default');
   assert.deepEqual(request.payload.metadata, { ui_form: 'openwiki' });
 });

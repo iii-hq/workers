@@ -37,6 +37,20 @@ export function fakeIii(): FakeIii {
       const payload = structuredClone(req.payload);
       calls.push({ function_id: req.function_id, namespace: req.namespace, payload });
       const { scope, key, value } = payload as { scope?: string; key?: string; value?: unknown };
+      if (req.function_id === 'configuration::ensure') {
+        const entryKey = `configuration/${String(payload.id)}`;
+        const prior = state.get(entryKey);
+        const next = prior == null ? structuredClone(payload.initial_value) : prior;
+        state.set(entryKey, next);
+        return {
+          action: prior == null ? 'seeded' : 'preserved',
+          entry: { ...payload, value: next },
+        };
+      }
+      if (req.function_id === 'configuration::get')
+        return { value: state.get(`configuration/${String(payload.id)}`) ?? null };
+      if (req.function_id === 'configuration::register')
+        throw new Error('unexpected legacy configuration registration');
       if (req.function_id === 'state::set') {
         state.set(`${scope}/${key}`, value);
         return null;

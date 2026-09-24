@@ -452,11 +452,14 @@ export async function listBrowserSessions(
 
 export async function startBrowserSession(
   iii: ExtensionIii,
-  options: { url?: string; incognito?: boolean } = {},
+  options: { url?: string; incognito?: boolean; preview?: boolean } = {},
 ): Promise<BrowserSessionStart | null> {
   const res = await iii.trigger<unknown>(BROWSER_SESSIONS_START_FUNCTION_ID, {
     ...(options.url ? { url: options.url } : {}),
     ...(options.incognito ? { incognito: true } : {}),
+    // A tab a surface opens on purpose (the page's new-tab button, "Open
+    // in browser") is shown by that surface: no console pops a preview.
+    ...(options.preview === false ? { preview: false } : {}),
   })
   const parsed = sessionStartSchema.safeParse(res)
   return parsed.success ? parsed.data : null

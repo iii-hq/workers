@@ -79,7 +79,13 @@ interface RunParams {
  */
 export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
-  deny: ['approval::*', 'configuration::register', 'shell::workspace::*'],
+  deny: [
+    'approval::*',
+    'configuration::register',
+    // Atomic register/seed twin — same schema/seed power under a new name.
+    'configuration::ensure',
+    'shell::workspace::*',
+  ],
   expose: 'agent_trigger',
 }
 
@@ -116,12 +122,17 @@ export function toThinkingLevel(
   }
 }
 
-/** Exact model-native effort, routed only to the selected provider. */
+/**
+ * Exact model-native effort, routed only to the selected provider. `default`
+ * sends `{}`: the harness keeps a session's prior effort when a send names
+ * none, so choosing Default must reset explicitly.
+ */
 export function toProviderOptions(
   provider: string,
   effort: ChatStreamOptions['thinkingLevel'],
 ): Record<string, unknown> | undefined {
-  if (!effort || effort === 'default') return undefined
+  if (!effort) return undefined
+  if (effort === 'default') return {}
   return { [provider]: { reasoning_effort: effort } }
 }
 

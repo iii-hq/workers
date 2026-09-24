@@ -1,0 +1,56 @@
+[workspace]
+
+[package]
+name = "judge-semif"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "SemIf provider for the judge hub: option-letter logits from a frozen GGUF LLM run in-process through llama.cpp."
+
+[features]
+default = ["console-ui"]
+console-ui = ["dep:iii-console-ui"]
+
+[dependencies]
+judge-contract = { path = "../crates/judge-contract" }
+iii-sdk = "=0.23.0"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui", optional = true }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+llama-cpp-2 = { version = "0.1.156", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tracing = "0.1"
+
+# macOS: Metal GPU offload is always compiled in.
+# Linux x86_64 and Windows load llama.cpp's backends at runtime (GGML_BACKEND_DL):
+# the Vulkan backend is a module beside the binary that only loads where a
+# Vulkan loader exists (else the CPU runs it), and the CPU module is picked per
+# host CPU (AVX2, AVX-512, ...). Keep this cfg in sync with engine.rs.
+[target.'cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "windows"))'.dependencies]
+llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["dynamic-backends", "vulkan"] }
+# Only for its `links = "llama"` metadata: build.rs copies the backend modules
+# beside the binary for packaging.
+llama-cpp-sys-2 = { version = "=0.1.156", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["metal"] }
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+tokio-tungstenite = "0.28"
+
+# Size-first like the other judge workers: inference runs in llama.cpp, which
+# CMake compiles with its own Release flags whatever the Rust opt-level.
+[profile.release]
+opt-level = "z"
+strip = true
+lto = "fat"
+codegen-units = 1

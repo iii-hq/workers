@@ -4,7 +4,10 @@
 use crate::config::{config_from_resolve, ApiMode};
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::request::{
+    build_body, build_headers, cache_retention, supports_explicit_cache_breakpoints,
+    supports_extended_cache_retention, BodyArgs,
+};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::{router_client, state};
@@ -18,7 +21,7 @@ use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
 use llm_router::types::events::ErrorKind;
-use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
+use llm_router::types::router::{PromptCacheIntent, ProviderStreamInput, ProviderStreamOutput};
 
 fn compatible_reasoning_effort(
     api_mode: ApiMode,
@@ -37,8 +40,12 @@ fn compatible_reasoning_effort(
     }
 }
 
+/// Body cache key: a caller override, else the shared profile surface (every
+/// session on the same frozen prefix routes to one cache shard), else the
+/// session itself.
 fn resolve_prompt_cache_key(
     provider_options: Option<&serde_json::Value>,
+    cache_intent: Option<&PromptCacheIntent>,
     session_id: Option<&str>,
 ) -> Option<String> {
     provider_options
@@ -46,6 +53,7 @@ fn resolve_prompt_cache_key(
         .and_then(serde_json::Value::as_str)
         .filter(|key| !key.trim().is_empty())
         .map(str::to_string)
+        .or_else(|| cache_intent.and_then(|intent| derive_affinity_id(&intent.surface_digest)))
         .or_else(|| session_id.and_then(derive_affinity_id))
 }
 
@@ -180,8 +188,14 @@ async fn run_stream_call(
             response_format: input.response_format,
             prompt_cache_key: resolve_prompt_cache_key(
                 input.provider_options.as_ref(),
+                input.cache_intent.as_ref(),
                 input.session_id.as_deref(),
             ),
+            system_sections: input.system_sections,
+            explicit_cache_breakpoints: cfg.api_mode == ApiMode::Responses
+                && supports_explicit_cache_breakpoints(&cfg.model, &cfg.api_url),
+            cache_retention: cache_retention()
+                .filter(|_| supports_extended_cache_retention(&cfg.model, &cfg.api_url)),
         },
         cfg.api_mode,
     );
@@ -217,18 +231,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cache_key_prefers_a_nonblank_provider_option_to_the_session() {
+    fn cache_key_prefers_override_then_shared_surface_then_session() {
+        let intent = PromptCacheIntent {
+            surface_digest: "sha256:abc".into(),
+        };
         assert_eq!(
             resolve_prompt_cache_key(
                 Some(&serde_json::json!({ "prompt_cache_key": "shared-key" })),
+                Some(&intent),
                 Some("s_conversation"),
             )
             .as_deref(),
             Some("shared-key")
         );
         assert_eq!(
+            resolve_prompt_cache_key(None, Some(&intent), Some("s_conversation")),
+            derive_affinity_id("sha256:abc"),
+            "a shared surface outranks the session"
+        );
+        assert_eq!(
             resolve_prompt_cache_key(
                 Some(&serde_json::json!({ "prompt_cache_key": "  " })),
+                None,
                 Some("s_conversation"),
             )
             .as_deref(),

@@ -3,8 +3,49 @@
   "function_id": "router::complete",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "PromptCacheIntent": {
+        "description": "Why a request's stable prefix is shareable across sessions: `surface_digest` is the caller's content identity for the text before the boundary (`sha256:<hex>`). A routing/accounting hint only — never a provider cache handle, and never evidence of a cache hit.",
+        "properties": {
+          "surface_digest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "surface_digest"
+        ],
+        "type": "object"
+      },
+      "PromptSection": {
+        "description": "One ordered system-prompt section. `cache_boundary` marks the end of a cumulative prefix worth its own provider cache entry (the frozen agent-profile surface). Adapters without a boundary concept read the sections joined with \"\\n\\n\", which must equal `system_prompt` when both forms are sent.",
+        "properties": {
+          "cache_boundary": {
+            "default": false,
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      }
+    },
     "description": "ChatRequest minus writer_ref (the sink arrives separately — the function handler wraps the looked-up writer, complete wraps its own).\n\n`messages` / `tools` / `response_format` / `thinking_level` / `provider_options` stay `Value`: they are forwarded to the provider verbatim, so the router intentionally does not re-validate their shape. The struct still derives `JsonSchema` so the SDK emits a real request schema (the freeform sub-fields surface as permissive sub-schemas).",
     "properties": {
+      "cache_intent": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/PromptCacheIntent"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
       "max_output_tokens": {
         "default": null,
         "format": "uint64",
@@ -53,6 +94,16 @@
         "default": null,
         "type": [
           "string",
+          "null"
+        ]
+      },
+      "system_sections": {
+        "default": null,
+        "items": {
+          "$ref": "#/definitions/PromptSection"
+        },
+        "type": [
+          "array",
           "null"
         ]
       },

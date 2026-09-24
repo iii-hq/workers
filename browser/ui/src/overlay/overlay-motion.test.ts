@@ -6,6 +6,7 @@ import {
   EDGE_MARGIN,
   isStill,
   overshoot,
+  resizedFromBottomRight,
   rubberBandPoint,
   velocityFromSamples,
 } from './overlay-motion'
@@ -31,6 +32,27 @@ describe('overlay motion', () => {
       viewport,
     )
     expect(wide.minX).toBe(wide.maxX)
+  })
+
+  it('a resize grows from the bottom right, and the box moves to stay in view', () => {
+    // Doubling the 200×100 box: same right and bottom, twice as wide and tall.
+    const grown = resizedFromBottomRight(rect, 400)
+    expect(grown).toEqual({ left: 500, top: 550, right: 900, bottom: 750 })
+    // Room enough here: the position holds.
+    expect(clampPoint(current, boundsFor(grown, current, viewport))).toEqual(
+      current,
+    )
+    // Dragged into the top-left corner, the grown box would overflow both
+    // edges: it is pushed right and down by exactly the overflow.
+    const corner = { left: 8, top: 8, right: 208, bottom: 108 }
+    const at = { x: -692, y: -642 }
+    const pushed = clampPoint(
+      at,
+      boundsFor(resizedFromBottomRight(corner, 400), at, viewport),
+    )
+    expect(pushed).toEqual({ x: -692 + 200, y: -642 + 100 })
+    expect(resizedFromBottomRight({ left: 0, top: 0, right: 0, bottom: 0 }, 400))
+      .toEqual({ left: 0, top: 0, right: 0, bottom: 0 })
   })
 
   it('clamps and rubber-bands past the edges', () => {

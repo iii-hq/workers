@@ -33,6 +33,20 @@
           "model": {
             "type": "string"
           },
+          "prompt_sections_fallback": {
+            "description": "Why no shared prefix went out: `disabled` (config), `no_stable_prefix` (empty identity prompt) or `prefix_rewritten` (a pre_generate hook replaced the prompt head; its prompt still wins, it just shares nothing).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_surface_digest": {
+            "description": "Identity of the shared prompt prefix this generation went out with (`sha256:` of the stable section) — present only when the request carried `system_sections`. A local identity, never a provider hit; `usage.cache_read` is the reuse signal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "provider": {
             "type": [
               "string",
@@ -241,7 +255,7 @@
         "additionalProperties": false,
         "properties": {
           "cache_read_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -250,7 +264,7 @@
             ]
           },
           "cache_write_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -259,7 +273,7 @@
             ]
           },
           "cost_usd": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "double",
             "type": [
               "number",
@@ -277,7 +291,7 @@
             "type": "integer"
           },
           "input_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -286,7 +300,7 @@
             ]
           },
           "output_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -295,7 +309,7 @@
             ]
           },
           "reasoning_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -332,7 +346,7 @@
         "additionalProperties": false,
         "properties": {
           "cache_read_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -341,7 +355,7 @@
             ]
           },
           "cache_write_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -361,7 +375,7 @@
             "description": "The session's latest per-generation context snapshot (categories, budget, usage) — absent for sessions that have not generated since snapshots landed."
           },
           "cost_usd": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "double",
             "type": [
               "number",
@@ -384,7 +398,7 @@
             "type": "integer"
           },
           "input_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -393,7 +407,7 @@
             ]
           },
           "output_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -408,7 +422,7 @@
             ]
           },
           "reasoning_tokens": {
-            "description": "Summed over every generation that reported it. `null` means at least one generation did not report the counter (a provider that omits it, or a turn that failed before usage came back) — never a measured zero, so the key is always present and a reader can tell the two apart.",
+            "description": "Summed over every generation that reported it. A single generation without the counter (a stream the provider cut before usage came back) is left out of the sum. `null` means no generation reported it or more than one did not — never a measured zero, so the key is always present and a reader can tell the two apart.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [

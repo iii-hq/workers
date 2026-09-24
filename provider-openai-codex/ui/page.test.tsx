@@ -1,6 +1,6 @@
-import { act, type ComponentType, type ButtonHTMLAttributes } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
 import type { Host, ProviderConfigFormProps } from '@iii-dev/console-ui'
+import { act, type ButtonHTMLAttributes, type ComponentType } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import setup from './page'
 
@@ -37,6 +37,7 @@ async function mount(modelCount = 0) {
   let Form: ComponentType<ProviderConfigFormProps> | undefined
   const host = {
     iii: { trigger: rpc },
+    functionTriggers: { register: vi.fn() },
     providerConfigForms: {
       register: vi.fn((id, form) => {
         expect(id).toBe('openai-codex')
@@ -313,26 +314,27 @@ describe('Codex console login', () => {
     expect(container.textContent).toContain('Signed out')
   })
 
-  it.each(['expired', 'canceled', 'error'])(
-    'handles terminal %s polls without hiding an existing session',
-    async (status) => {
-      rpc.mockResolvedValueOnce(authenticated)
-      await mount()
-      await click('Switch account')
-      rpc.mockResolvedValueOnce({
-        status,
-        error: { code: 'authorization_failed', message: 'sensitive server details' },
-      })
-      await advance(5000)
-      expect(container.textContent).toContain('Signed in')
-      expect(container.textContent).toContain('account-1')
-      expect(container.textContent).not.toContain('sensitive server details')
-      expect(container.textContent).not.toContain(attempt.user_code)
-      expect(button('New attempt').disabled).toBe(false)
-      await advance(5000)
-      expect(calls('login::poll')).toHaveLength(1)
-    },
-  )
+  it.each([
+    'expired',
+    'canceled',
+    'error',
+  ])('handles terminal %s polls without hiding an existing session', async (status) => {
+    rpc.mockResolvedValueOnce(authenticated)
+    await mount()
+    await click('Switch account')
+    rpc.mockResolvedValueOnce({
+      status,
+      error: { code: 'authorization_failed', message: 'sensitive server details' },
+    })
+    await advance(5000)
+    expect(container.textContent).toContain('Signed in')
+    expect(container.textContent).toContain('account-1')
+    expect(container.textContent).not.toContain('sensitive server details')
+    expect(container.textContent).not.toContain(attempt.user_code)
+    expect(button('New attempt').disabled).toBe(false)
+    await advance(5000)
+    expect(calls('login::poll')).toHaveLength(1)
+  })
 
   it('never overlaps slow polls or accepts responses from an expired attempt', async () => {
     await mount()
@@ -359,16 +361,18 @@ describe('Codex console login', () => {
     expect(container.textContent).not.toContain('account-1')
   })
 
-  it.each(['javascript:alert(1)', 'http://example.com/login', verificationLinkWithUserInfo.href, 'invalid'])(
-    'rejects unsafe verification link %s',
-    async (verification_uri) => {
-      rpc.mockResolvedValueOnce({ ...signedOut, login: { ...attempt, verification_uri } })
-      await mount()
-      expect(container.querySelector('a')).toBeNull()
-      expect(container.textContent).toContain('sign-in link is unavailable')
-      expect(button('Cancel sign-in').disabled).toBe(false)
-    },
-  )
+  it.each([
+    'javascript:alert(1)',
+    'http://example.com/login',
+    verificationLinkWithUserInfo.href,
+    'invalid',
+  ])('rejects unsafe verification link %s', async (verification_uri) => {
+    rpc.mockResolvedValueOnce({ ...signedOut, login: { ...attempt, verification_uri } })
+    await mount()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toContain('sign-in link is unavailable')
+    expect(button('Cancel sign-in').disabled).toBe(false)
+  })
 
   it('refreshes status when the window regains focus', async () => {
     await mount()

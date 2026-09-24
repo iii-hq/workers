@@ -1,14 +1,13 @@
 /**
  * Read-only peek at shell's permanent allowed folders
- * (`configuration::get { id: 'ide' }` → `value.fs.host_roots`), for the
+ * (`ide::configuration-id` → `configuration::get` → `value.fs.host_roots`), for the
  * filesystem-access management dialog's "always allowed (all sessions)" group.
  * Editing happens on the existing configuration editor
- * (`#/configuration/workers/ide`) — this is read-only here on purpose.
+ * for the resolved entry — this is read-only here on purpose.
  */
 
+import { resolveConfigurationId } from '@iii-dev/console-ui/configuration'
 import { getIiiClient } from '@/lib/iii-client'
-
-const SHELL_CONFIG_ID = 'ide'
 
 interface ShellConfigValue {
   fs?: { host_roots?: unknown }
@@ -23,7 +22,7 @@ export async function getShellHostRoots(): Promise<string[]> {
   try {
     const client = await getIiiClient()
     const res = await client.trigger<GetConfigResponse>('configuration::get', {
-      id: SHELL_CONFIG_ID,
+      id: await resolveConfigurationId(client, 'ide'),
       raw: false,
     })
     const roots = res?.value?.fs?.host_roots

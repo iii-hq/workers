@@ -7,7 +7,8 @@
  */
 
 export const OVERLAY_MIN_WIDTH = 120
-export const OVERLAY_MAX_WIDTH = 520
+/** Twice the pointer layout's default width, the double-click's 2x. */
+export const OVERLAY_MAX_WIDTH = 880
 /** Room kept between the overlay and the far edge of the viewport. */
 export const OVERLAY_EDGE_GAP = 32
 const RUBBER = 0.25
@@ -42,6 +43,16 @@ export function pinchWidth(
 export function settleWidth(width: number, limits: Limits): number {
   if (!Number.isFinite(width)) return limits.min
   return Math.round(Math.min(limits.max, Math.max(limits.min, width)))
+}
+
+/** A double-click on a pointer layout: the default width and twice it
+ * alternate (any other width, a pinch's say, goes back to the default). */
+export function toggledWidth(
+  width: number,
+  base: number,
+  limits: Limits,
+): number {
+  return settleWidth(width === base ? base * 2 : base, limits)
 }
 
 export function pinchDistance(

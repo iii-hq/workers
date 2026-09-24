@@ -1,0 +1,287 @@
+{
+  "description": "Generate one image from a text prompt with gpt-image-2.5-sunburst or gpt-image-2.5-flare on the ChatGPT subscription backend (a Codex chat model hosts the image_generation tool). Returns viewable content blocks (image + caption) that render inline, and saves the file under data/provider-openai-codex/images/ (details.path) for other processes to pick up.",
+  "function_id": "provider::openai-codex::image::generate",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "background": {
+        "default": null,
+        "description": "`transparent`, `opaque`, or `auto`; transparency needs png or webp.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "file_name": {
+        "default": null,
+        "description": "File stem for the persisted image (letters, digits, `.`, `_`, `-`; anything else becomes `-`). A timestamp and a random suffix are always appended so files never collide. Defaults to `image`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "host_model": {
+        "default": null,
+        "description": "Codex chat model that hosts the `image_generation` tool call (default `gpt-5.5`; the router's `codex/` prefix is accepted).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "inline": {
+        "default": null,
+        "description": "Whether the result embeds image bytes: `none` (default — the file is saved, `details.path` names it, and the console fetches its own preview), `preview` (a JPEG at most 512px / ~80 KB, for an agent that must look at the picture; fits the harness result cap), or `full` (the original bytes — over a megabyte for a 1024px PNG).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "description": "Image model: `gpt-image-2.5-sunburst` or `gpt-image-2.5-flare`.",
+        "type": "string"
+      },
+      "output_format": {
+        "default": null,
+        "description": "`png` (default), `jpeg`, or `webp`: the format of the file saved under data/ (and of the inline picture when `inline` is `full`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "prompt": {
+        "description": "What to draw (up to 32k characters).",
+        "type": "string"
+      },
+      "quality": {
+        "default": null,
+        "description": "`low`, `medium`, `high`, or `auto`; the model default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "size": {
+        "default": null,
+        "description": "`1024x1024`, `1536x1024` (landscape), `1024x1536` (portrait), or `auto`; the model default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "model",
+      "prompt"
+    ],
+    "title": "ImageGenerateRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ContentBlock": {
+        "description": "One block of a viewable response: an image block plus a text line — the shape the harness renders inline (same as `browser::screenshot`).",
+        "properties": {
+          "data": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "ImageDetails": {
+        "properties": {
+          "bytes": {
+            "description": "Saved file size in bytes.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "height": {
+            "description": "Pixel height of the saved file, when decodable.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "host_model": {
+            "description": "Codex chat model that hosted the tool call.",
+            "type": "string"
+          },
+          "inline": {
+            "description": "`preview`, `full`, or `none`: what the inline image block carries.",
+            "type": "string"
+          },
+          "mime": {
+            "description": "Mime of the saved file: `image/png`, `image/jpeg`, or `image/webp`.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Image model that produced the picture.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path of the full-resolution file under `data/provider-openai-codex/images/`.",
+            "type": "string"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/PreviewDetails"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when `inline` is `preview` and the preview could be built."
+          },
+          "quality": {
+            "description": "Requested quality (`auto` when left to the model).",
+            "type": "string"
+          },
+          "revised_prompt": {
+            "description": "The prompt as the model actually rendered it, when upstream reports one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "size": {
+            "description": "Requested size (`auto` when left to the model).",
+            "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ImageUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "width": {
+            "description": "Pixel width of the saved file, when decodable.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "bytes",
+          "host_model",
+          "inline",
+          "mime",
+          "model",
+          "path",
+          "quality",
+          "size"
+        ],
+        "type": "object"
+      },
+      "ImageUsage": {
+        "description": "Token usage of the hosting Responses call (absent when the backend omits it).",
+        "properties": {
+          "input_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "output_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "total_tokens": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PreviewDetails": {
+        "description": "What the inline image block actually holds when it is a preview.",
+        "properties": {
+          "bytes": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "height": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bytes",
+          "height",
+          "mime",
+          "width"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "content": {
+        "description": "`[image block, text line]` (`[text line]` with `inline: none`) — render `content` and the picture shows.",
+        "items": {
+          "$ref": "#/definitions/ContentBlock"
+        },
+        "type": "array"
+      },
+      "details": {
+        "$ref": "#/definitions/ImageDetails"
+      }
+    },
+    "required": [
+      "content",
+      "details"
+    ],
+    "title": "ImageGenerateResponse",
+    "type": "object"
+  }
+}

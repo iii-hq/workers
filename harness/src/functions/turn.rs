@@ -132,7 +132,16 @@ async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, Ha
             }
             Err(e) => {
                 tracing::error!(session_id = %session_id, turn_id = %turn_id, error = %e, "turn step failed; finalising turn as failed");
-                break turn_loop::fail_turn(deps, &session_id, &turn_id, &e.to_string()).await?;
+                // Keep failure finalization out of this future's inline state:
+                // its size propagates through every handler wrapper even on
+                // successful turns, exhausting the SDK thread's debug stack.
+                break Box::pin(turn_loop::fail_turn(
+                    deps,
+                    &session_id,
+                    &turn_id,
+                    &e.to_string(),
+                ))
+                .await?;
             }
         }
     };
@@ -163,6 +172,24 @@ fn record_step_status(result: &TurnStepResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_future_keeps_failure_finalization_out_of_its_inline_state() {
+        // Inspect the real future type without constructing dependencies or
+        // polling it. An inline fail_turn future previously grew this state
+        // to about 31 KiB and overflowed the SDK thread through its wrappers.
+        fn future_size<F: std::future::Future>(
+            _: impl FnOnce(&'static Deps, TurnStepPayload) -> F,
+        ) -> usize {
+            std::mem::size_of::<F>()
+        }
+
+        let bytes = future_size(run);
+        assert!(
+            bytes <= 1024,
+            "turn runner future is {bytes} bytes; keep large finalization futures boxed"
+        );
+    }
 
     #[test]
     fn boot_race_errors_are_transient_and_real_failures_are_not() {

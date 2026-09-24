@@ -20,10 +20,40 @@ export interface DiscoverInstallableView {
   functions: DiscoverCandidateView[]
 }
 
+/** An installed skill document the search judged relevant to the requested
+ * capabilities. Read one with `directory::skills::get { id }`
+ * before acting on it — it carries no callable function. */
+export interface DiscoverSkillView {
+  id: string
+  title: string
+  description: string
+}
+
+/** A registered trigger binding the search judged relevant to the requested
+ * capabilities: what already fires, schedules, or hooks
+ * `functionId`. Inspect the function with `engine::functions::info`. */
+export interface DiscoverTriggerView {
+  id: string
+  triggerType: string
+  functionId: string
+  workerName?: string
+  config: unknown
+}
+
+/** The search mode that actually ranked the results: the judge worker
+ * (`judge`), local BM25+MiniLM (`hybrid`), or BM25 only (`lexical`). Absent on
+ * transcript rows from workers that predate the field. */
+export type DiscoverSearchMode = 'lexical' | 'hybrid' | 'judge'
+
+const SEARCH_MODES: readonly DiscoverSearchMode[] = ['lexical', 'hybrid', 'judge']
+
 export interface DiscoverView {
   guidance: string
   workers: DiscoverWorkerView[]
   installable: DiscoverInstallableView[]
+  skills: DiscoverSkillView[]
+  triggers: DiscoverTriggerView[]
+  searchMode?: DiscoverSearchMode
   latency_ms: number
 }
 
@@ -126,7 +156,48 @@ export function parseDiscoverResponse(output: unknown): DiscoverView | null {
       })
     }
   }
-  return { guidance: value.guidance, workers, installable, latency_ms: value.latency_ms }
+  const skills: DiscoverSkillView[] = []
+  if ('skills' in value && value.skills !== undefined) {
+    if (!Array.isArray(value.skills)) return null
+    for (const skill of value.skills) {
+      if (!isRecord(skill)) return null
+      if (typeof skill.id !== 'string' || skill.id.length === 0) return null
+      if (typeof skill.title !== 'string') return null
+      if (typeof skill.description !== 'string') return null
+      skills.push({ id: skill.id, title: skill.title, description: skill.description })
+    }
+  }
+  const triggers: DiscoverTriggerView[] = []
+  if ('triggers' in value && value.triggers !== undefined) {
+    if (!Array.isArray(value.triggers)) return null
+    for (const trigger of value.triggers) {
+      if (!isRecord(trigger)) return null
+      if (typeof trigger.id !== 'string' || trigger.id.length === 0) return null
+      if (typeof trigger.trigger_type !== 'string') return null
+      if (typeof trigger.function_id !== 'string') return null
+      const workerName = trigger.worker_name
+      if (workerName !== undefined && workerName !== null && typeof workerName !== 'string') return null
+      triggers.push({
+        id: trigger.id,
+        triggerType: trigger.trigger_type,
+        functionId: trigger.function_id,
+        ...(typeof workerName === 'string' ? { workerName } : {}),
+        config: trigger.config ?? {},
+      })
+    }
+  }
+  // The mode is only a badge: an unknown value (such as `jev` from older
+  // transcripts) renders like an absent one instead of dropping the card.
+  const searchMode = SEARCH_MODES.find((mode) => 'search_mode' in value && value.search_mode === mode)
+  return {
+    guidance: value.guidance,
+    workers,
+    installable,
+    skills,
+    triggers,
+    ...(searchMode ? { searchMode } : {}),
+    latency_ms: value.latency_ms,
+  }
 }
 
 export function functionCount(view: DiscoverView): number {

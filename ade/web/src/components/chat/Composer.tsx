@@ -1,4 +1,4 @@
-import { $createParagraphNode, $getRoot, type LexicalEditor } from 'lexical'
+import type { LexicalEditor } from 'lexical'
 import {
   ArrowUp,
   ChevronDown,
@@ -34,6 +34,7 @@ import {
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
+import { formatBinding, shortcutPlatform } from '@/lib/keybindings/bindings'
 import { cn } from '@/lib/utils'
 import type {
   Attachment,
@@ -43,12 +44,13 @@ import type {
 } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
+import { GENERIC_COMPOSER_PLACEHOLDER } from './agent-defaults'
 import { BankPicker } from './BankPicker'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
-import { LexicalShell } from './LexicalShell'
-import { $appendComposerText } from './lexical/composer-text'
+import { LexicalShell, SEND_BINDING } from './LexicalShell'
+import { $fillComposerMarkdown } from './lexical/composer-markdown'
 import { ModelPicker } from './ModelPicker'
 import { nextHistoryTarget } from './queue-history'
 import { useFileDrop } from './use-file-drop'
@@ -58,6 +60,14 @@ import { useFileDrop } from './use-file-drop'
 // not pane layout; see viewport-breakpoint-conformance.test.ts.
 
 const WIDE_TOOLBAR_QUERY = '(min-width: 640px)'
+
+/** The send chord spelled for this keyboard: ⌘↵ on a Mac, ctrl+↵ elsewhere. */
+function sendShortcutLabel(): string {
+  const platform = shortcutPlatform()
+  return formatBinding(SEND_BINDING, platform).join(
+    platform === 'mac' ? '' : '+',
+  )
+}
 
 function subscribeWideToolbar(onChange: () => void): () => void {
   if (typeof window.matchMedia !== 'function') return () => {}
@@ -186,6 +196,12 @@ interface ComposerProps {
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
   /**
+   * Hint while the editor is idle and empty — the selected profile's example
+   * before the first message. Only ever a placeholder: it never becomes
+   * draft text, and the editor keeps its `message composer` label.
+   */
+  idlePlaceholder?: string
+  /**
    * Put the caret in the editor on mount. The caller decides, because only it
    * knows whether focus is welcome: on a touch device it raises the on-screen
    * keyboard over the conversation, which is worse than aiming once.
@@ -292,6 +308,7 @@ export function Composer({
   blocked,
   submitBlocked,
   blockedPlaceholder = 'chat unavailable…',
+  idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
   initialContent,
   initialText,
@@ -349,13 +366,9 @@ export function Composer({
     if (initialContent) return initialContent
     const text = initialText
     if (!text) return undefined
-    return () => {
-      const root = $getRoot()
-      root.clear()
-      const paragraph = $createParagraphNode()
-      $appendComposerText(paragraph, text)
-      root.append(paragraph)
-    }
+    // The draft was saved as composer markdown, so its lists and code
+    // blocks come back as the blocks they were.
+    return () => $fillComposerMarkdown(text)
   }, [])
 
   // ↑/↓ browse the queued messages for editing. `browseId` is the message the
@@ -565,6 +578,7 @@ export function Composer({
         onClick={handleSubmit}
         disabled={submitDisabled}
         aria-label={isStreaming ? 'queue message' : 'send message'}
+        title={`${isStreaming ? 'queue message' : 'send message'} (${sendShortcutLabel()})`}
         className={cn(
           actionButtonClass,
           hasText || attachments.length > 0
@@ -682,7 +696,7 @@ export function Composer({
                   ? queueWhileStreaming
                     ? 'queue a message…'
                     : 'streaming response…'
-                  : 'send a message…'
+                  : idlePlaceholder
             }
             disabled={inputDisabled}
             autoFocus={autoFocus}

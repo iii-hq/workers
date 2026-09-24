@@ -15,11 +15,25 @@ use crate::config::FpConfig;
 use crate::guidance;
 
 pub const CONFIG_ID: &str = "fp";
+
+/// Process-stable entry identity; the form family remains CONFIG_ID.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 pub const CONFIG_FN_ID: &str = "fp::on-config-change";
 
+/// Pair this process's dynamic entry ID with the stable function-provider form family.
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
-        id: CONFIG_ID,
+        id: config_id(),
         form_id: CONFIG_ID,
         name: "fp",
         description: "fp worker settings — whether fp::pipe usage guidance is injected into agent system prompts (on by default).",
@@ -29,11 +43,12 @@ fn spec() -> config_client::EntrySpec {
 }
 
 pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
-    config_client::register(iii, &spec(), None).await
+    config_client::ensure(iii, &spec(), None).await
 }
 
+/// Parse the assigned entry, retaining standalone defaults only when no value exists.
 pub async fn fetch_config(iii: &IIIClient) -> Result<FpConfig, String> {
-    match config_client::fetch(iii, CONFIG_ID).await? {
+    match config_client::fetch(iii, config_id()).await? {
         Some(v) => FpConfig::from_json(&v),
         None => {
             tracing::info!("no configuration value found; using built-in defaults");
@@ -54,7 +69,7 @@ pub fn register_config_trigger(
     let engine = iii.clone();
     config_client::on_change(
         iii,
-        CONFIG_ID,
+        config_id(),
         CONFIG_FN_ID,
         "Internal: reload fp settings from the authoritative configuration on change.",
         move || {

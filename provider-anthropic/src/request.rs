@@ -3,12 +3,13 @@
 use crate::config::{AnthropicConfig, AuthMode};
 use crate::thinking::ThinkingConfig;
 use crate::wire::cache::{
-    apply_messages_cache_anchor, apply_tools_cache_control, build_system_field,
+    apply_messages_cache_anchor, apply_tools_cache_control, build_system_blocks, build_system_field,
 };
 use crate::wire::messages::to_wire_messages;
 use crate::wire::tools::functions_to_wire;
 use llm_router::types::messages::AgentMessage;
 use llm_router::types::model::AgentFunction;
+use llm_router::types::router::PromptSection;
 use serde_json::{json, Value};
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -17,12 +18,19 @@ pub struct BodyArgs {
     pub model: String,
     pub max_tokens: u64,
     pub system_prompt: String,
+    /// Ordered sections behind `system_prompt`; when present (and non-empty)
+    /// they replace the flat string on the wire so the cache boundary lands
+    /// between blocks.
+    pub system_sections: Option<Vec<PromptSection>>,
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<AgentFunction>,
     pub thinking: Option<ThinkingConfig>,
     /// `output_config.effort` for the adaptive-thinking generation.
     pub effort: Option<&'static str>,
     pub cache_enabled: bool,
+    /// TTL for the shared-prefix markers on the sectioned path (`None` = the
+    /// 5-minute default); see `wire::cache::cache_ttl`.
+    pub cache_ttl: Option<&'static str>,
 }
 
 /// No `temperature`: the API default applies (required when thinking is on).
@@ -53,7 +61,13 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
     }
     apply_messages_cache_anchor(&mut wire_messages, args.cache_enabled);
     let mut wire_tools = functions_to_wire(&args.tools);
-    apply_tools_cache_control(&mut wire_tools, args.cache_enabled);
+    // The long TTL only makes sense when there is a shared prefix to keep warm.
+    let sectioned = args
+        .system_sections
+        .as_deref()
+        .is_some_and(|s| !s.is_empty());
+    let ttl = if sectioned { args.cache_ttl } else { None };
+    apply_tools_cache_control(&mut wire_tools, args.cache_enabled, ttl);
 
     let mut body = json!({
         "model": args.model,
@@ -62,7 +76,13 @@ pub fn build_body(args: &BodyArgs, warnings: &mut Vec<String>) -> Value {
         "tools": wire_tools,
         "stream": true,
     });
-    if let Some(system) = build_system_field(&args.system_prompt, args.cache_enabled) {
+    let system = match args.system_sections.as_deref() {
+        Some(sections) if !sections.is_empty() => {
+            build_system_blocks(sections, args.cache_enabled, ttl)
+        }
+        _ => build_system_field(&args.system_prompt, args.cache_enabled),
+    };
+    if let Some(system) = system {
         body["system"] = system;
     }
     if let Some(t) = &args.thinking {
@@ -105,6 +125,7 @@ mod tests {
             model: "claude-sonnet-4-6".into(),
             max_tokens: 4096,
             system_prompt: "be brief".into(),
+            system_sections: None,
             messages: vec![AgentMessage::User(UserMessage {
                 role: UserRoleTag::User,
                 content: vec![ContentBlock::Text { text: "hi".into() }],
@@ -114,6 +135,7 @@ mod tests {
             thinking: None,
             effort: None,
             cache_enabled: false,
+            cache_ttl: None,
         }
     }
 
@@ -144,6 +166,40 @@ mod tests {
         let mut a = args();
         a.system_prompt = String::new();
         assert!(build_body(&a, &mut Vec::new()).get("system").is_none());
+    }
+
+    #[test]
+    fn sections_render_one_block_each() {
+        let mut a = args();
+        a.system_sections = Some(vec![
+            PromptSection {
+                text: "stable".into(),
+                cache_boundary: true,
+            },
+            PromptSection {
+                text: "dynamic".into(),
+                cache_boundary: false,
+            },
+        ]);
+        a.cache_enabled = true;
+        a.cache_ttl = Some("1h");
+        let body = build_body(&a, &mut Vec::new());
+        assert_eq!(body["system"][0]["text"], "stable");
+        assert_eq!(body["system"][1]["text"], "dynamic");
+        // the boundary carries the 1h ttl whatever its size (Anthropic applies
+        // the token minimum itself); the tail stays bare
+        assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
+        assert!(body["system"][1].get("cache_control").is_none());
+        // the flat path never gets the ttl
+        a.system_sections = None;
+        a.system_prompt = "p".repeat(crate::wire::cache::CACHE_MIN_CHARS);
+        let flat = build_body(&a, &mut Vec::new());
+        assert!(flat["system"][0]["cache_control"].get("ttl").is_none());
+        // an empty section list falls back to the flat string
+        a.system_sections = Some(vec![]);
+        a.system_prompt = "be brief".into();
+        a.cache_enabled = false;
+        assert_eq!(build_body(&a, &mut Vec::new())["system"], "be brief");
     }
 
     #[test]

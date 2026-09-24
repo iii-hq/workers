@@ -91,10 +91,30 @@ pub fn new_cell(config: RestApiConfig) -> ConfigCell {
     Arc::new(RwLock::new(Arc::new(config)))
 }
 
+// Routed calls include engine metadata such as `_caller_worker_id`.
+// The payload never controls which configuration entry is returned.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ConfigurationIdentityRequest {}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ConfigurationIdentityResponse {
+    id: String,
+}
+
 /// Register the `http` configuration entry: schema + metadata refresh on every
 /// boot; `initial_value` (the `--config` seed, or built-in defaults) is included
 /// only when nothing is stored yet, so runtime edits survive restarts.
 pub async fn register_config(iii: &IIIClient, seed: Option<&RestApiConfig>) -> Result<(), String> {
+    iii.register_function(
+        "http::configuration-id",
+        RegisterFunction::new(|_request: ConfigurationIdentityRequest| {
+            Ok::<_, Error>(ConfigurationIdentityResponse {
+                id: config_id().to_string(),
+            })
+        })
+        .description("Returns this HTTP instance's configuration entry ID, without its value.")
+        .metadata(json!({ "internal": true })),
+    );
     let mut payload = json!({
         "id": config_id(),
         "name": "HTTP",
@@ -102,18 +122,17 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&RestApiConfig>) -> R
         "schema": RestApiConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
-    if should_seed_initial_value(iii).await? {
-        let seed = seed.cloned().unwrap_or_default().normalized();
-        payload["initial_value"] = seed.to_json();
-    }
-    trigger_configuration_with_retry(
-        iii,
-        "configuration::register",
-        payload,
-        CONFIG_BUS_TIMEOUT_MS,
-    )
-    .await?;
-    Ok(())
+    // The candidate (seed, else the built-in default) is forwarded
+    // unconditionally: `configuration::ensure` installs it atomically ONLY
+    // against an absent/null entry, so a stored operator/Compose override
+    // (even `false`/`0`/`""`) is preserved without a client-side
+    // read-then-register race.
+    let seed = seed.cloned().unwrap_or_default().normalized();
+    payload["initial_value"] = seed.to_json();
+    initialization::ensure_with(payload, |function, payload| {
+        trigger_configuration_with_retry(iii, function, payload, CONFIG_BUS_TIMEOUT_MS)
+    })
+    .await
 }
 
 /// Read the live configuration value. A missing/null value falls back to the
@@ -132,13 +151,10 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<RestApiConfig, String> {
     }
 }
 
-async fn should_seed_initial_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
-        Some(value) if !value.is_null() => Ok(false),
-        _ => Ok(true),
-    }
-}
+#[path = "../../crates/config-client/src/initialization.rs"]
+mod initialization;
 
+/// Return absence only for the entry's NOT_FOUND code; service failures remain errors.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(
         iii,
@@ -149,7 +165,7 @@ async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> 
     .await
     {
         Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
+        Err(e) if is_not_found(&e) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -337,6 +353,10 @@ async fn trigger_configuration_with_retry(
             Ok(v) => return Ok(v),
             Err(e) => {
                 last_err = e.to_string();
+                if matches!(&e, iii_sdk::errors::Error::Remote { code, .. } if code == "function_not_found" || code == "NOT_FOUND")
+                {
+                    return Err(last_err);
+                }
                 if attempt < CONFIG_RETRIES {
                     tokio::time::sleep(Duration::from_millis(
                         CONFIG_RETRY_BACKOFF_MS * u64::from(attempt),
@@ -359,8 +379,58 @@ pub struct ConfigChangeAck {
 #[derive(Debug, Default, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigChangeRequest {}
 
+/// `true` only when the error carries the configuration worker's standalone
+/// `NOT_FOUND` entry code, identified by the outermost `remote error (<code>)` envelope code rather than a substring or token scan of the message, so
+/// a compound code such as `RESOURCE_NOT_FOUND`/`STATEMENT_NOT_FOUND` or the
+/// engine's lowercase missing-FUNCTION code `function_not_found` still
+/// propagates as a failure instead of being read as "nothing stored yet".
+fn is_not_found(error: &str) -> bool {
+    // Anchor on the SDK's own rendering instead of scanning the whole string:
+    // a remote failure prints as `remote error ({code}): {message}`, and this
+    // worker wraps a retried get as
+    // `configuration::get failed after CONFIG_RETRIES attempts: {err}`. Peel
+    // exactly that one wrapper (never a foreign one or a different attempt
+    // count) and then require the NOT_FOUND envelope at the very start, so a
+    // NOT_FOUND code buried in an unrelated message, a nested envelope, or a
+    // different wrapper stays a real failure and propagates.
+    const RETRY_WRAPPER: &str = "configuration::get failed after 3 attempts: ";
+    const _: () = assert!(CONFIG_RETRIES == 3);
+    let raw = error.trim();
+    let raw = raw.strip_prefix(RETRY_WRAPPER).unwrap_or(raw);
+    raw == "NOT_FOUND"
+        || raw == "remote error (NOT_FOUND):"
+        || raw.starts_with("remote error (NOT_FOUND): ")
+}
+
 #[cfg(test)]
 mod tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../crates/config-client/tests/support/is_not_found_cases.rs"
+    ));
+
+    /// The missing-entry classifier only seeds on the configuration worker's
+    /// standalone `NOT_FOUND` envelope; every unrelated failure or compound
+    /// code propagates instead of clobbering a stored value with a default.
+    #[test]
+    fn is_not_found_matches_only_the_envelope_code() {
+        assert_missing_entry_contract(super::is_not_found);
+    }
+
+    /// HTTP identity discovery accepts engine metadata without changing the selected entry.
+    #[test]
+    fn configuration_identity_accepts_engine_caller_metadata() {
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({
+                "_caller_worker_id": "00000000-0000-4000-8000-000000000002"
+            }),
+        ] {
+            serde_json::from_value::<super::ConfigurationIdentityRequest>(payload)
+                .expect("routed identity requests accept engine metadata");
+        }
+    }
+
     use super::*;
     use crate::config::MiddlewareConfig;
 

@@ -237,10 +237,14 @@
   background: var(--color-panel-raised);
 }
 
-/* toolbar: the shared toolbar recipe grown to hold the round chrome buttons */
+/* toolbar: the shared toolbar recipe grown to hold the round chrome buttons.
+   Wrap before the address bar is squeezed to an icon — it is the primary
+   control, so it keeps a readable width and takes a full row when the pane
+   cannot fit buttons + URL on one line. */
 [data-iii-ui="browser"] .br-ui-toolbar {
   height: auto;
   min-height: 2.25rem;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 4px 8px;
 }
@@ -303,10 +307,10 @@
 }
 [data-iii-ui="browser"] .br-ui-address {
   display: flex;
-  flex: 1;
+  flex: 1 1 12rem;
   align-items: center;
   gap: 8px;
-  min-width: 0;
+  min-width: 12rem;
   height: 34px;
   margin: 0 4px;
   padding: 0 6px 0 12px;
@@ -671,8 +675,13 @@
   margin-top: 8px;
 }
 
-/* touch sizes in a narrow pane */
+/* touch sizes in a narrow pane: URL on its own row so it cannot collapse
+   to the globe icon, then history + actions underneath. */
 [data-iii-ui="browser"] .br-ui-browser.narrow .br-ui-address {
+  flex: 1 0 100%;
+  order: -1;
+  min-width: 0;
+  margin: 0;
   height: 40px;
 }
 [data-iii-ui="browser"] .br-ui-browser.narrow .br-ui-url-input {

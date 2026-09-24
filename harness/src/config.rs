@@ -54,6 +54,15 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_result_bytes")]
     pub max_result_bytes: usize,
 
+    /// Send the system prompt to `router::chat` as `system_sections` (the
+    /// frozen profile/identity prefix, then the per-session context) plus a
+    /// `cache_intent` digest, so cache-aware providers can route every session
+    /// on the same profile to one prefix entry — where the provider supports it
+    /// and the prefix meets its minimum cacheable size (MOT-4798). `false`
+    /// sends the flat string only.
+    #[serde(default = "default_prompt_cache_sections")]
+    pub prompt_cache_sections: bool,
+
     /// TTL for `harness_idem` webhook-dedupe rows. Seconds.
     #[serde(default = "default_idem_ttl_secs")]
     pub idem_ttl_secs: u64,
@@ -240,6 +249,9 @@ fn default_max_transient_resumes() -> u32 {
 fn default_max_result_bytes() -> usize {
     262_144
 }
+fn default_prompt_cache_sections() -> bool {
+    true
+}
 fn default_idem_ttl_secs() -> u64 {
     86_400
 }
@@ -314,6 +326,7 @@ impl Default for WorkerConfig {
             max_validation_retries: default_max_validation_retries(),
             max_transient_resumes: default_max_transient_resumes(),
             max_result_bytes: default_max_result_bytes(),
+            prompt_cache_sections: default_prompt_cache_sections(),
             idem_ttl_secs: default_idem_ttl_secs(),
             session_timeout_ms: default_session_timeout_ms(),
             context_timeout_ms: default_context_timeout_ms(),
@@ -341,6 +354,7 @@ mod tests {
         assert_eq!(cfg.max_children, 8);
         assert_eq!(cfg.max_transient_resumes, 3);
         assert_eq!(cfg.max_result_bytes, 262_144);
+        assert!(cfg.prompt_cache_sections);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
         assert_eq!(cfg.projects_file_path, "data/harness-projects.json");
     }

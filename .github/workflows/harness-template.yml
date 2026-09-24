@@ -26,10 +26,10 @@ jobs:
           python-version: '3.11'
       - name: Check Bash syntax
         run: bash -n template/sync.sh
-      - name: Test synchronization with the Python standard library only
+      - name: Install YAML parsers
+        run: python -m pip install --quiet ruamel.yaml==0.18.16 PyYAML==6.0.3
+      - name: Test synchronization and local worker configuration
         run: python -m unittest discover -s template/tests -p test_sync.py -v
-      - name: Install YAML parser for structural tests
-        run: python -m pip install --quiet PyYAML==6.0.3
       - name: Validate local Compose, configuration and upstream instructions
         run: python -m unittest discover -s template/tests -p test_template.py -v
 
@@ -51,5 +51,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/system-bash"
           ln -s /bin/bash "$RUNNER_TEMP/system-bash/bash"
           echo "$RUNNER_TEMP/system-bash" >> "$GITHUB_PATH"
+      - name: Install the Compose YAML parser
+        run: python -m pip install --quiet ruamel.yaml==0.18.16
       - name: Test direct script execution with Bash 3.2
         run: python -m unittest discover -s template/tests -p test_sync.py -v
