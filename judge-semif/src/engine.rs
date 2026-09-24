@@ -307,8 +307,10 @@ fn decode(
     Ok(out.into_iter().flatten().collect())
 }
 
+/// Softmax over the option logits; `None` for no options or a non-finite
+/// logit. One option is certain (`[1.0]`): a one-criterion `choice` is valid.
 pub fn softmax(z: &[f32]) -> Option<Vec<f64>> {
-    if z.len() < 2 || z.iter().any(|v| !v.is_finite()) {
+    if z.is_empty() || z.iter().any(|v| !v.is_finite()) {
         return None;
     }
     let max = z

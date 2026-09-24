@@ -414,10 +414,16 @@ fn plan(question: &Question) -> Result<(String, Vec<String>, Plan), ErrorCode> {
 }
 
 /// Readout: probabilities in option order, entropy confidence (1 - H/ln k).
+/// A single option is certain: ln 1 = 0 would make the confidence 0/0 = NaN,
+/// which the contract rejects (the whole evaluation failed invalid_response).
 fn answer(plan: &Plan, p: &[f64]) -> Answer {
     let k = p.len();
     let entropy: f64 = -p.iter().map(|&x| x * x.max(1e-12).ln()).sum::<f64>();
-    let confidence = (1.0 - entropy / (k as f64).ln()).clamp(0.0, 1.0);
+    let confidence = if k < 2 {
+        1.0
+    } else {
+        (1.0 - entropy / (k as f64).ln()).clamp(0.0, 1.0)
+    };
     let probabilities: BTreeMap<String, f64> =
         plan.keys.iter().cloned().zip(p.iter().cloned()).collect();
     let best = (0..k).max_by(|&a, &b| p[a].total_cmp(&p[b])).unwrap_or(0);
