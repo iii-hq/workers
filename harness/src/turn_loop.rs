@@ -1510,11 +1510,21 @@ async fn finish_step(
                     (arguments, annotations)
                 }
                 crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
-                    let data = trigger::ResultData {
+                    let mut data = trigger::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
                         details: json!({ "error": "hook_denied", "message": reason }),
                     };
+                    // The hook judged the repaired arguments: say so.
+                    let mut deny_annotations = serde_json::Map::new();
+                    if let Some(r) = &reconciled {
+                        crate::reconcile::note_result(
+                            &mut data,
+                            &mut deny_annotations,
+                            &r.changes,
+                            &call.function_id,
+                        );
+                    }
                     let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                     append_function_result(
                         &session,
@@ -1522,7 +1532,7 @@ async fn finish_step(
                         call,
                         &data,
                         &entry_id,
-                        &origin(&record.turn_id),
+                        &origin_with(&record.turn_id, &deny_annotations),
                     )
                     .await?;
                     trigger::apply_contract_updates_after_append(
@@ -1565,22 +1575,17 @@ async fn finish_step(
                     Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
                     Err(data) => (data, None),
                 };
-                let mut spawn_annotations = serde_json::Map::new();
-                if let Some(r) = &reconciled {
-                    crate::reconcile::note_result(
-                        &mut data,
-                        &mut spawn_annotations,
-                        &r.changes,
-                        &call.function_id,
-                    );
-                }
-                if crate::reconcile::looks_like_argument_error(&data) {
-                    if let Some(diagnosis) =
-                        crate::reconcile::diagnose(deps, &cfg, &call.function_id, call_args).await
-                    {
-                        data.content.push(ContentBlock::text(diagnosis));
-                    }
-                }
+                let mut spawn_annotations = pre_ann;
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut spawn_annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &call.function_id,
+                    call_args,
+                )
+                .await;
                 append_function_result(
                     &session,
                     &record,
@@ -1709,26 +1714,16 @@ async fn finish_step(
             if let Some(key) = &failure_key {
                 trigger::note_call_result(&mut record.failed_calls, key, &data);
             }
-            if let Some(r) = &reconciled {
-                crate::reconcile::note_result(
-                    &mut data,
-                    &mut annotations,
-                    &r.changes,
-                    &call.function_id,
-                );
-            }
-            // A call the target rejected as malformed, whose arguments still
-            // violate the schema: name the violations (the target's serde
-            // error names no field).
-            if crate::reconcile::looks_like_argument_error(&data)
-                && call.function_id != "engine::functions::info"
-            {
-                if let Some(diagnosis) =
-                    crate::reconcile::diagnose(deps, &cfg, &call.function_id, call_args).await
-                {
-                    data.content.push(ContentBlock::text(diagnosis));
-                }
-            }
+            crate::reconcile::settle_result(
+                deps,
+                &cfg,
+                &mut data,
+                &mut annotations,
+                reconciled.as_ref().map(|r| r.changes.as_slice()),
+                &call.function_id,
+                call_args,
+            )
+            .await;
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)

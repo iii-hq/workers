@@ -47,9 +47,15 @@ use crate::types::message::AgentMessage;
 /// Validator passes; each pass can unwrap one more nesting level (a parsed
 /// object whose own fields are stringified).
 const MAX_PASSES: usize = 4;
+/// Violations per pass layer A will try to repair; above it the call runs
+/// as the model wrote it (a stringified array is one violation, not many).
+const MAX_COERCE_VIOLATIONS: usize = 64;
 /// Longest value preview in the note shown to the model.
 const PREVIEW_CHARS: usize = 60;
 const JUDGE_FUNCTION_ID: &str = "judge::evaluate";
+/// Its results feed the contract ledger's digest, so the harness never
+/// appends to them.
+const FUNCTIONS_INFO_ID: &str = "engine::functions::info";
 /// Minimum judge probability for a rename, enum or drop repair.
 const JUDGE_THRESHOLD: f64 = 0.8;
 /// Budget for one reconciliation `judge::evaluate`; it runs only for calls
@@ -116,7 +122,7 @@ pub async fn reconcile(
     }
     let schema = schema_for(deps, function_id).await?;
     let compiled = JSONSchema::compile(&schema).ok()?;
-    if compiled.is_valid(arguments) {
+    if compiled.is_valid(arguments) || unresolvable(&compiled, arguments) {
         return None;
     }
     let coerced = coerce_compiled(&compiled, arguments);
@@ -168,8 +174,20 @@ fn coerce_compiled(compiled: &JSONSchema, arguments: &Value) -> Option<Reconcile
     let mut changes: Vec<Change> = Vec::new();
     for _ in 0..MAX_PASSES {
         let mut progressed = false;
-        for (path, instance) in violations(compiled, &current) {
+        let found = violations(compiled, &current);
+        // ponytail: each try re-validates the whole document, so cost is
+        // quadratic in violations; batch a pass into one validation if a
+        // real payload ever carries more stringified leaves than this.
+        if found.len() > MAX_COERCE_VIOLATIONS {
+            break;
+        }
+        for (path, instance) in found {
             if changes.iter().any(|c| c.path == path) {
+                continue;
+            }
+            // The error must point AT the string: a closed schema without
+            // `properties` reports a stray key's value at the object's path.
+            if current.pointer(&path) != Some(&instance) {
                 continue;
             }
             let Some(parsed) = parse_embedded(&instance) else {
@@ -251,8 +269,31 @@ pub fn note_result(
     function_id: &str,
 ) {
     annotations.insert("reconciled".into(), json!(changes));
-    if function_id != "engine::functions::info" {
+    if function_id != FUNCTIONS_INFO_ID {
         data.content.push(ContentBlock::text(note(changes)));
+    }
+}
+
+/// Finish the result of a dispatched call: note the repairs applied before
+/// dispatch and, when the target rejected the arguments as malformed, name
+/// the schema violations by path. Every path that appends a target's result
+/// (turn loop, spawn, deferred release) goes through here.
+pub async fn settle_result(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    data: &mut ResultData,
+    annotations: &mut Map<String, Value>,
+    changes: Option<&[Change]>,
+    function_id: &str,
+    arguments: &Value,
+) {
+    if let Some(changes) = changes {
+        note_result(data, annotations, changes, function_id);
+    }
+    if function_id != FUNCTIONS_INFO_ID && looks_like_argument_error(data) {
+        if let Some(diagnosis) = diagnose(deps, cfg, function_id, arguments).await {
+            data.content.push(ContentBlock::text(diagnosis));
+        }
     }
 }
 
@@ -262,6 +303,14 @@ fn parse_embedded(value: &Value) -> Option<Value> {
         return None;
     };
     let parsed: Value = serde_json::from_str(text.trim()).ok()?;
+    // A whole-valued float ("5.0", "1e2") passes `type: integer` in the
+    // validator but not a Rust integer field: hand the target an integer.
+    let parsed = match parsed.as_f64() {
+        Some(f) if parsed.is_f64() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 => {
+            json!(f as i64)
+        }
+        _ => parsed,
+    };
     (!parsed.is_string()).then_some(parsed)
 }
 
@@ -486,22 +535,35 @@ fn apply_answers(
     answers: &Value,
     threshold: f64,
 ) -> Option<Reconciled> {
+    // The confident rename target of each question, `(object, key)`.
+    let renames: Vec<Option<(&String, &String)>> = questions
+        .iter()
+        .enumerate()
+        .map(|(index, question)| match question {
+            Question::Rename {
+                object, candidates, ..
+            } => confident_choice(&answers[format!("q{index}")], threshold)
+                .and_then(|key| option_index(&key))
+                .and_then(|i| candidates.get(i))
+                .map(|to| (object, to)),
+            _ => None,
+        })
+        .collect();
     let mut current = arguments.clone();
     let mut changes = Vec::new();
     for (index, question) in questions.iter().enumerate() {
         let answer = &answers[format!("q{index}")];
         match question {
-            Question::Rename {
-                object,
-                from,
-                candidates,
-            } => {
-                let Some(to) = confident_choice(answer, threshold)
-                    .and_then(|key| option_index(&key))
-                    .and_then(|i| candidates.get(i))
-                else {
+            Question::Rename { object, from, .. } => {
+                let Some(target) = renames[index] else {
                     continue;
                 };
+                // Two stray keys confidently mapped to the same parameter:
+                // the judge cannot tell which one the agent meant.
+                if renames.iter().flatten().filter(|t| **t == target).count() > 1 {
+                    continue;
+                }
+                let to = target.1;
                 let Some(map) = current.pointer_mut(object).and_then(Value::as_object_mut) else {
                     continue;
                 };
@@ -640,7 +702,7 @@ async fn judge_layer(
 /// schema, name each violation by path. The SDK's serde error names no field
 /// (`invalid type: string "x", expected a boolean`), so the model otherwise
 /// has to guess which argument to fix.
-pub async fn diagnose(
+async fn diagnose(
     deps: &Deps,
     cfg: &WorkerConfig,
     function_id: &str,
@@ -658,7 +720,19 @@ const MAX_DIAGNOSES: usize = 5;
 /// Longest single violation message (validator messages embed the value).
 const MAX_DIAGNOSIS_CHARS: usize = 200;
 
+/// A schema `$ref` the validator cannot fetch (no HTTP or file resolver is
+/// compiled in) fails every value that reaches it: treat the schema as
+/// unknown, like a function without one, instead of blaming the arguments.
+fn unresolvable(schema: &JSONSchema, value: &Value) -> bool {
+    schema.validate(value).is_err_and(|mut errors| {
+        errors.any(|error| matches!(error.kind, ValidationErrorKind::Resolver { .. }))
+    })
+}
+
 fn diagnosis(schema: &JSONSchema, function_id: &str, arguments: &Value) -> Option<String> {
+    if unresolvable(schema, arguments) {
+        return None;
+    }
     let errors: Vec<String> = match schema.validate(arguments) {
         Ok(()) => return None,
         Err(errors) => errors
@@ -705,7 +779,7 @@ pub fn note(changes: &[Change]) -> String {
         })
         .collect();
     format!(
-        "[harness] The arguments were reconciled before this call ran: {}. Send arguments that \
+        "[harness] The arguments were reconciled before dispatch: {}. Send arguments that \
          match the function's schema: its parameter names, allowed values and JSON types.",
         parts.join("; ")
     )
@@ -1204,5 +1278,93 @@ mod tests {
         );
         assert!(note.contains("`seed` dropped"), "{note}");
         assert!(note.starts_with("[harness]"));
+    }
+
+    #[test]
+    fn a_stray_key_on_a_closed_schema_without_properties_never_replaces_the_payload() {
+        // The validator reports the stray VALUE at the object's own path.
+        assert!(coerce(
+            &json!({ "type": "object", "additionalProperties": false }),
+            &json!({ "foo": "{}", "bar": 1 })
+        )
+        .is_none());
+        assert!(coerce(
+            &json!({ "additionalProperties": false }),
+            &json!({ "foo": "7" })
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_whole_valued_float_string_reaches_an_integer_field_as_an_integer() {
+        let schema = json!({ "type": "object", "properties": { "limit": { "type": "integer" } } });
+        for (given, want) in [("5.0", 5), ("1e2", 100), ("-0", 0)] {
+            let repaired = coerce(&schema, &json!({ "limit": given })).expect(given);
+            assert!(repaired.arguments["limit"].is_i64(), "{given}");
+            assert_eq!(repaired.arguments["limit"], json!(want), "{given}");
+        }
+        assert!(coerce(&schema, &json!({ "limit": "5.5" })).is_none());
+    }
+
+    #[test]
+    fn two_stray_keys_confidently_mapped_to_one_parameter_rename_neither() {
+        let asked = vec![
+            Question::Rename {
+                object: String::new(),
+                from: "context".into(),
+                candidates: vec!["task".into()],
+            },
+            Question::Rename {
+                object: String::new(),
+                from: "instructions".into(),
+                candidates: vec!["task".into()],
+            },
+        ];
+        let arguments = json!({ "context": "background", "instructions": "Review PR 12" });
+        let both = json!({
+            "q0": { "choice": "o0", "probabilities": { "o0": 0.95, "none": 0.05 } },
+            "q1": { "choice": "o0", "probabilities": { "o0": 0.9, "none": 0.1 } }
+        });
+        assert!(apply_answers(&arguments, &asked, &both, JUDGE_THRESHOLD).is_none());
+
+        let one = json!({
+            "q0": { "choice": "none", "probabilities": { "o0": 0.1, "none": 0.9 } },
+            "q1": { "choice": "o0", "probabilities": { "o0": 0.9, "none": 0.1 } }
+        });
+        let renamed = apply_answers(&arguments, &asked, &one, JUDGE_THRESHOLD).expect("renamed");
+        assert_eq!(renamed.arguments["task"], "Review PR 12");
+    }
+
+    #[test]
+    fn layer_a_stops_above_the_violation_cap() {
+        let payload = |n: usize| -> (Value, Value) {
+            let properties: Map<String, Value> = (0..n)
+                .map(|i| (format!("p{i}"), json!({ "type": "integer" })))
+                .collect();
+            let arguments: Map<String, Value> =
+                (0..n).map(|i| (format!("p{i}"), json!("1"))).collect();
+            (
+                json!({ "type": "object", "properties": properties }),
+                Value::Object(arguments),
+            )
+        };
+        let (schema, arguments) = payload(MAX_COERCE_VIOLATIONS);
+        assert_eq!(
+            coerce(&schema, &arguments).map(|r| r.changes.len()),
+            Some(MAX_COERCE_VIOLATIONS)
+        );
+        let (schema, arguments) = payload(MAX_COERCE_VIOLATIONS + 1);
+        assert!(coerce(&schema, &arguments).is_none());
+    }
+
+    #[test]
+    fn an_unfetchable_ref_is_treated_as_an_unknown_schema() {
+        let schema = compile(&json!({
+            "type": "object",
+            "properties": { "a": { "$ref": "https://example.com/x.json#/A" } }
+        }));
+        assert!(unresolvable(&schema, &json!({ "a": 1 })));
+        assert_eq!(diagnosis(&schema, "remote::fn", &json!({ "a": 1 })), None);
+        assert!(!unresolvable(&schema, &json!({ "b": 1 })));
     }
 }
