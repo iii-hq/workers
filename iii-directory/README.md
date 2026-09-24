@@ -623,8 +623,9 @@ functions as internal, so search results show only the hub's `judge::*`.
 
 With `choice`, a judge whose models advertise a context window under 4096
 tokens (`context_window` in `judge::models::list`, read at most once a minute)
-gets each option as `id: <first eight words of its description>` instead of
-the full description object. laya (512 tokens) shares about 190 of them among
+gets compact options instead of the full description objects: each option is
+keyed by the function id and reads the first eight words of its description,
+and the state names the capability plainly (`{"capability": …}`). laya (512 tokens) shares about 190 of them among
 the sixteen options, so the objects cut the function ids themselves: live, it
 found the expected function in 13/22 searches with objects and 17/22 compact.
 SemIf (16384) and judges that advertise no window keep the objects.
