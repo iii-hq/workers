@@ -174,6 +174,9 @@ async fn main() -> anyhow::Result<()> {
 
 The rest of the surface: `browser::elements` (visible controls as an
 indexed table with `n` refs, plus the visible text, from one read),
+`browser::run` (reach a goal in one call: the optional judge worker picks
+each click/type/select/scroll from the table, text comes from the caller's
+`inputs`; without a judge it returns `judge_unavailable` and the table),
 `browser::act` (click/hover/type/select/press/scroll by ref or coordinates,
 left/right/middle and double-click; ref targets are scrolled into view and
 refused when disabled, hidden or covered; typing into a field by ref replaces

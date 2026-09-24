@@ -231,6 +231,7 @@ dependencies = [
  "image",
  "ipnet",
  "jpeg-encoder",
+ "judge-contract",
  "libc",
  "psl",
  "regex",
@@ -1225,6 +1226,15 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "judge-contract"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

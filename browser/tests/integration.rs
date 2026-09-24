@@ -1051,3 +1051,210 @@ async fn elements_table_guards_select_and_replace() {
     call("browser::sessions::stop", json!({ "session_id": sid })).await;
     client.shutdown_async().await;
 }
+
+/// A scripted `judge::evaluate`: select Bug, type the title, click Save,
+/// then DONE once the page title says saved. Answers every head the way a
+/// real judge does, but only the chosen operation's head matters.
+fn scripted_judge(request: &serde_json::Value) -> serde_json::Value {
+    let evaluation = &request["evaluations"][0];
+    let state = &evaluation["state"];
+    let questions = &evaluation["questions"];
+    let pick = |question: &str, choice: &str| {
+        let probabilities: serde_json::Map<String, serde_json::Value> = questions[question]
+            ["criteria"]
+            .as_object()
+            .expect("choice criteria")
+            .keys()
+            .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+            .collect();
+        json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.9 })
+    };
+    let field = |label: &str| {
+        state["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["label"] == label)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {label} in {state}"))
+    };
+    let (kind, title, save) = (field("Type"), field("Title"), field("Save"));
+    let r = |e: &serde_json::Value| e["ref"].as_str().unwrap().to_string();
+    let (operation, head) = if state["page"]["title"]
+        .as_str()
+        .unwrap()
+        .starts_with("saved")
+    {
+        ("DONE", None)
+    } else if kind["value"] != "Bug" {
+        ("SELECT", Some(("select_target", format!("{}:2", r(&kind)))))
+    } else if title["value"] != "Crash on save" {
+        ("TYPE_TEXT", Some(("type_text_target", r(&title))))
+    } else {
+        ("CLICK", Some(("click_target", r(&save))))
+    };
+    let mut answers = serde_json::Map::new();
+    answers.insert("operation".into(), pick("operation", operation));
+    if let Some((question, target)) = head {
+        answers.insert(question.into(), pick(question, &target));
+    }
+    json!({
+        "status": "ok",
+        "model": "scripted",
+        "results": { evaluation["id"].as_str().unwrap(): { "answers": answers } },
+        "stats": { "attempts": 1, "requests": 1, "questions": answers.len(),
+                   "input_tokens": 0, "output_tokens": 0, "elapsed_ms": 1, "usage_complete": false },
+    })
+}
+
+#[tokio::test]
+async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    let requests = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    {
+        let requests = requests.clone();
+        client.register_function(
+            "judge::evaluate",
+            RegisterFunction::new_async(move |request: serde_json::Value| {
+                let requests = requests.clone();
+                async move {
+                    let reply = scripted_judge(&request);
+                    requests.lock().unwrap().push(request);
+                    Ok::<_, iii_sdk::errors::Error>(reply)
+                }
+            }),
+        );
+    }
+    sleep(Duration::from_millis(800)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(60),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(50_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+    let url = serve_html(FORM_HTML);
+    let started = call("browser::sessions::start", json!({ "url": url })).await;
+    let sid = started["session_id"].as_str().unwrap().to_string();
+    let goal = "File a Bug with the given title and save it.";
+
+    // no inputs: the select happens, then the run hands the text back
+    let first = call("browser::run", json!({ "session_id": sid, "goal": goal })).await;
+    assert_eq!(first["status"], "needs_text", "{first}");
+    assert_eq!(first["steps"].as_array().unwrap().len(), 1, "{first}");
+    assert_eq!(first["steps"][0]["operation"], "SELECT", "{first}");
+    assert_eq!(first["steps"][0]["option"], "Bug", "{first}");
+    assert_eq!(first["needs_text"]["label"], "Title", "{first}");
+
+    // with the text: type, click, done — one call
+    let n = requests.lock().unwrap().len();
+    let second = call(
+        "browser::run",
+        json!({ "session_id": sid, "goal": goal, "inputs": { "title": "Crash on save" } }),
+    )
+    .await;
+    assert_eq!(second["status"], "done", "{second}");
+    let ops: Vec<&str> = second["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["operation"].as_str().unwrap())
+        .collect();
+    assert_eq!(ops, ["TYPE_TEXT", "CLICK"], "{second}");
+    assert_eq!(
+        second["page"]["title"], "saved:Crash on save:bug",
+        "{second}"
+    );
+
+    let requests = requests.lock().unwrap().clone();
+    // input values never reach the judge (until the page itself shows them)
+    assert!(!requests[n]["evaluations"][0]["state"]
+        .to_string()
+        .contains("Crash on save"));
+    // each request asks the operation plus one head per offered operation
+    let heads: Vec<&String> = requests[n]["evaluations"][0]["questions"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            "click_target",
+            "operation",
+            "select_target",
+            "type_text_target"
+        ]
+    );
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn run_without_a_judge_returns_the_page_and_touches_nothing() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(30),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(20_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+    let started = call(
+        "browser::sessions::start",
+        json!({ "url": serve_html(FORM_HTML) }),
+    )
+    .await;
+    let sid = started["session_id"].as_str().unwrap().to_string();
+    let run = json!({ "session_id": sid, "goal": "save the form" });
+
+    let first = call("browser::run", run.clone()).await;
+    assert_eq!(first["status"], "judge_unavailable", "{first}");
+    assert!(first["steps"].as_array().unwrap().is_empty(), "{first}");
+    assert_eq!(first["page"]["title"], "form", "{first}");
+    assert!(
+        first["page"]["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["label"] == "Save"),
+        "the page table comes back so the caller can act: {first}"
+    );
+    // the outage pauses the judge: the next run does not wait on the bus
+    let second = call("browser::run", run).await;
+    assert!(
+        second["reason"].as_str().unwrap().contains("paused"),
+        "{second}"
+    );
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}

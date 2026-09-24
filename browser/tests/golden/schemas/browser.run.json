@@ -1,0 +1,346 @@
+{
+  "function_id": "browser::run",
+  "description": "Drive the page toward a goal in one call: each step reads the visible controls, asks the judge worker which operation (click, type, select, scroll, wait, done, blocked) and which element, and acts, until the judge says done or blocked, a field needs text you did not give in `inputs`, nothing changes three times, or the step/time budget runs out. Returns the steps taken and the final page table; verify the outcome there, done is the judge's reading, not proof. Without a judge worker it returns status judge_unavailable with the page table: drive with browser::elements and browser::act instead.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RunInput",
+    "type": "object",
+    "required": [
+      "goal",
+      "session_id"
+    ],
+    "properties": {
+      "goal": {
+        "description": "The outcome to reach on the current page, in plain language (\"file a bug titled X with type Bug and save it\"). Name every value the outcome needs.",
+        "type": "string"
+      },
+      "inputs": {
+        "description": "Text for fields the goal needs filled, keyed by field label (or `n` ref): `{\"Title\": \"Crash on save\"}`. A label matches exactly (case-insensitive) or, failing that, as the only key contained in it or containing it. Only the keys are shown to the judge.",
+        "default": {},
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "max_steps": {
+        "description": "Most actions to execute (default 10, at most 60).",
+        "default": null,
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint32",
+        "minimum": 0.0
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "Whole-run budget in ms (default 30000), clamped to `max_timeout_ms`.",
+        "default": null,
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint64",
+        "minimum": 0.0
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RunOutput",
+    "type": "object",
+    "required": [
+      "elapsed_ms",
+      "judge_requests",
+      "page",
+      "status",
+      "steps"
+    ],
+    "properties": {
+      "elapsed_ms": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "judge_requests": {
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0.0
+      },
+      "needs_text": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/NeedsText"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "page": {
+        "description": "The page as the run left it (`browser::elements` shape).",
+        "allOf": [
+          {
+            "$ref": "#/definitions/ElementsOutput"
+          }
+        ]
+      },
+      "reason": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/definitions/RunStatus"
+      },
+      "steps": {
+        "description": "Executed actions, in order.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/RunStep"
+        }
+      }
+    },
+    "definitions": {
+      "Element": {
+        "description": "One control. `operations` says what `browser::act` can do with it.",
+        "type": "object",
+        "required": [
+          "label",
+          "operations",
+          "ref",
+          "role"
+        ],
+        "properties": {
+          "checked": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expanded": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "Accessible name (aria-labelledby, aria-label, label, text, title, or placeholder).",
+            "type": "string"
+          },
+          "more_options": {
+            "description": "Options beyond the listed 50; `select` still accepts them by label.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "operations": {
+            "description": "`click`, `type` and/or `select`.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "options": {
+            "description": "Enabled `<select>` option labels (first 50), for `act` `select`.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ref": {
+            "description": "`n` ref `browser::act` accepts; valid while the element stays in this document.",
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "selected": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "description": "Current value of a field or dropdown; a set password reads `(set)`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ElementsOutput": {
+        "type": "object",
+        "required": [
+          "can_scroll_down",
+          "can_scroll_up",
+          "elements",
+          "omitted",
+          "text",
+          "title",
+          "url"
+        ],
+        "properties": {
+          "can_scroll_down": {
+            "type": "boolean"
+          },
+          "can_scroll_up": {
+            "type": "boolean"
+          },
+          "elements": {
+            "description": "Visible, enabled controls inside the viewport, in document order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/Element"
+            }
+          },
+          "generation": {
+            "description": "Document generation; navigation advances it and every `n` ref dies.",
+            "default": 0,
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "omitted": {
+            "description": "Controls past the 250-element cap, not listed.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0.0
+          },
+          "text": {
+            "description": "Visible text in the viewport, up to 6000 characters.",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "NeedsText": {
+        "type": "object",
+        "required": [
+          "label",
+          "ref"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          }
+        }
+      },
+      "RunStatus": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "max_steps",
+              "deadline"
+            ]
+          },
+          {
+            "description": "The judge saw every requirement satisfied. Verify on `page`; DONE is the judge's reading, not proof.",
+            "type": "string",
+            "enum": [
+              "done"
+            ]
+          },
+          {
+            "description": "The judge found no operation that makes progress.",
+            "type": "string",
+            "enum": [
+              "blocked"
+            ]
+          },
+          {
+            "description": "Three executed steps in a row changed nothing.",
+            "type": "string",
+            "enum": [
+              "stalled"
+            ]
+          },
+          {
+            "description": "A field must be typed and no `inputs` entry matches it: type it with `browser::act` (or rerun with `inputs`), then run again.",
+            "type": "string",
+            "enum": [
+              "needs_text"
+            ]
+          },
+          {
+            "description": "No usable judge (not deployed, no provider, or failing). Drive with `browser::elements` + `browser::act`; `page` is the current table.",
+            "type": "string",
+            "enum": [
+              "judge_unavailable"
+            ]
+          }
+        ]
+      },
+      "RunStep": {
+        "type": "object",
+        "required": [
+          "judge_ms",
+          "operation",
+          "page_changed",
+          "probability"
+        ],
+        "properties": {
+          "error": {
+            "description": "Why the action was refused or failed; the page was re-read and the judge asked again.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "judge_ms": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation": {
+            "description": "CLICK, TYPE_TEXT, SELECT, SCROLL_UP, SCROLL_DOWN or WAIT.",
+            "type": "string"
+          },
+          "option": {
+            "description": "The option chosen (SELECT).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_changed": {
+            "type": "boolean"
+          },
+          "probability": {
+            "description": "The judge's probability for the executed choice.",
+            "type": "number",
+            "format": "double"
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -115,6 +115,12 @@ on navigation; re-snapshot before acting after any page change.
   covered element is refused (the error names what covers it) instead of
   landing on the overlay. Typing into an input or textarea by ref replaces
   its value.
+- `browser::run` — reach a goal on the current page in one call: the judge
+  worker picks each step (click, type, select, scroll, wait) from the element
+  table and the worker executes it, until done, blocked, a field needs text
+  you did not pass in `inputs` (`needs_text`), no progress, or the budget
+  runs out. Returns the steps and the final page table. Without a judge
+  worker it returns `judge_unavailable` plus the table, and changes nothing.
 - `browser::screenshot` — viewable JPEG of the viewport, for when layout or
   rendering matters.
 - `browser::evaluate` — run a JavaScript expression in the page and get the
@@ -243,6 +249,26 @@ default stream is `browser::crawl`.
    automate it. After it returns confirmed, re-read the page and verify the
    step actually landed — a human clicking Continue is not proof the step
    succeeded.
+
+## Workflow: drive a goal with browser::run
+
+A multi-step form or flow is one call instead of an act/read round trip per
+click:
+
+1. `browser::run { session_id, goal, inputs }`: state the whole outcome in
+   `goal` and give every value to type in `inputs`, keyed by field label.
+   Values go to the page only; the judge sees the keys.
+2. `done`: check `page` (the final table) against the goal; the judge's
+   done is not proof. `needs_text`: type the named field with
+   `browser::act` or rerun with that input. `blocked`/`stalled`/`max_steps`:
+   read `steps` (each has `error` when an action was refused) and continue
+   by hand.
+3. `judge_unavailable`: no judge worker is deployed (or it is failing and
+   paused for 30 s). Drive the same flow with `browser::elements` +
+   `browser::act`; `page` already holds the table.
+
+Do not use `run` for destructive actions; they need the two-phase approval
+below.
 
 ## Workflow: destructive UI actions
 

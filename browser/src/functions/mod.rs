@@ -26,6 +26,7 @@ pub mod pdf;
 pub mod pick;
 pub mod recording;
 pub mod resize;
+pub mod run;
 pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
@@ -115,6 +116,15 @@ pub const ACT_DESC: &str =
      view first, and a click, type or select on a disabled, hidden or covered element is \
      refused instead of landing on whatever is on top. Typing into an input or textarea by \
      ref replaces its value. Returns once the page had a moment to react.";
+pub const RUN_ID: &str = "browser::run";
+pub const RUN_DESC: &str =
+    "Drive the page toward a goal in one call: each step reads the visible controls, asks the \
+     judge worker which operation (click, type, select, scroll, wait, done, blocked) and which \
+     element, and acts, until the judge says done or blocked, a field needs text you did not \
+     give in `inputs`, nothing changes three times, or the step/time budget runs out. Returns \
+     the steps taken and the final page table; verify the outcome there, done is the judge's \
+     reading, not proof. Without a judge worker it returns status judge_unavailable with the \
+     page table: drive with browser::elements and browser::act instead.";
 pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
@@ -304,6 +314,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
             SCREENSHOT_DESC,
         ),
         spec::<act::ActInput, act::ActOutput>(ACT_ID, ACT_DESC),
+        spec::<run::RunInput, run::RunOutput>(RUN_ID, RUN_DESC),
         spec::<evaluate::EvaluateInput, evaluate::EvaluateOutput>(EVALUATE_ID, EVALUATE_DESC),
         spec::<execute::ExecuteInput, execute::ExecuteOutput>(EXECUTE_ID, EXECUTE_DESC),
         spec::<handoff::HandoffInput, handoff::HandoffOutput>(HANDOFF_ID, HANDOFF_DESC),
@@ -403,6 +414,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_elements(iii, sessions);
     register_screenshot(iii, sessions);
     register_act(iii, sessions);
+    register_run(iii, sessions);
     register_evaluate(iii, sessions);
     register_execute(iii, sessions);
     register_handoff(iii, sessions);
@@ -1495,6 +1507,168 @@ async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Resu
         }
     };
     Ok(detail)
+}
+
+fn register_run(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    let bus = iii.clone();
+    iii.register_function(
+        RUN_ID,
+        RegisterFunction::new_async(move |req: run::RunInput| {
+            let sx = sx.clone();
+            let bus = bus.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id).await?;
+                ensure_writable(&session, "browser::run")?;
+                if req.goal.trim().is_empty() {
+                    return Err(handler_err("run needs a goal"));
+                }
+                session.touch();
+                let budget = sx
+                    .config
+                    .load()
+                    .clamp_timeout(Some(req.timeout_ms.unwrap_or(run::DEFAULT_TIMEOUT_MS)));
+                let out = drive(&bus, &session, &req, budget).await;
+                session.touch();
+                out
+            }
+        })
+        .description(RUN_DESC),
+    );
+}
+
+/// `observe`, retried briefly while a navigation swaps the document.
+async fn observe_settled(session: &Session) -> Result<elements::ElementsOutput, Error> {
+    let mut last = None;
+    for _ in 0..10 {
+        match observe(session).await {
+            Ok(page) => return Ok(page),
+            Err(e) => last = Some(e),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(last.unwrap_or_else(|| handler_err("the page did not settle")))
+}
+
+/// The `browser::run` loop: observe, ask the judge, check the chosen element
+/// is still what the judge saw, act once (never retried), observe again.
+async fn drive(
+    iii: &IIIClient,
+    session: &Session,
+    req: &run::RunInput,
+    budget_ms: u64,
+) -> Result<run::RunOutput, Error> {
+    use run::{Action, RunStatus};
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_millis(budget_ms);
+    let max_steps = req
+        .max_steps
+        .unwrap_or(run::DEFAULT_MAX_STEPS)
+        .clamp(1, run::MAX_STEPS) as usize;
+    let mut steps: Vec<run::RunStep> = Vec::new();
+    let mut judge_requests = 0u32;
+    let mut page = observe_settled(session).await?;
+    let (status, reason, needs_text) = loop {
+        // Re-asking after a stale choice costs a request, never an action.
+        if steps.len() >= max_steps || judge_requests as usize >= 2 * max_steps {
+            break (RunStatus::MaxSteps, None, None);
+        }
+        let remaining = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis() as u64;
+        if remaining < 100 {
+            break (RunStatus::Deadline, None, None);
+        }
+        judge_requests += 1;
+        let evaluation = run::evaluation(&req.goal, &page, &steps, &req.inputs);
+        let judged = crate::judge::evaluate(iii, evaluation, remaining.min(run::JUDGE_TIMEOUT_MS))
+            .await
+            .and_then(|(answers, ms)| Ok((run::decide(&answers, &page)?, ms)));
+        let (decision, judge_ms) = match judged {
+            Ok(judged) => judged,
+            Err(e) => break (RunStatus::JudgeUnavailable, Some(e.to_string()), None),
+        };
+        let text = match &decision.action {
+            Action::Done => break (RunStatus::Done, None, None),
+            Action::Blocked => break (RunStatus::Blocked, None, None),
+            Action::Type(e) => match run::text_for(e, &req.inputs) {
+                Some(text) => Some(text.to_string()),
+                None => {
+                    let ask = run::NeedsText {
+                        r#ref: e.r#ref.clone(),
+                        label: e.label.clone(),
+                    };
+                    break (RunStatus::NeedsText, None, Some(ask));
+                }
+            },
+            _ => None,
+        };
+        // The page may have moved while the judge thought: act only if the
+        // chosen element still reads as it did.
+        if let Some(chosen) = decision.element() {
+            let fresh = observe_settled(session).await?;
+            let now = fresh.elements.iter().find(|e| e.r#ref == chosen.r#ref);
+            if now != Some(chosen) {
+                page = fresh;
+                continue;
+            }
+        }
+        let mut act = act::ActInput {
+            session_id: session.id.clone(),
+            ..Default::default()
+        };
+        match &decision.action {
+            Action::Click(e) => {
+                act.action = "click".into();
+                act.r#ref = Some(e.r#ref.clone());
+            }
+            Action::Type(e) => {
+                act.action = "type".into();
+                act.r#ref = Some(e.r#ref.clone());
+                act.text = text;
+            }
+            Action::Select(e, option) => {
+                act.action = "select".into();
+                act.r#ref = Some(e.r#ref.clone());
+                act.option = Some(option.clone());
+            }
+            Action::Scroll(delta) => {
+                act.action = "scroll".into();
+                act.delta_y = Some(*delta);
+            }
+            Action::Wait | Action::Done | Action::Blocked => {}
+        }
+        let outcome = if act.action.is_empty() {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            Ok(String::new())
+        } else {
+            perform(session, &act).await
+        };
+        let next = observe_settled(session).await?;
+        steps.push(run::RunStep {
+            operation: decision.operation.clone(),
+            r#ref: decision.element().map(|e| e.r#ref.clone()),
+            label: decision.element().map(|e| e.label.clone()),
+            option: act.option.clone(),
+            probability: decision.probability,
+            page_changed: !next.same_page(&page),
+            error: outcome.err().map(|e| e.to_string()),
+            judge_ms,
+        });
+        page = next;
+        if run::stalled(&steps) {
+            break (RunStatus::Stalled, None, None);
+        }
+    };
+    Ok(run::RunOutput {
+        status,
+        reason,
+        steps,
+        needs_text,
+        page,
+        judge_requests,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 fn register_evaluate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
