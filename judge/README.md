@@ -73,9 +73,16 @@ registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`)
 Four ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
 [`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/) and
 [`judge-laya`](../judge-laya/) (open models running inside the worker); a request may name its own with a top-level
-`provider`. Local providers load their model only while they are the default,
+`provider`. Between the two sits
+the calling session's provider: the console's composer (beside the model
+picker) stores it as the session's `judge_provider` metadata, the harness
+stamps it on every turn as the `iii.judge.provider` OTel baggage, and callers
+in that turn (function search, call reconciliation, `browser::run`) send it as
+`provider`; a request without one falls back to that baggage, then to the
+default. Each session routes on its own; no session changes another's judge
+or the default. Local providers load their model only while they are the default,
 unless **Keep every local provider loaded** (`preload_all`) is on, which lets
-requests route between them at run time. A new provider is a
+requests (and sessions) route between them at run time. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
 `::cancel` with the [`judge-contract`](../crates/judge-contract/) types,
 marked `metadata.internal: true` so default discovery shows only the hub, and
