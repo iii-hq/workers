@@ -1162,9 +1162,17 @@ async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
 
     // with the text: type, click, done — one call
     let n = requests.lock().unwrap().len();
-    let second = call(
-        "browser::run",
-        json!({ "session_id": sid, "goal": goal, "inputs": { "title": "Crash on save" } }),
+    // this call comes from a session whose judge is semif: every judge
+    // request of the run must name it
+    let semif = opentelemetry::baggage::BaggageExt::current_with_baggage(vec![
+        opentelemetry::KeyValue::new(judge_contract::PROVIDER_BAGGAGE_KEY, "semif"),
+    ]);
+    let second = opentelemetry::context::FutureExt::with_context(
+        call(
+            "browser::run",
+            json!({ "session_id": sid, "goal": goal, "inputs": { "title": "Crash on save" } }),
+        ),
+        semif,
     )
     .await;
     assert_eq!(second["status"], "done", "{second}");
@@ -1181,6 +1189,9 @@ async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
     );
 
     let requests = requests.lock().unwrap().clone();
+    // the session's provider rides every request of that run, and only it
+    assert!(requests[..n].iter().all(|r| r.get("provider").is_none()));
+    assert!(requests[n..].iter().all(|r| r["provider"] == "semif"));
     // input values never reach the judge (until the page itself shows them)
     assert!(!requests[n]["evaluations"][0]["state"]
         .to_string()

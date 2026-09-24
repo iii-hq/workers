@@ -28,6 +28,9 @@ iii-console-ui = { path = "../crates/console-ui" }
 # Typed judge::evaluate messages for browser::run; the judge worker itself is
 # optional at runtime.
 judge-contract = { path = "../crates/judge-contract" }
+# Same major as iii-sdk's, so Context::current() sees the handler's baggage
+# (the calling session's judge provider).
+opentelemetry = { version = "0.31", default-features = false }
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "net"] }
 serde = { version = "1", features = ["derive"] }

@@ -1528,7 +1528,10 @@ fn register_run(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .config
                     .load()
                     .clamp_timeout(Some(req.timeout_ms.unwrap_or(run::DEFAULT_TIMEOUT_MS)));
-                let out = drive(&bus, &session, &req, budget).await;
+                // The caller session's judge provider, read here in the
+                // handler's context and sent on every judge call of the run.
+                let provider = crate::judge::session_provider();
+                let out = drive(&bus, &session, &req, budget, provider.as_deref()).await;
                 session.touch();
                 out
             }
@@ -1557,6 +1560,7 @@ async fn drive(
     session: &Session,
     req: &run::RunInput,
     budget_ms: u64,
+    provider: Option<&str>,
 ) -> Result<run::RunOutput, Error> {
     use run::{Action, RunStatus};
     let started = std::time::Instant::now();
@@ -1581,9 +1585,14 @@ async fn drive(
         }
         judge_requests += 1;
         let evaluation = run::evaluation(&req.goal, &page, &steps, &req.inputs);
-        let judged = crate::judge::evaluate(iii, evaluation, remaining.min(run::JUDGE_TIMEOUT_MS))
-            .await
-            .and_then(|(answers, ms)| Ok((run::decide(&answers, &page)?, ms)));
+        let judged = crate::judge::evaluate(
+            iii,
+            evaluation,
+            remaining.min(run::JUDGE_TIMEOUT_MS),
+            provider,
+        )
+        .await
+        .and_then(|(answers, ms)| Ok((run::decide(&answers, &page)?, ms)));
         let (decision, judge_ms) = match judged {
             Ok(judged) => judged,
             Err(e) => break (RunStatus::JudgeUnavailable, Some(e.to_string()), None),

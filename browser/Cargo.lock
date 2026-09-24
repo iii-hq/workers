@@ -233,6 +233,7 @@ dependencies = [
  "jpeg-encoder",
  "judge-contract",
  "libc",
+ "opentelemetry",
  "psl",
  "regex",
  "reqwest 0.12.28",

@@ -4,9 +4,13 @@
 //! that is not a valid answer) pauses judge calls for `PAUSE_MS` so a run
 //! without one costs one quick refusal, not a timeout per call. The caller
 //! falls back to the agent-driven `elements` + `act` flow.
+//!
+//! Each call goes to the calling session's provider (the
+//! `iii.judge.provider` baggage the harness stamps per turn), and the pause
+//! is per provider, so one session's failing judge never stops another's.
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use iii_sdk::protocol::TriggerRequest;
@@ -18,8 +22,37 @@ use serde_json::Value;
 /// After a failure, skip the judge for this long (the directory's policy).
 pub const PAUSE_MS: i64 = 30_000;
 
-/// Epoch ms until which the judge is skipped.
-static PAUSED_UNTIL: AtomicI64 = AtomicI64::new(0);
+/// Epoch ms until which each provider is skipped (`""` = the hub default).
+static PAUSED_UNTIL: Mutex<Option<HashMap<String, i64>>> = Mutex::new(None);
+
+/// The calling session's judge provider from the handler's OTel baggage,
+/// when set and well-formed; `None` routes to the hub's default. Read it in
+/// the handler task: a spawned task without the context sees nothing.
+pub fn session_provider() -> Option<String> {
+    use opentelemetry::baggage::BaggageExt;
+    let provider = opentelemetry::Context::current()
+        .baggage()
+        .get(judge_contract::PROVIDER_BAGGAGE_KEY)?
+        .to_string();
+    judge_contract::is_valid_provider(&provider).then_some(provider)
+}
+
+fn paused(provider: &str, now: i64) -> bool {
+    PAUSED_UNTIL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .and_then(|pauses| pauses.get(provider))
+        .is_some_and(|until| now < *until)
+}
+
+fn pause(provider: &str, until: i64) {
+    PAUSED_UNTIL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(provider.to_string(), until);
+}
 
 /// A `choice` answer, read leniently: fields a later judge adds are ignored.
 #[derive(Debug, Clone, Deserialize)]
@@ -52,14 +85,16 @@ fn now_ms() -> i64 {
     crate::session::now_ms()
 }
 
-/// Ask one evaluation; returns its answers by question id plus the round
-/// trip in ms.
+/// Ask one evaluation of `provider` (`None` = the hub's default); returns
+/// its answers by question id plus the round trip in ms.
 pub async fn evaluate(
     iii: &IIIClient,
     evaluation: Evaluation,
     timeout_ms: u64,
+    provider: Option<&str>,
 ) -> Result<(BTreeMap<String, Value>, u64), JudgeError> {
-    if now_ms() < PAUSED_UNTIL.load(Ordering::Relaxed) {
+    let key = provider.unwrap_or_default();
+    if paused(key, now_ms()) {
         return Err(JudgeError::Unavailable(
             "paused after a recent failure".into(),
         ));
@@ -78,8 +113,11 @@ pub async fn evaluate(
             "request fails the judge contract".into(),
         ));
     }
-    let payload = serde_json::to_value(&request)
+    let mut payload = serde_json::to_value(&request)
         .map_err(|e| JudgeError::Rejected(format!("request does not serialize: {e}")))?;
+    if let Some(provider) = provider {
+        payload["provider"] = Value::String(provider.to_string());
+    }
     let started = Instant::now();
     // The bus deadline sits past the judge's own so its `deadline` reply
     // wins over a bare bus timeout.
@@ -97,7 +135,7 @@ pub async fn evaluate(
     let answers = classify(reply, &id);
     if let Err(JudgeError::Unavailable(reason)) = &answers {
         tracing::debug!(%reason, "judge unavailable for browser::run");
-        PAUSED_UNTIL.store(now_ms() + PAUSE_MS, Ordering::Relaxed);
+        pause(key, now_ms() + PAUSE_MS);
     }
     Ok((answers?, started.elapsed().as_millis() as u64))
 }
@@ -155,6 +193,32 @@ pub fn choice(answer: Option<&Value>, keys: &[&str]) -> Result<Choice, JudgeErro
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_failing_provider_pauses_only_itself() {
+        pause("pause-test-a", 2_000);
+        assert!(paused("pause-test-a", 1_000));
+        assert!(!paused("pause-test-a", 2_000));
+        assert!(!paused("pause-test-b", 1_000));
+    }
+
+    #[test]
+    fn the_session_provider_comes_from_baggage_and_must_be_well_formed() {
+        use opentelemetry::baggage::BaggageExt;
+        let with = |value: &'static str| {
+            opentelemetry::Context::current_with_baggage(vec![opentelemetry::KeyValue::new(
+                judge_contract::PROVIDER_BAGGAGE_KEY,
+                value,
+            )])
+        };
+        assert_eq!(session_provider(), None);
+        {
+            let _guard = with("semif").attach();
+            assert_eq!(session_provider().as_deref(), Some("semif"));
+        }
+        let _guard = with("Not Valid").attach();
+        assert_eq!(session_provider(), None);
+    }
 
     #[test]
     fn outages_and_rejections_are_told_apart() {
