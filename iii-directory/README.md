@@ -621,6 +621,14 @@ shortlist, `choice` with 0.1 kept a correct function in every search for both
 (precision 0.87, 1.5 functions). Providers register their `judge-<provider>::*`
 functions as internal, so search results show only the hub's `judge::*`.
 
+With `choice`, a judge whose models advertise a context window under 4096
+tokens (`context_window` in `judge::models::list`, read at most once a minute)
+gets each option as `id: <first eight words of its description>` instead of
+the full description object. laya (512 tokens) shares about 190 of them among
+the sixteen options, so the objects cut the function ids themselves: live, it
+found the expected function in 13/22 searches with objects and 17/22 compact.
+SemIf (16384) and judges that advertise no window keep the objects.
+
 `function_search_model_path: null` is valid in judge mode and makes the Hybrid
 fallback BM25-only, without the local-model warning. With a configured path,
 the worker keeps an installed MiniLM bundle and its catalog index current,
