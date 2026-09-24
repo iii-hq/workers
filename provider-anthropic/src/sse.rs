@@ -51,6 +51,9 @@ pub struct PartialState {
     /// Anthropic wire `index` → active block slot.
     block_slots: Vec<Option<BlockSlot>>,
     usage: Usage,
+    /// Part of `usage.cache_write` written with the 1-hour TTL; priced
+    /// separately because it bills at 2x input (curated.rs).
+    cache_write_1h: u64,
     stop_reason: StopReason,
     native_stop_reason: Option<String>,
     error_message: Option<String>,
@@ -68,6 +71,7 @@ impl PartialState {
             block_order: Vec::new(),
             block_slots: Vec::new(),
             usage: Usage::default(),
+            cache_write_1h: 0,
             stop_reason: StopReason::End,
             native_stop_reason: None,
             error_message: None,
@@ -217,6 +221,21 @@ pub fn merge_usage(raw: &Value, into: &mut Usage) {
     }
 }
 
+/// [`merge_usage`] plus the 1-hour cache-write split: when the payload
+/// reports `cache_creation.ephemeral_1h_input_tokens`, the provider prices
+/// the usage itself (the router keeps a provider-reported `cost_usd`).
+fn fold_usage(raw: &Value, state: &mut PartialState, model: &str) {
+    merge_usage(raw, &mut state.usage);
+    if let Some(v) = raw
+        .pointer("/cache_creation/ephemeral_1h_input_tokens")
+        .and_then(Value::as_u64)
+    {
+        state.cache_write_1h = v;
+    }
+    state.usage.cost_usd =
+        crate::curated::cost_with_1h_cache_writes(model, &state.usage, state.cache_write_1h);
+}
+
 /// Build a terminal error frame outside the SSE flow (fetch/HTTP failures).
 pub fn synthetic_error_event(message: &str, model: &str, kind: ErrorKind) -> AssistantMessageEvent {
     synthetic_error_event_from_state(&PartialState::new(vec![]), message, model, kind)
@@ -275,7 +294,7 @@ pub fn handle_sse_event(
     match event_type {
         "message_start" => {
             if let Some(u) = parsed.pointer("/message/usage") {
-                merge_usage(u, &mut state.usage);
+                fold_usage(u, state, model);
                 // spec: usage SHOULD be emitted as soon as it is known
                 events.push(AssistantMessageEvent::Usage {
                     usage: state.usage.clone(),
@@ -443,7 +462,7 @@ pub fn handle_sse_event(
                 state.native_stop_reason = Some(sr.to_string());
             }
             if let Some(u) = parsed.get("usage") {
-                merge_usage(u, &mut state.usage);
+                fold_usage(u, state, model);
                 events.push(AssistantMessageEvent::Usage {
                     usage: state.usage.clone(),
                 });
@@ -701,6 +720,31 @@ mod tests {
         assert_eq!(usage.cache_read, Some(11));
         assert_eq!(usage.cache_write, Some(13));
         assert_eq!(usage.output, Some(17));
+    }
+
+    #[test]
+    fn one_hour_cache_writes_are_priced_by_the_provider() {
+        let start = r#"data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":1000,"cache_creation_input_tokens":1100,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":1000}}}}"#;
+        let delta = r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20}}"#;
+        let mut state = PartialState::new(vec![]);
+        let usage_of = |events: Vec<AssistantMessageEvent>| match events.as_slice() {
+            [AssistantMessageEvent::Usage { usage }] => usage.clone(),
+            other => panic!("expected one usage frame, got {other:?}"),
+        };
+
+        let first = usage_of(handle_sse_event(start, &mut state, "claude-opus-5-5"));
+        let last = usage_of(handle_sse_event(delta, &mut state, "claude-opus-5-5"));
+
+        // 10*4 + 1000*0.20 + 100*5 (5m) + 1000*8 (1h), then + 20*20 output; per MTok.
+        assert_eq!(first.cache_write, Some(1_100));
+        assert!((first.cost_usd.unwrap() - 8_740e-6).abs() < 1e-12);
+        assert!((last.cost_usd.unwrap() - 9_140e-6).abs() < 1e-12);
+        assert_eq!(build_partial(&state, "claude-opus-5-5").usage, Some(last));
+        // Without 1h writes (or a price) the router prices the usage as before.
+        let (_, events) = run(&[start]);
+        assert!(
+            matches!(&events[0], AssistantMessageEvent::Usage { usage } if usage.cost_usd.is_none())
+        );
     }
 
     #[test]
