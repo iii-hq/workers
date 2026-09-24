@@ -18,10 +18,14 @@ async fn main() -> Result<()> {
         checkpoint.revision,
         t0.elapsed().as_secs_f32()
     );
-    let client = LayaClient::load(
-        std::slice::from_ref(&checkpoint),
-        judge_laya::engine::Options::default(),
-    )?;
+    // LAYA_GPU_LAYERS=0 keeps the encoder on the CPU.
+    let options = judge_laya::engine::Options {
+        gpu_layers: std::env::var("LAYA_GPU_LAYERS")
+            .ok()
+            .and_then(|n| n.parse().ok()),
+        ..judge_laya::engine::Options::default()
+    };
+    let client = LayaClient::load(std::slice::from_ref(&checkpoint), options)?;
     eprintln!("device {}", client.device());
     eprintln!("loaded in {:.1}s", t0.elapsed().as_secs_f32());
     let mut input = String::new();
@@ -48,13 +52,23 @@ async fn main() -> Result<()> {
     } else {
         serde_json::from_str(&input)?
     };
-    let request = serde_json::from_value(request)?;
-    let t1 = Instant::now();
-    let response = client
-        .with_caller_id(Some("example"))
-        .evaluate(request)
-        .await;
-    eprintln!("evaluated in {:.2}s", t1.elapsed().as_secs_f32());
+    let request: judge_contract::EvaluateRequest = serde_json::from_value(request)?;
+    // LAYA_REPEAT=n times the same request: the first call compiles GPU shaders.
+    let repeat: usize = std::env::var("LAYA_REPEAT")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1);
+    let mut response = None;
+    for _ in 0..repeat {
+        let t1 = Instant::now();
+        response = Some(
+            client
+                .with_caller_id(Some("example"))
+                .evaluate(request.clone())
+                .await,
+        );
+        eprintln!("evaluated in {:.3}s", t1.elapsed().as_secs_f32());
+    }
     println!("{}", serde_json::to_string_pretty(&response)?);
     let models = client.list_models(Default::default()).await;
     println!("{}", serde_json::to_string_pretty(&models)?);
