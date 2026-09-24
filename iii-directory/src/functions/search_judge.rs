@@ -5,7 +5,7 @@
 //! caller keep its Hybrid ranking. Credentials, model and retries belong to
 //! the judge provider.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 #[cfg(test)]
 use std::future::Future;
 #[cfg(test)]
@@ -152,8 +152,12 @@ enum Transport {
 #[derive(Clone)]
 pub struct JudgeSearch {
     transport: Transport,
-    paused_until: Arc<Mutex<Option<Instant>>>,
-    window: Arc<Mutex<Option<(Instant, Limits)>>>,
+    /// Pause end per judge provider (`""` = the hub's default): one
+    /// session's failing provider never pauses another session's searches.
+    paused_until: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Advertised limits per judge provider (`""` = the hub's default), each
+    /// with the instant it was read.
+    window: Arc<Mutex<HashMap<String, (Instant, Limits)>>>,
 }
 
 /// What the judge's models advertise, read at the paired instant: the
@@ -163,6 +167,29 @@ pub struct JudgeSearch {
 struct Limits {
     window: Option<u64>,
     options: Option<u64>,
+}
+
+/// The calling session's judge provider from the handler's OTel baggage
+/// (stamped per turn by the harness), when set and well-formed. `None`
+/// routes to the hub's default. Spawned search work must carry the
+/// handler's context for this to see it.
+pub(crate) fn session_provider() -> Option<String> {
+    use opentelemetry::baggage::BaggageExt;
+    let provider = opentelemetry::Context::current()
+        .baggage()
+        .get(judge_contract::PROVIDER_BAGGAGE_KEY)?
+        .to_string();
+    judge_contract::is_valid_provider(&provider).then_some(provider)
+}
+
+/// The bus payload: the typed request plus the hub-only `provider`
+/// selector when the session names one.
+fn request_payload(request: &EvaluateRequest, provider: Option<&str>) -> Option<Value> {
+    let mut payload = serde_json::to_value(request).ok()?;
+    if let Some(provider) = provider {
+        payload["provider"] = Value::String(provider.to_owned());
+    }
+    Some(payload)
 }
 
 #[cfg(test)]
@@ -239,10 +266,10 @@ impl JudgeSearch {
         }
     }
 
-    /// Drop the cached context window: the next search re-reads it. Called when
-    /// the judge hub's configuration changes (another default provider).
+    /// Drop the cached context windows: the next search re-reads them. Called
+    /// when the judge hub's configuration changes (another default provider).
     pub fn forget_window(&self) {
-        *self.window.lock().expect("judge window") = None;
+        self.window.lock().expect("judge window").clear();
     }
 
     /// Pretend the judge advertised `tokens` as its context window.
@@ -256,22 +283,31 @@ impl JudgeSearch {
 
     #[cfg(test)]
     fn with_limits(self, limits: Limits) -> Self {
-        *self.window.lock().expect("judge window") = Some((Instant::now(), limits));
+        self.window
+            .lock()
+            .expect("judge window")
+            .insert(String::new(), (Instant::now(), limits));
         self
     }
 
-    /// The judge's advertised limits, read through `judge::models::list` (the
-    /// hub's default provider, the one `judge::evaluate` uses) and cached for
-    /// `WINDOW_TTL`; a failed read means none and is retried next time.
+    /// The judge's advertised limits, read through `judge::models::list` for
+    /// the provider `judge::evaluate` uses (the calling session's, else the
+    /// hub's default) and cached per provider for `WINDOW_TTL`; a failed read
+    /// means none and is retried next time.
     async fn limits(&self, deadline: Instant) -> Limits {
-        let cached = *self.window.lock().expect("judge window");
+        let provider = session_provider();
+        let key = provider.clone().unwrap_or_default();
+        let cached = self.window.lock().expect("judge window").get(&key).copied();
         match cached {
             Some((read, limits)) if read.elapsed() < WINDOW_TTL => limits,
             _ => {
-                let Some(limits) = self.read_limits(deadline).await else {
+                let Some(limits) = self.read_limits(provider.as_deref(), deadline).await else {
                     return Limits::default();
                 };
-                *self.window.lock().expect("judge window") = Some((Instant::now(), limits));
+                self.window
+                    .lock()
+                    .expect("judge window")
+                    .insert(key, (Instant::now(), limits));
                 limits
             }
         }
@@ -288,7 +324,7 @@ impl JudgeSearch {
 
     /// The advertised limits from a successful model listing, `None` when the
     /// listing failed.
-    async fn read_limits(&self, deadline: Instant) -> Option<Limits> {
+    async fn read_limits(&self, provider: Option<&str>, deadline: Instant) -> Option<Limits> {
         let budget = deadline
             .saturating_duration_since(Instant::now())
             .min(Duration::from_secs(2))
@@ -296,11 +332,15 @@ impl JudgeSearch {
         if budget == 0 {
             return None;
         }
+        let mut payload = serde_json::json!({ "timeout_ms": budget });
+        if let Some(provider) = provider {
+            payload["provider"] = Value::String(provider.to_owned());
+        }
         let reply = match &self.transport {
             Transport::Bus(iii) => iii
                 .trigger(TriggerRequest {
                     function_id: judge_contract::MODELS_FUNCTION_ID.into(),
-                    payload: serde_json::json!({ "timeout_ms": budget }),
+                    payload,
                     action: None,
                     timeout_ms: Some(budget),
                 })
@@ -315,22 +355,28 @@ impl JudgeSearch {
         })
     }
 
-    /// False while a recent failure pauses the judge.
+    /// False while a recent failure pauses the calling session's provider.
     pub fn available(&self) -> bool {
+        let key = session_provider().unwrap_or_default();
         self.paused_until
             .lock()
             .expect("judge pause")
-            .is_none_or(|until| Instant::now() >= until)
+            .get(&key)
+            .is_none_or(|until| Instant::now() >= *until)
     }
 
     /// Start a pause unless one is running (it never extends itself), logging
     /// the transition once: unavailability is an expected state, the rest a fault.
     fn pause(&self, error: &JudgeError) {
+        let key = session_provider().unwrap_or_default();
         let mut paused = self.paused_until.lock().expect("judge pause");
-        if paused.is_some_and(|until| Instant::now() < until) {
+        if paused
+            .get(&key)
+            .is_some_and(|until| Instant::now() < *until)
+        {
             return;
         }
-        *paused = Some(Instant::now() + PAUSE);
+        paused.insert(key, Instant::now() + PAUSE);
         if let JudgeError::Unavailable(reason) = error {
             tracing::info!(
                 reason,
@@ -531,8 +577,8 @@ impl JudgeSearch {
             Transport::Bus(iii) => iii
                 .trigger(TriggerRequest {
                     function_id: judge_contract::FUNCTION_ID.into(),
-                    payload: serde_json::to_value(&request)
-                        .map_err(|_| fail(JudgeError::PayloadTooLarge))?,
+                    payload: request_payload(&request, session_provider().as_deref())
+                        .ok_or_else(|| fail(JudgeError::PayloadTooLarge))?,
                     action: None,
                     timeout_ms: Some(remaining),
                 })
@@ -1683,6 +1729,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_provider_never_reads_the_defaults_window() {
+        use opentelemetry::baggage::BaggageExt;
+        use opentelemetry::context::FutureExt;
+        let client = JudgeSearch::default().with_window(Some(512));
+        let semif =
+            opentelemetry::Context::current_with_baggage(vec![opentelemetry::KeyValue::new(
+                judge_contract::PROVIDER_BAGGAGE_KEY,
+                "semif",
+            )]);
+        assert!(client.small_window(deadline()).await);
+        assert!(!client.small_window(deadline()).with_context(semif).await);
+    }
+
+    #[tokio::test]
+    async fn a_session_provider_pauses_only_itself_and_routes_the_request() {
+        use opentelemetry::baggage::BaggageExt;
+        use opentelemetry::context::FutureExt;
+        let (client, requests) = one_reply(json!({"status":"error","code":"missing_key"}));
+        let work = lanes(&["send"], &[tool("email::send")]);
+        let semif =
+            opentelemetry::Context::current_with_baggage(vec![opentelemetry::KeyValue::new(
+                judge_contract::PROVIDER_BAGGAGE_KEY,
+                "semif",
+            )]);
+        let failed = client
+            .rank(&work, &options(), deadline())
+            .with_context(semif.clone())
+            .await;
+        assert!(failed.is_err());
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        // semif is paused for its sessions; the hub default is not
+        assert!(!async { client.available() }.with_context(semif).await);
+        assert!(client.available());
+
+        let request = EvaluateRequest {
+            options: Default::default(),
+            request_id: None,
+            model: None,
+            timeout_ms: 1,
+            expires_at_unix_ms: None,
+            evaluations: Vec::new(),
+        };
+        assert_eq!(
+            request_payload(&request, Some("semif")).unwrap()["provider"],
+            "semif"
+        );
+        assert!(request_payload(&request, None)
+            .unwrap()
+            .get("provider")
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn a_failure_pauses_the_judge_without_extending_itself() {
         let (client, requests) = one_reply(json!({"status":"error","code":"missing_key"}));
         let work = lanes(&["send"], &[tool("email::send")]);
@@ -1696,7 +1795,7 @@ mod tests {
             JudgeError::Unavailable("provider has no API key")
         );
         assert!(!client.available());
-        let until = client.paused_until.lock().unwrap().unwrap();
+        let until = client.paused_until.lock().unwrap()[""];
         let second = client
             .rank(&work, &options(), deadline())
             .await
@@ -1710,7 +1809,7 @@ mod tests {
             1,
             "a paused judge sends nothing"
         );
-        assert_eq!(client.paused_until.lock().unwrap().unwrap(), until);
+        assert_eq!(client.paused_until.lock().unwrap()[""], until);
         // Clones share the pause (one JudgeSearch lives in Deps, cloned per call).
         assert!(!client.clone().available());
     }
