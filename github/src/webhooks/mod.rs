@@ -2,6 +2,7 @@
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
+pub mod listeners;
 pub mod normalize;
 pub mod notifications;
 pub mod store;

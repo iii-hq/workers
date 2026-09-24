@@ -1,3 +1,5 @@
+static LAST_SUBSCRIBER_RECONCILE: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
 use super::*;
 use sha2::Digest;
 
@@ -24,37 +26,49 @@ fn terminal_state(w: &Watch) -> WatchState {
     }
 }
 
+fn ensure_repo(d: &mut Data, repo: &str) {
+    d.repos.entry(repo.to_owned()).or_insert_with(|| RepoHook {
+        endpoint_id: store::random_id(),
+        secret: store::random_id(),
+        hook_id: None,
+        url: None,
+        pending_url: None,
+        generation: None,
+        create_started: false,
+        cleanup_attempts: 0,
+        error: None,
+    });
+}
+
 impl Service {
     pub(super) async fn watch(&self, req: WatchRequest) -> Result<WatchResponse> {
         let _guard = self.operations.lock().await;
         let spec = req.validate()?;
+        let max_days = self.cell.read().await.webhooks.max_watch_days;
         self.store()?.change(|d| {
-            if let Some(w) = d.watches.get(&spec.watch_id) {
-                return if w.spec == spec {
-                    Ok(())
-                } else {
-                    Err(Failure::Conflict)
-                };
+            if let Some(w) = d.watches.get_mut(&spec.watch_id) {
+                if w.spec != spec {
+                    return Err(Failure::Conflict);
+                }
+                // Re-watching resumes a stopped watch (for example one stopped
+                // after losing its listeners); completed and expired stay terminal.
+                if w.status == WatchState::Stopped && w.spec.expires_at > Utc::now() {
+                    w.status = WatchState::Preparing;
+                    w.error = None;
+                    w.orphaned_at = None;
+                    ensure_repo(d, &spec.repo);
+                }
+                return Ok(());
             }
             let now = Utc::now();
-            if spec.expires_at <= now || spec.expires_at > now + chrono::Duration::days(30) {
-                return Err(Failure::Invalid(
-                    "expires_at must be in the future and no more than 30 days away (quick-tunnel lease limit)".into(),
-                ));
+            if spec.expires_at <= now
+                || spec.expires_at > now + chrono::Duration::days(i64::from(max_days))
+            {
+                return Err(Failure::Invalid(format!(
+                    "expires_at must be in the future and at most {max_days} days away (webhooks.max_watch_days; never above 30, the quick-tunnel lease limit)"
+                )));
             }
-            d.repos
-                .entry(spec.repo.clone())
-                .or_insert_with(|| RepoHook {
-                    endpoint_id: store::random_id(),
-                    secret: store::random_id(),
-                    hook_id: None,
-                    url: None,
-                    pending_url: None,
-                    generation: None,
-                    create_started: false,
-                    cleanup_attempts: 0,
-                    error: None,
-                });
+            ensure_repo(d, &spec.repo);
             d.watches.insert(
                 spec.watch_id.clone(),
                 Watch {
@@ -64,6 +78,7 @@ impl Service {
                     lease_id: None,
                     error: None,
                     seen: Default::default(),
+                    orphaned_at: None,
                 },
             );
             Ok(())
@@ -607,6 +622,85 @@ impl Service {
         }
         first_error.map_or(Ok(()), Err)
     }
+    /// Remove bindings, then stop every watch that lost its last listener.
+    /// Cleanup releases those leases and deletes the repository hook once no
+    /// live watch remains; quick-tunnel stops with its last lease.
+    pub(super) async fn drop_subscribers(&self, ids: &[String]) -> Result<Vec<String>> {
+        let _guard = self.operations.lock().await;
+        let grace = self.cell.read().await.webhooks.orphan_grace_minutes;
+        let stopped = self.store()?.change(|d| {
+            let removed: Vec<_> = ids
+                .iter()
+                .filter_map(|id| d.subscribers.get(id).map(|s| s.filter.clone()))
+                .collect();
+            for id in ids {
+                d.subscribers.remove(id);
+            }
+            // Explicit cancellation means no further callback to these bindings.
+            d.jobs.retain(|_, j| {
+                !matches!(j, Job::Notify { target, .. } | Job::ReviewNotify { target, .. } if ids.contains(&target.id))
+            });
+            // A one-shot wake is unregistered right after it fires and re-armed
+            // at the end of its turn; only a grace period tells that apart from
+            // an owner that is gone for good.
+            let orphans = super::listeners::mark_orphans(d, &removed, Utc::now());
+            if grace == 0 {
+                for id in &orphans {
+                    if let Some(w) = d.watches.get_mut(id) {
+                        w.status = WatchState::Stopped;
+                        w.orphaned_at = None;
+                    }
+                }
+            }
+            Ok(orphans)
+        })?;
+        if stopped.is_empty() {
+        } else if grace > 0 {
+            tracing::info!(watches = ?stopped, grace_minutes = grace, "watches lost their last listener; stopping after the grace period unless one returns");
+        } else {
+            tracing::info!(watches = ?stopped, "stopped watches without listeners");
+            if let Err(e) = self.cleanup().await {
+                self.record_failure(&e)?;
+            }
+        }
+        Ok(stopped)
+    }
+    /// Bindings removed while this worker was offline never reach
+    /// unregister_trigger. At most every five minutes, drop local copies the
+    /// engine no longer has (which also stops watches left without listeners).
+    pub(super) async fn reconcile_subscribers(&self) -> Result<Vec<String>> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let now = Utc::now().timestamp();
+        if now - LAST_SUBSCRIBER_RECONCILE.load(Relaxed) < 300 {
+            return Ok(vec![]);
+        }
+        LAST_SUBSCRIBER_RECONCILE.store(now, Relaxed);
+        // Read before listing: a binding registered meanwhile is never dropped.
+        let known: std::collections::BTreeSet<String> =
+            self.store()?.read()?.subscribers.keys().cloned().collect();
+        if known.is_empty() {
+            return Ok(vec![]);
+        }
+        let listed = self
+            .invoke(
+                "engine::registered-triggers::list",
+                json!({"trigger_type": "github::pr::event", "include_pending": true, "include_internal": true}),
+            )
+            .await?;
+        let Some(rows) = listed["registered_triggers"].as_array() else {
+            return Ok(vec![]);
+        };
+        let engine = rows
+            .iter()
+            .filter_map(|r| r["id"].as_str().map(str::to_owned))
+            .collect();
+        let stale = super::listeners::stale(&known, &engine);
+        if stale.is_empty() {
+            return Ok(vec![]);
+        }
+        tracing::info!(subscribers = ?stale, "dropping bindings the engine no longer has");
+        self.drop_subscribers(&stale).await
+    }
     /// Maintenance only expires deadlines and drains/retries pending local work.
     /// It NEVER reads a PR or lists GitHub deliveries on an interval.
     pub(super) async fn maintain(&self) -> Result<OperationResponse> {
@@ -637,6 +731,17 @@ impl Service {
             }
             Ok(())
         })?;
+        let grace = self.cell.read().await.webhooks.orphan_grace_minutes;
+        let orphaned = self.store()?.change(|d| {
+            Ok(super::listeners::expire_orphans(
+                d,
+                Utc::now(),
+                chrono::Duration::minutes(i64::from(grace)),
+            ))
+        })?;
+        if !orphaned.is_empty() {
+            tracing::info!(watches = ?orphaned, "stopped watches that stayed without listeners past the grace period");
+        }
         let publication = self.publish_pending().await;
         let cleanup = self.cleanup().await;
         publication.and(cleanup)?;

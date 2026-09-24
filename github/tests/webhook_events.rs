@@ -20,6 +20,7 @@ fn watch() -> Watch {
         lease_id: None,
         error: None,
         seen: BTreeSet::new(),
+        orphaned_at: None,
     }
 }
 

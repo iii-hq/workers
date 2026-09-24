@@ -28,6 +28,7 @@ fn watch(id: &str) -> Watch {
         lease_id: None,
         error: None,
         seen: Default::default(),
+        orphaned_at: None,
     }
 }
 fn hook() -> RepoHook {

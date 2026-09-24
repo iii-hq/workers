@@ -62,6 +62,8 @@ const GITHUB_WEBHOOK_DEFAULTS: JsonObject = {
   queue: 'github-webhooks',
   max_body_bytes: 1048576,
   max_pending: 10000,
+  max_watch_days: 30,
+  orphan_grace_minutes: 60,
 }
 const GITHUB_NOTIFICATION_DEFAULTS: JsonObject = {
   profile: 'all',

@@ -106,3 +106,21 @@ acts. Every item carries `event_id`; fetch the full event with
 Timing: a digest is sent after `quiet_ms` (15s) without new items, and never
 later than `max_wait_ms` (2min) after its first item. `max_items` (30) bounds the
 payload; extra items are counted in `omitted_items`.
+
+## Watch lifetime follows its listeners
+
+A watch is kept alive by the `github::pr::event` bindings that listen to it
+(same `watch_id`, or a repo/number filter that matches it).
+
+- When the last listening binding goes away (its chat was deleted, or it
+  unregistered), the watch is marked orphaned. If no binding listens again
+  within `webhooks.orphan_grace_minutes` (default 60), maintenance stops it,
+  releases its quick-tunnel lease and deletes the repository hook once no live
+  watch remains there; the tunnel stops with its last lease. One-shot wakes are
+  unregistered right after they fire, so re-arm before the grace period ends.
+- Bindings removed while the worker was offline are reconciled against the
+  engine at most every five minutes.
+- Calling `github::pr::watch` again with the same `watch_id` and spec resumes a
+  stopped watch; completed (merged/closed) and expired watches stay terminal.
+- `expires_at` must be within `webhooks.max_watch_days` (1..=30, default 30):
+  a watch holds a quick-tunnel lease, and leases last at most 30 days.

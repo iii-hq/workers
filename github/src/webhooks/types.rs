@@ -18,6 +18,24 @@ pub struct WebhookConfig {
     pub queue: String,
     pub max_body_bytes: usize,
     pub max_pending: usize,
+    /// Longest watch lifetime in days (1..=30); new watches must expire within
+    /// it. Capped at 30 because every watch holds a quick-tunnel lease and
+    /// quick-tunnel accepts leases of at most 30 days. Hot-reloaded.
+    #[schemars(range(min = 1, max = 30))]
+    pub max_watch_days: u32,
+    /// Minutes a watch may stay without any github::pr::event binding before it
+    /// is stopped (0..=1440). One-shot agent wakes unregister right after they
+    /// fire and are re-armed at the end of the turn, so keep this longer than a
+    /// turn. 0 stops immediately. Hot-reloaded.
+    #[schemars(range(max = 1440))]
+    pub orphan_grace_minutes: u32,
+}
+/// Upper bound for `orphan_grace_minutes` (one day).
+pub const MAX_ORPHAN_GRACE_MINUTES: u32 = 1440;
+/// Hard cap for `max_watch_days`: the quick-tunnel lease limit (30 days).
+pub const MAX_WATCH_DAYS: u32 = 30;
+pub fn valid_watch_days(days: u32) -> bool {
+    (1..=MAX_WATCH_DAYS).contains(&days)
 }
 impl Default for WebhookConfig {
     fn default() -> Self {
@@ -29,6 +47,8 @@ impl Default for WebhookConfig {
             queue: "github-webhooks".into(),
             max_body_bytes: 1_048_576,
             max_pending: 10_000,
+            max_watch_days: MAX_WATCH_DAYS,
+            orphan_grace_minutes: 60,
         }
     }
 }
@@ -277,6 +297,10 @@ pub struct Watch {
     pub lease_id: Option<String>,
     pub error: Option<String>,
     pub seen: BTreeSet<String>,
+    /// When the last listening binding left; cleared when one returns. The
+    /// watch stops once this is older than `orphan_grace_minutes`.
+    #[serde(default)]
+    pub orphaned_at: Option<DateTime<Utc>>,
 }
 impl Watch {
     pub fn live(&self) -> bool {

@@ -109,6 +109,7 @@ fn watch(id: &str) -> Watch {
         lease_id: None,
         error: None,
         seen: BTreeSet::new(),
+        orphaned_at: None,
     }
 }
 fn inbox(event: &str, body: Value) -> Inbox {

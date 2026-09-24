@@ -80,15 +80,8 @@ impl TriggerHandler for EventHandler {
     ) -> std::result::Result<(), iii_sdk::Error> {
         let service = self.0.clone();
         storage_task(async move {
-            if let Some(store) = &service.store {
-                store.change(|d| {
-                    d.subscribers.remove(&config.id);
-                    // Explicit cancellation means no further callback to this binding.
-                    d.jobs.retain(
-                        |_, j| !matches!(j, Job::Notify { target, .. } | Job::ReviewNotify { target, .. } if target.id == config.id),
-                    );
-                    Ok(())
-                })?;
+            if service.store.is_some() {
+                service.drop_subscribers(&[config.id]).await?;
             }
             Ok(())
         })
@@ -143,7 +136,7 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
     }
     function!(
         "github::pr::watch",
-        "Watch a PR via authenticated webhooks until merged/closed; expires_at must be in the future within 30 days.",
+        "Watch a PR via authenticated webhooks until merged/closed; expires_at must be in the future within webhooks.max_watch_days (default 30, the quick-tunnel lease cap).",
         WatchRequest,
         WatchResponse,
         watch
@@ -226,9 +219,15 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         RegisterFunction::new_async(move |_req: MaintenanceRequest| {
             let s = s.clone();
             async move {
-                storage_task(async move { s.maintain().await })
-                    .await
-                    .map_err(iii_sdk::Error::from)
+                storage_task(async move {
+                    let response = s.maintain().await?;
+                    if let Err(e) = s.reconcile_subscribers().await {
+                        tracing::warn!(error = %e, "binding reconciliation skipped");
+                    }
+                    Ok(response)
+                })
+                .await
+                .map_err(iii_sdk::Error::from)
             }
         })
         .description("Internal bounded cleanup, expiry and outbox recovery; never polls PRs."),
@@ -257,6 +256,8 @@ pub(super) fn validate_config(config: &WebhookConfig) -> Result<()> {
     if config.storage_path.trim().is_empty()
         || config.max_body_bytes == 0
         || config.max_pending == 0
+        || !super::types::valid_watch_days(config.max_watch_days)
+        || config.orphan_grace_minutes > super::types::MAX_ORPHAN_GRACE_MINUTES
         || config.queue.trim().is_empty()
         || config.queue.chars().any(char::is_control)
         || config.tunnel_id.is_empty()

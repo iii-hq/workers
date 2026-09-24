@@ -422,3 +422,206 @@ fn defaults_are_valid_but_zero_capacity_is_rejected() {
     config.max_pending = 0;
     assert!(wiring::validate_config(&config).is_err());
 }
+
+async fn set_grace(s: &Service, minutes: u32) {
+    let mut config = (**s.cell.read().await).clone();
+    config.webhooks.orphan_grace_minutes = minutes;
+    *s.cell.write().await = std::sync::Arc::new(config);
+}
+fn listen(d: &mut Data, id: &str, watch_id: &str) {
+    d.subscribers.insert(
+        id.into(),
+        Subscriber {
+            id: id.into(),
+            function_id: "notify".into(),
+            filter: EventFilter {
+                watch_id: Some(watch_id.into()),
+                ..Default::default()
+            },
+            metadata: None,
+            namespace: None,
+        },
+    );
+}
+
+#[tokio::test]
+async fn zero_grace_stops_watch_releases_lease_and_deletes_hook_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    set_grace(&s, 0).await;
+    tests::seed(&s);
+    s.store()
+        .unwrap()
+        .change(|d| {
+            let w1 = d.watches.get_mut("w1").unwrap();
+            w1.status = WatchState::Active;
+            w1.lease_id = Some("lease-w1".into());
+            let w2 = d.watches.get_mut("w2").unwrap();
+            w2.status = WatchState::Stopped;
+            w2.lease_id = None;
+            listen(d, "chat", "w1");
+            Ok(())
+        })
+        .unwrap();
+    s.bus
+        .as_ref()
+        .unwrap()
+        .reply("quick-tunnel::release", Ok(Value::Null));
+    let stopped = s.drop_subscribers(&["chat".into()]).await.unwrap();
+    assert_eq!(stopped, ["w1"]);
+    let data = s.store().unwrap().read().unwrap();
+    assert_eq!(data.watches["w1"].status, WatchState::Stopped);
+    assert!(data.watches["w1"].lease_id.is_none(), "lease released");
+    assert!(data.subscribers.is_empty());
+    assert!(data.repos.is_empty(), "no live watch left: hook deleted");
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn a_remaining_listener_keeps_the_watch_lease_and_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    tests::seed(&s);
+    s.store()
+        .unwrap()
+        .change(|d| {
+            let w1 = d.watches.get_mut("w1").unwrap();
+            w1.status = WatchState::Active;
+            w1.lease_id = Some("lease-w1".into());
+            listen(d, "chat", "w1");
+            listen(d, "other-chat", "w1");
+            Ok(())
+        })
+        .unwrap();
+    // No bus reply queued: any release or hook call would fail the test.
+    assert!(s
+        .drop_subscribers(&["chat".into()])
+        .await
+        .unwrap()
+        .is_empty());
+    let data = s.store().unwrap().read().unwrap();
+    assert!(data.watches["w1"].live());
+    assert_eq!(data.watches["w1"].lease_id.as_deref(), Some("lease-w1"));
+    assert!(data.repos.contains_key("owner/repo"));
+    assert!(data.subscribers.contains_key("other-chat"));
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn watch_expiry_follows_configured_max_watch_days() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let mut config = (**s.cell.read().await).clone();
+    config.webhooks.max_watch_days = 2;
+    *s.cell.write().await = std::sync::Arc::new(config);
+    let request = serde_json::from_value(json!({"watch_id":"long","repo":"owner/repo","number":1,"expires_at":Utc::now()+chrono::Duration::days(3)})).unwrap();
+    let error = s.watch(request).await.unwrap_err().to_string();
+    assert!(error.contains("at most 2 days"), "{error}");
+    assert!(error.contains("quick-tunnel"));
+    assert!(!crate::webhooks::valid_watch_days(0));
+    assert!(!crate::webhooks::valid_watch_days(31));
+    assert!(crate::webhooks::valid_watch_days(30));
+    s.iii.shutdown_async().await;
+}
+
+fn seed_one_listener(s: &Service) {
+    tests::seed(s);
+    s.store()
+        .unwrap()
+        .change(|d| {
+            let w1 = d.watches.get_mut("w1").unwrap();
+            w1.status = WatchState::Active;
+            w1.lease_id = Some("lease-w1".into());
+            let w2 = d.watches.get_mut("w2").unwrap();
+            w2.status = WatchState::Stopped;
+            w2.lease_id = None;
+            listen(d, "wake", "w1");
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn one_shot_wake_leaving_only_marks_and_a_rearm_keeps_the_watch() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    seed_one_listener(&s);
+    // Default grace: the fired one-shot wake leaves, nothing is released.
+    assert_eq!(s.drop_subscribers(&["wake".into()]).await.unwrap(), ["w1"]);
+    let data = s.store().unwrap().read().unwrap();
+    assert!(data.watches["w1"].live());
+    assert!(data.watches["w1"].orphaned_at.is_some());
+    assert_eq!(data.watches["w1"].lease_id.as_deref(), Some("lease-w1"));
+    // The agent re-arms at the end of its turn: maintenance clears the mark.
+    s.store()
+        .unwrap()
+        .change(|d| {
+            listen(d, "wake-2", "w1");
+            Ok(())
+        })
+        .unwrap();
+    s.maintain().await.unwrap();
+    let data = s.store().unwrap().read().unwrap();
+    assert!(data.watches["w1"].live());
+    assert!(data.watches["w1"].orphaned_at.is_none());
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn watch_without_listeners_past_grace_is_stopped_and_released() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    seed_one_listener(&s);
+    s.drop_subscribers(&["wake".into()]).await.unwrap();
+    s.store()
+        .unwrap()
+        .change(|d| {
+            d.watches.get_mut("w1").unwrap().orphaned_at =
+                Some(Utc::now() - chrono::Duration::minutes(61));
+            Ok(())
+        })
+        .unwrap();
+    s.bus
+        .as_ref()
+        .unwrap()
+        .reply("quick-tunnel::release", Ok(Value::Null));
+    s.maintain().await.unwrap();
+    let data = s.store().unwrap().read().unwrap();
+    assert_eq!(data.watches["w1"].status, WatchState::Stopped);
+    assert!(data.watches["w1"].lease_id.is_none());
+    assert!(data.repos.is_empty(), "last live watch gone: hook deleted");
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn rewatching_the_same_spec_resumes_a_stopped_watch() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let expires_at = Utc::now() + chrono::Duration::days(1);
+    let request = || {
+        serde_json::from_value::<WatchRequest>(
+            json!({"watch_id":"resume","repo":"owner/repo","number":1,"expires_at":expires_at}),
+        )
+        .unwrap()
+    };
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply("quick-tunnel::acquire", Err(offline()));
+    let _ = s.watch(request()).await;
+    s.store()
+        .unwrap()
+        .change(|d| {
+            d.watches.get_mut("resume").unwrap().status = WatchState::Stopped;
+            d.repos.remove("owner/repo");
+            Ok(())
+        })
+        .unwrap();
+    bus.reply("quick-tunnel::acquire", Err(offline()));
+    let _ = s.watch(request()).await;
+    let data = s.store().unwrap().read().unwrap();
+    assert!(data.watches["resume"].live(), "stopped watch resumed");
+    assert!(
+        data.repos.contains_key("owner/repo"),
+        "repository hook re-planned"
+    );
+    s.iii.shutdown_async().await;
+}
