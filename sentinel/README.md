@@ -11,10 +11,6 @@ it read the code, you steer it, and it records a structured diagnosis against
 the group. Resolving and ignoring stay human decisions; regressions are
 detected on their own.
 
-The
-[spec](https://github.com/iii-hq/workers/blob/main/tech-specs/2026-09-sentinel/sentinel.md)
-is the design of record.
-
 ## Install
 
 ```bash

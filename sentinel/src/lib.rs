@@ -5,9 +5,6 @@
 //! span ring discards it, and opens assisted harness investigations beside
 //! the console page. Resolving and ignoring are human decisions; regression
 //! is detected automatically.
-//!
-//! Design of record:
-//! <https://github.com/iii-hq/workers/blob/main/tech-specs/2026-09-sentinel/sentinel.md>.
 
 /// The name this worker registers under. Its own traces are recognised by it,
 /// so it is a constant rather than a string spelled out per call site.

@@ -1,7 +1,6 @@
 /* sentinel console page. Every selector is scoped to the host wrapper, and
    every colour, radius and duration comes from a token — the page has to sit
-   inside the console without announcing that it came from somewhere else.
-   Measures follow the prototype in tech-specs/2026-09-sentinel/design/mock. */
+   inside the console without announcing that it came from somewhere else. */
 
 [data-iii-ui="sentinel"] .sentinel-ui-list,
 [data-iii-ui="sentinel"] .sentinel-ui-detail {
