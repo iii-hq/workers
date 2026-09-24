@@ -99,6 +99,9 @@ pub struct TraceSummary {
     pub function_id: Option<String>,
     pub name: Option<String>,
     pub trace_tags: BTreeMap<String, String>,
+    /// Spans in the whole trace. More than the tree read returns means the
+    /// trace was too big to read whole — see `iii_runtime::bounded_tree`.
+    pub span_count: u64,
 }
 
 impl TraceSummary {
@@ -217,6 +220,11 @@ impl<D: Db, E: EngineRegistry> Ingest<D, E> {
             );
             self.attribute(&mut event, &mut bundle, config).await;
             self.counters.add_redactions(redactions);
+            // A trace too big to read whole arrives as its error spans only;
+            // the rest is counted as left out rather than silently missing.
+            bundle.truncated.spans +=
+                u32::try_from(summary.span_count.saturating_sub(spans.len() as u64))
+                    .unwrap_or(u32::MAX);
             bundle.fit_within(config.evidence.max_bytes as usize);
 
             let outcome = self

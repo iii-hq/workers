@@ -203,15 +203,7 @@ impl Telemetry for IiiTelemetry {
     }
 
     async fn tree(&self, trace_id: &str) -> Result<Vec<Value>, SentinelError> {
-        let response = self
-            .runtime
-            .call("engine::traces::tree", json!({ "trace_id": trace_id }))
-            .await?;
-        Ok(response
-            .get("roots")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default())
+        bounded_tree(&self.runtime, trace_id).await
     }
 
     async fn logs(&self, trace_id: &str) -> Result<Vec<Value>, SentinelError> {
@@ -244,6 +236,122 @@ impl TraceAvailability for IiiTelemetry {
     }
 }
 
+/// Spans a trace may have and still be read whole, as one `traces::tree`.
+///
+/// The SDK refuses a frame over 16 MiB and drops the connection with it —
+/// every call in flight fails, the console loses the page, and the ingest job
+/// that asked is redelivered to ask again. A long harness turn carries each
+/// prompt and reply as a payload event: 2 428 spans came to 80 MiB.
+const TREE_SPANS_MAX: u64 = 300;
+/// Error spans read per page, and in all, from a trace too big for its tree.
+const ERROR_SPANS_PAGE: usize = 25;
+const ERROR_SPANS_MAX: usize = 200;
+
+/// A trace's tree, or — past [`TREE_SPANS_MAX`] — its error spans only,
+/// read a page at a time and nested by their own parent links. The error
+/// spans are what grouping and evidence need: the failure, and the chain it
+/// propagated up.
+pub(crate) async fn bounded_tree(
+    runtime: &Runtime,
+    trace_id: &str,
+) -> Result<Vec<Value>, SentinelError> {
+    let span_count = runtime
+        .call(
+            "engine::traces::list",
+            json!({ "trace_ids": [trace_id], "limit": 1 }),
+        )
+        .await?
+        .get("traces")
+        .and_then(Value::as_array)
+        .and_then(|traces| traces.first())
+        .and_then(|trace| trace.get("span_count"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if span_count <= TREE_SPANS_MAX {
+        let response = runtime
+            .call("engine::traces::tree", json!({ "trace_id": trace_id }))
+            .await?;
+        return Ok(response
+            .get("roots")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default());
+    }
+    let mut spans = Vec::new();
+    while spans.len() < ERROR_SPANS_MAX {
+        let page = runtime
+            .call(
+                "engine::traces::spans",
+                json!({
+                    "trace_id": trace_id,
+                    "status": "error",
+                    "search_all_spans": true,
+                    "limit": ERROR_SPANS_PAGE,
+                    "offset": spans.len(),
+                }),
+            )
+            .await?
+            .get("spans")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let last = page.len() < ERROR_SPANS_PAGE;
+        spans.extend(page);
+        if last {
+            break;
+        }
+    }
+    Ok(nest(spans))
+}
+
+/// Flat spans into the shape `traces::tree` answers with: each span under
+/// its parent when the parent is among them, a root otherwise. A span whose
+/// parent chain loops is kept as a root rather than lost.
+fn nest(spans: Vec<Value>) -> Vec<Value> {
+    use std::collections::{HashMap, HashSet};
+    let id_of = |span: &Value| {
+        span.get("span_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let ids: HashSet<String> = spans.iter().map(id_of).collect();
+    let mut children: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut roots = Vec::new();
+    for span in spans {
+        match span.get("parent_span_id").and_then(Value::as_str) {
+            Some(parent) if ids.contains(parent) && parent != id_of(&span) => {
+                children.entry(parent.to_string()).or_default().push(span)
+            }
+            _ => roots.push(span),
+        }
+    }
+    fn attach(mut node: Value, children: &mut HashMap<String, Vec<Value>>) -> Value {
+        let id = node
+            .get("span_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let kids = children.remove(&id).unwrap_or_default();
+        let kids: Vec<Value> = kids.into_iter().map(|kid| attach(kid, children)).collect();
+        if let Some(object) = node.as_object_mut() {
+            object.insert("children".into(), Value::Array(kids));
+        }
+        node
+    }
+    let mut tree: Vec<Value> = roots
+        .into_iter()
+        .map(|root| attach(root, &mut children))
+        .collect();
+    // Whatever no root reached sat on a loop; it stays, flat.
+    let rest: Vec<Value> = children.drain().flat_map(|(_, kids)| kids).collect();
+    tree.extend(
+        rest.into_iter()
+            .map(|span| attach(span, &mut HashMap::new())),
+    );
+    tree
+}
+
 fn summary_of(value: &Value) -> TraceSummary {
     TraceSummary {
         trace_id: value
@@ -272,6 +380,7 @@ fn summary_of(value: &Value) -> TraceSummary {
             .get("name")
             .and_then(Value::as_str)
             .map(str::to_string),
+        span_count: value.get("span_count").and_then(Value::as_u64).unwrap_or(0),
         trace_tags: value
             .get("trace_tags")
             .and_then(Value::as_object)
@@ -509,6 +618,36 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value.starts_with("git:")),
             "{commit:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod nest_tests {
+    use super::nest;
+    use serde_json::json;
+
+    #[test]
+    fn error_spans_nest_under_the_parents_among_them_and_loops_are_kept() {
+        let spans = vec![
+            json!({ "span_id": "leaf", "parent_span_id": "mid" }),
+            json!({ "span_id": "mid", "parent_span_id": "root" }),
+            json!({ "span_id": "root", "parent_span_id": "absent" }),
+            json!({ "span_id": "a", "parent_span_id": "b" }),
+            json!({ "span_id": "b", "parent_span_id": "a" }),
+        ];
+        let tree = nest(spans);
+        let root = tree
+            .iter()
+            .find(|node| node["span_id"] == "root")
+            .expect("the chain has its root");
+        assert_eq!(root["children"][0]["span_id"], "mid");
+        assert_eq!(root["children"][0]["children"][0]["span_id"], "leaf");
+        let count = |id: &str| tree.iter().filter(|node| node["span_id"] == id).count();
+        assert_eq!(
+            count("a") + count("b"),
+            2,
+            "a loop is kept, not lost and not repeated"
         );
     }
 }

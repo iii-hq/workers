@@ -126,6 +126,7 @@ fn summary(trace_id: &str, service: &str, function: &str, tags: &[(&str, &str)])
         service_name: Some(service.into()),
         function_id: Some(function.into()),
         name: Some(format!("execute {function}")),
+        span_count: 0,
         trace_tags: tags
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))

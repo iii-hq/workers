@@ -192,6 +192,10 @@ pub struct IiiEngineWindow {
     runtime: Runtime,
 }
 
+/// Flat spans an agent may ask for alongside the tree — enough to read, never
+/// a frame the SDK refuses.
+const FLAT_SPANS_MAX: u64 = 100;
+
 impl IiiEngineWindow {
     pub fn new(runtime: Runtime) -> Self {
         Self { runtime }
@@ -201,14 +205,17 @@ impl IiiEngineWindow {
 #[async_trait]
 impl EngineWindow for IiiEngineWindow {
     async fn trace(&self, trace_id: &str, include_spans: bool) -> Result<Value, SentinelError> {
-        let mut tree = self
-            .runtime
-            .call("engine::traces::tree", json!({ "trace_id": trace_id }))
-            .await?;
+        // The same bounded read the ingest uses: an agent asking for a long
+        // harness turn must not take the worker's connection down with it.
+        let roots = super::bounded_tree(&self.runtime, trace_id).await?;
+        let mut tree = json!({ "trace_id": trace_id, "roots": roots });
         if include_spans {
             let spans = self
                 .runtime
-                .call("engine::traces::spans", json!({ "trace_id": trace_id }))
+                .call(
+                    "engine::traces::spans",
+                    json!({ "trace_id": trace_id, "search_all_spans": true, "limit": FLAT_SPANS_MAX }),
+                )
                 .await
                 .ok()
                 .and_then(|response| response.get("spans").cloned());
