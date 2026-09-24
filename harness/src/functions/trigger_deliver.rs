@@ -519,26 +519,19 @@ async fn call_target(
             timeout_ms: Some(timeout_ms),
         })
         .await
-        .map(|_| ())
-        .map_err(|e| e.to_string());
-    let ambiguous = outcome.as_ref().err().is_some_and(|error| {
-        let message = error.to_ascii_lowercase();
-        [
-            "timeout",
-            "timed out",
-            "connection",
-            "transport",
-            "websocket",
-        ]
-        .iter()
-        .any(|word| message.contains(word))
-    });
+        .map(|_| ());
+    // Classify the structured SDK error before it becomes text: a timeout or
+    // broken transport does not cancel the invocation, so keep the witness.
+    let ambiguous = outcome
+        .as_ref()
+        .err()
+        .is_some_and(crate::clients::engine::invocation_outcome_unknown);
     if !ambiguous {
         if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
             return (payload, Err(error.to_string()));
         }
     }
-    (payload, outcome)
+    (payload, outcome.map_err(|e| e.to_string()))
 }
 
 /// Ceiling on the rendered event inside a wake (the label prefix is extra).

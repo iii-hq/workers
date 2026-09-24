@@ -25,6 +25,10 @@ struct Store {
     fail_delete: Option<String>,
     delete_reply: Option<Value>,
     fail_after_queue_once: bool,
+    /// Reply to these functions with a remote error carrying this code.
+    codes: BTreeMap<String, String>,
+    /// Fail the deletion-runner enqueue for these operation ids.
+    fail_enqueue: BTreeSet<String>,
 }
 impl Store {
     fn state(&self, scope: &str, key: &str) -> Value {
@@ -38,10 +42,16 @@ impl Store {
     }
     fn respond(&mut self, function: &str, data: &Value, action: &Value) -> Result<Value, String> {
         self.calls.push((function.into(), data.clone()));
-        if self.fail.contains(function) {
+        if self.fail.contains(function) || self.codes.contains_key(function) {
             return Err(format!("injected failure: {function}"));
         }
         if action["type"] == "enqueue" {
+            if data["operation_id"]
+                .as_str()
+                .is_some_and(|id| self.fail_enqueue.contains(id))
+            {
+                return Err("injected enqueue failure".into());
+            }
             return Ok(json!({"message_receipt_id":"receipt"}));
         }
         let sid = data["session_id"].as_str().unwrap_or_default();
@@ -169,11 +179,18 @@ impl Stack {
                     continue;
                 }
                 let function = message["function_id"].as_str().unwrap();
-                let result =
-                    state
-                        .lock()
-                        .unwrap()
-                        .respond(function, &message["data"], &message["action"]);
+                let (result, code) = {
+                    let mut store = state.lock().unwrap();
+                    let code = store
+                        .codes
+                        .get(function)
+                        .cloned()
+                        .unwrap_or_else(|| "test_error".into());
+                    (
+                        store.respond(function, &message["data"], &message["action"]),
+                        code,
+                    )
+                };
                 notice.notify_waiters();
                 if message["invocation_id"].is_null() {
                     continue;
@@ -181,7 +198,7 @@ impl Stack {
                 let mut reply = json!({"type":"invocationresult","invocation_id":message["invocation_id"],"function_id":function});
                 match result {
                     Ok(value) => reply["result"] = value,
-                    Err(error) => reply["error"] = json!({"code":"test_error","message":error}),
+                    Err(error) => reply["error"] = json!({"code":code,"message":error}),
                 }
                 if socket
                     .send(tokio_tungstenite::tungstenite::Message::Text(
@@ -259,6 +276,15 @@ impl Stack {
         turn["status"] = json!(status);
         store.put("harness_turn", id, turn);
         self.deps.deletion_changed.notify_waiters();
+    }
+    /// Park `id` on one external pending call (no hook hold, no child): the
+    /// shape nothing but its external resolver can confirm.
+    fn park_on_external_call(&self, id: &str) {
+        let mut store = self.store.lock().unwrap();
+        let mut turn = store.state("harness_turn", id);
+        turn["status"] = json!("awaiting_functions");
+        turn["calls"] = json!({"ext-1": {"state": "pending", "function_id": "slow::external"}});
+        store.put("harness_turn", id, turn);
     }
     async fn request(&self, id: &str) -> deletion::Snapshot {
         deletion::handle(
@@ -1364,4 +1390,232 @@ async fn persisted_parent_notification_retries_once_after_ack_loss() {
     assert!(context.1["messages"].to_string().contains("Do not await"));
     assert!(store.sessions.contains_key("parent"));
     assert!(store.sessions.contains_key("child1"));
+}
+
+fn turn(stack: &Stack, id: &str) -> Value {
+    stack.store.lock().unwrap().state("harness_turn", id)
+}
+
+async fn ordinary_stop(stack: &Stack, id: &str) -> harness::functions::stop::StopResponse {
+    harness::functions::stop::handle(
+        &stack.deps,
+        harness::functions::stop::StopRequest {
+            session_id: id.into(),
+            turn_id: None,
+        },
+    )
+    .await
+    .expect("an ordinary stop never fails on an unconfirmed cancellation")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn late_external_result_while_tombstoned_lets_the_retry_delete_the_subtree() {
+    let stack = Stack::new("running").await;
+    stack.park_on_external_call("grandchild1");
+    let accepted = stack.request("child2").await;
+    let failed = stack.run(&accepted.operation_id).await;
+    assert_eq!(failed.status, DeletionStatus::Failed);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("pending external tool")),
+        "{failed:?}"
+    );
+    assert_eq!(stack.store.lock().unwrap().sessions.len(), 4);
+    assert_eq!(turn(&stack, "grandchild1")["status"], "awaiting_functions");
+
+    // The external result arrives while the subtree is tombstoned.
+    let resolved = harness::functions::function_resolve::handle(
+        &stack.deps,
+        serde_json::from_value(json!({
+            "session_id": "grandchild1",
+            "turn_id": "t_grandchild1",
+            "function_call_id": "ext-1",
+            "content": [{"type": "text", "text": "late result"}]
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(resolved.resolved);
+    assert!(!resolved.turn_resumed);
+    let settled = turn(&stack, "grandchild1");
+    assert_eq!(settled["status"], "cancelled");
+    assert_eq!(settled["calls"]["ext-1"]["state"], "done");
+    {
+        let store = stack.store.lock().unwrap();
+        // Consumed without a model-visible result or a resumed step.
+        assert!(!store
+            .messages
+            .get("grandchild1")
+            .is_some_and(|m| m.iter().any(|e| e.to_string().contains("late result"))));
+        assert!(!store
+            .calls
+            .iter()
+            .any(|(f, p)| f == "harness::turn" && p["session_id"] == "grandchild1"));
+    }
+
+    let retry = stack.request("child2").await;
+    assert_eq!(retry.attempt, 2);
+    let done = stack.run(&retry.operation_id).await;
+    assert_eq!(done.status, DeletionStatus::Completed, "{done:?}");
+    assert_eq!(done.deleted_session_ids, vec!["grandchild1", "child2"]);
+    let store = stack.store.lock().unwrap();
+    assert_eq!(
+        store
+            .state
+            .iter()
+            .filter(|((scope, _), row)| scope == "harness_queue" && row["session_id"] == "parent")
+            .count(),
+        1,
+        "the parent is notified exactly once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_stop_persists_abort_on_router_failure_but_deletion_fails_closed() {
+    for code in ["test_error", "function_not_found"] {
+        let stack = Stack::new("running").await;
+        stack.set_status("grandchild1", "running");
+        {
+            let mut store = stack.store.lock().unwrap();
+            let mut row = store.state("harness_turn", "grandchild1");
+            row["stream_request_id"] = json!("stream");
+            store.put("harness_turn", "grandchild1", row);
+            store.codes.insert("router::abort".into(), code.into());
+        }
+        assert!(
+            ordinary_stop(&stack, "grandchild1").await.stopping,
+            "{code}"
+        );
+        assert_eq!(turn(&stack, "grandchild1")["abort"], true, "{code}");
+
+        let accepted = stack.request("child2").await;
+        let failed = stack.run(&accepted.operation_id).await;
+        assert_eq!(failed.status, DeletionStatus::Failed, "{code}");
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("router::abort")),
+            "{code}: {failed:?}"
+        );
+        assert_eq!(stack.store.lock().unwrap().sessions.len(), 4, "{code}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_stop_of_unconfirmed_external_call_reports_stopping_with_abort() {
+    let stack = Stack::new("running").await;
+    stack.park_on_external_call("grandchild1");
+    assert!(ordinary_stop(&stack, "grandchild1").await.stopping);
+    let parked = turn(&stack, "grandchild1");
+    assert_eq!(parked["abort"], true);
+    // Not finalized: the external call's outcome is still unknown.
+    assert_eq!(parked["status"], "awaiting_functions");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_skips_malformed_rows_and_continues_after_an_enqueue_failure() {
+    let stack = Stack::new("completed").await;
+    let child2 = stack.request("child2").await;
+    let child1 = stack.request("child1").await;
+    // Rows are listed in key order: both malformed rows sort first, then the
+    // operation whose enqueue fails, then the one that must still be enqueued.
+    let (failing, failing_session, other) = if child1.operation_id < child2.operation_id {
+        (&child1, "child1", &child2)
+    } else {
+        (&child2, "child2", &child1)
+    };
+    {
+        let mut store = stack.store.lock().unwrap();
+        let mut zero = store.state(deletion::OPERATIONS, &child2.operation_id);
+        zero["snapshot"]["operation_id"] = json!("delete_!zero");
+        zero["snapshot"]["attempt"] = json!(0);
+        store.put(deletion::OPERATIONS, "delete_!zero", zero);
+        store.put(
+            deletion::OPERATIONS,
+            "delete_!garbage",
+            json!({"snapshot": "not an operation"}),
+        );
+        store.fail_enqueue.insert(failing.operation_id.clone());
+        store.calls.clear();
+    }
+    deletion::recover(&stack.deps)
+        .await
+        .expect("bad rows and enqueue failures must not abort boot recovery");
+    let enqueued = |store: &Store| -> Vec<String> {
+        store
+            .calls
+            .iter()
+            .filter(|(f, _)| f == deletion::RUN_ID)
+            .filter_map(|(_, p)| p["operation_id"].as_str().map(str::to_string))
+            .collect()
+    };
+    {
+        let store = stack.store.lock().unwrap();
+        assert_eq!(
+            enqueued(&store),
+            vec![failing.operation_id.clone(), other.operation_id.clone()]
+        );
+        // The malformed row is left untouched: its operation stays fail-closed.
+        assert_eq!(
+            store.state(deletion::OPERATIONS, "delete_!zero")["snapshot"]["attempt"],
+            0
+        );
+    }
+    // A client retry of the pending command re-enqueues the stranded operation.
+    {
+        let mut store = stack.store.lock().unwrap();
+        store.fail_enqueue.clear();
+        store.calls.clear();
+    }
+    let pending = stack.request(failing_session).await;
+    assert_eq!(pending.status, DeletionStatus::Deleting);
+    assert_eq!(pending.attempt, 1);
+    assert_eq!(
+        enqueued(&stack.store.lock().unwrap()),
+        vec![failing.operation_id.clone()]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_dispatch_witness_follows_the_structured_outcome_not_error_text() {
+    let stack = Stack::new("completed").await;
+    stack
+        .store
+        .lock()
+        .unwrap()
+        .codes
+        .insert("ext::stopped".into(), "invocation_stopped".into());
+    let engine = stack.deps.engine().await;
+    let policy = harness::policy::CompiledPolicy::from(None);
+    // The first target's failure text mentions a connection timeout, but the
+    // target answered: its outcome is known and the witness is released.
+    for (function, keeps_witness) in [("ext::connection-timeout", false), ("ext::stopped", true)] {
+        let result = harness::functions::subscribe::invoke(
+            &stack.deps,
+            &engine,
+            &policy,
+            function,
+            &json!({}),
+            "child1",
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_error, "{function}");
+        let witnesses = stack
+            .store
+            .lock()
+            .unwrap()
+            .state
+            .iter()
+            .filter(|((scope, _), row)| {
+                scope == deletion::DISPATCHES && row["function_id"] == function
+            })
+            .count();
+        assert_eq!(witnesses, usize::from(keeps_witness), "{function}");
+    }
 }

@@ -54,13 +54,19 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
         match stop_one(
             deps,
             StopRequest {
-                session_id: node.session_id,
+                session_id: node.session_id.clone(),
                 turn_id: None,
             },
         )
         .await
         {
-            Ok(response) => stopping |= response.stopping,
+            Ok(outcome) => {
+                stopping |= outcome.stopping;
+                // The abort is persisted; only deletion needs confirmation.
+                for reason in outcome.unconfirmed {
+                    tracing::warn!(session_id = %node.session_id, %reason, "stop not confirmed");
+                }
+            }
             Err(error) => errors.push(error.to_string()),
         }
     }
@@ -70,7 +76,18 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     Ok(StopResponse { stopping })
 }
 
-pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
+/// What stopping one session established. `harness::stop` reports only
+/// `stopping`; deletion additionally fails closed on any `unconfirmed` reason.
+#[derive(Debug, Default)]
+pub(crate) struct StopOutcome {
+    /// A matching non-terminal turn was found and its stop accepted.
+    pub stopping: bool,
+    /// Why the stop could not be confirmed (router abort failure, unknown
+    /// external pending work). The abort flag is persisted regardless.
+    pub unconfirmed: Vec<String>,
+}
+
+pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopOutcome, HarnessError> {
     let cfg = deps.cfg().await;
 
     // Lock-free pre-read: discover the in-flight stream + spawned children and
@@ -89,16 +106,16 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopRespon
         crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
     else {
         crate::session_status::spawn_reconcile(deps, &req.session_id);
-        return Ok(StopResponse { stopping: false });
+        return Ok(StopOutcome::default());
     };
     if let Some(tid) = &req.turn_id {
         if &record.turn_id != tid {
-            return Ok(StopResponse { stopping: false });
+            return Ok(StopOutcome::default());
         }
     }
     if record.status.is_terminal() {
         crate::session_status::spawn_project(deps, record);
-        return Ok(StopResponse { stopping: false });
+        return Ok(StopOutcome::default());
     }
     // Pin the turn we observed so the write under the lock can't land on a newer
     // turn that started in between (matters when `turn_id` was omitted).
@@ -112,9 +129,13 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopRespon
 
     // Prompt stream interruption (lock-free): aborting a stale or already
     // finished request_id is a harmless no-op, so the pre-read id is safe to
-    // use without the lock.
+    // use without the lock. Best effort, as before deletion existed: a router
+    // failure must never skip the durable abort write below. Deletion reads
+    // the recorded failure and fails closed.
+    let mut outcome = StopOutcome::default();
     if let Some(request_id) = &record.stream_request_id {
-        deps.iii
+        if let Err(error) = deps
+            .iii
             .trigger(iii_sdk::protocol::TriggerRequest {
                 function_id: "router::abort".into(),
                 payload: serde_json::json!({"request_id": request_id}),
@@ -122,7 +143,12 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopRespon
                 timeout_ms: Some(cfg.session_timeout_ms),
             })
             .await
-            .map_err(|e| HarnessError::Dependency(format!("router::abort {request_id}: {e}")))?;
+        {
+            tracing::warn!(request_id, %error, "router::abort failed");
+            outcome
+                .unconfirmed
+                .push(format!("router::abort {request_id}: {error}"));
+        }
     }
 
     // Authoritative abort write UNDER the per-session lock (see locks.rs): the
@@ -136,44 +162,45 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopRespon
     let Some(mut record) =
         crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?
     else {
-        return Ok(StopResponse { stopping: false });
+        return Ok(StopOutcome::default());
     };
     if record.turn_id != target_turn {
         // A newer turn started between the pre-read and the lock — don't flag it.
-        return Ok(StopResponse { stopping: false });
+        return Ok(StopOutcome::default());
     }
+    outcome.stopping = true;
     if record.status.is_terminal() {
         // The in-process cancel signal and router abort above can finalize the
         // turn before this handler reacquires the session lock. The stop was
         // accepted against the matching non-terminal pre-read; report that
         // acceptance even though the durable abort bit can no longer be set.
-        return Ok(StopResponse { stopping: true });
+        return Ok(outcome);
     }
     record.abort = true;
     record.updated_at = crate::types::message::AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
 
     // A parked approval has no queued step to observe abort. Finalize it
-    // under the same lock, but refuse unknown external pending work.
+    // under the same lock. Unknown external pending work cannot be confirmed
+    // cancelled: keep the persisted abort and the "stopping" ack (the
+    // behaviour of `harness::stop` before deletion), and report it so
+    // deletion fails closed instead of treating the turn as stopped.
     if record.status == crate::types::turn::TurnStatus::AwaitingFunctions {
-        if record.calls.values().any(|call| {
-            call.state == crate::types::turn::CallState::Pending
-                && call.held_by.is_none()
-                && call.child_session_id.is_none()
-        }) {
-            return Err(HarnessError::Dependency(
-                "pending external tool has no confirmed cancellation".into(),
-            ));
+        if has_unconfirmed_external_pending(&record) {
+            outcome
+                .unconfirmed
+                .push("pending external tool has no confirmed cancellation".into());
+        } else {
+            crate::turn_loop::finalize_cancelled(
+                deps,
+                &deps.session().await,
+                &mut record,
+                "cancelled by user",
+            )
+            .await?;
+            deps.deletion_changed.notify_waiters();
+            return Ok(outcome);
         }
-        crate::turn_loop::finalize_cancelled(
-            deps,
-            &deps.session().await,
-            &mut record,
-            "cancelled by user",
-        )
-        .await?;
-        deps.deletion_changed.notify_waiters();
-        return Ok(StopResponse { stopping: true });
     }
 
     // "stopping" ack on the existing phase-reason channel (status stays
@@ -186,5 +213,15 @@ pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopRespon
         .set_status(&req.session_id, "working", Some("stopping"))
         .await;
 
-    Ok(StopResponse { stopping: true })
+    Ok(outcome)
+}
+
+/// A pending call that is neither a hook hold nor a legacy child spawn: an
+/// external resolver owns it, and nothing here can confirm it stopped.
+pub(crate) fn has_unconfirmed_external_pending(record: &crate::types::turn::TurnRecord) -> bool {
+    record.calls.values().any(|call| {
+        call.state == crate::types::turn::CallState::Pending
+            && call.held_by.is_none()
+            && call.child_session_id.is_none()
+    })
 }

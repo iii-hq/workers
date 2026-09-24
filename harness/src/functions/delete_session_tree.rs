@@ -381,13 +381,41 @@ async fn reserve_root(deps: &Deps, op: &Operation) -> Result<(), HarnessError> {
 
 /// Startup recovery is a single durable scan, never a polling loop. The queue
 /// also redelivers a job interrupted by a worker/engine restart.
+///
+/// Bad data must not become a boot outage: each row is decoded on its own and
+/// a malformed one (including a stored `attempt: 0`) is logged and skipped.
+/// Its guards stay in place, so the affected subtree remains fail-closed. An
+/// enqueue failure is logged too; a repeated delete command re-enqueues.
 pub async fn recover(deps: &Deps) -> Result<(), HarnessError> {
-    for op in
-        state::list_values::<Operation>(&deps.iii, OPERATIONS, deps.cfg().await.session_timeout_ms)
-            .await?
-    {
+    let rows =
+        state::list_values::<Value>(&deps.iii, OPERATIONS, deps.cfg().await.session_timeout_ms)
+            .await?;
+    for row in rows {
+        // The storage key is the operation id; `state::list` returns values only.
+        let key = row
+            .pointer("/snapshot/operation_id")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>")
+            .to_string();
+        let op = match serde_json::from_value::<Operation>(row) {
+            Ok(op) => op,
+            Err(error) => {
+                tracing::error!(
+                    operation_id = %key,
+                    %error,
+                    "skipping malformed session deletion during recovery; its guards remain"
+                );
+                continue;
+            }
+        };
         if op.snapshot.status == DeletionStatus::Deleting {
-            enqueue(deps, &op.snapshot.operation_id).await?;
+            if let Err(error) = enqueue(deps, &op.snapshot.operation_id).await {
+                tracing::warn!(
+                    operation_id = %op.snapshot.operation_id,
+                    %error,
+                    "could not re-enqueue session deletion during recovery"
+                );
+            }
         }
     }
     Ok(())
@@ -485,7 +513,9 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
     let mut cancellation_errors = Vec::new();
     for record in &records {
         if !record.status.is_terminal() {
-            if let Err(error) = super::stop::stop_one(
+            // Stricter than `harness::stop`: an unconfirmed stop (router abort
+            // failure, unknown external pending work) fails the deletion.
+            match super::stop::stop_one(
                 deps,
                 super::stop::StopRequest {
                     session_id: record.session_id.clone(),
@@ -494,7 +524,13 @@ async fn prepare(deps: &Deps, op: &mut Operation) -> Result<(), HarnessError> {
             )
             .await
             {
-                cancellation_errors.push(error.to_string());
+                Ok(outcome) => cancellation_errors.extend(
+                    outcome
+                        .unconfirmed
+                        .into_iter()
+                        .map(|reason| format!("{}: {reason}", record.session_id)),
+                ),
+                Err(error) => cancellation_errors.push(error.to_string()),
             }
         }
     }
@@ -846,29 +882,6 @@ pub(crate) async fn end_dispatch(deps: &Deps, id: &str) -> Result<(), HarnessErr
     .await?;
     deps.deletion_changed.notify_waiters();
     Ok(())
-}
-
-pub(crate) fn ambiguous_dispatch(result: &crate::trigger::ResultData) -> bool {
-    if !result.is_error {
-        return false;
-    }
-    let error = result
-        .details
-        .get("error")
-        .unwrap_or(&Value::Null)
-        .to_string()
-        .to_ascii_lowercase();
-    [
-        "timeout",
-        "timed out",
-        "engine_restart",
-        "not connected",
-        "connection",
-        "websocket",
-        "transport",
-    ]
-    .iter()
-    .any(|word| error.contains(word))
 }
 
 #[cfg(test)]

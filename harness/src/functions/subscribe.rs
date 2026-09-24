@@ -272,29 +272,35 @@ pub async fn invoke(
         session_id,
         caller_holds_session_lock,
     );
-    let result = if let Some(request) = send {
-        intercept_send(deps, request, session_id).await
+    let (result, outcome_unknown) = if let Some(request) = send {
+        (intercept_send(deps, request, session_id).await, false)
     } else {
         match function_id {
-            REGISTER_TRIGGER_ID => {
-                intercept_register(deps, arguments, session_id, caller, policy).await
-            }
-            UNREGISTER_TRIGGER_ID => intercept_unregister(deps, arguments, session_id).await,
+            REGISTER_TRIGGER_ID => (
+                intercept_register(deps, arguments, session_id, caller, policy).await,
+                false,
+            ),
+            UNREGISTER_TRIGGER_ID => (
+                intercept_unregister(deps, arguments, session_id).await,
+                false,
+            ),
             crate::functions::triggers_list::TRIGGERS_LIST_ID
             | crate::functions::triggers_list::TRIGGERS_UNREGISTER_ID => {
                 // In-turn controls always target their caller. External console
                 // calls bypass this chokepoint and continue supplying session_id.
                 let args = with_caller_session_id(arguments, session_id);
-                trigger::invoke_target(engine, policy, function_id, &args).await
+                trigger::invoke_target_classified(engine, policy, function_id, &args).await
             }
-            internal if agent_call_forbidden(internal) => trigger::denied_result(internal),
-            _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
+            internal if agent_call_forbidden(internal) => (trigger::denied_result(internal), false),
+            _ => trigger::invoke_target_classified(engine, policy, function_id, arguments).await,
         }
     };
     // A timeout or broken transport does not cancel the remote invocation.
     // Keep its witness until an operator can establish completion; deletion
     // fails closed instead of treating the local error result as tool exit.
-    if !super::delete_session_tree::ambiguous_dispatch(&result) {
+    // The flag is classified by the harness from the structured SDK error,
+    // never from the target-controlled result text.
+    if !outcome_unknown {
         if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
             return trigger::invocation_error_result(Some(error.code().into()), error.to_string());
         }
@@ -310,6 +316,10 @@ pub async fn invoke(
 fn agent_call_forbidden(function_id: &str) -> bool {
     function_id.starts_with("harness::delete-session-tree")
         || function_id == crate::state::CLAIM_NAMESPACE_ID
+        // `harness::function::trigger` takes the session lock a running step
+        // already holds: an agent calling it for its own session deadlocks,
+        // and recursive pipeline invocation is never an agent need.
+        || function_id == crate::functions::FUNCTION_TRIGGER_ID
         || [
             "harness::state::",
             "provider::openai-codex::login::",
@@ -2293,6 +2303,9 @@ pub(crate) mod tests {
         "provider-openai-codex::state::compare-and-set",
         "provider::openai-codex::login::future-operation",
         "provider::openai-codex::auth::future-operation",
+        // Re-entering the pipeline for the caller's own session would wait on
+        // the session lock the running step holds across tool execution.
+        crate::functions::FUNCTION_TRIGGER_ID,
         "provider-openai-codex::state::future-operation",
     ];
 
@@ -2433,6 +2446,27 @@ pub(crate) mod tests {
             assert!(result.is_error, "{id} must not register a validator");
             assert!(result.details["error"].as_str().unwrap().contains(id));
         }
+    }
+
+    /// A running step holds its session lock across tool execution and
+    /// `harness::function::trigger` takes that lock: an agent reaching it for
+    /// its own session would deadlock, even with an allow-all policy.
+    #[tokio::test]
+    async fn agents_cannot_reenter_the_function_trigger_pipeline() {
+        let id = crate::functions::FUNCTION_TRIGGER_ID;
+        assert_eq!(id, "harness::function::trigger");
+        assert!(agent_call_forbidden(id));
+        let deps = disconnected_deps();
+        let engine = deps.engine().await;
+        let policy = policy_allowing(&["*"]);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            invoke(&deps, &engine, &policy, id, &json!({}), "owner", true, None),
+        )
+        .await
+        .expect("the denial completes locally without taking the session lock");
+        assert!(result.is_error);
+        assert_eq!(result.details["error"], "policy_denied");
     }
 
     #[test]

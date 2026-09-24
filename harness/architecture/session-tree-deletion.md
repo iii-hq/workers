@@ -52,7 +52,10 @@ startup explicitly rather than silently weakening recovery. Both queues must be
 ready before the startup recovery scan and ready event. The definitions match
 `queue/src/adapter.rs::FunctionQueueConfig` and `queue/src/runtime.rs::DefineQueueInput`.
 `harness::delete-session-tree-run` is internal. Boot
-performs one recovery scan of pending operations. No extra runtime process,
+performs one recovery scan of pending operations. A malformed stored row is
+logged and skipped (its guards stay, so that subtree remains fail-closed) and
+an enqueue failure is logged; neither blocks startup, and a repeated pending
+command re-enqueues the operation. No extra runtime process,
 HTTP server, or polling task is introduced. A persisted deadline and turn/tool
 completion notifications bound the wait; the deadline is recomputed on recovery.
 
@@ -71,7 +74,9 @@ runner. Lock order is operation -> topology, with no nested operation locks.
 Tombstones intentionally survive completion and execution failure;
 a deleted id is not reusable. Unknown remote tool completion is retained as a
 durable witness, not reclassified as cancellation just because its caller timed
-out. A subsequent confirmed reply clears its witness and signals the waiter.
+out. The harness classifies this from the structured SDK error (transport,
+timeout, and engine interruption/restart codes), never from result text. A
+subsequent confirmed reply clears its witness and signals the waiter.
 
 Admission for session creation, message enqueue/append, binding registration and
 target dispatch checks the selected session **and its durable ancestors**.
@@ -84,7 +89,12 @@ last turn's spawn checkpoints. Creation metadata is serialized against tree
 planning. All members receive cancellation signals before the first busy tool
 lock is awaited. Deletion waits for terminal records and the full running-turn
 lifetime, including generation outside the record lock. Parked approval holds
-can finalize as cancelled; unknown external pending jobs cannot.
+can finalize as cancelled; unknown external pending jobs cannot. Their late
+result on a tombstoned session is consumed without transcript output or a
+resumed step; once no unconfirmed external call remains the turn finalizes as
+cancelled, so a retry can complete. Ordinary `harness::stop` keeps its
+best-effort semantics (abort persisted, router abort failures logged); only
+deletion fails closed on an unconfirmed stop.
 
 Cleanup removes owned bindings, parked messages, turn records, filesystem
 grants, context accounting and the member's budget ledger, then delegates

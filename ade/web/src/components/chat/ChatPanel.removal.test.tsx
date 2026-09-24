@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   remove: vi.fn(),
   getRemovalPreview: vi.fn(),
   watchConversation: vi.fn(() => vi.fn()),
+  /** The id the mocked sidebar asks to remove. */
+  target: 'child2',
 }))
 vi.mock('@/lib/conversations-context', () => ({
   useConversationsCtx: mocks.useConversationsCtx,
@@ -23,7 +25,7 @@ vi.mock('@/hooks/use-container-narrow', () => ({
 vi.mock('@/hooks/use-media-query', () => ({ useMediaQuery: () => false }))
 vi.mock('@/components/sidebar/ConversationSidebar', () => ({
   ConversationSidebar: ({ onRemove }: { onRemove: (id: string) => void }) => (
-    <button type="button" onClick={() => onRemove('child2')}>
+    <button type="button" onClick={() => onRemove(mocks.target)}>
       Request removal
     </button>
   ),
@@ -91,6 +93,7 @@ const clickOutside = async () => {
 beforeEach(async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   vi.clearAllMocks()
+  mocks.target = 'child2'
   mocks.remove.mockResolvedValue(undefined)
   mocks.getRemovalPreview.mockReset().mockResolvedValue({
     id: 'child2',
@@ -220,6 +223,41 @@ describe('ChatPanel contextual delete confirmation', () => {
     expect(dialog()).not.toBeNull()
     expect(mocks.getRemovalPreview).toHaveBeenCalledTimes(2)
     expect(mocks.remove).not.toHaveBeenCalled()
+  })
+  it('clears a failed preview once session::deleted removes that conversation', async () => {
+    mocks.getRemovalPreview.mockRejectedValueOnce(new Error('offline'))
+    await click('Request removal')
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+      'offline',
+    )
+    mocks.useConversationsCtx.mockReturnValue({
+      ...mocks.useConversationsCtx(),
+      conversations: [parent],
+    })
+    await act(async () =>
+      root.render(
+        <TooltipProvider>
+          <ChatPanel />
+        </TooltipProvider>,
+      ),
+    )
+    await click('Try again')
+    expect(document.querySelector('[role="alert"]')).toBeNull()
+    expect(mocks.getRemovalPreview).toHaveBeenCalledTimes(1)
+    expect(mocks.remove).not.toHaveBeenCalled()
+  })
+
+  it('keeps a failed preview for another conversation when a missing id is requested', async () => {
+    mocks.getRemovalPreview.mockRejectedValueOnce(new Error('offline'))
+    await click('Request removal')
+    mocks.target = 'already-deleted'
+    await click('Request removal')
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+      'offline',
+    )
+    await click('Try again')
+    expect(mocks.getRemovalPreview).toHaveBeenCalledTimes(2)
+    expect(mocks.getRemovalPreview.mock.calls[1][0].id).toBe('child2')
   })
 
   it('ignores a preview completed after the panel unmounts', async () => {
