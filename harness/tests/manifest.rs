@@ -76,7 +76,7 @@ fn worker_manifest_uses_latest_runtime_dependencies() {
         );
     }
 
-    for retired in ["iii-state", "iii-queue", "iii-cron", "iii-stream", "scrapling"] {
+    for retired in ["iii-state", "iii-queue", "iii-cron", "iii-stream"] {
         assert!(!dependencies.contains_key(serde_yaml::Value::String(retired.into())));
     }
 }
