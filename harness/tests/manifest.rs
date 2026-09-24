@@ -58,7 +58,6 @@ fn worker_manifest_uses_latest_runtime_dependencies() {
         "cron",
         "configuration",
         "iii-observability",
-        "iii-stream",
         "iii-directory",
         "judge",
         "llm-router",
@@ -77,7 +76,7 @@ fn worker_manifest_uses_latest_runtime_dependencies() {
         );
     }
 
-    for retired in ["iii-state", "iii-queue", "iii-cron", "scrapling"] {
+    for retired in ["iii-state", "iii-queue", "iii-cron", "iii-stream", "scrapling"] {
         assert!(!dependencies.contains_key(serde_yaml::Value::String(retired.into())));
     }
 }

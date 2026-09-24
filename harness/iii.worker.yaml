@@ -14,7 +14,6 @@ dependencies:
   cron: "latest"
   configuration: "latest"
   iii-observability: "latest"
-  iii-stream: "latest"
   iii-directory: "latest"
   judge: "latest"
   llm-router: "latest"
