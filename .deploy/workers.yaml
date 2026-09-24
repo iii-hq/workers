@@ -1590,6 +1590,25 @@ workers:
         - build
         outputs:
         - dist
+      - workspace_root: .
+        source_path: provider-openai/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
     publish: true
   provider-openai-codex:
     source:
