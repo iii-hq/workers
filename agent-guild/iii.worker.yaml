@@ -1,0 +1,17 @@
+iii: v1
+name: agent-guild
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+description: Optional public endpoint observations and supplied public passport verification; no delegation guard or payment.
+tags:
+  - agents
+  - endpoint-observation
+  - public-passport
+runtime:
+  kind: javascript
+scripts:
+  start: node ./dist/bundle/index.mjs
+dependencies: {}
+config: {}
