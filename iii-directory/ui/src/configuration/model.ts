@@ -42,7 +42,7 @@ export const JUDGE_QUESTION_OPTIONS = [
   {
     value: 'tournament',
     label: 'Tournament over the whole catalog',
-    description: 'Skip the Hybrid shortlist: all functions compete in groups of 16, winners go on to a final choice. Best for laya; several questions per capability.',
+    description: 'Skip the Hybrid shortlist: all functions compete in groups of 16, winners go on to a final choice. Automatic under Choice for small-window judges (laya); several questions per capability.',
   },
 ] as const
 
