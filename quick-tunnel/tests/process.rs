@@ -326,3 +326,60 @@ exec /usr/bin/python3 -c 'import signal; signal.alarm(10); signal.pause()'
         reaped(dir.path());
     }
 }
+
+#[tokio::test]
+async fn failed_tunnel_retries_after_cooldown_while_leased() {
+    let (dir, mut config) = fixture("crash");
+    config.failed_cooldown_ms = 150;
+    let manager = Manager::open(config).unwrap();
+    let mut events = manager.subscribe();
+    manager.acquire(request("github", 10_000)).await.unwrap();
+    let failed = event(&mut events, Status::Failed).await;
+    assert!(failed.error.unwrap().contains("exited"));
+    // The outage ends: the next cooldown attempt recovers without a restart.
+    std::fs::write(dir.path().join("mode"), "ready").unwrap();
+    let ready = event(&mut events, Status::Ready).await;
+    assert_ne!(ready.generation, failed.generation);
+    assert!(ready.public_url.is_some());
+    manager.shutdown().await;
+    reaped(dir.path());
+}
+
+#[tokio::test]
+async fn zero_cooldown_keeps_failed_terminal() {
+    let (dir, mut config) = fixture("crash");
+    config.failed_cooldown_ms = 0;
+    let manager = Manager::open(config).unwrap();
+    let mut events = manager.subscribe();
+    manager.acquire(request("github", 10_000)).await.unwrap();
+    event(&mut events, Status::Failed).await;
+    std::fs::write(dir.path().join("mode"), "ready").unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(pids(dir.path()).len(), 1, "no retry without a cooldown");
+    assert_eq!(snapshot(&manager).await.snapshot.status, Status::Failed);
+    manager.shutdown().await;
+    reaped(dir.path());
+}
+
+#[tokio::test]
+async fn stable_ready_generation_restores_the_retry_budget() {
+    let (dir, mut config) = fixture("ready");
+    config.retry_budget_reset_ms = 50;
+    let manager = Manager::open(config).unwrap();
+    let mut events = manager.subscribe();
+    manager.acquire(request("github", 10_000)).await.unwrap();
+    let ready = event(&mut events, Status::Ready).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // max_retries = 0: without the reset this crash would be terminal.
+    let pid = pids(dir.path()).pop().unwrap();
+    std::process::Command::new("kill")
+        .args(["-9", &pid])
+        .status()
+        .unwrap();
+    let reconnecting = event(&mut events, Status::Reconnecting).await;
+    assert!(reconnecting.error.unwrap().contains("exited"));
+    let next = event(&mut events, Status::Ready).await;
+    assert_ne!(next.generation, ready.generation);
+    manager.shutdown().await;
+    reaped(dir.path());
+}

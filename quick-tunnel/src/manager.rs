@@ -205,6 +205,7 @@ struct Tunnel {
     deadline: Option<Instant>,
     retry_at: Option<Instant>,
     attempts: u32,
+    ready_since: Option<Instant>,
 }
 impl Tunnel {
     fn new(id: &str) -> Self {
@@ -222,6 +223,7 @@ impl Tunnel {
             deadline: None,
             retry_at: None,
             attempts: 0,
+            ready_since: None,
         }
     }
     fn emit(
@@ -401,6 +403,7 @@ impl Actor {
                 }
                 tunnel.attempts = 0;
                 tunnel.retry_at = None;
+                tunnel.ready_since = None;
                 continue;
             }
             let failure = if let Some(p) = &mut tunnel.process {
@@ -418,6 +421,16 @@ impl Actor {
             if let Some(error) = failure {
                 fail(tunnel, &self.config, &self.events, error).await;
             }
+            // A long-stable generation proves health: restore the retry budget.
+            if self.config.retry_budget_reset_ms > 0
+                && tunnel.snapshot.status == Status::Ready
+                && tunnel.ready_since.is_some_and(|since| {
+                    since.elapsed() >= Duration::from_millis(self.config.retry_budget_reset_ms)
+                })
+            {
+                tunnel.attempts = 0;
+                tunnel.ready_since = None;
+            }
             if tunnel.snapshot.status == Status::Stopped
                 || tunnel.retry_at.is_some_and(|d| Instant::now() >= d)
             {
@@ -428,7 +441,7 @@ impl Actor {
                 tunnel.retry_at = None;
                 tunnel.deadline =
                     Some(Instant::now() + Duration::from_millis(self.config.startup_timeout_ms));
-                let status = if tunnel.attempts == 1 {
+                let status = if tunnel.snapshot.status == Status::Stopped {
                     Status::Starting
                 } else {
                     Status::Reconnecting
@@ -507,6 +520,7 @@ impl Actor {
         if tunnel.connected && tunnel.candidate.is_some() && tunnel.snapshot.status != Status::Ready
         {
             tunnel.deadline = None;
+            tunnel.ready_since = Some(Instant::now());
             tunnel.emit(&self.events, Status::Ready, None);
         }
     }
@@ -523,16 +537,27 @@ async fn fail(
     }
     t.connected = false;
     t.deadline = None;
+    t.ready_since = None;
     let retry = t.attempts <= config.max_retries;
-    t.retry_at = retry.then(|| {
-        Instant::now()
-            + Duration::from_millis(
-                config
-                    .retry_initial_ms
-                    .saturating_mul(1 << t.attempts.saturating_sub(1))
-                    .min(config.retry_max_ms),
-            )
-    });
+    // Bounded exponent: the attempt counter keeps growing during cooldown retries.
+    let exponent = t.attempts.saturating_sub(1).min(16);
+    t.retry_at = if retry {
+        Some(
+            Instant::now()
+                + Duration::from_millis(
+                    config
+                        .retry_initial_ms
+                        .saturating_mul(1u64 << exponent)
+                        .min(config.retry_max_ms),
+                ),
+        )
+    } else if config.failed_cooldown_ms > 0 {
+        // Fast budget spent: stay `failed` but retry once per cooldown, which
+        // recovers transient outages without a crash loop.
+        Some(Instant::now() + Duration::from_millis(config.failed_cooldown_ms))
+    } else {
+        None
+    };
     t.emit(
         events,
         if retry {

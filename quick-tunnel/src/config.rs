@@ -35,6 +35,13 @@ pub struct Config {
     pub max_retries: u32,
     pub retry_initial_ms: u64,
     pub retry_max_ms: u64,
+    /// After the fast retry budget is spent, keep trying once per cooldown while
+    /// leases remain, so a transient outage cannot park a leased tunnel forever.
+    /// 0 keeps `failed` terminal until leases end or the worker restarts.
+    pub failed_cooldown_ms: u64,
+    /// A generation continuously ready for this long restores the retry budget.
+    /// Crash-after-connect loops shorter than this still consume it. 0 disables.
+    pub retry_budget_reset_ms: u64,
     pub max_leases: usize,
     pub max_lease_seconds: i64,
 }
@@ -49,6 +56,8 @@ impl Default for Config {
             max_retries: 3,
             retry_initial_ms: 1_000,
             retry_max_ms: 30_000,
+            failed_cooldown_ms: 300_000,
+            retry_budget_reset_ms: 600_000,
             max_leases: 1024,
             max_lease_seconds: 2_592_000,
         }
@@ -90,6 +99,9 @@ impl Config {
             || self.retry_initial_ms == 0
             || self.retry_initial_ms > self.retry_max_ms
             || self.retry_max_ms > 300_000
+            || (self.failed_cooldown_ms != 0 && self.failed_cooldown_ms < self.retry_max_ms)
+            || self.failed_cooldown_ms > 3_600_000
+            || self.retry_budget_reset_ms > 86_400_000
             || !(1..=100_000).contains(&self.max_leases)
             || !(1..=2_592_000).contains(&self.max_lease_seconds)
         {

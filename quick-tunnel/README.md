@@ -23,6 +23,8 @@ cloudflared: cloudflared
 state_path: data/quick-tunnel/leases.json
 startup_timeout_ms: 30000
 max_retries: 3
+failed_cooldown_ms: 300000
+retry_budget_reset_ms: 600000
 retry_initial_ms: 1000
 retry_max_ms: 30000
 max_leases: 1024
@@ -68,7 +70,7 @@ Config `{}` (todos os targets) ou `{"tunnel_id":"webhooks"}`. Evento `{tunnel_id
 - Um task proprietário serializa aquisições/liberações, vencimentos, saídas e retries.
 - Expirações são checadas pelo runtime a cada 50 ms, sem agente ou chamadas externas. O relógio UTC é a autoridade; atrasos de scheduling/IO são possíveis.
 - A última lease termina o processo. Shutdown preserva leases válidas; o próximo boot as reconstrói e inicia nova geração, nunca restaura URL anterior como pronta.
-- Startup e reconexão têm deadline monotônico; repetidas mensagens de retry não prolongam o deadline. Backoff exponencial limitado; no máximo `1 + max_retries` processos por grupo contínuo de leases. O orçamento não é resetado ao ficar pronto, evitando loops infinitos de crashes. `failed` permanece observável; libere/expire todas as leases antes de nova tentativa, ou reinicie o worker.
+- Startup e reconexão têm deadline monotônico; repetidas mensagens de retry não prolongam o deadline. Backoff exponencial limitado; no máximo `1 + max_retries` processos rápidos por orçamento (depois, um por `failed_cooldown_ms`). O orçamento só é restaurado depois que uma geração fica `ready` continuamente por `retry_budget_reset_ms` (padrão 10 min), então loops de crash logo após conectar continuam consumindo o orçamento. Esgotado o orçamento, o status fica `failed` (observável), mas enquanto houver leases o worker tenta um novo processo a cada `failed_cooldown_ms` (padrão 5 min): uma queda transitória do trycloudflare se recupera sozinha, sem loop rápido. `failed_cooldown_ms: 0` restaura o comportamento terminal (libere/expire todas as leases ou reinicie o worker); `retry_budget_reset_ms: 0` nunca restaura o orçamento.
 - SIGTERM e CTRL-C encerram/recolhem os filhos, abortam leitores e desligam o SDK. `kill_on_drop(true)` protege cancelamento/panic; encerramento normal usa kill + wait, inclusive se o filho ignorar SIGTERM. Requisições em andamento no serviço público são interrompidas, sem drain.
 - SIGKILL/queda do host não executa destructors; use o supervisor/container com grupo de processos/cgroup para limpeza nesse cenário. Não se promete cleanup sob SIGKILL nem de descendentes criados por executável malicioso. O prerequisite deve ser cloudflared oficial sem auto-update, não um wrapper que daemonize.
 
