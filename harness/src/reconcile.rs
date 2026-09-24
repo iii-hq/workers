@@ -28,7 +28,7 @@
 //! model wrote them (after any lossless layer-A repair).
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use iii_sdk::protocol::TriggerRequest;
@@ -73,8 +73,37 @@ const MAX_JUDGE_STRING_CHARS: usize = 512;
 /// Largest evaluation sent to the judge (the directory's calibration).
 const MAX_EVALUATION_BYTES: usize = 48 * 1024;
 
-/// Epoch ms until which the judge is skipped after a failure.
-static JUDGE_PAUSED_UNTIL: AtomicI64 = AtomicI64::new(0);
+/// Epoch ms until which each judge provider is skipped after a failure,
+/// keyed by provider (`""` = the hub's default). Per provider, so one
+/// session's failing judge never pauses another session's.
+static JUDGE_PAUSED_UNTIL: Mutex<BTreeMap<String, i64>> = Mutex::new(BTreeMap::new());
+
+/// The current turn's judge provider (`judge_contract::PROVIDER_BAGGAGE_KEY`
+/// baggage stamped by the turn step), when set and well-formed.
+pub(crate) fn current_judge_provider() -> Option<String> {
+    use iii_helpers::observability::opentelemetry::baggage::BaggageExt as _;
+    let context = iii_helpers::observability::opentelemetry::Context::current();
+    let provider = context
+        .baggage()
+        .get(judge_contract::PROVIDER_BAGGAGE_KEY)?
+        .to_string();
+    judge_contract::is_valid_provider(&provider).then_some(provider)
+}
+
+fn judge_paused(provider: &str, now: i64) -> bool {
+    JUDGE_PAUSED_UNTIL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(provider)
+        .is_some_and(|until| now < *until)
+}
+
+fn pause_judge(provider: &str, until: i64) {
+    JUDGE_PAUSED_UNTIL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(provider.to_string(), until);
+}
 
 /// One repair applied to the arguments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -650,7 +679,11 @@ async fn judge_layer(
     arguments: &Value,
     description: Option<&str>,
 ) -> Option<Reconciled> {
-    if AgentMessage::now_ms() < JUDGE_PAUSED_UNTIL.load(Ordering::Relaxed) {
+    // The session's provider travels in the request itself, so the hub
+    // routes it even if some hop dropped the turn's context.
+    let provider = current_judge_provider();
+    let pause_key = provider.as_deref().unwrap_or_default();
+    if judge_paused(pause_key, AgentMessage::now_ms()) {
         return None;
     }
     // No RPC, and no question building, when the judge is not deployed:
@@ -667,9 +700,13 @@ async fn judge_layer(
     let asked = questions(compiled, schema, arguments);
     let evaluation = evaluation(function_id, description, arguments, schema, &asked)?;
     let wait = JUDGE_TIMEOUT_MS + 1_000;
+    let mut payload = json!({ "timeout_ms": JUDGE_TIMEOUT_MS, "evaluations": [evaluation] });
+    if let Some(provider) = provider.as_deref() {
+        payload["provider"] = json!(provider);
+    }
     let call = deps.iii.trigger(TriggerRequest {
         function_id: JUDGE_FUNCTION_ID.into(),
-        payload: json!({ "timeout_ms": JUDGE_TIMEOUT_MS, "evaluations": [evaluation] }),
+        payload,
         action: None,
         timeout_ms: Some(wait),
     });
@@ -687,8 +724,7 @@ async fn judge_layer(
                 tracing::warn!(function_id, "judge rejected the reconciliation request");
             } else {
                 tracing::debug!(function_id, %reason, "judge unavailable for call reconciliation");
-                JUDGE_PAUSED_UNTIL
-                    .store(AgentMessage::now_ms() + JUDGE_PAUSE_MS, Ordering::Relaxed);
+                pause_judge(pause_key, AgentMessage::now_ms() + JUDGE_PAUSE_MS);
             }
             return None;
         }
@@ -799,6 +835,39 @@ fn ellipsis(text: &str, max: usize) -> String {
         format!("{cut}…")
     } else {
         cut
+    }
+}
+
+#[cfg(test)]
+mod judge_pause_tests {
+    use super::*;
+
+    #[test]
+    fn a_failing_provider_pauses_only_itself() {
+        pause_judge("pause-test-a", 2_000);
+        assert!(judge_paused("pause-test-a", 1_000));
+        assert!(!judge_paused("pause-test-a", 2_000));
+        assert!(!judge_paused("pause-test-b", 1_000));
+    }
+
+    #[test]
+    fn the_turn_provider_comes_from_baggage_and_must_be_well_formed() {
+        use iii_helpers::observability::opentelemetry::baggage::BaggageExt as _;
+        use iii_helpers::observability::opentelemetry::{Context, KeyValue};
+        let with = |value: &'static str| {
+            Context::current_with_baggage(vec![KeyValue::new(
+                judge_contract::PROVIDER_BAGGAGE_KEY,
+                value,
+            )])
+        };
+        {
+            let _guard = with("semif").attach();
+            assert_eq!(current_judge_provider().as_deref(), Some("semif"));
+        }
+        {
+            let _guard = with("Not A Provider").attach();
+            assert_eq!(current_judge_provider(), None);
+        }
     }
 }
 

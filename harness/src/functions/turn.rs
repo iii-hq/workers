@@ -37,7 +37,8 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
         .message_preview
         .clone()
         .filter(|p| !p.trim().is_empty());
-    let session_name = deps.session().await.title(&session_id).await;
+    let hints = deps.session().await.turn_hints(&session_id).await;
+    let session_name = hints.title;
     let is_subagent = payload.depth > 0;
     let kind = if is_subagent {
         "harness.subagent"
@@ -61,6 +62,12 @@ pub async fn handle(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepRes
     }
     if let Some(display_name) = subagent_display_name.as_deref() {
         baggage.push(("iii.tag.display_name", display_name));
+    }
+    // The session's judge provider rides the turn's context: every judge call
+    // this turn causes (call reconciliation here, function search in the
+    // directory, browser::run) routes to it, and other sessions never see it.
+    if let Some(provider) = hints.judge_provider.as_deref() {
+        baggage.push((judge_contract::PROVIDER_BAGGAGE_KEY, provider));
     }
     // The explicit step span matters: the baggage only materializes as span
     // attributes when a span STARTS inside this scope, and downstream workers
