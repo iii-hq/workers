@@ -253,6 +253,11 @@ pub fn evaluation(
         },
     )]);
     for (operation, candidates) in targets(page) {
+        // One candidate is a forced answer: asking costs tokens, and some
+        // providers (semif) cannot answer a one-option choice.
+        if candidates.len() < 2 {
+            continue;
+        }
         let criteria = candidates
             .into_iter()
             .map(|(key, e, option)| {
@@ -349,11 +354,18 @@ pub fn decide(
     }
     let all = targets(page);
     let candidates = &all[op.choice.as_str()];
-    let keys: Vec<&str> = candidates.iter().map(|(k, _, _)| k.as_str()).collect();
-    let target = judge::choice(answers.get(&head(&op.choice)), &keys)?;
+    let (chosen, probability) = if let [(only, _, _)] = candidates.as_slice() {
+        // Not asked (see `evaluation`): the only target.
+        (only.clone(), 1.0)
+    } else {
+        let keys: Vec<&str> = candidates.iter().map(|(k, _, _)| k.as_str()).collect();
+        let target = judge::choice(answers.get(&head(&op.choice)), &keys)?;
+        let probability = target.probabilities[&target.choice];
+        (target.choice, probability)
+    };
     let (_, element, option) = candidates
         .iter()
-        .find(|(k, _, _)| *k == target.choice)
+        .find(|(k, _, _)| *k == chosen)
         .expect("choice validated against the candidate keys");
     let element = (*element).clone();
     let action = match (op.choice.as_str(), option) {
@@ -364,7 +376,7 @@ pub fn decide(
     Ok(Decision {
         operation: op.choice.clone(),
         action,
-        probability: target.probabilities[&target.choice],
+        probability,
     })
 }
 
@@ -470,14 +482,10 @@ mod tests {
             &[],
             &BTreeMap::from([("Title".into(), "secret".into())]),
         );
+        // one typeable field: its head is not asked (a forced answer)
         assert_eq!(
             e.questions.keys().collect::<Vec<_>>(),
-            [
-                "click_target",
-                "operation",
-                "select_target",
-                "type_text_target"
-            ]
+            ["click_target", "operation", "select_target"]
         );
         assert_eq!(
             question_keys(&e, "operation"),
@@ -493,7 +501,6 @@ mod tests {
         );
         // a textbox is clickable and typeable; a select only selectable
         assert_eq!(question_keys(&e, "click_target"), ["n1", "n3"]);
-        assert_eq!(question_keys(&e, "type_text_target"), ["n1"]);
         assert_eq!(question_keys(&e, "select_target"), ["n2:1", "n2:2"]);
         // input values never reach the judge
         assert!(!e.state.to_string().contains("secret"), "{}", e.state);
@@ -540,6 +547,12 @@ mod tests {
 
         let answers = BTreeMap::from([("operation".to_string(), choice("DONE", &ops))]);
         assert_eq!(decide(&answers, &p).unwrap().action, Action::Done);
+
+        // the only typeable field needs no target answer
+        let answers = BTreeMap::from([("operation".to_string(), choice("TYPE_TEXT", &ops))]);
+        let d = decide(&answers, &p).unwrap();
+        assert_eq!(d.action, Action::Type(p.elements[0].clone()));
+        assert_eq!(d.probability, 1.0);
     }
 
     #[test]
