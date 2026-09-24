@@ -126,8 +126,8 @@ containers:
     scripts:
       run: cargo run --bin cron
 
-  # The sentinel's store. Nothing else in this stack needs it yet, so it is
-  # here for the sentinel and seeded by harness/config/database.yaml.
+  # The sentinel's store. Nothing else in this stack needs it yet; its default
+  # config already names the `primary` SQLite database the sentinel uses.
   database:
     worker: path://../database
     env_file:

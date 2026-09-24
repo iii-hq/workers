@@ -118,6 +118,34 @@ containers:
     scripts:
       run: cargo run --bin cron
 
+  # The sentinel's store; its default config already names the `primary`
+  # SQLite database the sentinel uses.
+  database:
+    worker: path://../database
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin database
+
+  sentinel:
+    worker: path://../sentinel
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - database
+      - queue
+      - cron
+      - session-manager
+    environment:
+      RUST_LOG: info
+      CI: "true"
+      SKIP_UI_BUILD: "${SENTINEL_SKIP_UI_BUILD:-}"
+    scripts:
+      run: cargo run --bin sentinel
+
   ade:
     worker: path://../ade
     env_file:
@@ -167,6 +195,8 @@ containers:
       - context-manager
       - iii-directory
       - cron
+      - database
+      - sentinel
       - ade
       - ide
       - browser
