@@ -16,6 +16,7 @@ dependencies:
   iii-observability: "latest"
   iii-stream: "latest"
   iii-directory: "latest"
+  judge: "latest"
   llm-router: "latest"
   session-manager: "latest"
   context-manager: "latest"

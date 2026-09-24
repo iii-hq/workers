@@ -152,6 +152,29 @@ containers:
     scripts:
       run: cargo run --bin browser
 
+  judge-typesafe:
+    worker: path://../judge-typesafe
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    environment:
+      RUST_LOG: info
+      CI: "true"
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
+    scripts:
+      run: cargo run --bin judge-typesafe
+
+  judge:
+    worker: path://../judge
+    env_file:
+      - ${WORKERS_DEV_ENV_FILE:-workers-dev.env.example}
+    start_after:
+      - judge-typesafe
+    environment:
+      RUST_LOG: info
+      CI: "true"
+    scripts:
+      run: cargo run --bin judge
+
   harness:
     worker: path://../harness
     env_file:
@@ -170,6 +193,7 @@ containers:
       - ade
       - ide
       - browser
+      - judge
     environment:
       RUST_LOG: info
       CI: "true"

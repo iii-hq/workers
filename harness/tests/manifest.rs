@@ -60,6 +60,7 @@ fn worker_manifest_uses_latest_runtime_dependencies() {
         "iii-observability",
         "iii-stream",
         "iii-directory",
+        "judge",
         "llm-router",
         "session-manager",
         "context-manager",
