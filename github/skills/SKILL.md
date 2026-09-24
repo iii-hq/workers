@@ -84,3 +84,25 @@ every repo-scoped call takes an explicit `repo: "owner/name"`.
   (`stdout`, `stderr`, `exit_code`, `timed_out`, truncation flags).
 - `github::api` — `{ path, method?, fields?, body?, jq?, paginate?,
   timeout_ms? }` → parsed JSON.
+
+## Actionable PR notifications (`agent_actionable`)
+
+The default `webhooks.notifications.profile` in `config.yaml` delivers only what
+needs an agent action, as one `kind: "digest"` payload per watch:
+
+- `ci.failed` items: `failure`, `timed_out`, `startup_failure`, `action_required`
+  on the current head. A failed workflow is dropped when its failed job is
+  already reported. Failures of a superseded head are dropped at delivery.
+- New comments and reviews (created/submitted, approved, changes requested,
+  unresolved threads), excluding edits, deletions, the agent's own login
+  (`ignore_self`, discovered via `GET /user`) and known bot noise.
+- `merged` / closed lifecycle, delivered immediately with anything pending.
+
+Never delivered: CI success or progress, cancelled/skipped/neutral runs, pushes,
+labels, assignments. The agent checks current CI with `github::pr::checks` when it
+acts. Every item carries `event_id`; fetch the full event with
+`github::pr::event-detail`.
+
+Timing: a digest is sent after `quiet_ms` (15s) without new items, and never
+later than `max_wait_ms` (2min) after its first item. `max_items` (30) bounds the
+payload; extra items are counted in `omitted_items`.

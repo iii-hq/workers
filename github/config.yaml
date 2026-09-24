@@ -6,6 +6,21 @@ webhooks:
   queue: github-webhooks
   max_body_bytes: 1048576
   max_pending: 10000
+  # Default delivery policy for every agent (hot-reloaded). A github::pr::event
+  # binding can override it with its own `notifications` object; profile=all
+  # restores the full per-entity stream.
+  notifications:
+    # Only CI failures on the current head, new comments/reviews from others and
+    # merge/close, coalesced into one digest per watch. CI success, progress,
+    # cancellations, pushes and edits never wake the agent.
+    profile: agent_actionable
+    # Ignore the agent's own comments; its gh login is discovered automatically.
+    ignore_self: true
+    # Send after 15s without new events; never hold a digest longer than 2min.
+    quiet_ms: 15000
+    max_wait_ms: 120000
+    max_items: 30
+    max_comment_chars: 2000
 
 # Seed installed as `initial_value` with the configuration worker on first
 # registration; the live value is authoritative thereafter. The engine URL is

@@ -61,7 +61,7 @@ with open(os.environ['GH_TOKEN'], 'r+', encoding='utf-8') as stream:
             state['hook'] = None
     elif path.startswith(prefix + 'commits/') and method == 'GET':
         if path.endswith('/check-runs'):
-            answer = {'total_count': 0, 'check_runs': []}
+            answer = {'total_count': len(state.get('checks', [])), 'check_runs': state.get('checks', [])}
         elif path.endswith('/status'):
             answer = {'state': 'pending', 'total_count': 0, 'statuses': []}
         elif path.endswith('/statuses'):

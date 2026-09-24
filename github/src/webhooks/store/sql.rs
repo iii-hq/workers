@@ -24,6 +24,8 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<Data> {
         CREATE TABLE IF NOT EXISTS repos (id TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS subscribers (id TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS publications (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS event_history (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS notification_state (id TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS deliveries_age ON deliveries(created_at, id);
         CREATE TABLE IF NOT EXISTS watch_seen (watch_id TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(watch_id, fingerprint));
@@ -109,6 +111,8 @@ pub(super) fn load(conn: &Connection) -> Result<Data> {
     data.repos = load_rows(conn, "repos")?;
     data.subscribers = load_rows(conn, "subscribers")?;
     data.publications = load_rows(conn, "publications")?;
+    data.event_history = load_rows(conn, "event_history")?;
+    data.notification_state = load_rows(conn, "notification_state")?;
     let mut stmt = conn.prepare("SELECT id FROM deliveries")?;
     for id in stmt.query_map([], |r| r.get::<_, String>(0))? {
         data.deliveries.insert(id?);
@@ -187,6 +191,8 @@ pub(super) fn persist(tx: &Transaction<'_>, old: &Data, data: &mut Data, now: i6
         )?;
     }
     sync_rows(tx, "jobs", &data.jobs)?;
+    sync_rows(tx, "event_history", &data.event_history)?;
+    sync_rows(tx, "notification_state", &data.notification_state)?;
     sync_rows(tx, "repos", &data.repos)?;
     sync_rows(tx, "subscribers", &data.subscribers)?;
     // Subscriber cancellation can remove jobs without explicitly touching claims.
@@ -226,6 +232,7 @@ pub(super) fn persist(tx: &Transaction<'_>, old: &Data, data: &mut Data, now: i6
 /// snapshots referenced by an outbox job are never evicted for age or capacity.
 pub(super) fn prune(tx: &Transaction<'_>, data: &mut Data, now: i64) -> Result<()> {
     let cutoff = now.saturating_sub(RETENTION_SECONDS);
+    prune_notifications(tx, data, cutoff.saturating_mul(1000))?;
     let mut stmt =
         tx.prepare("SELECT id,created_at FROM deliveries ORDER BY created_at DESC,id DESC")?;
     let mut retained = 0;
@@ -266,7 +273,8 @@ pub(super) fn prune(tx: &Transaction<'_>, data: &mut Data, now: i64) -> Result<(
         .jobs
         .values()
         .filter_map(|job| match job {
-            super::super::types::Job::Notify { event, .. } => Some(event.watch_id.as_str()),
+            super::super::types::Job::Notify { event, .. }
+            | super::super::types::Job::ReviewNotify { event, .. } => Some(event.watch_id.as_str()),
             _ => None,
         })
         .collect();
@@ -312,9 +320,39 @@ pub(super) fn prune(tx: &Transaction<'_>, data: &mut Data, now: i64) -> Result<(
 }
 pub(super) fn clean(data: &mut Data) {
     data.jobs.clean();
+    data.event_history.clean();
+    data.notification_state.clean();
     data.watches.clean();
     data.repos.clean();
     data.subscribers.clean();
     data.publications.clean();
     data.deliveries.clean();
+}
+
+/// Bounded diagnostic history and semantic delivery identities; pending jobs own their full events.
+fn prune_notifications(tx: &Transaction<'_>, data: &mut Data, cutoff_ms: i64) -> Result<()> {
+    for table in ["event_history", "notification_state"] {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT id FROM {table} ORDER BY json_extract(value, '$.created_at') DESC, id DESC"
+        ))?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (index, id) in ids.into_iter().enumerate() {
+            let at = if table == "event_history" {
+                data.event_history.get(&id).map(|v| v.created_at)
+            } else {
+                data.notification_state.get(&id).map(|v| v.created_at)
+            };
+            if index >= 10_000 || at.is_some_and(|v| v < cutoff_ms) {
+                tx.execute(&format!("DELETE FROM {table} WHERE id=?1"), [&id])?;
+                if table == "event_history" {
+                    data.event_history.remove(&id);
+                } else {
+                    data.notification_state.remove(&id);
+                }
+            }
+        }
+    }
+    Ok(())
 }

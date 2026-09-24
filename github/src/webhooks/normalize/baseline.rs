@@ -7,6 +7,38 @@ use serde_json::Value;
 use crate::webhooks::{CiEntity, Failure, Result, Service, Snapshot};
 
 impl Service {
+    /// Validate selected workflow identities once before delivering an aggregate success.
+    pub(crate) async fn confirm_selected_workflows(
+        &self,
+        repo: &str,
+        mut snapshot: Snapshot,
+        policy: &super::super::notifications::NotificationPolicy,
+    ) -> Result<Snapshot> {
+        for (key, ci) in snapshot.ci.iter_mut().filter(|(key, ci)| {
+            key.starts_with("workflow_run:")
+                && policy.success_checks.contains(&format!(
+                    "workflow_run:{}",
+                    ci.name.as_deref().unwrap_or("")
+                ))
+        }) {
+            let id = key.strip_prefix("workflow_run:").unwrap_or("");
+            if id.parse::<u64>().is_err() {
+                return Err(Failure::Invalid("invalid workflow run identity".into()));
+            }
+            let run = self
+                .api("GET", &format!("repos/{repo}/actions/runs/{id}"), None)
+                .await?;
+            if run["head_sha"].as_str() != Some(ci.sha.as_str()) {
+                return Err(Failure::Invalid(
+                    "workflow head changed during confirmation".into(),
+                ));
+            }
+            ci.status = text(&run, "status").unwrap_or_else(|| "unknown".into());
+            ci.conclusion = text(&run, "conclusion");
+            ci.attempt = run["run_attempt"].as_u64().unwrap_or(1);
+        }
+        Ok(snapshot)
+    }
     pub(crate) async fn reconcile_ci(
         &self,
         repo: &str,

@@ -605,3 +605,63 @@ async fn failed_publication_and_callback_keep_durable_work_until_real_handler_ac
         std::panic::resume_unwind(panic);
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn review_policy_filters_signed_ingress_and_delivers_compact_retryable_events() {
+    let mut fixture = Fixture::start().await;
+    let outcome = std::panic::AssertUnwindSafe(async {
+        fixture.two_watches_ready().await;
+        let review_log = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let received = review_log.clone();
+        let consumer = fixture.engine.client(CONSUMER).await;
+        consumer.register_function("integration::compact", RegisterFunction::new(move |payload: Value| {
+            received.lock().unwrap().push(payload);
+            Ok(json!({"ok":true}))
+        }).description("Capture compact review events").request_format(json!({"type":"object"})).response_format(json!({"type":"object"})));
+        fixture.engine.function(CONSUMER, "integration::compact").await;
+        let mut binding = RegisterTriggerInput::new("github::pr::event", "integration::compact", json!({
+            "watch_id":"watch-1", "notifications":{"profile":"review_assistant", "batch_window_ms":0,
+            "success_checks":["check_run:lint","check_run:tests"],"ignored_actors":["my-agent"]}
+        }));
+        binding.namespace = Some(CONSUMER.into()); binding.trigger_namespace = Some(PROVIDER.into());
+        consumer.register_trigger(binding).unwrap();
+        fixture.engine.registered("github::pr::event", "integration::compact").await;
+        let check = |id, name, status, conclusion| json!({"repository":{"full_name":"owner/repo"},"action":"completed",
+            "check_run":{"id":id,"name":name,"head_sha":"head-1","status":status,"conclusion":conclusion,
+                "completed_at":"2026-01-01T00:01:00Z","details_url":format!("https://ci.example/{id}")}});
+        fixture.deliver("check_run", "queued", &check(1, "lint", "queued", "")).await;
+        fixture.deliver("check_run", "running", &check(2, "tests", "in_progress", "")).await;
+        assert!(review_log.lock().unwrap().is_empty());
+        fixture.deliver("check_run", "failed", &check(1, "lint", "completed", "failure")).await;
+        assert_eq!(review_log.lock().unwrap().len(), 1);
+        let failure = review_log.lock().unwrap()[0].clone();
+        assert_eq!(failure["kind"], "ci.failed"); assert!(failure.get("snapshot").is_none());
+        let full = call(&fixture.iii, "github::pr::event-detail", json!({"event_id":failure["failures"][0]["event_id"]})).await;
+        assert!(full["snapshot"]["ci"].is_object());
+        fixture.deliver("check_run", "failed-again", &check(1, "lint", "completed", "failure")).await;
+        assert_eq!(review_log.lock().unwrap().len(), 1);
+        // Updating current REST state models the one-shot final confirmation.
+        let mut state = fixture.gh();
+        state["checks"] = json!([check(1,"lint","completed","success")["check_run"], check(2,"tests","completed","success")["check_run"]]);
+        std::fs::write(&fixture.gh_path, state.to_string()).unwrap();
+        let mut passed = check(1,"lint","completed","success"); passed["check_run"]["completed_at"] = json!("2026-01-01T00:02:00Z");
+        fixture.deliver("check_run", "lint-passed", &passed).await;
+        assert_eq!(review_log.lock().unwrap().len(), 1, "other selected check has not completed");
+        fixture.deliver("check_run", "tests-passed", &check(2,"tests","completed","success")).await;
+        assert_eq!(review_log.lock().unwrap().len(), 2);
+        assert_eq!(review_log.lock().unwrap()[1]["kind"], "ci.passed");
+        let mut own = comment(99); own["comment"]["user"]["login"] = json!("my-agent");
+        fixture.deliver("issue_comment", "own-comment", &own).await;
+        assert_eq!(review_log.lock().unwrap().len(), 2);
+        fixture.deliver("issue_comment", "reviewer-comment", &comment(100)).await;
+        assert_eq!(review_log.lock().unwrap().len(), 3);
+        assert_eq!(review_log.lock().unwrap()[2]["detail"]["body"], COMMENT);
+        // Legacy consumer receives full events independently.
+        assert!(fixture.events().iter().all(|e| e.get("snapshot").is_some()));
+        for number in [1,2] { call(&fixture.iii,"github::pr::unwatch",json!({"watch_id":format!("watch-{number}")})).await; }
+    }).catch_unwind().await;
+    fixture.shutdown().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}

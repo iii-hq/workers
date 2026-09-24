@@ -3,6 +3,7 @@ mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
 pub mod normalize;
+pub mod notifications;
 pub mod store;
 #[cfg(test)]
 mod tests;
@@ -26,6 +27,8 @@ use sha2::Sha256;
 use std::{collections::HashMap, path::Path, sync::Arc};
 use store::Store;
 use tokio::sync::Mutex;
+static SELF_LOGIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static SELF_ATTEMPT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Failure {
@@ -207,24 +210,155 @@ impl Service {
             })?;
             return self.operation_response();
         }
-        let publishes_notifications = matches!(job, Job::Inbox(_));
+        let mut policy = self.cell.read().await.webhooks.notifications.clone();
+        if notifications::wants_self(&policy, &d) {
+            policy.resolved_self = self.discover_self().await;
+        }
+        let publishes_notifications = matches!(job, Job::Inbox(_))
+            || matches!(job, Job::Notify { target, .. } if d.subscribers.get(&target.id).is_some_and(|sub| notifications::effective(sub, &policy).profile != notifications::NotificationProfile::All));
         {
             match job {
                 Job::Notify { event, target } => {
-                    // None is the legacy/default namespace, not this provider's.
-                    // Crash before local ack can repeat event_id (at-least-once).
+                    let Some(current_target) = d.subscribers.get(&target.id) else {
+                        self.ack_job(id)?;
+                        return self.operation_response();
+                    };
+                    let policy = &notifications::effective(current_target, &policy);
+                    if policy.profile != notifications::NotificationProfile::All {
+                        self.store()?.change(|data| {
+                            data.event_history
+                                .entry(event.event_id.clone())
+                                .or_insert_with(|| notifications::StoredEvent {
+                                    event: event.clone(),
+                                    created_at: Utc::now().timestamp_millis(),
+                                });
+                            notifications::route(
+                                data,
+                                event,
+                                current_target,
+                                policy,
+                                Utc::now().timestamp_millis(),
+                            );
+                            data.jobs.remove(id);
+                            data.publications.remove(id);
+                            Ok(())
+                        })?;
+                    } else {
+                        // Legacy subscribers retain their original full-event contract.
+                        // None is the legacy/default namespace, not this provider's.
+                        // Crash before local ack can repeat event_id (at-least-once).
+                        self.invoke_target(
+                            &target.function_id,
+                            serde_json::to_value(event)?,
+                            Some(target.namespace.as_deref().unwrap_or("default")),
+                            target.metadata.clone(),
+                        )
+                        .await?;
+                        self.store()?.change(|d| {
+                            d.jobs.remove(id);
+                            d.publications.remove(id);
+                            Ok(())
+                        })?;
+                    }
+                }
+                Job::ReviewNotify {
+                    event,
+                    target,
+                    payload,
+                    due_at,
+                    ..
+                } => {
+                    if *due_at > Utc::now().timestamp_millis() {
+                        self.store()?.change(|data| {
+                            data.publications.remove(id);
+                            Ok(())
+                        })?;
+                        return self.operation_response();
+                    }
+                    let Some(current_target) = d.subscribers.get(&target.id) else {
+                        self.ack_job(id)?;
+                        return self.operation_response();
+                    };
+                    if !current_target.filter.matches(event) {
+                        self.ack_job(id)?;
+                        return self.operation_response();
+                    }
+                    let current_policy = &notifications::effective(current_target, &policy);
+                    if payload.kind == notifications::DIGEST_KIND {
+                        let head = d
+                            .watches
+                            .get(&event.watch_id)
+                            .and_then(|w| w.snapshot.head_sha.as_deref());
+                        let mut digest = (**payload).clone();
+                        if notifications::prune_digest(&mut digest, head) {
+                            self.invoke_target(
+                                &current_target.function_id,
+                                serde_json::to_value(&digest)?,
+                                Some(current_target.namespace.as_deref().unwrap_or("default")),
+                                current_target.metadata.clone(),
+                            )
+                            .await?;
+                        }
+                        self.ack_job(id)?;
+                        self.cleanup().await?;
+                        return self.operation_response();
+                    }
+                    if payload.category == Category::Ci
+                        && ((payload.kind == "ci.failed" && !current_policy.notify_ci_failures)
+                            || (payload.kind == "ci.passed" && !current_policy.notify_ci_success))
+                    {
+                        self.ack_job(id)?;
+                        return self.operation_response();
+                    }
+                    if payload.category == Category::Ci {
+                        let Some(watch) = d.watches.get(&event.watch_id) else {
+                            self.ack_job(id)?;
+                            return self.operation_response();
+                        };
+                        if watch.snapshot.head_sha != payload.head_sha {
+                            self.ack_job(id)?;
+                            return self.operation_response();
+                        }
+                        if payload.kind == "ci.passed" {
+                            // One event-driven confirmation, never polling. Refuse success if
+                            // the PR moved or any selected check is pending/missing/non-success.
+                            let pr = self
+                                .api(
+                                    "GET",
+                                    &format!("repos/{}/pulls/{}", event.repo, event.number),
+                                    None,
+                                )
+                                .await?;
+                            let snapshot = normalize::snapshot(&pr, &watch.snapshot)?;
+                            let snapshot = self.reconcile_ci(&event.repo, snapshot).await?;
+                            let snapshot = self
+                                .confirm_selected_workflows(&event.repo, snapshot, current_policy)
+                                .await?;
+                            if snapshot.head_sha != payload.head_sha
+                                || !notifications::selected_passed(&snapshot, current_policy)
+                            {
+                                self.store()?.change(|data| {
+                                    notifications::release_success(
+                                        data,
+                                        current_target,
+                                        event,
+                                        current_policy,
+                                    );
+                                    Ok(())
+                                })?;
+                                self.ack_job(id)?;
+                                return self.operation_response();
+                            }
+                        }
+                    }
                     self.invoke_target(
-                        &target.function_id,
-                        serde_json::to_value(event)?,
-                        Some(target.namespace.as_deref().unwrap_or("default")),
-                        target.metadata.clone(),
+                        &current_target.function_id,
+                        serde_json::to_value(payload)?,
+                        Some(current_target.namespace.as_deref().unwrap_or("default")),
+                        current_target.metadata.clone(),
                     )
                     .await?;
-                    self.store()?.change(|d| {
-                        d.jobs.remove(id);
-                        d.publications.remove(id);
-                        Ok(())
-                    })?;
+                    self.ack_job(id)?;
                 }
                 Job::Inbox(inbox) => {
                     let targets: Vec<_> = d
@@ -251,7 +385,12 @@ impl Service {
                         for (watch_id, snapshot) in updates {
                             if let Some(w) = data.watches.get_mut(&watch_id) {
                                 if let Some(event) = normalize::normalize(w, inbox, snapshot) {
-                                    normalize::persist_event(data, event, &inbox.delivery);
+                                    normalize::persist_event_with_policy(
+                                        data,
+                                        event,
+                                        &inbox.delivery,
+                                        &policy,
+                                    );
                                 }
                             }
                         }
@@ -271,6 +410,38 @@ impl Service {
         publication.and(cleanup)?;
         self.operation_response()
     }
+    /// Authenticated gh login for ignore_self: one GET /user, cached in memory on
+    /// success; a failure (e.g. an App installation token) retries after 5 min.
+    async fn discover_self(&self) -> Option<String> {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(login) = SELF_LOGIN.get() {
+            return Some(login.clone());
+        }
+        let now = Utc::now().timestamp();
+        if now - SELF_ATTEMPT.load(Relaxed) < 300 {
+            return None;
+        }
+        SELF_ATTEMPT.store(now, Relaxed);
+        let login = self.api("GET", "user", None).await.ok()?["login"]
+            .as_str()?
+            .to_owned();
+        Some(SELF_LOGIN.get_or_init(|| login).clone())
+    }
+    fn ack_job(&self, id: &str) -> Result<()> {
+        self.store()?.change(|data| {
+            data.jobs.remove(id);
+            data.publications.remove(id);
+            Ok(())
+        })
+    }
+    pub fn event_detail(&self, req: notifications::EventDetailRequest) -> Result<PrEvent> {
+        self.store()?
+            .read()?
+            .event_history
+            .get(&req.event_id)
+            .map(|v| (*v.event).clone())
+            .ok_or(Failure::NotFound)
+    }
     fn operation_response(&self) -> Result<OperationResponse> {
         Ok(OperationResponse {
             status: "ok".into(),
@@ -282,10 +453,12 @@ impl Service {
         // at every boundary, including queue redelivery/DLQ and engine restart.
         let data = self.store()?.read()?;
         let now = Utc::now().timestamp();
+        let now_ms = Utc::now().timestamp_millis();
         for id in data
             .jobs
             .keys()
             .filter(|id| {
+                if matches!(data.jobs.get(id), Some(Job::ReviewNotify { due_at, .. }) if *due_at > now_ms) { return false; }
                 data.publications
                     .get(id)
                     .is_none_or(|(at, attempts)| *attempts < 5 && now - at >= 60)

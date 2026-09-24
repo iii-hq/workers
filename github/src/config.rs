@@ -88,7 +88,9 @@ impl Config {
     /// Parse a value fetched from the configuration worker (already env-expanded
     /// by the worker; this does not re-expand).
     pub fn from_json(value: &Value) -> anyhow::Result<Config> {
-        Ok(serde_json::from_value(value.clone())?)
+        let config: Self = serde_json::from_value(value.clone())?;
+        config.webhooks.notifications.validate()?;
+        Ok(config)
     }
 }
 

@@ -278,17 +278,37 @@ fn event_detail(inbox: &Inbox) -> EventDetail {
             .and_then(Value::as_u64),
     }
 }
-pub fn persist_event(data: &mut Data, mut event: PrEvent, source: &str) {
+pub fn persist_event(data: &mut Data, event: PrEvent, source: &str) {
+    persist_event_with_policy(
+        data,
+        event,
+        source,
+        &super::notifications::NotificationPolicy::default(),
+    );
+}
+
+pub fn persist_event_with_policy(
+    data: &mut Data,
+    mut event: PrEvent,
+    source: &str,
+    policy: &super::notifications::NotificationPolicy,
+) {
     event.event_id = hex::encode(Sha256::digest(format!("{}:{source}", event.event_id)));
-    for sub in data
-        .subscribers
-        .values()
-        .filter(|s| s.filter.matches(&event))
-    {
-        let id = format!("notify:{}:{}", event.event_id, sub.id);
-        data.jobs.entry(id).or_insert_with(|| Job::Notify {
+    let now = chrono::Utc::now().timestamp_millis();
+    data.event_history
+        .entry(event.event_id.clone())
+        .or_insert_with(|| super::notifications::StoredEvent {
             event: Box::new(event.clone()),
-            target: Box::new(sub.clone()),
+            created_at: now,
         });
+    let subscribers: Vec<_> = data.subscribers.values().cloned().collect();
+    for sub in subscribers {
+        super::notifications::route(
+            data,
+            &event,
+            &sub,
+            &super::notifications::effective(&sub, policy),
+            now,
+        );
     }
 }

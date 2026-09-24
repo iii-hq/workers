@@ -472,6 +472,7 @@ impl Service {
         } else {
             snapshot
         };
+        let policy = self.cell.read().await.webhooks.notifications.clone();
         self.store()?.change(|d| {
             let w = d.watches.get_mut(id).ok_or(Failure::NotFound)?;
             let changed = w.snapshot != snapshot || w.status == WatchState::Preparing;
@@ -496,7 +497,7 @@ impl Service {
                 };
                 let event =
                     normalize::make_event(w, Category::Pr, kind, "snapshot", 0, final_event);
-                normalize::persist_event(d, event, source);
+                normalize::persist_event_with_policy(d, event, source, &policy);
             }
             Ok(())
         })
@@ -613,6 +614,7 @@ impl Service {
         self.maintain_locked().await
     }
     async fn maintain_locked(&self) -> Result<OperationResponse> {
+        let policy = self.cell.read().await.webhooks.notifications.clone();
         self.store()?.change(|d| {
             let mut expired = Vec::new();
             for w in d
@@ -631,7 +633,7 @@ impl Service {
                 ));
             }
             for event in expired {
-                normalize::persist_event(d, event, "expiry");
+                normalize::persist_event_with_policy(d, event, "expiry", &policy);
             }
             Ok(())
         })?;

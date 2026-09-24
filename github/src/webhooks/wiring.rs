@@ -49,6 +49,9 @@ impl TriggerHandler for EventHandler {
         if let Some(repo) = &filter.repo {
             validate_repo(repo)?;
         }
+        if let Some(policy) = &filter.notifications {
+            policy.validate()?;
+        }
         let service = self.0.clone();
         storage_task(async move {
             if let Some(store) = &service.store {
@@ -82,7 +85,7 @@ impl TriggerHandler for EventHandler {
                     d.subscribers.remove(&config.id);
                     // Explicit cancellation means no further callback to this binding.
                     d.jobs.retain(
-                        |_, j| !matches!(j, Job::Notify { target, .. } if target.id == config.id),
+                        |_, j| !matches!(j, Job::Notify { target, .. } | Job::ReviewNotify { target, .. } if target.id == config.id),
                     );
                     Ok(())
                 })?;
@@ -125,7 +128,7 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         #[cfg(test)]
         bus: None,
     });
-    iii.register_trigger_type(RegisterTriggerType::new("github::pr::event", "Durable PR lifecycle, comment, review and per-entity CI events. Arm before watch and read one snapshot after watch.", EventHandler(service.clone())).trigger_request_format::<EventFilter>().call_request_format::<PrEvent>());
+    iii.register_trigger_type(RegisterTriggerType::new("github::pr::event", "Durable PR lifecycle, comment, review and per-entity CI events. Arm before watch and read one snapshot after watch.", EventHandler(service.clone())).trigger_request_format::<EventFilter>().call_request_format::<notifications::NotificationEvent>());
     macro_rules! function {
         ($id:expr, $desc:expr, $req:ty, $resp:ty, $method:ident $(, $field:ident)?) => {{
             let service = service.clone();
@@ -162,6 +165,10 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         })
         .description("Read persisted snapshot and health without secrets or polling GitHub."),
     );
+    let s = service.clone();
+    iii.register_function("github::pr::event-detail", RegisterFunction::new_async(move |EngineRequest(req): EngineRequest<notifications::EventDetailRequest>| {
+        let s = s.clone(); async move { storage_task(async move { s.event_detail(req) }).await.map_err(iii_sdk::Error::from) }
+    }).description("Read a retained full webhook event by id without polling GitHub; seven-day bounded retention."));
     let s = service.clone();
     iii.register_function("github::pr::recover", RegisterFunction::new_async(move |EngineRequest(req): EngineRequest<RecoverRequest>| {
         let s = s.clone(); async move { storage_task(async move { s.recover(req.repo.as_deref()).await }).await.map_err(iii_sdk::Error::from) }
@@ -246,6 +253,7 @@ struct MaintenanceRequest {
     _fields: HashMap<String, Value>,
 }
 pub(super) fn validate_config(config: &WebhookConfig) -> Result<()> {
+    config.notifications.validate()?;
     if config.storage_path.trim().is_empty()
         || config.max_body_bytes == 0
         || config.max_pending == 0
@@ -286,7 +294,7 @@ async fn activate(s: &Arc<Service>) -> Result<()> {
         (
             "cron",
             "github::webhooks::maintain",
-            json!({"expression":"0 * * * * *"}),
+            json!({"expression":"*/10 * * * * *"}),
         ),
     ] {
         s.iii

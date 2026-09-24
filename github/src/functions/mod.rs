@@ -592,6 +592,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<crate::webhooks::WatchRequest, crate::webhooks::WatchResponse>("github::pr::watch", "Watch a PR via authenticated webhooks until merged/closed or an explicit expiry."),
         spec::<crate::webhooks::WatchId, crate::webhooks::WatchResponse>("github::pr::unwatch", "Stop a watch and clean up only installation-owned resources; failures remain cleanup_pending."),
         spec::<crate::webhooks::WatchId, crate::webhooks::WatchResponse>("github::pr::watch-status", "Read persisted snapshot and health without secrets or polling GitHub."),
+        spec::<crate::webhooks::notifications::EventDetailRequest, crate::webhooks::PrEvent>("github::pr::event-detail", "Read a retained full webhook event by id without polling GitHub; seven-day bounded retention."),
         spec::<crate::webhooks::RecoverRequest, crate::webhooks::OperationResponse>("github::pr::recover", "Manually reconcile watches and request bounded redelivery of failed owned-hook deliveries."),
     ]
 }

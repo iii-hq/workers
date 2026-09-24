@@ -82,5 +82,5 @@ fn gh_bin_prefers_the_configured_path() {
 /// tests/schemas.rs; this is the cheap headcount.
 #[test]
 fn catalog_covers_the_full_surface() {
-    assert_eq!(catalog().len(), 36);
+    assert_eq!(catalog().len(), 37);
 }

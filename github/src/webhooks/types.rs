@@ -8,6 +8,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebhookConfig {
+    /// Default delivery policy; individual subscriptions can override it. Hot-reloaded.
+    pub notifications: super::notifications::NotificationPolicy,
     /// Opt in only after configuring the durable queue and public HTTP listener.
     pub enabled: bool,
     /// Private, persistent directory; not a shared/network filesystem.
@@ -20,6 +22,7 @@ pub struct WebhookConfig {
 impl Default for WebhookConfig {
     fn default() -> Self {
         Self {
+            notifications: Default::default(),
             enabled: false,
             storage_path: "./data/github-webhooks/store.sqlite3".into(),
             tunnel_id: "webhooks".into(),
@@ -209,6 +212,8 @@ pub struct WatchResponse {
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct EventFilter {
+    /// Omitted inherits webhooks.notifications; profile=all explicitly keeps the legacy stream.
+    pub notifications: Option<super::notifications::NotificationPolicy>,
     pub watch_id: Option<String>,
     pub repo: Option<String>,
     pub number: Option<u64>,
@@ -302,6 +307,15 @@ pub struct Inbox {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Job {
+    ReviewNotify {
+        event: Box<PrEvent>,
+        target: Box<Subscriber>,
+        payload: Box<super::notifications::CompactEvent>,
+        due_at: i64,
+        /// First item time of an agent_actionable digest; bounds max_wait_ms.
+        #[serde(default)]
+        first_at: Option<i64>,
+    },
     Inbox(Inbox),
     Notify {
         event: Box<PrEvent>,
@@ -310,6 +324,10 @@ pub enum Job {
 }
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Data {
+    #[serde(default)]
+    pub event_history: super::store::rows::Rows<super::notifications::StoredEvent>,
+    #[serde(default)]
+    pub notification_state: super::store::rows::Rows<super::notifications::NotificationState>,
     #[serde(default)]
     pub publications: super::store::rows::Rows<(i64, u32)>,
     #[serde(default)]
