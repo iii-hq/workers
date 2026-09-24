@@ -202,6 +202,23 @@ fn origin(turn_id: &str) -> Value {
 
 /// `{ turn_id }` with hook annotations merged in (audit trail — harness.md §
 /// Cautions: mutations are silent; annotations record what ran).
+/// The `description` the model gave an `agent_trigger` call (dropped by
+/// `plan_calls`): the call's stated purpose, used as reconciliation intent.
+fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
+    content.iter().find_map(|block| match block {
+        // Only the wrapper's field: in native exposure `description` would
+        // be one of the target's own parameters.
+        ContentBlock::FunctionCall {
+            id,
+            function_id,
+            arguments,
+        } if id == call_id && function_id == policy::AGENT_TRIGGER_NAME => {
+            arguments.get("description").and_then(Value::as_str)
+        }
+        _ => None,
+    })
+}
+
 fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("turn_id".to_string(), json!(turn_id));
@@ -1438,13 +1455,31 @@ async fn finish_step(
                 continue;
             }
 
+            // Reconcile malformed arguments against the target's schema
+            // (MOT-4847) before hooks and approvers see them, so they review
+            // what will actually run. Fail-open: `None` dispatches the
+            // model's arguments unchanged. The breaker above keys on the
+            // model's original arguments, so a repaired call that still fails
+            // the same way is still counted.
+            let reconciled = crate::reconcile::reconcile(
+                deps,
+                &cfg,
+                &call.function_id,
+                &call.arguments,
+                call_description(&outcome.message.content, &call.id),
+            )
+            .await;
+            let call_args = reconciled
+                .as_ref()
+                .map_or(&call.arguments, |r| &r.arguments);
+
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
             let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
-                call.arguments.clone(),
+                call_args.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
                 deps.hooks.filesystem_boundary(&call.function_id),
@@ -1475,11 +1510,21 @@ async fn finish_step(
                     (arguments, annotations)
                 }
                 crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
-                    let data = trigger::ResultData {
+                    let mut data = trigger::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
                         details: json!({ "error": "hook_denied", "message": reason }),
                     };
+                    // The hook judged the repaired arguments: say so.
+                    let mut deny_annotations = serde_json::Map::new();
+                    if let Some(r) = &reconciled {
+                        crate::reconcile::note_result(
+                            &mut data,
+                            &mut deny_annotations,
+                            &r.changes,
+                            &call.function_id,
+                        );
+                    }
                     let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                     append_function_result(
                         &session,
@@ -1487,7 +1532,7 @@ async fn finish_step(
                         call,
                         &data,
                         &entry_id,
-                        &origin(&record.turn_id),
+                        &origin_with(&record.turn_id, &deny_annotations),
                     )
                     .await?;
                     trigger::apply_contract_updates_after_append(
@@ -1506,6 +1551,7 @@ async fn finish_step(
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
                         held_arguments: Some(arguments),
+                        reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1521,7 +1567,7 @@ async fn finish_step(
             // Guard failures skip post_trigger.
             if call.function_id == crate::functions::SPAWN_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                let (data, child) = match crate::subagent::spawn_from_turn(
+                let (mut data, child) = match crate::subagent::spawn_from_turn(
                     deps, &record, &call.id, &eff_args,
                 )
                 .await
@@ -1529,13 +1575,24 @@ async fn finish_step(
                     Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
                     Err(data) => (data, None),
                 };
+                let mut spawn_annotations = pre_ann;
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut spawn_annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &call.function_id,
+                    call_args,
+                )
+                .await;
                 append_function_result(
                     &session,
                     &record,
                     call,
                     &data,
                     &entry_id,
-                    &origin(&record.turn_id),
+                    &origin_with(&record.turn_id, &spawn_annotations),
                 )
                 .await?;
                 trigger::apply_contract_updates_after_append(
@@ -1558,6 +1615,7 @@ async fn finish_step(
                         child_session_reused: child.as_ref().is_some_and(|c| c.reused),
                         held_by: None,
                         held_arguments: None,
+                        reconciled: None,
                         pending_timeout_ms: None,
                         pending_at: None,
                     },
@@ -1578,6 +1636,7 @@ async fn finish_step(
                     child_session_reused: false,
                     held_by: None,
                     held_arguments: None,
+                    reconciled: None,
                     pending_timeout_ms: None,
                     pending_at: None,
                 },
@@ -1628,6 +1687,7 @@ async fn finish_step(
                         // A post-trigger release re-invokes the target: keep
                         // the fully pre-mutated args, not the model originals.
                         held_arguments: Some(eff_args.clone()),
+                        reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1639,7 +1699,7 @@ async fn finish_step(
             for (k, v) in post_ann {
                 annotations.insert(k, v);
             }
-            let (data, contract_updates) = match info_raw {
+            let (mut data, contract_updates) = match info_raw {
                 Some(raw) => trigger::prepare_info_result(
                     &call.id,
                     &eff_args,
@@ -1649,9 +1709,21 @@ async fn finish_step(
                 ),
                 None => (data, Vec::new()),
             };
+            // The breaker digests the target's own result, before the harness
+            // adds its reconciliation note or schema diagnosis.
             if let Some(key) = &failure_key {
                 trigger::note_call_result(&mut record.failed_calls, key, &data);
             }
+            crate::reconcile::settle_result(
+                deps,
+                &cfg,
+                &mut data,
+                &mut annotations,
+                reconciled.as_ref().map(|r| r.changes.as_slice()),
+                &call.function_id,
+                call_args,
+            )
+            .await;
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
@@ -2555,6 +2627,7 @@ fn checkpoint_pending(
             child_session_reused: false,
             held_by: info.held_by.clone(),
             held_arguments: info.held_arguments.clone(),
+            reconciled: info.reconciled.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
         },
@@ -2576,6 +2649,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             child_session_reused: false,
             held_by: None,
             held_arguments: None,
+            reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
         },
@@ -3450,9 +3524,29 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::{
-        cancel_requested, concrete_allowed_tools, count_model_visible,
+        call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
         retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
     };
+
+    #[test]
+    fn call_description_reads_only_the_agent_trigger_wrapper() {
+        let blocks = vec![
+            ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "agent_trigger".into(),
+                arguments: serde_json::json!({ "function": "x::y", "description": "look up" }),
+            },
+            ContentBlock::FunctionCall {
+                id: "c2".into(),
+                function_id: "directory::skills::create".into(),
+                arguments: serde_json::json!({ "name": "s", "description": "a skill that…" }),
+            },
+        ];
+
+        assert_eq!(call_description(&blocks, "c1"), Some("look up"));
+        assert_eq!(call_description(&blocks, "c2"), None);
+        assert_eq!(call_description(&blocks, "c3"), None);
+    }
     use crate::clients::router::ChatError;
     use crate::error::HarnessError;
     use crate::types::content::ContentBlock;

@@ -75,6 +75,10 @@ The agent-facing function surface is deny-by-default: with no `functions.allow`
 globs, every model-requested call is refused and the harness is a plain chat
 loop. Allow functions in per-send (`options.functions.allow`) and gate them
 with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) sibling.
+Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
+schema rejects is parsed. When the optional
+[`judge`](https://github.com/iii-hq/workers/tree/main/judge) worker is deployed, it also settles
+misnamed keys, off-enum values and unknown arguments. Every repair is noted in the call's result.
 
 The full function reference (every `harness::*` id and its request/response
 schema) lives in the code and `iii worker info harness`.
@@ -200,6 +204,7 @@ max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
 max_result_bytes: 262144         # function-result byte cap at capture; oversized results become an elision marker (0 = off)
 prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
+call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
