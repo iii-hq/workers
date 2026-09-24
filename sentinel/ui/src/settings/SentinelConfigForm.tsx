@@ -105,8 +105,8 @@ export function SentinelConfigForm({
       }) as ConfigFormProps['value'],
     )
 
-  const repositories = Array.isArray(config.repositories)
-    ? (config.repositories as { id: string; path: string; workers: string[] }[])
+  const repositories = Array.isArray(config.projects)
+    ? (config.projects as { id: string; path: string; workers: string[] }[])
     : []
   const ignored = Array.isArray(config.ignore_services) ? (config.ignore_services as string[]) : []
   const joinSeconds =
@@ -145,7 +145,7 @@ export function SentinelConfigForm({
   const path = focusField?.map(String).join('.') ?? null
   useEffect(() => {
     if (!path || honoured.current === path) return
-    const index = path.startsWith('repositories.') ? Number(path.split('.')[1]) : Number.NaN
+    const index = path.startsWith('projects.') ? Number(path.split('.')[1]) : Number.NaN
     if (Number.isInteger(index)) {
       const wanted = repositories[index]?.id ?? null
       if (wanted && openRepository !== wanted) {
@@ -286,7 +286,7 @@ export function SentinelConfigForm({
             selected ? (
               <SettingsList>
                 <SettingsField
-                  field={`repositories.${repositories.indexOf(selected)}.path`}
+                  field={`projects.${repositories.indexOf(selected)}.path`}
                   label="Folder"
                   description="The folder an investigation reads, read-only, on this machine."
                   error={folderError}
@@ -309,7 +309,7 @@ export function SentinelConfigForm({
                   )}
                 />
                 <SettingsField
-                  field={`repositories.${repositories.indexOf(selected)}.workers`}
+                  field={`projects.${repositories.indexOf(selected)}.workers`}
                   label="Workers"
                   description="The workers whose code lives here. A worker belongs to one project; adding one mapped elsewhere moves it."
                   layout="stacked"
@@ -336,7 +336,7 @@ export function SentinelConfigForm({
                       variant="ghost"
                       onClick={() => {
                         update(
-                          'repositories',
+                          'projects',
                           repositories.filter((repository) => repository.id !== selected.id),
                         )
                         setOpenRepository(null)

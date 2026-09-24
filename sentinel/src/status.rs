@@ -196,7 +196,7 @@ impl Counters {
             groups,
             investigations,
             repositories: config
-                .repositories
+                .projects
                 .iter()
                 .map(|repository| RepositoryStatusV1 {
                     id: repository.id.clone(),
@@ -297,7 +297,7 @@ mod tests {
     fn repository_status_reports_whether_the_checkout_is_here() {
         let counters = Counters::default();
         let config = WorkerConfig {
-            repositories: vec![
+            projects: vec![
                 RepositoryConfigV1 {
                     id: "here".into(),
                     path: env!("CARGO_MANIFEST_DIR").into(),

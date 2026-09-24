@@ -14,7 +14,7 @@ export const DEFAULTS = Object.freeze({
   enabled: true,
   sources: { trace: { enabled: true }, log: { enabled: true, join_window_ms: 2000 } },
   investigation: { model: '' },
-  repositories: [],
+  projects: [],
   retention: {
     evidence_per_group: 5,
     occurrences_per_group: 1000,
@@ -32,7 +32,12 @@ export const DEFAULTS = Object.freeze({
  */
 export function normalize(stored) {
   /** @type {Record<string, any>} */
-  const value = stored && typeof stored === 'object' ? { ...stored } : {}
+  const raw = stored && typeof stored === 'object' ? { ...stored } : {}
+  // `projects` was called `repositories` until 2026-09. A value stored under
+  // the old name is read, and saved back under the new one only: the worker
+  // refuses the two together.
+  const { repositories: former, ...value } = raw
+  if (!Array.isArray(value.projects) && Array.isArray(former)) value.projects = former
   return {
     ...DEFAULTS,
     ...value,
@@ -40,7 +45,7 @@ export function normalize(stored) {
     investigation: { ...DEFAULTS.investigation, ...(value.investigation ?? {}) },
     retention: { ...DEFAULTS.retention, ...(value.retention ?? {}) },
     archive: { ...DEFAULTS.archive, ...(value.archive ?? {}) },
-    repositories: Array.isArray(value.repositories) ? value.repositories : [],
+    projects: Array.isArray(value.projects) ? value.projects : [],
   }
 }
 
@@ -74,7 +79,7 @@ export function problems(config) {
   const out = []
   /** @type {Record<string, any>} */
   const retention = (config.retention ?? {})
-  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  const repositories = Array.isArray(config.projects) ? config.projects : []
   /** @type {Map<string, string>} */
   const seen = new Map()
   for (const repository of repositories) {
@@ -109,12 +114,12 @@ export function problems(config) {
  */
 export function addRepository(config, path) {
   /** @type {{ id: string, path: string, workers: string[] }[]} */
-  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  const repositories = Array.isArray(config.projects) ? config.projects : []
   const base = path.split('/').filter(Boolean).pop() || 'project'
   let id = base
   let suffix = 2
   while (repositories.some((repository) => repository.id === id)) id = `${base}-${suffix++}`
-  return { ...config, repositories: [...repositories, { id, path, workers: [] }] }
+  return { ...config, projects: [...repositories, { id, path, workers: [] }] }
 }
 
 /** @param {string} path */
@@ -128,7 +133,7 @@ const trimmed = (path) => path.replace(/\/+$/, '') || '/'
  * @returns {{ id: string, path: string, workers: string[] } | undefined}
  */
 export function repositoryAt(config, path) {
-  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  const repositories = Array.isArray(config.projects) ? config.projects : []
   return repositories.find((repository) => trimmed(String(repository?.path ?? '')) === trimmed(path))
 }
 
@@ -140,10 +145,10 @@ export function repositoryAt(config, path) {
  * @returns {Config}
  */
 export function setRepositoryPath(config, id, path) {
-  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  const repositories = Array.isArray(config.projects) ? config.projects : []
   return {
     ...config,
-    repositories: repositories.map((repository) => (repository.id === id ? { ...repository, path } : repository)),
+    projects: repositories.map((repository) => (repository.id === id ? { ...repository, path } : repository)),
   }
 }
 
@@ -157,11 +162,11 @@ export function setRepositoryPath(config, id, path) {
  * @returns {Config}
  */
 export function setRepositoryWorkers(config, id, workers) {
-  const repositories = Array.isArray(config.repositories) ? config.repositories : []
+  const repositories = Array.isArray(config.projects) ? config.projects : []
   const unique = [...new Set(workers.map((worker) => worker.trim()).filter(Boolean))]
   return {
     ...config,
-    repositories: repositories.map((repository) =>
+    projects: repositories.map((repository) =>
       repository.id === id
         ? { ...repository, workers: unique }
         : { ...repository, workers: (repository.workers ?? []).filter((/** @type {string} */ worker) => !unique.includes(worker)) },

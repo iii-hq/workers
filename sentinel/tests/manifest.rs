@@ -10,10 +10,7 @@ fn manifest_builder_emits_registry_metadata_without_a_binary() {
     assert_eq!(value["description"], manifest::DESCRIPTION);
     assert_eq!(value["default_config"]["database"], "primary");
     assert_eq!(value["default_config"]["investigation"]["model"], "");
-    assert_eq!(
-        value["default_config"]["repositories"],
-        serde_json::json!([])
-    );
+    assert_eq!(value["default_config"]["projects"], serde_json::json!([]));
     assert!(value["supported_targets"]
         .as_array()
         .is_some_and(|targets| targets.len() == 1));

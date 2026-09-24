@@ -335,7 +335,7 @@ containers:
     # the surface, and an ingesting monitor would capture the collection run.
     config_override:
       enabled: false
-      repositories: []
+      projects: []
       investigation: { model: "" }
     scripts: { run: cargo run --locked --bin sentinel }
   slack:

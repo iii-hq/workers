@@ -246,7 +246,7 @@ struct Fixture {
 fn config(model: &str, repositories: Vec<RepositoryConfigV1>) -> sentinel::ConfigCell {
     let mut config = WorkerConfig::default();
     config.investigation.model = model.into();
-    config.repositories = repositories;
+    config.projects = repositories;
     Arc::new(RwLock::new(Arc::new(config)))
 }
 

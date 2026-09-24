@@ -134,7 +134,7 @@ retention:
   resolved_ttl_days: 90
 investigation:
   model: ""                             # catalog id an investigation opens with; each run may pick another
-repositories:                           # where a worker's source lives on this machine
+projects:                               # where a worker's source lives on this machine (formerly `repositories`, still read)
   - id: workers
     path: /home/me/workspaces/workers
     workers: [harness, ade, queue]

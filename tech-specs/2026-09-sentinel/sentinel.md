@@ -1660,7 +1660,7 @@ triage:
 investigation:
   model: ""                         # "provider::model"; a UI pode sobrescrever por chamada. Sem tetos: o usuário assiste e para.
   provider: null
-repositories:                       # service_name → checkout local (v1: só path)
+projects:                           # service_name → checkout local (v1: só path). ⚠ Chamava-se `repositories` até 24/09; o nome antigo ainda é lido (e fica no schema como obsoleto), nunca gravado, e os dois juntos são recusados.
   - id: workers
     path: /home/me/workspaces/workers
     workers: [harness, ade, session-manager, context-manager, llm-router, state, queue]

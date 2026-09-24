@@ -37,7 +37,7 @@ config:
     cron: "0 0 3 * * *"
   investigation:
     model: ""
-  repositories: []
+  projects: []
   service_aliases: {}
   database: primary
   workers_ttl_ms: 60000

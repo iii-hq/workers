@@ -3,7 +3,7 @@
 //!
 //! Every field has a shipped default, so a partial document is valid and an
 //! unknown key is a typo rather than a silently ignored setting. What the
-//! operator actually has to choose is small: which repositories map to which
+//! operator actually has to choose is small: which projects map to which
 //! workers, and which model an investigation opens with.
 
 use std::collections::{BTreeMap, HashSet};
@@ -222,7 +222,17 @@ pub struct WorkerConfig {
     pub evidence: EvidenceConfigV1,
     pub retention: RetentionConfigV1,
     pub investigation: InvestigationConfigV1,
-    pub repositories: Vec<RepositoryConfigV1>,
+    /// Where each worker's source lives, so an investigation can read it.
+    pub projects: Vec<RepositoryConfigV1>,
+    /// The name `projects` had until 2026-09. Still read, so a value stored
+    /// under it keeps working; folded into `projects` by
+    /// [`WorkerConfig::fold_former_keys`] and never written back.
+    // An `Option`, because the schema generator lists a `skip_serializing`
+    // field as required whatever its default — and a required former name
+    // would refuse every value saved under the new one.
+    #[serde(rename = "repositories", default, skip_serializing)]
+    #[schemars(description = "Deprecated: the former name of `projects`. Read, never written.")]
+    pub former_repositories: Option<Vec<RepositoryConfigV1>>,
     /// Span `service.name` to registered worker name, for SDKs that report a
     /// binary name instead of the name the worker registered with.
     pub service_aliases: BTreeMap<String, String>,
@@ -246,7 +256,8 @@ impl Default for WorkerConfig {
             evidence: EvidenceConfigV1::default(),
             retention: RetentionConfigV1::default(),
             investigation: InvestigationConfigV1::default(),
-            repositories: Vec::new(),
+            projects: Vec::new(),
+            former_repositories: None,
             service_aliases: BTreeMap::new(),
             database: "primary".into(),
             workers_ttl_ms: 60_000,
@@ -256,6 +267,24 @@ impl Default for WorkerConfig {
 }
 
 impl WorkerConfig {
+    /// Move a value stored under a former key name to the current one. Both
+    /// set is refused: which of the two is meant cannot be guessed.
+    pub fn fold_former_keys(&mut self) -> Result<(), SentinelError> {
+        let Some(former) = self.former_repositories.take() else {
+            return Ok(());
+        };
+        if former.is_empty() {
+            return Ok(());
+        }
+        if !self.projects.is_empty() {
+            return Err(invalid(
+                "both projects and its former name repositories are set; keep projects",
+            ));
+        }
+        self.projects = former;
+        Ok(())
+    }
+
     /// Reject a configuration the worker cannot honour. A missing repository
     /// directory is deliberately *not* an error: it disables code access for
     /// those workers and shows as `exists: false` in `sentinel::status`,
@@ -321,19 +350,19 @@ impl WorkerConfig {
     fn validate_repositories(&self) -> Result<(), SentinelError> {
         let mut ids = HashSet::new();
         let mut workers = HashSet::new();
-        for repository in &self.repositories {
+        for repository in &self.projects {
             if repository.id.trim().is_empty() {
-                return Err(invalid("repository id cannot be empty"));
+                return Err(invalid("project id cannot be empty"));
             }
             if !ids.insert(repository.id.as_str()) {
                 return Err(invalid(format!(
-                    "repository id {} is configured more than once",
+                    "project id {} is configured more than once",
                     repository.id
                 )));
             }
             if !Path::new(&repository.path).is_absolute() {
                 return Err(invalid(format!(
-                    "repository {} path must be absolute",
+                    "project {} path must be absolute",
                     repository.id
                 )));
             }
@@ -346,7 +375,7 @@ impl WorkerConfig {
                 }
                 if !workers.insert(worker.as_str()) {
                     return Err(invalid(format!(
-                        "worker {worker} is mapped to more than one repository"
+                        "worker {worker} is mapped to more than one project"
                     )));
                 }
             }
@@ -418,13 +447,11 @@ impl WorkerConfig {
     /// one and only kept the id.
     pub fn repository_for_worker_id(&self, id: Option<&str>) -> Option<&RepositoryConfigV1> {
         let id = id?;
-        self.repositories
-            .iter()
-            .find(|repository| repository.id == id)
+        self.projects.iter().find(|repository| repository.id == id)
     }
 
     pub fn repository_for_worker(&self, worker: &str) -> Option<&RepositoryConfigV1> {
-        self.repositories
+        self.projects
             .iter()
             .find(|repository| repository.workers.iter().any(|name| name == worker))
     }
@@ -457,7 +484,7 @@ mod tests {
     #[test]
     fn shipped_defaults_are_idle_and_valid() {
         let config = WorkerConfig::default();
-        assert!(config.repositories.is_empty());
+        assert!(config.projects.is_empty());
         assert!(config.investigation.model.is_empty());
         assert!(config.archive.bucket.is_empty());
         assert_eq!(config.database, "primary");
@@ -487,7 +514,7 @@ mod tests {
     #[test]
     fn a_relative_repository_path_is_rejected() {
         let config = WorkerConfig {
-            repositories: vec![mapped("workers", "workspaces/workers", &["harness"])],
+            projects: vec![mapped("workers", "workspaces/workers", &["harness"])],
             ..WorkerConfig::default()
         };
         let error = config.validate().expect_err("relative path");
@@ -497,23 +524,47 @@ mod tests {
     #[test]
     fn a_missing_directory_is_allowed_so_grouping_survives_a_moved_checkout() {
         let config = WorkerConfig {
-            repositories: vec![mapped("workers", "/nonexistent/workers", &["harness"])],
+            projects: vec![mapped("workers", "/nonexistent/workers", &["harness"])],
             ..WorkerConfig::default()
         };
         config.validate().expect("a missing checkout is not fatal");
     }
 
     #[test]
+    fn a_value_stored_under_the_former_key_still_maps_its_projects() {
+        let mut config: WorkerConfig = serde_json::from_value(serde_json::json!({
+            "repositories": [{ "id": "workers", "path": "/w", "workers": ["harness"] }]
+        }))
+        .expect("the former key is still read");
+        config.fold_former_keys().expect("folded");
+        assert_eq!(config.projects[0].id, "workers");
+        assert!(config.former_repositories.is_none());
+        let written = serde_json::to_value(&config).unwrap();
+        assert!(written.get("repositories").is_none(), "never written back");
+        assert_eq!(written["projects"][0]["id"], "workers");
+
+        let mut both: WorkerConfig = serde_json::from_value(serde_json::json!({
+            "projects": [{ "id": "a", "path": "/a", "workers": [] }],
+            "repositories": [{ "id": "b", "path": "/b", "workers": [] }]
+        }))
+        .unwrap();
+        assert!(
+            both.fold_former_keys().is_err(),
+            "which one is meant cannot be guessed"
+        );
+    }
+
+    #[test]
     fn a_worker_cannot_belong_to_two_repositories() {
         let config = WorkerConfig {
-            repositories: vec![
+            projects: vec![
                 mapped("workers", "/tmp/workers", &["harness"]),
                 mapped("fork", "/tmp/fork", &["harness"]),
             ],
             ..WorkerConfig::default()
         };
         let error = config.validate().expect_err("duplicate worker mapping");
-        assert!(error.to_string().contains("more than one repository"));
+        assert!(error.to_string().contains("more than one project"));
     }
 
     #[test]
@@ -558,7 +609,7 @@ mod tests {
     #[test]
     fn repository_and_alias_lookups_answer_what_the_ingest_asks() {
         let mut config = WorkerConfig {
-            repositories: vec![mapped("workers", "/tmp/workers", &["harness", "ade"])],
+            projects: vec![mapped("workers", "/tmp/workers", &["harness", "ade"])],
             ..WorkerConfig::default()
         };
         config

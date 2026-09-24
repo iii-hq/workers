@@ -3,7 +3,7 @@
 //!
 //! Configuration is a **required** boot dependency — the worker retries until
 //! it answers rather than starting on guessed settings, because the settings
-//! decide which repositories an investigation may read.
+//! decide which projects an investigation may read.
 //!
 //! Reloads are serialized by [`iii_config_client::Reload`] with the fetch
 //! inside the lock, so two overlapping `configuration:updated` deliveries
@@ -125,9 +125,10 @@ fn is_permanent(error: &SentinelError) -> bool {
 /// every field has one, so an empty entry is a valid idle worker.
 fn parse(stored: Option<Value>) -> Result<WorkerConfig, SentinelError> {
     let value = stored.unwrap_or_else(|| json!({}));
-    let config: WorkerConfig = serde_json::from_value(value).map_err(|error| {
+    let mut config: WorkerConfig = serde_json::from_value(value).map_err(|error| {
         SentinelError::invalid(format!("stored sentinel configuration is invalid: {error}"))
     })?;
+    config.fold_former_keys()?;
     config.validate()?;
     Ok(config)
 }
@@ -224,7 +225,18 @@ mod tests {
     fn the_registration_separates_the_entry_id_from_the_form_family() {
         let spec = entry_spec();
         assert_eq!(spec.form_id, CONFIG_FORM_ID);
+        assert!(spec.schema["properties"]["projects"].is_object());
+        // The former name stays in the schema, so a stored value that still
+        // uses it validates until it is saved under the new one — and it is
+        // never required, or no value without it could be saved.
         assert!(spec.schema["properties"]["repositories"].is_object());
+        assert!(
+            spec.schema
+                .get("required")
+                .is_none_or(|required| required.as_array().is_some_and(|fields| fields.is_empty())),
+            "no field is required: every one has a default ({})",
+            spec.schema["required"]
+        );
         assert!(spec.default_value["retention"]["cron"].is_string());
     }
 }

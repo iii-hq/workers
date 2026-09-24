@@ -21,13 +21,13 @@ test('setting one field leaves its siblings alone', () => {
 })
 
 test('a relative path is refused before the round trip', () => {
-  const config = normalize({ repositories: [{ id: 'x', path: 'relative/thing', workers: [] }] })
+  const config = normalize({ projects: [{ id: 'x', path: 'relative/thing', workers: [] }] })
   assert.deepEqual(problems(config), ['x needs an absolute path'])
 })
 
 test('a worker cannot live in two checkouts', () => {
   const config = normalize({
-    repositories: [
+    projects: [
       { id: 'a', path: '/a', workers: ['harness'] },
       { id: 'b', path: '/b', workers: ['harness'] },
     ],
@@ -53,7 +53,7 @@ test('a second checkout with the same folder name gets its own id', () => {
   config = addRepository(config, '/home/dev/workers')
   config = addRepository(config, '/other/workers')
   assert.deepEqual(
-    config.repositories.map((repository) => repository.id),
+    config.projects.map((repository) => repository.id),
     ['workers', 'workers-2'],
   )
 })
@@ -61,7 +61,7 @@ test('a second checkout with the same folder name gets its own id', () => {
 import { repositoryAt, setRepositoryPath, setRepositoryWorkers } from './form-model.js'
 
 const mapped = {
-  repositories: [
+  projects: [
     { id: 'workers', path: '/w', workers: ['harness', 'queue'] },
     { id: 'iii', path: '/iii/', workers: ['iii'] },
   ],
@@ -75,12 +75,23 @@ test('picking a folder that is already mapped finds that repository', () => {
 
 test('a repository can move to another folder and keep its workers', () => {
   const next = setRepositoryPath(mapped, 'workers', '/home/w')
-  assert.deepEqual(next.repositories[0], { id: 'workers', path: '/home/w', workers: ['harness', 'queue'] })
-  assert.deepEqual(next.repositories[1], mapped.repositories[1])
+  assert.deepEqual(next.projects[0], { id: 'workers', path: '/home/w', workers: ['harness', 'queue'] })
+  assert.deepEqual(next.projects[1], mapped.projects[1])
 })
 
 test('a worker given to one repository leaves the other', () => {
   const next = setRepositoryWorkers(mapped, 'iii', ['iii', 'queue', ' queue '])
-  assert.deepEqual(next.repositories[1].workers, ['iii', 'queue'], 'trimmed, once')
-  assert.deepEqual(next.repositories[0].workers, ['harness'], 'queue moved, it is not mapped twice')
+  assert.deepEqual(next.projects[1].workers, ['iii', 'queue'], 'trimmed, once')
+  assert.deepEqual(next.projects[0].workers, ['harness'], 'queue moved, it is not mapped twice')
+})
+
+test('a value stored under the former key is read, and saved under the new one only', () => {
+  const config = normalize({ repositories: [{ id: 'workers', path: '/w', workers: ['harness'] }], enabled: true })
+  assert.deepEqual(config.projects, [{ id: 'workers', path: '/w', workers: ['harness'] }])
+  assert.equal('repositories' in config, false, 'the worker refuses both keys together')
+  assert.deepEqual(
+    normalize({ projects: [{ id: 'a', path: '/a', workers: [] }], repositories: [{ id: 'b', path: '/b', workers: [] }] }).projects,
+    [{ id: 'a', path: '/a', workers: [] }],
+    'the new key wins when both are stored',
+  )
 })
