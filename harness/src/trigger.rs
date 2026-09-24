@@ -817,15 +817,34 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
 /// in-turn, so the engine's own registration (raw: `function_id` required, no
 /// `once`/`lifecycle`/`conditions`) is NOT the contract an agent calls.
 /// Discovery must describe the intercept, or an agent that reads
-/// `functions::info` "learns" its tool schema is wrong.
+/// `functions::info` "learns" its tool schema is wrong. Only the schema keys
+/// the engine sent are replaced: an info detail gets the intercepted request
+/// (and, for the raw details — console, hooks, contract ledger — its response;
+/// the model-visible copy strips response schemas), a list row carries no
+/// schema and gets the description only.
 fn overlay_control_contract(item: &mut Value, id: &str) {
+    // Decided: the engine's negative wins over the harness's own offer. An
+    // RBAC `forbidden` or a foreign-`namespace` `not_found` passes through;
+    // an overlay never turns an error into a contract.
+    if item.get("error").is_some() {
+        return;
+    }
     let Some((description, schema)) = crate::functions::subscribe::control_contract(id) else {
         return;
     };
     if let Some(map) = item.as_object_mut() {
         map.insert("description".into(), Value::String(description.into()));
-        if map.contains_key("request_schema") {
-            map.insert("request_schema".into(), schema);
+        for key in ["request_schema", "parameters", "request_format"] {
+            if map.contains_key(key) {
+                map.insert(key.into(), schema.clone());
+            }
+        }
+        if let Some(response) = crate::functions::subscribe::control_response_schema(id) {
+            for key in ["response_schema", "response_format"] {
+                if map.contains_key(key) {
+                    map.insert(key.into(), response.clone());
+                }
+            }
         }
     }
 }
@@ -2215,5 +2234,140 @@ mod tests {
             call_digest("coder::read-file", &json!({ "path": "b" }))
         );
         assert_ne!(base, call_digest("coder::search", &json!({ "path": "a" })));
+    }
+
+    #[test]
+    fn virtual_info_overlay_matches_preload_and_preserves_real_errors() {
+        for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+            let policy = pol(&["*"]);
+            let expected = crate::agents::effective_contract(
+                id,
+                &policy,
+                &crate::discovery::snapshot_of(vec![]),
+            )
+            .unwrap();
+            for key in ["request_schema", "request_format", "parameters"] {
+                let mut detail = json!({"function_id":id, "description":"native"});
+                detail[key] = json!({"required":["function_id"]});
+                post_filter_info(&mut detail, &policy);
+                assert_eq!(
+                    crate::agents::contract_digest(
+                        id,
+                        detail["description"].as_str(),
+                        Some(detail[key].clone())
+                    ),
+                    crate::agents::digest_of(&expected)
+                );
+                assert_eq!(
+                    detail.as_object().unwrap().len(),
+                    3,
+                    "only the keys the engine sent: {detail}"
+                );
+            }
+            // A list row carries no schema: the description only.
+            let mut list = json!({"functions":[{"function_id":id, "description":"native"}]});
+            post_filter_discovery(&mut list, &policy);
+            let row = &list["functions"][0];
+            assert!(row.get("request_schema").is_none(), "{row}");
+            assert_eq!(
+                row["description"],
+                crate::functions::subscribe::control_contract(id).unwrap().0
+            );
+            // The native `{ id }` response is not what the intercept returns.
+            let mut detail = json!({
+                "function_id": id, "description": "native",
+                "request_schema": {"required": ["function_id"]},
+                "response_schema": {"required": ["id"]},
+                "response_format": {"required": ["id"]}
+            });
+            post_filter_info(&mut detail, &policy);
+            let required: Vec<&str> = detail["response_schema"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            let wrapper_field = if id.ends_with("::register_trigger") {
+                "subscription_id"
+            } else {
+                "removed"
+            };
+            assert!(required.contains(&wrapper_field), "{id}: {required:?}");
+            assert!(!required.contains(&"id"), "{id}: {required:?}");
+            assert_eq!(detail["response_format"], detail["response_schema"]);
+            for error in ["not_found", "forbidden"] {
+                let mut detail = json!({"function_id":id, "error":error});
+                let original = detail.clone();
+                post_filter_info(&mut detail, &policy);
+                assert_eq!(detail, original, "a real negative stays negative");
+            }
+            let mut detail = json!({"function_id":id, "request_schema":{}});
+            post_filter_info(&mut detail, &CompiledPolicy::from(None));
+            assert!(detail.is_null());
+            let mut batch = json!({"functions":[{"function_id":id, "request_schema":{}}]});
+            post_filter_info(&mut batch, &CompiledPolicy::from(None));
+            assert_eq!(
+                batch["functions"][0],
+                json!({"function_id":id,"error":"not available"})
+            );
+        }
+        // Only the two intercepted controls own a wrapper response.
+        assert!(
+            crate::functions::subscribe::control_response_schema("engine::functions::info")
+                .is_none()
+        );
+    }
+
+    /// The production gate is `turn_loop`'s `if !policy.allows(&call.function_id)`,
+    /// which answers `denied_result` before `subscribe::invoke` can intercept:
+    /// both exposures must plan the control under its own id, and that id must
+    /// fail the gate. (End to end, AC3 of MOT-4861 was observed live.)
+    #[test]
+    fn denied_controls_in_both_exposures_fail_the_turn_loop_gate_under_their_own_id() {
+        use crate::types::{
+            content::ContentBlock,
+            turn::{ExposeMode, FunctionPolicy},
+        };
+        for expose in [ExposeMode::Native, ExposeMode::AgentTrigger] {
+            for raw_policy in [
+                None,
+                Some(FunctionPolicy {
+                    allow: vec!["*".into()],
+                    deny: vec!["engine::*".into()],
+                    expose,
+                }),
+                Some(FunctionPolicy::default()),
+            ] {
+                let policy = CompiledPolicy::from(raw_policy.as_ref());
+                for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+                    let args =
+                        json!({"trigger_type":"state","config":{"scope":"test","key":"done"}});
+                    let mut message = crate::types::message::empty_assistant("fixture", "fixture");
+                    message.content = vec![ContentBlock::FunctionCall {
+                        id: "call".into(),
+                        function_id: if expose == ExposeMode::Native {
+                            id.into()
+                        } else {
+                            crate::policy::AGENT_TRIGGER_NAME.into()
+                        },
+                        arguments: if expose == ExposeMode::Native {
+                            args
+                        } else {
+                            json!({"function":id,"description":"fixture","payload":args})
+                        },
+                    }];
+                    let calls = crate::policy::plan_calls(&message, expose);
+                    assert_eq!(calls[0].function_id, id);
+                    assert!(
+                        !policy.allows(&calls[0].function_id),
+                        "{id} passed the gate"
+                    );
+                    let result = denied_result(&calls[0].function_id);
+                    assert!(result.is_error);
+                    assert_eq!(result.details["error"], "policy_denied");
+                    assert_eq!(result.details["function_id"], id);
+                }
+            }
+        }
     }
 }

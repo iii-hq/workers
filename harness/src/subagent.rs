@@ -311,13 +311,15 @@ fn task_function_ids(task: &str) -> Vec<String> {
 }
 
 /// Render a child's seeded `<preloaded_functions>` block and its digests.
-/// Only ids the registry lists are resolved — a Rust path, a harness-native
-/// id or a typo is dropped without a lookup — the same way a profile's
-/// preloads are ([`crate::agents::preload_contracts`]). Best effort: nothing
-/// resolvable seeds nothing.
+/// Only ids the public registry lists, or the intercepted session controls,
+/// are resolved — an internal-only id (a config-change handler, a console
+/// watch), a Rust path, a harness-native id or a typo is dropped without a
+/// lookup, never seeded as "pre-verified". Best effort: nothing resolvable
+/// seeds nothing.
 async fn seed_contracts(
     deps: &Deps,
     ids: Vec<String>,
+    policy: &crate::policy::CompiledPolicy,
 ) -> (Option<String>, BTreeMap<String, Option<String>>) {
     if ids.is_empty() {
         return (None, BTreeMap::new());
@@ -325,12 +327,16 @@ async fn seed_contracts(
     let snapshot = deps.functions().await;
     let listed: Vec<String> = ids
         .into_iter()
-        .filter(|id| snapshot.functions.iter().any(|d| d.function_id == *id))
+        .filter(|id| {
+            policy.allows(id)
+                && (crate::functions::subscribe::control_contract(id).is_some()
+                    || snapshot.functions.iter().any(|d| d.function_id == *id))
+        })
         .collect();
     if listed.is_empty() {
         return (None, BTreeMap::new());
     }
-    let (contracts, _, digests) = crate::agents::preload_contracts(deps, &listed).await;
+    let (contracts, _, digests) = crate::agents::preload_contracts(deps, &listed, policy).await;
     if contracts.is_empty() {
         return (None, BTreeMap::new());
     }
@@ -421,11 +427,28 @@ async fn seed_child(
     }
     let agent_id = child_agent_id(req.agent.as_deref(), parent_record, names_own_prompt);
     let inherited = agent_id.is_some() && req.agent.is_none();
+    let orchestrator = req
+        .options
+        .as_ref()
+        .and_then(|o| o.orchestrator)
+        .unwrap_or(false);
+
+    let ChildFunctions {
+        policy: functions,
+        dispatch_only,
+    } = child_functions(
+        cfg,
+        parent_record,
+        req.options.as_ref().and_then(|o| o.functions.as_ref()),
+        orchestrator,
+    );
+
+    let preload_policy = crate::policy::CompiledPolicy::from(functions.as_ref());
     // Resolve the agent profile (if any) before anything else fallible — an
     // unknown id must not leave a session behind.
     let agent = match agent_id {
         Some(id) => Some(
-            crate::agents::resolve(deps, cfg, id)
+            crate::agents::resolve(deps, cfg, id, &preload_policy)
                 .await
                 .map_err(|error| {
                     if inherited {
@@ -480,22 +503,6 @@ async fn seed_child(
     };
     let identity = identity.as_str();
 
-    let orchestrator = req
-        .options
-        .as_ref()
-        .and_then(|o| o.orchestrator)
-        .unwrap_or(false);
-
-    let ChildFunctions {
-        policy: functions,
-        dispatch_only,
-    } = child_functions(
-        cfg,
-        parent_record,
-        req.options.as_ref().and_then(|o| o.functions.as_ref()),
-        orchestrator,
-    );
-
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
     let requested_turns = req
         .options
@@ -526,6 +533,7 @@ async fn seed_child(
             &task_text,
             agent.as_ref().map(|a| &a.contract_digests),
         ),
+        &preload_policy,
     )
     .await;
     let mut preloaded_contracts = agent.as_ref().map(|a| a.contract_digests.clone());
@@ -1854,5 +1862,70 @@ mod tests {
         let display = merged_display(None, Some(&long)).unwrap();
         assert_eq!(display.name.chars().count(), 48);
         assert!(normalize_display(Some(&display)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn final_leaf_policy_filters_profile_and_seed_without_granting_controls() {
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let cfg = WorkerConfig::default();
+        let requested = FunctionPolicy {
+            allow: vec![
+                "engine::register_trigger".into(),
+                "engine::unregister_trigger".into(),
+            ],
+            ..Default::default()
+        };
+        for orchestrator in [false, true] {
+            let child = child_functions(&cfg, None, Some(&requested), orchestrator);
+            let policy = crate::policy::CompiledPolicy::from(child.policy.as_ref());
+            let ids = vec![
+                "engine::register_trigger".into(),
+                "engine::unregister_trigger".into(),
+            ];
+            let (profile, unavailable, _) =
+                crate::agents::preload_contracts(&deps, &ids, &policy).await;
+            assert_eq!(profile.len(), if orchestrator { 2 } else { 1 });
+            assert_eq!(unavailable.is_empty(), orchestrator);
+            let (seed, digests) = seed_contracts(&deps, ids, &policy).await;
+            let seed = seed.unwrap();
+            assert!(seed.contains("### `engine::register_trigger`"));
+            assert_eq!(
+                seed.contains("### `engine::unregister_trigger`"),
+                orchestrator
+            );
+            assert_eq!(
+                digests.contains_key("engine::unregister_trigger"),
+                orchestrator
+            );
+            assert!(policy.allows("engine::functions::info"));
+            assert!(child
+                .dispatch_only
+                .contains(&"engine::functions::info".into()));
+        }
+        let denied = crate::policy::CompiledPolicy::from(None);
+        assert_eq!(
+            seed_contracts(&deps, vec!["engine::register_trigger".into()], &denied).await,
+            (None, BTreeMap::new())
+        );
+        // A task-named id only the internal inventory knows is never seeded,
+        // and costs no lookup (the disconnected engine would hang it).
+        let internal = "harness::on-functions-change";
+        crate::discovery::apply_with_internal(
+            &deps.functions,
+            vec![],
+            Some(std::collections::BTreeSet::from([internal.to_string()])),
+        )
+        .await;
+        let all = crate::policy::CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let seeded = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            seed_contracts(&deps, vec![internal.into()], &all),
+        )
+        .await
+        .expect("an internal-only id is dropped without a lookup");
+        assert_eq!(seeded, (None, BTreeMap::new()));
     }
 }
