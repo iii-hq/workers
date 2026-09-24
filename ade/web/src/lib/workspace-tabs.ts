@@ -427,30 +427,20 @@ function isValidTab(v: unknown): v is WorkspaceTab {
   )
 }
 
-/**
- * A fresh workspace: one tab with the conversation alone. Traces stay one
- * command away (palette, `page.traces`, a pane's screen picker) but no longer
- * greet a first-time user. Only used when no layout is saved — a stored
- * layout, including one with Traces open, is never rewritten.
- */
+/** A fresh workspace: the classic chat-beside-traces layout, one tab. */
 export function defaultTabs(): WorkspaceTab[] {
-  return [{ id: 'tab-home', columns: 1, screens: [CHAT_SCREEN] }]
+  return [{ id: 'tab-home', columns: 2, screens: [CHAT_SCREEN, 'traces'] }]
 }
 
 /**
- * The home tab — the one the strip lands on when no active pointer is
- * recorded (or the recorded one no longer exists): the chat-only tab a fresh
- * workspace starts with, or the classic chat-beside-traces tab of layouts
- * saved before that default changed.
+ * The classic chat-beside-traces tab — the one the strip lands on when no
+ * active pointer is recorded (or the recorded one no longer exists).
  */
 export function isDefaultLayoutTab(tab: WorkspaceTab): boolean {
-  return (
-    tab.screens[0] === CHAT_SCREEN &&
-    (tab.screens.length === 1 || tab.screens[1] === 'traces')
-  )
+  return tab.screens[0] === CHAT_SCREEN && tab.screens[1] === 'traces'
 }
 
-/** `activeTab` resolution: the pointer's tab, else the home tab, else first. */
+/** `activeTab` resolution: the pointer's tab, else chat+traces, else first. */
 export function resolveActiveTab(
   tabs: WorkspaceTab[],
   pointer: string | undefined,

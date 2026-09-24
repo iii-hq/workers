@@ -7,7 +7,6 @@ import {
   deepLinkScreen,
   defaultTabs,
   isChatScreen,
-  isDefaultLayoutTab,
   MAX_COLUMNS,
   type OpenDirection,
   parseActivation,
@@ -263,42 +262,6 @@ describe('resolveActiveTab', () => {
 
   it('falls back to the first tab when no chat+traces tab exists', () => {
     expect(resolveActiveTab([solo], undefined)).toBe(solo)
-  })
-
-  it('lands on the chat-only home tab of a fresh workspace', () => {
-    const [home] = defaultTabs()
-    expect(resolveActiveTab([solo, home], undefined)).toBe(home)
-    expect(resolveActiveTab([solo, home], 'closed')).toBe(home)
-  })
-})
-
-describe('fresh workspace', () => {
-  it('starts with the conversation alone — no Traces pane', () => {
-    expect(defaultTabs()).toEqual([
-      { id: 'tab-home', columns: 1, screens: ['chat'] },
-    ])
-    expect(defaultTabs()[0].screens).not.toContain('traces')
-  })
-
-  it('still recognizes a saved chat+traces layout as the home tab', () => {
-    const saved: WorkspaceTab = {
-      id: 'tab-home',
-      columns: 2,
-      screens: ['chat', 'traces'],
-    }
-    expect(isDefaultLayoutTab(saved)).toBe(true)
-    expect(isDefaultLayoutTab(defaultTabs()[0])).toBe(true)
-    expect(isDefaultLayoutTab({ id: 'w', screens: ['chat', 'workers'] })).toBe(
-      false,
-    )
-    expect(isDefaultLayoutTab({ id: 'w', screens: ['workers'] })).toBe(false)
-  })
-
-  it('keeps a saved layout with Traces open exactly as stored', () => {
-    const stored = {
-      tabs: [{ id: 'tab-home', columns: 2, screens: ['chat', 'traces'] }],
-    }
-    expect(parseWorkspaceTabs(stored)).toEqual(stored.tabs)
   })
 })
 

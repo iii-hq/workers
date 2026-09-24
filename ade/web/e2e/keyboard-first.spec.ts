@@ -75,13 +75,12 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   ).toBeVisible()
   await page.keyboard.press('Escape')
 
-  // A fresh workspace is the chat alone; a second pane, then the modified
-  // braces move the keyboard between panes, and the palette's "open" lands
-  // the keyboard in the page it opened.
+  // A second pane, then the modified braces move the keyboard between panes, and the
+  // palette's "open" lands the keyboard in the page it opened.
   await settle(page)
-  await expect(page.locator('[data-workspace-pane-id]')).toHaveCount(1)
-  await page.keyboard.press(`${paneModifier}+]`)
   await expect(page.locator('[data-workspace-pane-id]')).toHaveCount(2)
+  await page.keyboard.press(`${paneModifier}+]`)
+  await expect(page.locator('[data-workspace-pane-id]')).toHaveCount(3)
   // The new pane opens with its search focused, where `}` is a character.
   await pane(page, 0).focus()
   const focusedPane = page.locator('[data-workspace-pane-id]:focus-within')

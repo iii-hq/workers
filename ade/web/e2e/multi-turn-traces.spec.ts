@@ -34,23 +34,7 @@ test('shows two traces and exposes function arguments in trace events', async ({
     }),
   ).toHaveCount(1)
 
-  // A fresh workspace starts with the conversation alone (sending does not
-  // pull Traces in); the user opens it explicitly, here through the palette.
   const traces = page.getByRole('region', { name: 'traces' })
-  await expect(traces).toHaveCount(0)
-  await page.evaluate(() => {
-    const doc = (
-      globalThis as {
-        document?: { activeElement?: { blur?: () => void } | null }
-      }
-    ).document
-    doc?.activeElement?.blur?.()
-  })
-  await page.keyboard.press('ControlOrMeta+k')
-  const palette = page.getByRole('dialog')
-  await palette.getByRole('textbox').fill('go to traces')
-  await palette.getByRole('button', { name: /^traces/ }).click()
-  await expect(traces).toBeVisible()
   // The list follows the active chat (MOT-4479): scoped to this session,
   // flat (grouping is suspended while scoped), with a dismissable chip.
   // Assert the scoped arrival, then clear the scope to exercise the

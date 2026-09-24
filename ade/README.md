@@ -231,8 +231,7 @@ startup-only.
 The workspace layout itself (tabs, panes, active tab) is **not** part of the
 entry: it changes on every click, and the configuration YAML is meant to be
 committed. It lives in `<data_dir>/workspace.json` (atomic writes; a missing
-or unreadable file starts from the default tab with the chat alone — Traces
-opens on demand, and a saved layout with Traces open is kept as stored). Entries written
+or unreadable file starts from the default chat + traces tab). Entries written
 by older Console versions still carry a `workspace` section — on boot the
 worker imports it into the file once (unless the file already exists) and
 removes it from the entry.
