@@ -122,6 +122,11 @@ interface MessageListProps {
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
+  /**
+   * Interrupt one running call from its card (`harness::function::cancel`);
+   * absent when the backend has no per-call cancellation.
+   */
+  onCancelCall?: (sessionId: string, functionTriggerId: string) => Promise<void>
   /** Open the model/provider picker from the empty provider state. */
   onConfigureProvider?: () => void
   /** Current child-session identity shown by direct spawn seed messages. */
@@ -552,6 +557,7 @@ export function MessageList({
   onAlwaysAllow,
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
+  onCancelCall,
   onConfigureProvider,
   spawnContext,
   agentName,
@@ -1279,6 +1285,7 @@ export function MessageList({
                     onAlwaysAllow={onAlwaysAllow}
                     onResolveFilesystemAccess={onResolveFilesystemAccess}
                     onManageFilesystemAccess={onManageFilesystemAccess}
+                    onCancelCall={onCancelCall}
                     workingDir={workingDir}
                     agentName={agentName}
                   />
@@ -1364,6 +1371,7 @@ export function MessageList({
                   onAlwaysAllow={onAlwaysAllow}
                   onResolveFilesystemAccess={onResolveFilesystemAccess}
                   onManageFilesystemAccess={onManageFilesystemAccess}
+                  onCancelCall={onCancelCall}
                   workingDir={workingDir}
                   registration={registrations.get(m.id)}
                 />
@@ -1502,6 +1510,7 @@ interface FunctionTriggerGroupProps {
   onAlwaysAllow?: MessageListProps['onAlwaysAllow']
   onResolveFilesystemAccess?: MessageListProps['onResolveFilesystemAccess']
   onManageFilesystemAccess?: MessageListProps['onManageFilesystemAccess']
+  onCancelCall?: MessageListProps['onCancelCall']
   workingDir?: string | null
   agentName?: string
   /** External landing target — a hidden matching item expands the group. */
@@ -1598,6 +1607,7 @@ function FunctionTriggerGroup({
   onAlwaysAllow,
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
+  onCancelCall,
   workingDir,
   agentName,
   focusMessageId,
@@ -1821,6 +1831,7 @@ function FunctionTriggerGroup({
                           onAlwaysAllow={onAlwaysAllow}
                           onResolveFilesystemAccess={onResolveFilesystemAccess}
                           onManageFilesystemAccess={onManageFilesystemAccess}
+                          onCancelCall={onCancelCall}
                           workingDir={workingDir}
                         />
                       </LiveTimelineRow>

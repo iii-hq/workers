@@ -218,6 +218,10 @@ export interface HarnessStopResponse {
   stopping: boolean
 }
 
+export interface HarnessFunctionCancelResponse {
+  cancelling: boolean
+}
+
 /** Whether a status report represents a turn that is still in flight. */
 export function isTurnActive(status: HarnessTurnStatus): boolean {
   return status === 'running' || status === 'awaiting_functions'
@@ -286,6 +290,32 @@ export async function stopTurn(
     ...(turnId ? { turn_id: turnId } : {}),
   })
   return Boolean(res?.stopping)
+}
+
+/**
+ * Trigger `harness::function::cancel`: interrupt ONE in-flight function call
+ * without ending the turn. The harness stops awaiting the target and settles
+ * the call as a `cancelled` error result the model sees next; the target
+ * itself may keep running on its worker (the engine has no cancel primitive).
+ * Omit `turnId` to target the session's current turn. Resolves `false` when
+ * there was nothing to interrupt (call already settled, pending approval, no
+ * live turn).
+ */
+export async function cancelCall(
+  client: Pick<IiiClient, 'trigger'>,
+  sessionId: string,
+  functionCallId: string,
+  turnId?: string,
+): Promise<boolean> {
+  const res = await client.trigger<HarnessFunctionCancelResponse>(
+    'harness::function::cancel',
+    {
+      session_id: sessionId,
+      function_call_id: functionCallId,
+      ...(turnId ? { turn_id: turnId } : {}),
+    },
+  )
+  return Boolean(res?.cancelling)
 }
 
 /**

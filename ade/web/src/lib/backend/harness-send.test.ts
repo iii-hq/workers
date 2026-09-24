@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  cancelCall,
   getTurnStatus,
   isTurnActive,
   predictedUserEntryId,
@@ -61,6 +62,32 @@ describe('stopTurn', () => {
       session_id: 's-1',
       turn_id: 't-9',
     })
+  })
+})
+
+describe('cancelCall', () => {
+  it('triggers harness::function::cancel for the call and reports the flag', async () => {
+    const client = fakeClient(() => ({ cancelling: true }))
+    expect(await cancelCall(client, 's-1', 'call_a')).toBe(true)
+    expect(client.trigger).toHaveBeenCalledWith('harness::function::cancel', {
+      session_id: 's-1',
+      function_call_id: 'call_a',
+    })
+  })
+
+  it('passes turn_id when supplied and reports a refused cancel as false', async () => {
+    const client = fakeClient(() => ({ cancelling: false }))
+    expect(await cancelCall(client, 's-1', 'call_a', 't-9')).toBe(false)
+    expect(client.trigger).toHaveBeenCalledWith('harness::function::cancel', {
+      session_id: 's-1',
+      function_call_id: 'call_a',
+      turn_id: 't-9',
+    })
+  })
+
+  it('treats a missing response as not cancelling', async () => {
+    const client = fakeClient(() => undefined)
+    expect(await cancelCall(client, 's-1', 'call_a')).toBe(false)
   })
 })
 

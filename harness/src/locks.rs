@@ -43,6 +43,11 @@ impl SessionLocks {
 /// channels: a fire before subscribe is still observed. Keyed by turn_id so a
 /// stale fire can never cancel a newer turn. Same single-process caveat as
 /// `SessionLocks` above.
+///
+/// The same primitive backs `Deps::call_cancels`, the per-call signals
+/// `harness::function::cancel` fires: there the key is [`call_cancel_key`]
+/// (turn + call id) and the tool phase races the in-flight target invocation
+/// against `wait_fired` on it.
 #[derive(Clone, Default)]
 pub struct TurnCancels {
     map: Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
@@ -79,11 +84,38 @@ impl TurnCancels {
         let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
         map.remove(turn_id);
     }
+
+    /// Drop every per-call signal of `turn_id` (keys from [`call_cancel_key`])
+    /// once the turn is terminal: a cancel fired for a call the loop never
+    /// raced (finalized first, or a locally intercepted control call) would
+    /// otherwise linger.
+    pub fn clear_turn_calls(&self, turn_id: &str) {
+        let prefix = call_cancel_key(turn_id, "");
+        let mut map = self.map.lock().unwrap_or_else(|p| p.into_inner());
+        map.retain(|key, _| !key.starts_with(&prefix));
+    }
+}
+
+/// The `Deps::call_cancels` key for one function call: scoped by turn so a
+/// provider call id reused across turns (or sessions) never shares a signal.
+pub fn call_cancel_key(turn_id: &str, function_call_id: &str) -> String {
+    format!("{turn_id}/{function_call_id}")
+}
+
+/// Resolve once `rx`'s signal is fired. Level-triggered: a fire before the
+/// call is observed immediately. A signal whose sender was dropped (the key
+/// was cleared) stays pending forever — a cleared key must never read as a
+/// cancel, so a `select!` racing this against a target invocation always
+/// lets the real result win.
+pub async fn wait_fired(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    if rx.wait_for(|fired| *fired).await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionLocks, TurnCancels};
+    use super::{call_cancel_key, wait_fired, SessionLocks, TurnCancels};
     use crate::types::turn::SkillContext;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
@@ -177,5 +209,70 @@ mod tests {
         assert!(!cancels.is_fired("t2"));
         cancels.clear("t1");
         assert!(!cancels.is_fired("t1"));
+    }
+
+    /// A per-call key is scoped by turn: the same provider call id in two
+    /// turns (or sessions) never shares a signal, so a stale cancel from an
+    /// earlier turn can't interrupt a later call.
+    #[test]
+    fn call_cancel_keys_are_scoped_by_turn() {
+        assert_eq!(call_cancel_key("t1", "call_a"), "t1/call_a");
+        assert_ne!(
+            call_cancel_key("t1", "call_a"),
+            call_cancel_key("t2", "call_a")
+        );
+        assert_ne!(
+            call_cancel_key("t1", "call_a"),
+            call_cancel_key("t1", "call_b")
+        );
+    }
+
+    /// Finalizing a turn drops its per-call signals and nobody else's.
+    #[test]
+    fn clear_turn_calls_drops_only_that_turns_call_signals() {
+        let cancels = TurnCancels::new();
+        cancels.fire(&call_cancel_key("t1", "call_a"));
+        cancels.fire(&call_cancel_key("t1", "call_b"));
+        cancels.fire(&call_cancel_key("t10", "call_a"));
+        cancels.clear_turn_calls("t1");
+        assert!(!cancels.is_fired(&call_cancel_key("t1", "call_a")));
+        assert!(!cancels.is_fired(&call_cancel_key("t1", "call_b")));
+        assert!(cancels.is_fired(&call_cancel_key("t10", "call_a")));
+    }
+
+    /// `wait_fired` resolves once the signal is set — including when it was
+    /// set BEFORE the wait began (level-triggered, like the chat backstop).
+    #[tokio::test]
+    async fn wait_fired_resolves_on_a_prior_or_later_fire() {
+        let cancels = TurnCancels::new();
+        cancels.fire("early");
+        let mut rx = cancels.watch("early");
+        tokio::time::timeout(std::time::Duration::from_millis(100), wait_fired(&mut rx))
+            .await
+            .expect("a prior fire is observed immediately");
+
+        let mut rx = cancels.watch("late");
+        let waiter = tokio::spawn(async move { wait_fired(&mut rx).await });
+        tokio::task::yield_now().await;
+        cancels.fire("late");
+        tokio::time::timeout(std::time::Duration::from_millis(100), waiter)
+            .await
+            .expect("a later fire wakes the waiter")
+            .unwrap();
+    }
+
+    /// Clearing a key the loop is still racing against must NOT read as a
+    /// cancel: the waiter stays pending so the real call result wins.
+    #[tokio::test]
+    async fn wait_fired_stays_pending_when_the_signal_is_cleared() {
+        let cancels = TurnCancels::new();
+        let mut rx = cancels.watch("gone");
+        cancels.clear("gone");
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_millis(50), wait_fired(&mut rx)).await;
+        assert!(
+            outcome.is_err(),
+            "a cleared signal must never resolve as fired"
+        );
     }
 }

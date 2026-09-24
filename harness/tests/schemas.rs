@@ -38,6 +38,7 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::turn",
             "harness::function::trigger",
             "harness::function::resolve",
+            "harness::function::cancel",
             "harness::stop",
             "harness::status",
             "harness::system-prompt::get",

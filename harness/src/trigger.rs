@@ -841,6 +841,40 @@ pub fn denied_result(function_id: &str) -> ResultData {
     }
 }
 
+/// The `details.error` tag of a call interrupted by `harness::function::cancel`.
+pub const CANCELLED_ERROR: &str = "cancelled";
+
+/// The `is_error` result for a call the user cancelled while it was in flight
+/// (`harness::function::cancel`). The harness stopped awaiting the target; the
+/// engine has no way to interrupt the worker that is running it, so the text
+/// tells the model the effects are unknown rather than undone. The turn goes
+/// on — this is the result the model reasons over next.
+pub fn cancelled_result(function_id: &str) -> ResultData {
+    let msg = format!(
+        "{function_id} was cancelled by the user before it returned. Its result was discarded and \
+         the function may still be running on its worker: do not assume it completed, and do not \
+         assume its side effects were undone. Ask the user how to proceed or take a different \
+         approach instead of retrying the same call."
+    );
+    ResultData {
+        content: vec![ContentBlock::text(msg.clone())],
+        is_error: true,
+        details: json!({
+            "error": CANCELLED_ERROR,
+            "cancelled_by": "user",
+            "function_id": function_id,
+            "message": msg,
+        }),
+    }
+}
+
+/// Whether `data` is a [`cancelled_result`]. A cancellation is the user's
+/// choice, not the target's failure, so it must not feed the repeated-failure
+/// short-circuit: the same call after a cancel has to run again.
+pub fn is_cancelled_result(data: &ResultData) -> bool {
+    data.is_error && data.details.get("error").and_then(Value::as_str) == Some(CANCELLED_ERROR)
+}
+
 /// The `is_error` result for an `agent_trigger` call with no resolvable
 /// target — arguments were empty, null, or unparseable (local models emit
 /// malformed JSON args). Dispatching the wrapper name to the engine would
@@ -2213,5 +2247,47 @@ mod tests {
             call_digest("coder::read-file", &json!({ "path": "b" }))
         );
         assert_ne!(base, call_digest("coder::search", &json!({ "path": "a" })));
+    }
+
+    /// The result a user cancel settles a call with: an error the model can
+    /// recognise by tag, whose text says the effects are unknown — not undone.
+    #[test]
+    fn cancelled_result_is_a_tagged_error_that_warns_about_unknown_effects() {
+        let data = cancelled_result("shell::exec");
+        assert!(data.is_error);
+        assert_eq!(data.details["error"], CANCELLED_ERROR);
+        assert_eq!(data.details["cancelled_by"], "user");
+        assert_eq!(data.details["function_id"], "shell::exec");
+        let text = match &data.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            other => panic!("expected text, got {other:?}"),
+        };
+        assert!(text.contains("cancelled by the user"));
+        assert!(text.contains("may still be running"));
+        assert!(is_cancelled_result(&data));
+        assert!(!is_cancelled_result(&failure("boom")));
+        assert!(!is_cancelled_result(&success("ok")));
+        // The tag alone is not enough: a success cannot read as cancelled.
+        assert!(!is_cancelled_result(&ResultData {
+            is_error: false,
+            ..cancelled_result("shell::exec")
+        }));
+    }
+
+    /// Two cancels of the same call must not trip the repeated-failure
+    /// breaker: the loop skips `note_call_result` for them, and even if one
+    /// slipped through it is not the target's error.
+    #[test]
+    fn cancellations_are_excluded_from_the_repeated_failure_breaker_by_the_caller() {
+        let key = call_digest("shell::exec", &json!({ "command": "make" })).unwrap();
+        let mut failed = BTreeMap::new();
+        for _ in 0..REPEATED_FAILURE_LIMIT + 1 {
+            let data = cancelled_result("shell::exec");
+            if !is_cancelled_result(&data) {
+                note_call_result(&mut failed, &key, &data);
+            }
+        }
+        assert!(failed.is_empty());
+        assert!(repeated_failure_result(&failed, &key, "shell::exec").is_none());
     }
 }

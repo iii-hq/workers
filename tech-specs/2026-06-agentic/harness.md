@@ -138,6 +138,14 @@ records `TurnStatus` `cancelled`, and sets `session::set-status done`. When the 
 spawned children, the stop cascades to them before the turn finalises (see
 [Sub-agents](#sub-agents-harnessspawn)).
 
+One in-flight function call can also be interrupted *without* ending the turn:
+[`harness::function::cancel`](#harnessfunctioncancel) fires a per-call signal the tool phase races
+the target invocation against. The harness stops awaiting the target (the engine has no way to
+reach the worker running it, so it may finish unobserved), appends a `function_result` with
+`is_error: true` and `details.error: "cancelled"` for the call, and the loop continues — the model
+sees the interruption as the call's result and decides what to do next. A cancelled call is not a
+repeated failure: it neither counts toward nor clears the identical-failure short-circuit.
+
 The harness maps the turn lifecycle onto the session's coarse status: `working` while a turn is
 running or awaiting functions, `done` when it ends `completed` or `cancelled`, and `error` (with a
 short `reason`) when it ends `failed`. The internal `TurnStatus` (below) is finer-grained and stays
@@ -580,6 +588,8 @@ For operators wiring hooks and developers writing them:
   function; capture its result — or report it `pending`.
 - `harness::function::resolve` — Internal: deliver a pending call's result and resume the parked
   turn.
+- `harness::function::cancel` — Control-plane: interrupt one in-flight function call without
+  cancelling the turn; the call settles as a `cancelled` error result.
 - `harness::stop` — Request cancellation of an in-flight turn (cascades to spawned children).
 - `harness::status` — Read the current turn status for a session.
 
@@ -591,7 +601,8 @@ Deny-by-default for in-run agents (see [README § Security model](README.md#secu
   turns can fork unbounded loops outside any `max_turns` guard; `harness::turn` (internal);
   `harness::function::trigger`
   (forged call ids, policy re-entry); `harness::function::resolve` (forged results for parked
-  calls); `harness::stop`.
+  calls); `harness::function::cancel` (a model discarding its own calls' results);
+  `harness::stop`.
 - **Allow (gated):** `harness::spawn` — the controlled alternative to `send`: the harness itself
   enforces depth / fan-out / turn budgets and policy subsetting (see
   [Sub-agents](#sub-agents-harnessspawn)), and the fail-closed dispatch policy still applies — a
@@ -955,6 +966,34 @@ type FunctionResolveResponse = {
   resolved: boolean;          // false when the call is unknown, already done, or (execute) not held
   turn_resumed: boolean;      // true when this resolve re-enqueued the turn
                               // (deliver: last pending call settled; execute: always)
+};
+```
+
+### `harness::function::cancel`
+
+Interrupt **one** in-flight function call without cancelling the turn — the console's per-card
+stop button. Fires a per-call, level-triggered signal the tool phase races the target invocation
+against (see [The loop](#the-loop)); on cancel the harness stops awaiting the target, appends the
+call's `function_result` with `is_error: true` and `details.error: "cancelled"`, flips the
+checkpoint to `done`, and the loop continues. The target itself is **not** stopped — the engine
+has no cancellation primitive — so the result text tells the model its effects are unknown, not
+undone. Lock-free by design: the tool phase holds the session lock across the invocation, so a
+handler that took the lock would wait for the very call it is meant to interrupt.
+
+Denied to in-run agents (control-plane only). Calls parked for approval are not cancelled here —
+denying them via [`harness::function::resolve`](#harnessfunctionresolve) is their cancel.
+
+- Invocation: **sync**
+
+```typescript
+type FunctionCancelRequest = {
+  session_id: string;
+  turn_id?: string;           // omitted = current turn
+  function_call_id: string;   // the console card's functionTriggerId
+};
+type FunctionCancelResponse = {
+  cancelling: boolean;        // false: no turn, other/terminal turn, call already done, or
+                              // call pending approval (deny it instead)
 };
 ```
 

@@ -1,4 +1,4 @@
-import { Check, Copy, Loader2, X } from 'lucide-react'
+import { Check, Copy, Loader2, Square, X } from 'lucide-react'
 import {
   type ReactNode,
   useEffect,
@@ -89,6 +89,14 @@ interface FunctionTriggerCardProps {
   ) => void | Promise<void>
   /** Opens the filesystem-access management dialog (§5 of the spec). */
   onManageFilesystemAccess?: () => void
+  /**
+   * Interrupt this call while it runs (`harness::function::cancel`). When
+   * provided, a stop button renders in the header of a running card; the
+   * component shows a spinner until the message settles and a warn row if
+   * the promise rejects. The turn goes on — the call settles as a
+   * `cancelled` error the model sees next (see `isCancelledOutput`).
+   */
+  onCancel?: () => void | Promise<void>
   /** Conversation's session workspace — shown as "always allowed" context. */
   workingDir?: string | null
 }
@@ -124,6 +132,25 @@ export function isDeniedOutput(v: unknown): boolean {
     !Array.isArray(details) &&
     (details as Record<string, unknown>).status === 'denied' &&
     'denied_by' in (details as Record<string, unknown>)
+  )
+}
+
+/**
+ * A user cancel from the card's stop button: the harness stopped awaiting the
+ * call and settled it with `details.error: "cancelled"` (harness
+ * `trigger::cancelled_result`), preserved under `error.details` by
+ * `functionResultOutput`. "Failed" would blame the target for the user's
+ * choice, so the copy says "Cancelled" instead.
+ */
+export function isCancelledOutput(v: unknown): boolean {
+  if (!isErrorOutput(v)) return false
+  const details = (v as { error?: { details?: unknown } }).error?.details
+  return (
+    !!details &&
+    typeof details === 'object' &&
+    !Array.isArray(details) &&
+    (details as Record<string, unknown>).error === 'cancelled' &&
+    (details as Record<string, unknown>).cancelled_by === 'user'
   )
 }
 
@@ -406,6 +433,7 @@ function FunctionTriggerStatusIcon({
 }
 
 interface FunctionTriggerStatusCopyProps {
+  cancelled: boolean
   denied: boolean
   description?: string
   durationMs?: number
@@ -425,6 +453,7 @@ interface FunctionTriggerStatusCopyProps {
  * a call settles; inactive layers are hidden from both interaction and AT.
  */
 function FunctionTriggerStatusCopy({
+  cancelled,
   denied,
   description,
   durationMs,
@@ -480,7 +509,9 @@ function FunctionTriggerStatusCopy({
             <>Triggering </>
           )
         ) : layer === 'error' ? (
-          denied ? null : (
+          denied ? null : cancelled ? (
+            <>Cancelled </>
+          ) : (
             <>Failed </>
           )
         ) : ran ? (
@@ -555,6 +586,7 @@ export function FunctionTriggerCard({
   onAlwaysAllow,
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
+  onCancel,
   workingDir,
 }: FunctionTriggerCardProps) {
   const pending = !!message.pendingApproval
@@ -635,6 +667,38 @@ export function FunctionTriggerCard({
     'approve' | 'deny' | 'always_allow' | null
   >(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // Stop-button state. `cancelling` stays set after the RPC resolves: the card
+  // settles when the cancelled result pairs in (running flips off), and the
+  // effect below clears both so a card that runs again starts clean.
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  const runCancel = async () => {
+    if (!onCancel || cancelling) return
+    setCancelError(null)
+    setCancelling(true)
+    try {
+      await onCancel()
+    } catch (err) {
+      setCancelling(false)
+      setCancelError(err instanceof Error ? err.message : String(err))
+    }
+  }
+  useEffect(() => {
+    if (!running) {
+      setCancelling(false)
+      setCancelError(null)
+    }
+  }, [running])
+  // The stop affordance: only a call that is executing can be interrupted —
+  // a pending one is denied, a settled one is history.
+  const cancelButton =
+    running && !pending && onCancel ? (
+      <FunctionTriggerCancelButton
+        functionId={message.functionId}
+        cancelling={cancelling}
+        onClick={() => void runCancel()}
+      />
+    ) : null
 
   const customPreview = unloaded
     ? null
@@ -699,6 +763,9 @@ export function FunctionTriggerCard({
   // A gate denial is an error envelope, but the function never ran —
   // "failed" would misreport a rejection as a failed execution.
   const denied = errored && isDeniedOutput(message.output)
+  // A user cancel is an error envelope too, but the user's choice — not the
+  // target failing.
+  const cancelled = errored && isCancelledOutput(message.output)
   // "triggered" is an execution claim, so a settled card only makes it when
   // the call actually ran. Denials are recognized by the gate's envelope in
   // the error details (see isDeniedOutput) — a plain run error keeps the
@@ -748,36 +815,51 @@ export function FunctionTriggerCard({
           disabled={running}
           className="@container function-trigger-active-collapsible"
         >
-          <CollapsibleCardTrigger
-            className="p-4 select-none sm:p-3"
-            aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${message.functionId}`}
-          >
-            <FunctionRendererPresence
-              presentation={customDisplay != null ? 'display' : 'terminal'}
-            >
-              {customDisplay ?? (
-                <div className="flex min-w-0 items-center gap-2">
-                  <FunctionTriggerStatusIcon expanded status={status} />
-                  <TimelineActivityTrail kind="function" />
-                  <div className="min-w-0 flex-1 font-mono text-[0.8125rem] text-ink">
-                    <FunctionTriggerStatusCopy
-                      denied={denied}
-                      description={description}
-                      durationMs={message.durationMs}
-                      expanded
-                      filesystemAccess={!!filesystemAccess}
-                      functionId={message.functionId}
-                      hideGenericVerb={!!hideGenericVerb}
-                      preview={preview}
-                      ran={ran}
-                      status={status}
-                      unresolvedTarget={!!message.unresolvedTarget}
-                    />
-                  </div>
-                </div>
+          {/* The trigger is a <button>: the stop control has to be its
+              sibling (nested buttons are invalid HTML), so a running card
+              with a cancel handler wraps both in one row. */}
+          <div className={cn(cancelButton && 'flex items-stretch')}>
+            <CollapsibleCardTrigger
+              className={cn(
+                'p-4 select-none sm:p-3',
+                cancelButton && 'min-w-0 flex-1',
               )}
-            </FunctionRendererPresence>
-          </CollapsibleCardTrigger>
+              aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${message.functionId}`}
+            >
+              <FunctionRendererPresence
+                presentation={customDisplay != null ? 'display' : 'terminal'}
+              >
+                {customDisplay ?? (
+                  <div className="flex min-w-0 items-center gap-2">
+                    <FunctionTriggerStatusIcon expanded status={status} />
+                    <TimelineActivityTrail kind="function" />
+                    <div className="min-w-0 flex-1 font-mono text-[0.8125rem] text-ink">
+                      <FunctionTriggerStatusCopy
+                        cancelled={cancelled}
+                        denied={denied}
+                        description={description}
+                        durationMs={message.durationMs}
+                        expanded
+                        filesystemAccess={!!filesystemAccess}
+                        functionId={message.functionId}
+                        hideGenericVerb={!!hideGenericVerb}
+                        preview={preview}
+                        ran={ran}
+                        status={status}
+                        unresolvedTarget={!!message.unresolvedTarget}
+                      />
+                    </div>
+                  </div>
+                )}
+              </FunctionRendererPresence>
+            </CollapsibleCardTrigger>
+            {cancelButton ? (
+              <div className="flex items-center pr-3">{cancelButton}</div>
+            ) : null}
+          </div>
+          {cancelError ? (
+            <FunctionTriggerCancelError message={cancelError} />
+          ) : null}
           <CollapsibleCardContent>
             <Tabs
               value={tab}
@@ -868,6 +950,7 @@ export function FunctionTriggerCard({
               )}
             >
               <FunctionTriggerStatusCopy
+                cancelled={cancelled}
                 denied={denied}
                 description={description}
                 durationMs={message.durationMs}
@@ -916,7 +999,21 @@ export function FunctionTriggerCard({
             <TimelineActivityDisclosure />
           )}
         </button>
+        {cancelButton ? (
+          <div
+            className={cn(
+              'flex items-center',
+              expandedSurface ? 'pr-2' : 'pr-1',
+            )}
+          >
+            {cancelButton}
+          </div>
+        ) : null}
       </div>
+
+      {cancelError ? (
+        <FunctionTriggerCancelError message={cancelError} />
+      ) : null}
 
       {open && unloaded ? (
         <div className="border-t border-rule-2">
@@ -1090,6 +1187,63 @@ export function FunctionTriggerCard({
         </div>
       ) : null}
     </section>
+  )
+}
+
+/**
+ * The running card's stop control (`harness::function::cancel`). Always
+ * visible while the call runs — it is the one action a long call offers, so
+ * it does not hide behind hover like the copy affordance. A square, as in
+ * the composer's stop, not an ✕: the call is interrupted, not dismissed. The
+ * 24px control keeps a 48px hit area on coarse pointers via the overlay span.
+ */
+function FunctionTriggerCancelButton({
+  functionId,
+  cancelling,
+  onClick,
+}: {
+  functionId: string
+  cancelling: boolean
+  onClick: () => void
+}) {
+  const label = cancelling ? `cancelling ${functionId}` : `cancel ${functionId}`
+  return (
+    <button
+      type="button"
+      data-message-action="cancel"
+      onClick={onClick}
+      disabled={cancelling}
+      aria-label={label}
+      title={cancelling ? 'cancelling…' : 'cancel this call'}
+      className="relative flex size-6 shrink-0 cursor-pointer items-center justify-center text-ink-ghost transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:hover:text-ink-ghost"
+    >
+      <span
+        className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+        aria-hidden="true"
+      />
+      {cancelling ? (
+        <Loader2
+          className="size-4 shrink-0 animate-spin motion-reduce:animate-none"
+          aria-hidden
+        />
+      ) : (
+        <Square className="size-4 shrink-0 fill-current" aria-hidden />
+      )}
+    </button>
+  )
+}
+
+/** A rejected cancel (nothing left to interrupt, RPC failure) — warn, not
+    error: the call itself is unaffected. */
+function FunctionTriggerCancelError({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      data-function-trigger-cancel-error=""
+      className="border-t border-rule-2 px-3 py-1.5 font-mono text-[12px] text-warn"
+    >
+      {message}
+    </div>
   )
 }
 

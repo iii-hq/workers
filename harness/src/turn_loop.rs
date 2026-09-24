@@ -1587,7 +1587,21 @@ async fn finish_step(
             // Single invocation chokepoint: subscription control calls are
             // intercepted (trusted session injected); everything else invokes the
             // target. Then the post_trigger chain runs over the result.
-            let raw = crate::functions::subscribe::invoke(
+            //
+            // Raced against this call's `harness::function::cancel` signal:
+            // the user can interrupt ONE long-running call from its card
+            // without ending the turn. On cancel the invocation future is
+            // dropped (the engine cannot reach the worker running the target,
+            // so it may run to completion unobserved) and the call settles
+            // as a `cancelled` error result the model reasons over next.
+            // Level-triggered, so a click that landed before this subscribe
+            // is observed immediately. Locally intercepted control calls are
+            // short and not drop-safe (two-step writes), so they run
+            // uninterrupted — see `subscribe::is_locally_intercepted`.
+            let caller = Some(crate::functions::subscribe::CallerModel::from_options(
+                &record.options,
+            ));
+            let invocation = crate::functions::subscribe::invoke(
                 deps,
                 &engine,
                 &policy,
@@ -1595,11 +1609,25 @@ async fn finish_step(
                 &eff_args,
                 &record.session_id,
                 true, // run_step holds this session's lock
-                Some(crate::functions::subscribe::CallerModel::from_options(
-                    &record.options,
-                )),
-            )
-            .await;
+                caller,
+            );
+            let raw = if crate::functions::subscribe::is_locally_intercepted(
+                &call.function_id,
+                &eff_args,
+                &record.session_id,
+                true,
+            ) {
+                invocation.await
+            } else {
+                race_with_call_cancel(
+                    &deps.call_cancels,
+                    &record.turn_id,
+                    &call.id,
+                    &call.function_id,
+                    invocation,
+                )
+                .await
+            };
             let info_raw = (call.function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
@@ -1649,7 +1677,12 @@ async fn finish_step(
                 ),
                 None => (data, Vec::new()),
             };
-            if let Some(key) = &failure_key {
+            // A user cancel is not the target failing: it must neither count
+            // toward the repeated-failure short-circuit nor clear a streak.
+            if let Some(key) = failure_key
+                .as_deref()
+                .filter(|_| !trigger::is_cancelled_result(&data))
+            {
                 trigger::note_call_result(&mut record.failed_calls, key, &data);
             }
             let entry_origin = origin_with(&record.turn_id, &annotations);
@@ -1699,6 +1732,34 @@ async fn finish_step(
     }
 
     finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+}
+
+/// Race one target invocation against its per-call cancel signal
+/// (`harness::function::cancel`): the invocation's own result when it returns
+/// first, [`trigger::cancelled_result`] when the signal fires first — the
+/// invocation future is dropped then, which stops awaiting the engine but
+/// cannot reach the worker running the target. Level-triggered (a fire before
+/// the race is observed at once); the key is dropped afterwards either way.
+pub(crate) async fn race_with_call_cancel<F>(
+    call_cancels: &crate::locks::TurnCancels,
+    turn_id: &str,
+    call_id: &str,
+    function_id: &str,
+    invocation: F,
+) -> trigger::ResultData
+where
+    F: std::future::Future<Output = trigger::ResultData>,
+{
+    let cancel_key = crate::locks::call_cancel_key(turn_id, call_id);
+    let mut call_cancel_rx = call_cancels.watch(&cancel_key);
+    let raw = tokio::select! {
+        raw = invocation => raw,
+        () = crate::locks::wait_fired(&mut call_cancel_rx) => {
+            trigger::cancelled_result(function_id)
+        }
+    };
+    call_cancels.clear(&cancel_key);
+    raw
 }
 
 fn turn_step_matches(
@@ -2030,6 +2091,7 @@ async fn finalize_completed(
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
+    deps.call_cancels.clear_turn_calls(&record.turn_id);
     crate::session_status::project(session, record).await;
     deps.events
         .emit_completed(
@@ -2236,6 +2298,7 @@ async fn finalize_failed(
     record_failure_telemetry(record, detail, failure);
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
+    deps.call_cancels.clear_turn_calls(&record.turn_id);
     let _ = session
         .append_custom(
             &record.session_id,
@@ -2453,6 +2516,7 @@ async fn finalize_cancelled(
     record.updated_at = AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
+    deps.call_cancels.clear_turn_calls(&record.turn_id);
     // Durable stop marker: without it the transcript just ends mid-thought
     // after a reload. Deterministic id so the live `stop-reason` notice
     // (translate.ts) dedupes against this entry, mirroring `e_{turn}_error`.
@@ -3441,7 +3505,7 @@ mod tests {
     use tokio::sync::Mutex;
 
     use super::{
-        cancel_requested, concrete_allowed_tools, count_model_visible,
+        cancel_requested, concrete_allowed_tools, count_model_visible, race_with_call_cancel,
         retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
     };
     use crate::clients::router::ChatError;
@@ -4463,5 +4527,89 @@ mod tests {
     fn no_signal_does_not_cancel() {
         assert!(!cancel_requested(false, false, StopReason::End));
         assert!(!cancel_requested(false, false, StopReason::FunctionCall));
+    }
+
+    fn ok_result(text: &str) -> crate::trigger::ResultData {
+        crate::trigger::ResultData {
+            content: vec![ContentBlock::text(text)],
+            is_error: false,
+            details: serde_json::Value::Null,
+        }
+    }
+
+    /// A target that returns wins the race untouched — the cancel signal is
+    /// only consulted, never asserted.
+    #[tokio::test]
+    async fn call_cancel_race_returns_the_target_result_when_nothing_fires() {
+        let cancels = crate::locks::TurnCancels::new();
+        let raw = race_with_call_cancel(&cancels, "t1", "call_a", "shell::exec", async {
+            ok_result("done")
+        })
+        .await;
+        assert!(!raw.is_error);
+        assert!(!crate::trigger::is_cancelled_result(&raw));
+        // The race drops its key so the next turn starts clean.
+        assert!(!cancels.is_fired(&crate::locks::call_cancel_key("t1", "call_a")));
+    }
+
+    /// `harness::function::cancel` firing while the target is still running
+    /// settles the call as a cancelled error without waiting for the target.
+    #[tokio::test]
+    async fn call_cancel_race_settles_a_hung_target_when_the_signal_fires() {
+        let cancels = crate::locks::TurnCancels::new();
+        let key = crate::locks::call_cancel_key("t1", "call_a");
+        let firer = {
+            let cancels = cancels.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                cancels.fire(&key);
+            })
+        };
+        let raw = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            race_with_call_cancel(&cancels, "t1", "call_a", "shell::exec", async {
+                std::future::pending::<crate::trigger::ResultData>().await
+            }),
+        )
+        .await
+        .expect("the cancel signal must settle a target that never returns");
+        firer.await.unwrap();
+        assert!(crate::trigger::is_cancelled_result(&raw));
+        assert_eq!(raw.details["function_id"], "shell::exec");
+    }
+
+    /// The console can click before the loop reaches the call (it learns the
+    /// id from the streamed assistant message): a fire that precedes the race
+    /// is observed the moment the race starts.
+    #[tokio::test]
+    async fn call_cancel_fired_before_the_race_is_observed_immediately() {
+        let cancels = crate::locks::TurnCancels::new();
+        cancels.fire(&crate::locks::call_cancel_key("t1", "call_a"));
+        let raw = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            race_with_call_cancel(&cancels, "t1", "call_a", "shell::exec", async {
+                std::future::pending::<crate::trigger::ResultData>().await
+            }),
+        )
+        .await
+        .expect("a prior fire must be observed");
+        assert!(crate::trigger::is_cancelled_result(&raw));
+    }
+
+    /// A cancel for ANOTHER call (or the same call id in another turn) never
+    /// interrupts this one.
+    #[tokio::test]
+    async fn call_cancel_race_ignores_signals_for_other_calls_and_turns() {
+        let cancels = crate::locks::TurnCancels::new();
+        cancels.fire(&crate::locks::call_cancel_key("t1", "call_b"));
+        cancels.fire(&crate::locks::call_cancel_key("t2", "call_a"));
+        let raw = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            race_with_call_cancel(&cancels, "t1", "call_a", "shell::exec", async {
+                std::future::pending::<crate::trigger::ResultData>().await
+            }),
+        )
+        .await;
+        assert!(raw.is_err(), "unrelated signals must not settle this call");
     }
 }
