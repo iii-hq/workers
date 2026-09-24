@@ -126,6 +126,7 @@ import {
 } from '@/types/chat'
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
+import { idleComposerPlaceholder } from './agent-defaults'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
@@ -2799,6 +2800,10 @@ export function ChatView({
             blocked={harnessBlocked}
             submitBlocked={submitBlocked}
             autoFocus={focusComposerOnOpen && !harnessBlocked}
+            idlePlaceholder={idleComposerPlaceholder(
+              conversation.agentProfile,
+              conversation.messages.length > 0,
+            )}
             blockedPlaceholder={
               conversationsCtx
                 ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)

@@ -125,6 +125,11 @@ export interface AgentEntry {
   skill_count: number | null
   /** Hidden from the new-session gallery; absent on older Directory workers. */
   hidden?: boolean
+  /**
+   * Example request for the empty composer while this profile is selected;
+   * profile-local (never inherited) and absent on older Directory workers.
+   */
+  composer_placeholder?: string | null
   modified_at: string
 }
 

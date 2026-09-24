@@ -44,6 +44,7 @@ import type {
 } from '@/types/chat'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
+import { GENERIC_COMPOSER_PLACEHOLDER } from './agent-defaults'
 import { BankPicker } from './BankPicker'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
@@ -195,6 +196,12 @@ interface ComposerProps {
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
   /**
+   * Hint while the editor is idle and empty — the selected profile's example
+   * before the first message. Only ever a placeholder: it never becomes
+   * draft text, and the editor keeps its `message composer` label.
+   */
+  idlePlaceholder?: string
+  /**
    * Put the caret in the editor on mount. The caller decides, because only it
    * knows whether focus is welcome: on a touch device it raises the on-screen
    * keyboard over the conversation, which is worse than aiming once.
@@ -301,6 +308,7 @@ export function Composer({
   blocked,
   submitBlocked,
   blockedPlaceholder = 'chat unavailable…',
+  idlePlaceholder = GENERIC_COMPOSER_PLACEHOLDER,
   autoFocus,
   initialContent,
   initialText,
@@ -688,7 +696,7 @@ export function Composer({
                   ? queueWhileStreaming
                     ? 'queue a message…'
                     : 'streaming response…'
-                  : 'send a message…'
+                  : idlePlaceholder
             }
             disabled={inputDisabled}
             autoFocus={autoFocus}

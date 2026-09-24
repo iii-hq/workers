@@ -13,10 +13,12 @@
 //! ADDITIVELY (the union of the chain's lists, root first); display fields
 //! never inherit. The chain is resolved here, on
 //! every read, so the harness always receives a finished prompt. The base
-//! of most chains is a bundled profile embedded in this binary — `iii` (the
-//! harness default identity) or `iii-minimal` (the minimal directory-first
-//! identity): always listed, `builtin: true` until a local file with the
-//! same id shadows it. Seven filesystem-backed verbs:
+//! of most chains is a bundled profile embedded in this binary — `default`
+//! (the minimal directory-first identity, shown as "Default") or `iii` (the
+//! harness default identity, hidden from the gallery); `iii-minimal` is a
+//! hidden bundled alias that `extends: default`, kept so older chains and
+//! sessions keep resolving. All are always listed, `builtin: true` until a
+//! local file with the same id shadows one. Seven filesystem-backed verbs:
 //!
 //!   * `directory::agents::list`   — metadata-only listing, chain-resolved.
 //!   * `directory::agents::get`    — one agent profile's resolved system
@@ -114,6 +116,11 @@ pub struct AgentEntry {
     /// Hidden from the chat's new-session gallery (still selectable by id).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// Example request for the chat's empty composer, from this profile's
+    /// OWN frontmatter (never inherited through `extends`); omitted when
+    /// absent or blank. Presentation only — never part of the prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composer_placeholder: Option<String>,
     /// Bundled with the worker, no file behind it: editing it creates the
     /// local file (which then shadows this entry); there is nothing to
     /// delete.
@@ -194,6 +201,10 @@ pub struct AgentGetOutput {
     /// Hidden from the chat's new-session gallery (still selectable by id).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// Example request for the chat's empty composer (see `list`): this
+    /// profile's own value, never inherited; omitted when absent or blank.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composer_placeholder: Option<String>,
     /// Bundled with the worker, no file behind it (see `list`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub builtin: bool,
@@ -310,9 +321,9 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
         })
         .description(
             "List agent profiles (id, name, description, logo, icon, color, model, \
-             reasoning_effort, skill_count, function_count, extends, hidden, modified_at) from \
-             the agents folder plus the bundled ones (`builtin: true`). Inherited fields \
-             resolve through `extends`; skill_count null means no preloaded skills, \
+             reasoning_effort, skill_count, function_count, extends, hidden, composer_placeholder, \
+             modified_at) from the agents folder plus the bundled ones (`builtin: true`). \
+             Inherited fields resolve through `extends` (composer_placeholder never inherits); skill_count null means no preloaded skills, \
              function_count counts the preloaded functions (contracts injected into new sessions).",
         ),
     );
@@ -730,6 +741,7 @@ pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
                 logo: a.logo.clone(),
                 extends: a.extends.clone(),
                 hidden: a.hidden,
+                composer_placeholder: a.composer_placeholder.clone(),
                 builtin: a.builtin,
                 inheritance_error,
             }
@@ -786,6 +798,7 @@ pub fn get_agent(
         color: agent.color.clone(),
         extends: agent.extends.clone(),
         hidden: agent.hidden,
+        composer_placeholder: agent.composer_placeholder.clone(),
         builtin: agent.builtin,
         inheritance_error,
         raw,
@@ -1180,6 +1193,223 @@ mod tests {
             .contains("hidden"));
     }
 
+    /// `composer_placeholder` survives create → get → an update of another
+    /// field → list; blank and missing values are both "absent" and stay off
+    /// the wire, so older profiles serialize exactly as before.
+    #[test]
+    fn composer_placeholder_round_trips_and_blank_is_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        let content = "---\nname: Helper\ncomposer_placeholder: \"Example:  add a\\n  task list\"\n---\nHelp.\n";
+        create_agent(
+            &cfg,
+            &AgentCreateInput {
+                id: "helper".into(),
+                content: content.into(),
+            },
+        )
+        .unwrap();
+        let got = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "helper".into(),
+                raw: Some(true),
+            },
+            &[],
+        )
+        .unwrap();
+        // Whitespace runs (newlines included) collapse to one space.
+        assert_eq!(
+            got.composer_placeholder.as_deref(),
+            Some("Example: add a task list")
+        );
+        assert!(
+            !got.system_prompt.contains("Example"),
+            "never part of the prompt"
+        );
+
+        // Editing another field through the raw round trip keeps it.
+        let edited = got.raw.unwrap().replace("name: Helper", "name: Helper Two");
+        update_agent(
+            &cfg,
+            &AgentUpdateInput {
+                id: "helper".into(),
+                content: edited,
+            },
+        )
+        .unwrap();
+        let listed = list_agents(&cfg);
+        let row = listed.agents.iter().find(|a| a.id == "helper").unwrap();
+        assert_eq!(row.name, "Helper Two");
+        assert_eq!(
+            row.composer_placeholder.as_deref(),
+            Some("Example: add a task list")
+        );
+
+        write_fixture(
+            tmp.path(),
+            "agents/blank.md",
+            "---\nname: Blank\ncomposer_placeholder: \"   \"\n---\nHi.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/plain.md",
+            "---\nname: Plain\n---\nHi.\n",
+        );
+        let listed = list_agents(&cfg);
+        for id in ["blank", "plain"] {
+            let row = listed.agents.iter().find(|a| a.id == id).unwrap();
+            assert!(row.composer_placeholder.is_none(), "{id}");
+            assert!(
+                !serde_json::to_string(row)
+                    .unwrap()
+                    .contains("composer_placeholder"),
+                "{id}"
+            );
+        }
+    }
+
+    /// Over the limit is a write-time error (and the same gate skips such a
+    /// file at scan time), counted in characters, not bytes.
+    #[test]
+    fn composer_placeholder_length_is_capped_in_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        let at_limit = "é".repeat(fs_source::AGENT_COMPOSER_PLACEHOLDER_MAX_CHARS);
+        let ok = format!("---\nname: Ok\ncomposer_placeholder: \"{at_limit}\"\n---\n");
+        create_agent(
+            &cfg,
+            &AgentCreateInput {
+                id: "ok".into(),
+                content: ok,
+            },
+        )
+        .unwrap();
+        let too_long = format!("---\nname: Long\ncomposer_placeholder: \"{at_limit}x\"\n---\n");
+        let err = create_agent(
+            &cfg,
+            &AgentCreateInput {
+                id: "long".into(),
+                content: too_long,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("composer_placeholder"), "got: {err}");
+        assert!(!tmp.path().join("agents/long.md").exists());
+    }
+
+    /// Profile-local: a child that sets no example does not inherit its
+    /// parent's, so the UI falls back to its generic hint.
+    #[test]
+    fn composer_placeholder_is_not_inherited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(
+            tmp.path(),
+            "agents/parent.md",
+            "---\nname: Parent\ncomposer_placeholder: Parent example\n---\nParent.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/child.md",
+            "---\nname: Child\nextends: parent\n---\nChild.\n",
+        );
+        let got = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "child".into(),
+                raw: None,
+            },
+            &[],
+        )
+        .unwrap();
+        assert!(got.inheritance_error.is_none());
+        assert!(got.composer_placeholder.is_none());
+        let listed = list_agents(&cfg);
+        let child = listed.agents.iter().find(|a| a.id == "child").unwrap();
+        assert!(child.composer_placeholder.is_none());
+        // Also for the bundled base: children of `default` get no example.
+        write_fixture(
+            tmp.path(),
+            "agents/kid.md",
+            "---\nname: Kid\nextends: default\n---\n",
+        );
+        let kid = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "kid".into(),
+                raw: None,
+            },
+            &[],
+        )
+        .unwrap();
+        assert!(kid.composer_placeholder.is_none());
+    }
+
+    /// Renaming `iii-minimal` to `default` must not break anything that
+    /// still says `iii-minimal`: a child extending it resolves to exactly
+    /// the identity it resolved to before, the alias itself serves that
+    /// identity by id, and it stays out of the gallery.
+    #[test]
+    fn iii_minimal_alias_keeps_existing_chains_resolving() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(
+            tmp.path(),
+            "agents/legacy-child.md",
+            "---\nname: Legacy\nextends: iii-minimal\n---\nLegacy body.\n",
+        );
+        let base = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "default".into(),
+                raw: None,
+            },
+            &[],
+        )
+        .unwrap();
+        let alias = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "iii-minimal".into(),
+                raw: None,
+            },
+            &[],
+        )
+        .unwrap();
+        let child = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "legacy-child".into(),
+                raw: None,
+            },
+            &[],
+        )
+        .unwrap();
+        assert!(alias.inheritance_error.is_none());
+        assert!(child.inheritance_error.is_none());
+        assert!(alias.hidden);
+        assert_eq!(alias.system_prompt, base.system_prompt);
+        let expected = format!(
+            "{}\n\nLegacy body.\n",
+            base.system_prompt.trim_end_matches('\n')
+        );
+        assert_eq!(child.system_prompt, expected);
+        assert!(
+            !child.hidden,
+            "hidden is display metadata and never inherits"
+        );
+
+        let listed = list_agents(&cfg);
+        let visible: Vec<&str> = listed
+            .agents
+            .iter()
+            .filter(|a| !a.hidden)
+            .map(|a| a.id.as_str())
+            .collect();
+        assert_eq!(visible, vec!["default", "legacy-child"]);
+    }
+
     #[test]
     fn get_reports_absent_lists() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1237,7 +1467,7 @@ mod tests {
             .into_iter()
             .map(|agent| agent.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["current", "iii", "iii-minimal"]);
+        assert_eq!(ids, vec!["current", "default", "iii", "iii-minimal"]);
     }
 
     #[test]
@@ -1437,6 +1667,7 @@ mod tests {
             names,
             vec![
                 ("captain", "Local Captain"),
+                ("default", "Default"),
                 ("iii", "iii"),
                 ("iii-minimal", "iii-minimal"),
                 ("scout", "Scout")

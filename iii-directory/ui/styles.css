@@ -1307,6 +1307,30 @@
 [data-iii-ui="iii-directory"] .dir-ui-af-model-picker {
   width: min(100%, 280px);
 }
+/* Plain multi-line text field (the composer example): same surface and
+   focus ring as the inline editors, sized like the pickers. */
+[data-iii-ui="iii-directory"] .dir-ui-af-text-input {
+  box-sizing: border-box;
+  width: min(100%, 280px);
+  min-height: 32px;
+  overflow: hidden;
+  resize: none;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-text-input::placeholder {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-text-input:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -1px;
+}
 
 /* disclosure rows: the shared collapsible card, flattened onto the page */
 [data-iii-ui="iii-directory"] .dir-ui-af-disclosure {
@@ -1612,7 +1636,8 @@
   align-items: stretch;
   gap: 8px;
 }
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-model-picker {
+[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-model-picker,
+[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-text-input {
   width: 100%;
 }
 [data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-disclosure-head {
@@ -1650,6 +1675,7 @@
   }
   [data-iii-ui="iii-directory"] .dir-ui-af-inline-display.description,
   [data-iii-ui="iii-directory"] .dir-ui-af-inline-description-input,
+  [data-iii-ui="iii-directory"] .dir-ui-af-text-input,
   [data-iii-ui="iii-directory"] .dir-ui-af-model-label,
   [data-iii-ui="iii-directory"] .dir-ui-af-skill-name,
   [data-iii-ui="iii-directory"] .dir-ui-af-skill-description,

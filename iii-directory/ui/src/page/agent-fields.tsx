@@ -1030,6 +1030,50 @@ export function AgentFormSkeleton() {
   )
 }
 
+/** Server-side cap on `composer_placeholder` (iii-directory
+    `AGENT_COMPOSER_PLACEHOLDER_MAX_CHARS`); the field enforces it too. */
+export const COMPOSER_PLACEHOLDER_MAX_CHARS = 200
+
+/**
+ * Write the profile's composer example as typed, or drop the key when it is
+ * blank so the chat falls back to its generic hint. Every other frontmatter
+ * key and the body are left untouched.
+ */
+export function withComposerPlaceholder(draft: string, next: string): string {
+  return next.trim()
+    ? setFrontmatterField(draft, 'composer_placeholder', next)
+    : withoutFrontmatterFields(draft, ['composer_placeholder'])
+}
+
+function ComposerExampleField({
+  id,
+  value,
+  readOnly,
+  onChange,
+}: {
+  id: string
+  value: string
+  readOnly: boolean
+  onChange: (next: string) => void
+}) {
+  const textareaRef = useAutoResizeTextarea(value)
+  return (
+    <textarea
+      ref={textareaRef}
+      id={id}
+      name="composer_placeholder"
+      value={value}
+      rows={1}
+      maxLength={COMPOSER_PLACEHOLDER_MAX_CHARS}
+      readOnly={readOnly}
+      aria-describedby={`${id}-hint`}
+      placeholder="Example: Review my workers and suggest useful tests."
+      className="dir-ui-af-text-input"
+      onChange={(event) => onChange(event.currentTarget.value)}
+    />
+  )
+}
+
 export function AgentForm(ctx: FormContext) {
   const {
     host,
@@ -1055,6 +1099,7 @@ export function AgentForm(ctx: FormContext) {
   const icon = readFrontmatterField(draft, ['icon']).value.trim()
   const color = readFrontmatterField(draft, ['color']).value.trim()
   const hidden = readFrontmatterField(draft, ['hidden']).value.trim() === 'true'
+  const composerPlaceholder = readFrontmatterField(draft, ['composer_placeholder']).value
   const skillCatalog = useCatalog(host, fetchSkills)
   const functionCatalog = useCatalog(host, fetchFunctions)
   const modelCatalog = useCatalog(host, fetchModels)
@@ -1099,6 +1144,9 @@ export function AgentForm(ctx: FormContext) {
   }
   const setHidden = (next: boolean) => {
     editDraft(next ? setFrontmatterField(draft, 'hidden', 'true', true) : withoutFrontmatterFields(draft, ['hidden']))
+  }
+  const setComposerPlaceholder = (next: string) => {
+    commitDraft(withComposerPlaceholder(draftRef.current, next))
   }
   const setAvatarColor = (next: AgentColor) => {
     editDraft(setFrontmatterField(draft, 'color', next, true))
@@ -1269,6 +1317,25 @@ export function AgentForm(ctx: FormContext) {
                   checked={hidden}
                   disabled={readOnly}
                   onChange={(event) => setHidden(event.currentTarget.checked)}
+                />
+              </div>
+            </div>
+
+            <div className="dir-ui-af-model-row">
+              <div className="dir-ui-af-model-label">
+                <span>
+                  <label htmlFor={`${fieldId}-composer-placeholder`}>Composer example</label>
+                </span>
+                <span id={`${fieldId}-composer-placeholder-hint`}>
+                  Shown in an empty chat box for this profile. Never sent; not inherited.
+                </span>
+              </div>
+              <div className="dir-ui-af-model-control">
+                <ComposerExampleField
+                  id={`${fieldId}-composer-placeholder`}
+                  value={composerPlaceholder}
+                  readOnly={readOnly}
+                  onChange={setComposerPlaceholder}
                 />
               </div>
             </div>

@@ -62,7 +62,7 @@ describe('EmptyState', () => {
     expect(html).toContain('aria-label="session setup"')
     expect(html).toContain('Use Engineer agent profile')
     expect(html).toContain('Use Researcher agent profile')
-    expect(html).toContain('Create a new agent profile')
+    expect(html).toContain('Configure an agent manually in the profile editor')
     expect(html).not.toContain('Configure manually')
     expect(html).not.toContain('System prompt')
     expect(html).not.toContain('remove design from this session')
@@ -89,7 +89,7 @@ describe('EmptyState', () => {
     expect(html).toContain('Use Researcher agent profile')
     expect(html).toContain('active-subagent-chip')
     expect(html).toContain('data-color="blue"')
-    expect(html).toContain('Create a new agent profile')
+    expect(html).toContain('Configure an agent manually in the profile editor')
     expect(html).toContain('@lg:grid-cols-2')
     expect(html).toContain('@3xl:grid-cols-3')
     expect(html).toContain('@lg:min-h-40')
@@ -98,7 +98,8 @@ describe('EmptyState', () => {
     expect(html).toContain('text-ink @lg:hidden')
     expect(html).toContain('hidden font-sans text-sm')
     expect(html).toContain('@lg:block')
-    expect(html).toContain('lucide-plus size-4 h-lh shrink-0')
+    expect(html).toContain('size-4 h-lh shrink-0')
+    expect(html).toContain('Open profile editor')
     expect(html).toContain('flex items-center gap-1.5')
     expect(html).not.toContain('Sub-agent')
     expect(html).not.toContain('ActivityMetadata')
@@ -127,7 +128,7 @@ describe('EmptyState', () => {
     expect(html).toMatch(/Use Researcher agent profile[^>]*aria-pressed="true"/)
   })
 
-  it('offers to create the first agent profile in Directory', () => {
+  it('offers the manual profile editor as a secondary, predictable action', () => {
     const html = renderToStaticMarkup(
       <EmptyState
         variant="ready"
@@ -137,12 +138,93 @@ describe('EmptyState', () => {
       />,
     )
 
-    expect(html).toContain('Create a new agent')
+    expect(html).toContain('Configure an agent manually')
     expect(html).toContain(
-      'Save a reusable set of instructions, a model, and skills.',
+      'Opens a form to set instructions, a model, and skills yourself.',
     )
-    expect(html).toContain('Create agent profile')
+    expect(html).toContain('Open profile editor')
+    expect(html).not.toContain('Create a new agent')
     expect(html).toContain('bg-surface')
     expect(html).not.toContain('shadow-raised')
+  })
+
+  const withDefault = [
+    ...agents,
+    {
+      id: 'default',
+      name: 'Default',
+      description:
+        'Use for general questions and development tasks in your project.',
+      logo: null,
+      icon: null,
+      model: null,
+      skill_count: null,
+      composer_placeholder: 'Example: Explain this project.',
+      modified_at: '',
+    },
+  ]
+
+  it('marks Default as the selected card of an untouched local draft', () => {
+    const html = renderToStaticMarkup(
+      <EmptyState
+        variant="ready"
+        systemPrompt={DEFAULT_SYSTEM_PROMPT_STATE}
+        onSystemPromptChange={() => {}}
+        onAgentProfileChange={() => {}}
+        agentEntries={withDefault}
+        preselectDefaultAgent
+      />,
+    )
+
+    expect(html).toMatch(/Use Default agent profile[^>]*aria-pressed="true"/)
+    expect(html).toMatch(/Use Engineer agent profile[^>]*aria-pressed="false"/)
+  })
+
+  it('leaves a session created elsewhere unselected', () => {
+    // An empty server session (created by a trigger, the API, another
+    // client) is not a local draft: opening it must not pick a profile.
+    const html = renderToStaticMarkup(
+      <EmptyState
+        variant="ready"
+        systemPrompt={DEFAULT_SYSTEM_PROMPT_STATE}
+        onSystemPromptChange={() => {}}
+        onAgentProfileChange={() => {}}
+        agentEntries={withDefault}
+      />,
+    )
+    expect(html).not.toContain('aria-pressed="true"')
+  })
+
+  it('does not preselect Default over a manual or explicit choice', () => {
+    const manual = renderToStaticMarkup(
+      <EmptyState
+        variant="ready"
+        systemPrompt={{
+          ...DEFAULT_SYSTEM_PROMPT_STATE,
+          choice: { named: 'reviewer' },
+        }}
+        onSystemPromptChange={() => {}}
+        agentEntries={withDefault}
+        preselectDefaultAgent
+      />,
+    )
+    expect(manual).toMatch(/Use Default agent profile[^>]*aria-pressed="false"/)
+
+    const explicit = renderToStaticMarkup(
+      <EmptyState
+        variant="ready"
+        systemPrompt={DEFAULT_SYSTEM_PROMPT_STATE}
+        onSystemPromptChange={() => {}}
+        agentEntries={withDefault}
+        agentProfile={{ id: 'engineer', name: 'Engineer' }}
+        preselectDefaultAgent
+      />,
+    )
+    expect(explicit).toMatch(
+      /Use Default agent profile[^>]*aria-pressed="false"/,
+    )
+    expect(explicit).toMatch(
+      /Use Engineer agent profile[^>]*aria-pressed="true"/,
+    )
   })
 })

@@ -1,6 +1,11 @@
 import { isValidElement, type ReactElement, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentFormSkeleton } from './agent-fields'
+import {
+  AgentFormSkeleton,
+  COMPOSER_PLACEHOLDER_MAX_CHARS,
+  withComposerPlaceholder,
+} from './agent-fields'
+import { frontmatterBody, readFrontmatterField } from './frontmatter'
 // @ts-expect-error Vite exposes source files imported with the raw query.
 import agentFieldsSource from './agent-fields.tsx?raw'
 
@@ -38,6 +43,37 @@ describe('AgentFormSkeleton', () => {
     expect(
       classes.filter((name) => name === 'dir-ui-af-skill-list-wrap'),
     ).toHaveLength(4)
+  })
+})
+
+describe('composer example field', () => {
+  const draft =
+    '---\nname: Helper\ndescription: "Helps."\nhidden: true\n---\nYou help.\n'
+
+  it('writes a YAML-safe value and keeps every other key and the body', () => {
+    const next = withComposerPlaceholder(draft, 'Example: add a task, then "done"')
+    expect(readFrontmatterField(next, ['composer_placeholder']).value).toBe(
+      'Example: add a task, then "done"',
+    )
+    expect(readFrontmatterField(next, ['name']).value).toBe('Helper')
+    expect(readFrontmatterField(next, ['hidden']).value).toBe('true')
+    expect(frontmatterBody(next)).toBe(frontmatterBody(draft))
+  })
+
+  it('drops the key when cleared, so the chat uses its generic hint', () => {
+    const withValue = withComposerPlaceholder(draft, 'Example: one')
+    for (const blank of ['', '   ']) {
+      const cleared = withComposerPlaceholder(withValue, blank)
+      expect(readFrontmatterField(cleared, ['composer_placeholder']).present).toBe(false)
+      expect(readFrontmatterField(cleared, ['name']).value).toBe('Helper')
+    }
+  })
+
+  it('caps input at the server limit and keeps an accessible label', () => {
+    expect(COMPOSER_PLACEHOLDER_MAX_CHARS).toBe(200)
+    expect(agentFieldsSource).toContain('maxLength={COMPOSER_PLACEHOLDER_MAX_CHARS}')
+    expect(agentFieldsSource).toContain('>Composer example</label>')
+    expect(agentFieldsSource).toContain('aria-describedby=')
   })
 })
 
