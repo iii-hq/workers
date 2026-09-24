@@ -1004,12 +1004,30 @@ function AgentFormSkeletonLayout() {
       </div>
 
       <div className="dir-ui-af-aligned">
-        <div className="dir-ui-af-model-row">
-          <div className="dir-ui-af-model-label">
-            <Bar w={52} h={12} />
-            <Bar w={86} h={8} />
+        <div className="dir-ui-af-settings">
+          {[0, 1].map((cell) => (
+            <div key={cell} className="dir-ui-af-field">
+              <div className="dir-ui-af-field-head">
+                <Bar w={52} h={12} />
+                <Bar w={112} h={8} />
+              </div>
+              <Bar w="100%" h={36} />
+            </div>
+          ))}
+          <div className="dir-ui-af-field is-wide">
+            <div className="dir-ui-af-field-head">
+              <Bar w={112} h={12} />
+              <Bar w="min(80%, 360px)" h={8} />
+            </div>
+            <Bar w="100%" h={32} />
           </div>
-          <Bar w="min(100%, 280px)" h={36} />
+          <div className="dir-ui-af-field is-wide is-switch">
+            <Bar w={36} h={20} />
+            <div className="dir-ui-af-field-head">
+              <Bar w={52} h={12} />
+              <Bar w="min(70%, 320px)" h={8} />
+            </div>
+          </div>
         </div>
         <SkeletonDisclosure kind="prompt" />
         <SkeletonDisclosure kind="skills" />
@@ -1250,93 +1268,103 @@ export function AgentForm(ctx: FormContext) {
           </div>
 
           <div className="dir-ui-af-aligned">
-            <div className="dir-ui-af-model-row">
-              <div className="dir-ui-af-model-label">
-                <span>Model</span>
-                <span>{modelKnown ? 'Optional default.' : 'Unavailable in the catalog.'}</span>
+            {/* Profile settings: a two-up grid of stacked fields (label, hint,
+                control) that fills the aligned column. The two pickers pair
+                up; free text and the visibility switch span both tracks. */}
+            <div className="dir-ui-af-settings">
+              <div className="dir-ui-af-field">
+                <div className="dir-ui-af-field-head">
+                  <span className="dir-ui-af-field-label">Model</span>
+                  <span className="dir-ui-af-field-hint">
+                    {modelKnown ? 'Optional default.' : 'Unavailable in the catalog.'}
+                  </span>
+                </div>
+                <div className="dir-ui-af-field-control">
+                  <ModelPicker
+                    value={model || null}
+                    options={pickerOptions}
+                    thinkingLevel={reasoningEffort}
+                    onChange={setModel}
+                    onThinkingLevelChange={setReasoningEffort}
+                    disabled={readOnly || modelCatalog.error}
+                    loading={modelCatalog.items === null && !modelCatalog.error}
+                    showRefresh={false}
+                    showProviderConfiguration={false}
+                    showReasoningEffort
+                    placeholder="Session default"
+                    className="dir-ui-af-field-picker"
+                  />
+                  {model && !readOnly ? (
+                    <IconButton label="Use the session default model" onClick={() => setModel('')}>
+                      <X />
+                    </IconButton>
+                  ) : null}
+                </div>
               </div>
-              <div className="dir-ui-af-model-control">
-                <ModelPicker
-                  value={model || null}
-                  options={pickerOptions}
-                  thinkingLevel={reasoningEffort}
-                  onChange={setModel}
-                  onThinkingLevelChange={setReasoningEffort}
-                  disabled={readOnly || modelCatalog.error}
-                  loading={modelCatalog.items === null && !modelCatalog.error}
-                  showRefresh={false}
-                  showProviderConfiguration={false}
-                  showReasoningEffort
-                  placeholder="Session default"
-                  className="dir-ui-af-model-picker"
-                />
-                {model && !readOnly ? (
-                  <IconButton label="Use the session default model" onClick={() => setModel('')}>
-                    <X />
-                  </IconButton>
+
+              <div className="dir-ui-af-field">
+                <div className="dir-ui-af-field-head">
+                  <span className="dir-ui-af-field-label">Extends</span>
+                  <span className="dir-ui-af-field-hint">
+                    {inheritanceError ? 'Saved chain does not resolve.' : 'Optional parent profile.'}
+                  </span>
+                </div>
+                <div className="dir-ui-af-field-control">
+                  <Select
+                    className="dir-ui-af-field-picker"
+                    aria-label="Parent agent profile"
+                    aria-busy={agentCatalog.items === null && !agentCatalog.error}
+                    value={extendsId || undefined}
+                    options={parentOptions.map((row) => ({
+                      value: row.id,
+                      label: row.name && row.name !== row.id ? `${row.name} (${row.id})` : row.id,
+                    }))}
+                    placeholder="None"
+                    allowEmpty
+                    emptyLabel="None"
+                    onClear={() => setExtends('')}
+                    disabled={readOnly || agentCatalog.error}
+                    onChange={setExtends}
+                  />
+                </div>
+                {inheritanceError ? (
+                  <p className="dir-ui-af-file-hint dir-ui-af-inheritance-error">{inheritanceError}</p>
                 ) : null}
               </div>
-            </div>
 
-            <div className="dir-ui-af-model-row">
-              <div className="dir-ui-af-model-label">
-                <span>Extends</span>
-                <span>{inheritanceError ? 'Saved chain does not resolve.' : 'Optional parent profile.'}</span>
-              </div>
-              <div className="dir-ui-af-model-control">
-                <Select
-                  className="dir-ui-af-model-picker"
-                  aria-label="Parent agent profile"
-                  aria-busy={agentCatalog.items === null && !agentCatalog.error}
-                  value={extendsId || undefined}
-                  options={parentOptions.map((row) => ({
-                    value: row.id,
-                    label: row.name && row.name !== row.id ? `${row.name} (${row.id})` : row.id,
-                  }))}
-                  placeholder="None"
-                  allowEmpty
-                  emptyLabel="None"
-                  onClear={() => setExtends('')}
-                  disabled={readOnly || agentCatalog.error}
-                  onChange={setExtends}
-                />
-              </div>
-            </div>
-            {inheritanceError ? (
-              <p className="dir-ui-af-file-hint dir-ui-af-inheritance-error">{inheritanceError}</p>
-            ) : null}
-
-            <div className="dir-ui-af-model-row">
-              <div className="dir-ui-af-model-label">
-                <span>Hidden</span>
-                <span>Keep out of the new-session gallery; still usable as a parent.</span>
-              </div>
-              <div className="dir-ui-af-model-control">
-                <Switch
-                  aria-label="Hide from the new-session gallery"
-                  checked={hidden}
-                  disabled={readOnly}
-                  onChange={(event) => setHidden(event.currentTarget.checked)}
-                />
-              </div>
-            </div>
-
-            <div className="dir-ui-af-model-row">
-              <div className="dir-ui-af-model-label">
-                <span>
-                  <label htmlFor={`${fieldId}-composer-placeholder`}>Composer example</label>
-                </span>
-                <span id={`${fieldId}-composer-placeholder-hint`}>
-                  Shown in an empty chat box for this profile. Never sent; not inherited.
-                </span>
-              </div>
-              <div className="dir-ui-af-model-control">
+              <div className="dir-ui-af-field is-wide">
+                <div className="dir-ui-af-field-head">
+                  <span className="dir-ui-af-field-label">
+                    <label htmlFor={`${fieldId}-composer-placeholder`}>Composer example</label>
+                  </span>
+                  <span className="dir-ui-af-field-hint" id={`${fieldId}-composer-placeholder-hint`}>
+                    Shown in an empty chat box for this profile. Never sent; not inherited.
+                  </span>
+                </div>
                 <ComposerExampleField
                   id={`${fieldId}-composer-placeholder`}
                   value={composerPlaceholder}
                   readOnly={readOnly}
                   onChange={setComposerPlaceholder}
                 />
+              </div>
+
+              <div className="dir-ui-af-field is-wide is-switch">
+                <Switch
+                  id={`${fieldId}-hidden`}
+                  aria-describedby={`${fieldId}-hidden-hint`}
+                  checked={hidden}
+                  disabled={readOnly}
+                  onChange={(event) => setHidden(event.currentTarget.checked)}
+                />
+                <div className="dir-ui-af-field-head">
+                  <label className="dir-ui-af-field-label" htmlFor={`${fieldId}-hidden`}>
+                    Hidden
+                  </label>
+                  <span className="dir-ui-af-field-hint" id={`${fieldId}-hidden-hint`}>
+                    Keep out of the new-session gallery; still usable as a parent.
+                  </span>
+                </div>
               </div>
             </div>
 

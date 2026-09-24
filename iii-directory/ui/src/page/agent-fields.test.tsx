@@ -36,7 +36,11 @@ describe('AgentFormSkeleton', () => {
     expect(props['aria-label']).toBe('Loading agent profile')
     expect(classes).toContain('t-skel-skeleton is-pulsing')
     expect(classes).toContain('dir-ui-af-profile')
-    expect(classes).toContain('dir-ui-af-model-row')
+    expect(classes).toContain('dir-ui-af-settings')
+    // Model + Extends pair up; composer example and the Hidden switch span the row.
+    expect(classes.filter((name) => name === 'dir-ui-af-field')).toHaveLength(2)
+    expect(classes).toContain('dir-ui-af-field is-wide')
+    expect(classes).toContain('dir-ui-af-field is-wide is-switch')
     expect(classes).toContain('dir-ui-af-prompt dir-ui-af-skeleton-prompt')
     expect(classes).toContain('dir-ui-af-skills')
     // Two pickers (skills, preloaded functions) × two lists (selected, available).
@@ -74,6 +78,28 @@ describe('composer example field', () => {
     expect(agentFieldsSource).toContain('maxLength={COMPOSER_PLACEHOLDER_MAX_CHARS}')
     expect(agentFieldsSource).toContain('>Composer example</label>')
     expect(agentFieldsSource).toContain('aria-describedby=')
+  })
+})
+
+describe('AgentForm settings grid', () => {
+  const formSource = agentFieldsSource.slice(agentFieldsSource.indexOf('export function AgentForm'))
+
+  it('lays the four profile settings out as grid fields, not fixed-width rows', () => {
+    expect(formSource).toContain('className="dir-ui-af-settings"')
+    expect(formSource).not.toContain('dir-ui-af-model-row')
+    for (const label of ['>Model</span>', '>Extends</span>', '>Composer example</label>']) {
+      expect(formSource).toContain(label)
+    }
+    // Both pickers stretch to their cell instead of a 280px cap.
+    expect(formSource.match(/className="dir-ui-af-field-picker"/g)).toHaveLength(2)
+  })
+
+  it('names the Hidden switch by its visible label and describes it with the hint', () => {
+    expect(formSource).toMatch(/<Switch\s+id=\{`\$\{fieldId\}-hidden`\}/)
+    expect(formSource).toMatch(/htmlFor=\{`\$\{fieldId\}-hidden`\}/)
+    expect(formSource).toMatch(/aria-describedby=\{`\$\{fieldId\}-hidden-hint`\}/)
+    expect(formSource).toMatch(/id=\{`\$\{fieldId\}-hidden-hint`\}/)
+    expect(formSource).not.toContain('aria-label="Hide from the new-session gallery"')
   })
 })
 

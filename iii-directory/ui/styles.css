@@ -1278,44 +1278,87 @@
 [data-iii-ui="iii-directory"] .dir-ui-af-inheritance-error {
   color: var(--color-warn);
 }
-[data-iii-ui="iii-directory"] .dir-ui-af-model-row {
+/* Profile settings: a grid of stacked fields (label, hint, control) that
+   fills the aligned column. The track minimum is half the row, so it never
+   holds more than two columns and folds to one below ~520px on its own —
+   no breakpoint, so split mode and narrow panes behave the same way. */
+[data-iii-ui="iii-directory"] .dir-ui-af-settings {
   display: grid;
-  grid-template-columns: 104px minmax(0, 320px);
-  align-items: center;
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(248px, calc((100% - 25px) / 2))), 1fr));
+  align-items: start;
+  gap: 20px 24px;
+  padding-bottom: 6px;
 }
-[data-iii-ui="iii-directory"] .dir-ui-af-model-label {
+[data-iii-ui="iii-directory"] .dir-ui-af-field {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 8px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-field.is-wide {
+  grid-column: 1 / -1;
+}
+/* A boolean reads as one line: the switch leads, its label and hint follow. */
+[data-iii-ui="iii-directory"] .dir-ui-af-field.is-switch {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-field.is-switch:not(:has(input:disabled)) label {
+  cursor: pointer;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-field-head {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-field-label {
   font-size: 14px;
   font-weight: 500;
+  line-height: 20px;
   color: var(--color-ink);
 }
-[data-iii-ui="iii-directory"] .dir-ui-af-model-label > span + span {
-  font-size: 11px;
-  font-weight: 400;
+[data-iii-ui="iii-directory"] .dir-ui-af-field-hint {
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--color-ink-faint);
 }
-[data-iii-ui="iii-directory"] .dir-ui-af-model-control {
+[data-iii-ui="iii-directory"] .dir-ui-af-field-control {
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 4px;
 }
-[data-iii-ui="iii-directory"] .dir-ui-af-model-picker {
-  width: min(100%, 280px);
+[data-iii-ui="iii-directory"] .dir-ui-af-field-picker {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+/* The shared model trigger is transparent (it was drawn for the chat
+   composer). Give it the Select's field fill so Model and Extends read as a
+   pair; without this hook it simply falls back to the transparent trigger. */
+[data-iii-ui="iii-directory"] .dir-ui-af-field-picker > button[aria-haspopup] {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-field-picker > button[aria-haspopup]:hover,
+[data-iii-ui="iii-directory"] .dir-ui-af-field-picker > button[aria-haspopup][data-state="open"] {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-field-picker > button[aria-haspopup] > svg {
+  color: var(--color-ink-faint);
+  stroke-width: 1;
 }
 /* Plain multi-line text field (the composer example): same surface and
-   focus ring as the inline editors, sized like the pickers. */
+   focus ring as the inline editors, as wide as its grid cell. */
 [data-iii-ui="iii-directory"] .dir-ui-af-text-input {
   box-sizing: border-box;
-  width: min(100%, 280px);
-  min-height: 32px;
+  width: 100%;
+  min-height: 36px;
   overflow: hidden;
   resize: none;
-  padding: 6px 8px;
+  padding: 8px 12px;
   border: 0;
   border-radius: 6px;
   background: var(--color-surface);
@@ -1631,15 +1674,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-model-row {
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  gap: 8px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-model-picker,
-[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-text-input {
-  width: 100%;
-}
 [data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-disclosure-head {
   min-height: 70px;
   grid-template-columns: minmax(0, 1fr) 20px;
@@ -1676,7 +1710,7 @@
   [data-iii-ui="iii-directory"] .dir-ui-af-inline-display.description,
   [data-iii-ui="iii-directory"] .dir-ui-af-inline-description-input,
   [data-iii-ui="iii-directory"] .dir-ui-af-text-input,
-  [data-iii-ui="iii-directory"] .dir-ui-af-model-label,
+  [data-iii-ui="iii-directory"] .dir-ui-af-field-label,
   [data-iii-ui="iii-directory"] .dir-ui-af-skill-name,
   [data-iii-ui="iii-directory"] .dir-ui-af-skill-description,
   [data-iii-ui="iii-directory"] .dir-ui-af-skill-empty,
@@ -1685,7 +1719,7 @@
   [data-iii-ui="iii-directory"] .dir-ui-af-remove-copy {
     font-size: 16px;
   }
-  [data-iii-ui="iii-directory"] .dir-ui-af-model-label > span + span,
+  [data-iii-ui="iii-directory"] .dir-ui-af-field-hint,
   [data-iii-ui="iii-directory"] .dir-ui-af-disclosure-description,
   [data-iii-ui="iii-directory"] .dir-ui-af-skill-list-head {
     font-size: 14px;
