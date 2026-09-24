@@ -75,7 +75,7 @@ fn entry_spec() -> EntrySpec {
 /// are seeded only when nothing is stored yet.
 pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, SentinelError> {
     let spec = entry_spec();
-    config_client::register(iii, &spec, None)
+    config_client::ensure(iii, &spec, None)
         .await
         .map_err(SentinelError::dependency)?;
     let stored = config_client::fetch(iii, spec.id)
