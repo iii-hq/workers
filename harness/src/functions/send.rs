@@ -249,7 +249,15 @@ async fn start_with_delivery_lock(
     // Resolve the agent profile (if named) BEFORE the model gate and session
     // creation: the profile's model is a fallback for a session-creating send,
     // and a failed resolve must leave no session or budget ledger behind.
-    let agent = resolve_send_agent(deps, &cfg, &req, prev.as_ref()).await?;
+    // The one dispatch-policy rule for this send: persisted as
+    // `options.functions` AND the policy its profile's contracts freeze under.
+    let functions = send_functions(
+        &cfg,
+        &req,
+        prev.as_ref().and_then(|p| p.options.functions.as_ref()),
+    )
+    .cloned();
+    let agent = resolve_send_agent(deps, &cfg, &req, prev.as_ref(), functions.as_ref()).await?;
 
     // A profile-associated model is authoritative for that profile. Console
     // locks its picker to the same value, while this server-side precedence
@@ -296,16 +304,7 @@ async fn start_with_delivery_lock(
         crate::prompt::effective_default(&deps.iii).await.identity
     };
     let mut options = build_options(&cfg, &req, model, provider, agent.as_ref(), &identity);
-    inherit_prior_functions(
-        &mut options,
-        prev.as_ref()
-            .and_then(|p| p.options.functions.as_ref())
-            // An agent send with no explicit policy gets the configured
-            // default instead of deny-all: an identity picked to DO something
-            // must be able to dispatch. `prev` and `agent` are mutually
-            // exclusive (resolve_send_agent).
-            .or_else(|| agent.as_ref().and(cfg.default_functions.as_ref())),
-    );
+    options.functions = functions;
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
     }
@@ -930,16 +929,28 @@ pub(crate) fn session_metadata_with_agent(
     Some(Value::Object(object))
 }
 
-/// A steer also inherits the prior turn's dispatch policy unless this send
-/// names its own: `functions` is fail-closed, so leaving it `None` on a fresh
-/// steer record would silently DISARM a live run — every turn from the nudge
-/// onward denied all dispatch. Explicit strip stays possible
-/// (`options.functions: { allow: [] }`).
-fn inherit_prior_functions(options: &mut TurnOptions, prev_functions: Option<&FunctionPolicy>) {
-    if options.functions.is_some() {
-        return;
-    }
-    options.functions = prev_functions.cloned();
+/// The dispatch policy a send runs under — and the one its profile's
+/// preloaded contracts freeze against. An explicit `options.functions` (even
+/// `{ allow: [] }`, the deliberate strip) wins. A steer otherwise keeps the
+/// prior turn's policy whole: `functions` is fail-closed, so `None` on a fresh
+/// steer record would silently DISARM a live run. A profile send with neither
+/// gets the configured default instead of deny-all — an identity picked to DO
+/// something must be able to dispatch. A plain new send stays `None`.
+/// `prev` and `options.agent` are mutually exclusive (`agent_send_id`).
+fn send_functions<'a>(
+    cfg: &'a WorkerConfig,
+    req: &'a SendRequest,
+    prev_functions: Option<&'a FunctionPolicy>,
+) -> Option<&'a FunctionPolicy> {
+    let options = req.options.as_ref();
+    options
+        .and_then(|o| o.functions.as_ref())
+        .or(prev_functions)
+        .or_else(|| {
+            options
+                .and_then(|o| o.agent.as_ref())
+                .and(cfg.default_functions.as_ref())
+        })
 }
 
 fn select_skill_context(
@@ -1080,26 +1091,15 @@ async fn resolve_send_agent(
     cfg: &WorkerConfig,
     req: &SendRequest,
     prev: Option<&TurnRecord>,
+    functions: Option<&FunctionPolicy>,
 ) -> Result<Option<crate::agents::ResolvedAgent>, HarnessError> {
     let Some(id) = agent_send_id(req.options.as_ref(), prev.is_some())? else {
         return Ok(None);
     };
-    // A profile send cannot also be a steer. Match build_options followed by
-    // inherit_prior_functions: explicit (even empty) policy wins, else default.
-    let policy = crate::policy::CompiledPolicy::from(profile_send_functions(cfg, req));
+    let policy = crate::policy::CompiledPolicy::from(functions);
     crate::agents::resolve(deps, cfg, id, &policy)
         .await
         .map(Some)
-}
-
-fn profile_send_functions<'a>(
-    cfg: &'a WorkerConfig,
-    req: &'a SendRequest,
-) -> Option<&'a FunctionPolicy> {
-    req.options
-        .as_ref()
-        .and_then(|o| o.functions.as_ref())
-        .or(cfg.default_functions.as_ref())
 }
 
 /// The pre-fetch half of agent-send validation: which id (if any) this send
@@ -2144,23 +2144,26 @@ mod tests {
             expose: Default::default(),
         };
 
+        let cfg = WorkerConfig::default();
         // A steer with no policy of its own keeps the run armed exactly as
         // the prior turn left it.
-        let mut options = options_with(None);
-        inherit_prior_functions(&mut options, Some(&broad));
-        let compiled = policy::CompiledPolicy::from(options.functions.as_ref());
+        let steer = agent_send_request(SendOptions::default());
+        let compiled = policy::CompiledPolicy::from(send_functions(&cfg, &steer, Some(&broad)));
         assert!(compiled.allows("state::get"));
         assert!(compiled.allows("state::set"));
 
         // An explicit policy on the send still beats inheritance.
-        let strip = FunctionPolicy {
-            allow: vec![],
-            deny: vec![],
-            expose: Default::default(),
-        };
-        let mut options = options_with(Some(strip));
-        inherit_prior_functions(&mut options, Some(&broad));
-        assert!(!policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::get"));
+        let strip = agent_send_request(SendOptions {
+            functions: Some(FunctionPolicy::default()),
+            ..Default::default()
+        });
+        assert!(
+            !policy::CompiledPolicy::from(send_functions(&cfg, &strip, Some(&broad)))
+                .allows("state::get")
+        );
+
+        // A plain new send with no policy stays fail-closed, default or not.
+        assert!(send_functions(&cfg, &steer, None).is_none());
     }
 
     #[test]
@@ -2724,25 +2727,12 @@ mod tests {
     #[test]
     fn agent_send_defaults_functions_to_the_configured_baseline() {
         let cfg = WorkerConfig::default();
-        let agent = resolved_agent(None);
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
         });
         // Absent policy + agent → the configured default applies.
-        let mut opts = build_options(
-            &cfg,
-            &req,
-            "m".into(),
-            None,
-            Some(&agent),
-            crate::prompt::DEFAULT,
-        );
-        inherit_prior_functions(
-            &mut opts,
-            None.or_else(|| Some(&agent).and(cfg.default_functions.as_ref())),
-        );
-        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        let compiled = policy::CompiledPolicy::from(send_functions(&cfg, &req, None));
         assert!(compiled.allows("harness::spawn"));
         assert!(compiled.allows("state::set"));
         // Explicit policy wins over the agent default.
@@ -2755,19 +2745,7 @@ mod tests {
             }),
             ..Default::default()
         });
-        let mut opts = build_options(
-            &cfg,
-            &req,
-            "m".into(),
-            None,
-            Some(&agent),
-            crate::prompt::DEFAULT,
-        );
-        inherit_prior_functions(
-            &mut opts,
-            None.or_else(|| Some(&agent).and(cfg.default_functions.as_ref())),
-        );
-        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        let compiled = policy::CompiledPolicy::from(send_functions(&cfg, &req, None));
         assert!(compiled.allows("state::get"));
         assert!(!compiled.allows("harness::spawn"));
     }
@@ -2816,56 +2794,21 @@ mod tests {
         assert_eq!(explicit.agent, None);
     }
     #[tokio::test]
-    async fn profile_preload_policy_matches_persisted_send_options_and_validates_before_rpc() {
-        let deps = crate::agents::tests::disconnected_contract_deps();
-        let broad = FunctionPolicy {
-            allow: vec!["*".into()],
+    async fn agent_send_validation_runs_before_profile_rpc() {
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
+        let cfg = WorkerConfig::default();
+        let invalid = agent_send_request(SendOptions {
+            agent: Some("fixture".into()),
+            system_prompt: Some("conflicting prompt".into()),
             ..Default::default()
-        };
-        for defaults in [None, Some(broad.clone())] {
-            let cfg = WorkerConfig {
-                default_functions: defaults,
-                ..Default::default()
-            };
-            for explicit in [
-                None,
-                Some(FunctionPolicy::default()),
-                Some(FunctionPolicy {
-                    allow: vec!["engine::*".into()],
-                    deny: vec!["engine::unregister_trigger".into()],
-                    ..Default::default()
-                }),
-            ] {
-                let req: SendRequest = serde_json::from_value(serde_json::json!({
-                    "message":"fixture", "model":"fixture", "options":{"functions":explicit}
-                }))
-                .unwrap();
-                let preload = policy::CompiledPolicy::from(profile_send_functions(&cfg, &req));
-                let mut persisted =
-                    build_options(&cfg, &req, "fixture".into(), None, None, "identity");
-                inherit_prior_functions(&mut persisted, cfg.default_functions.as_ref());
-                let persisted_policy = policy::CompiledPolicy::from(persisted.functions.as_ref());
-                for id in [
-                    "engine::register_trigger",
-                    "engine::unregister_trigger",
-                    "engine::functions::info",
-                    "state::set",
-                ] {
-                    assert_eq!(preload.allows(id), persisted_policy.allows(id), "{id}");
-                }
-                let mut invalid = req;
-                let opts = invalid.options.as_mut().unwrap();
-                opts.agent = Some("fixture".into());
-                opts.system_prompt = Some("conflicting prompt".into());
-                let error = tokio::time::timeout(
-                    std::time::Duration::from_millis(100),
-                    resolve_send_agent(&deps, &cfg, &invalid, None),
-                )
-                .await
-                .expect("validation must run before profile RPC")
-                .unwrap_err();
-                assert_eq!(error.code(), "harness/invalid_request");
-            }
-        }
+        });
+        let error = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            resolve_send_agent(&deps, &cfg, &invalid, None, None),
+        )
+        .await
+        .expect("validation must run before profile RPC")
+        .unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
     }
 }

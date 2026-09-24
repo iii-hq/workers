@@ -311,10 +311,11 @@ fn task_function_ids(task: &str) -> Vec<String> {
 }
 
 /// Render a child's seeded `<preloaded_functions>` block and its digests.
-/// Only ids the registry lists are resolved — a Rust path, a harness-native
-/// id or a typo is dropped without a lookup — the same way a profile's
-/// preloads are ([`crate::agents::preload_contracts`]). Best effort: nothing
-/// resolvable seeds nothing.
+/// Only ids the public registry lists, or the intercepted session controls,
+/// are resolved — an internal-only id (a config-change handler, a console
+/// watch), a Rust path, a harness-native id or a typo is dropped without a
+/// lookup, never seeded as "pre-verified". Best effort: nothing resolvable
+/// seeds nothing.
 async fn seed_contracts(
     deps: &Deps,
     ids: Vec<String>,
@@ -326,7 +327,11 @@ async fn seed_contracts(
     let snapshot = deps.functions().await;
     let listed: Vec<String> = ids
         .into_iter()
-        .filter(|id| crate::agents::effective_contract(id, policy, &snapshot).is_some())
+        .filter(|id| {
+            policy.allows(id)
+                && (crate::functions::subscribe::control_contract(id).is_some()
+                    || snapshot.functions.iter().any(|d| d.function_id == *id))
+        })
         .collect();
     if listed.is_empty() {
         return (None, BTreeMap::new());
@@ -1861,7 +1866,7 @@ mod tests {
 
     #[tokio::test]
     async fn final_leaf_policy_filters_profile_and_seed_without_granting_controls() {
-        let deps = crate::agents::tests::disconnected_contract_deps();
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
         let cfg = WorkerConfig::default();
         let requested = FunctionPolicy {
             allow: vec![
@@ -1892,10 +1897,6 @@ mod tests {
                 digests.contains_key("engine::unregister_trigger"),
                 orchestrator
             );
-            assert!(
-                !seed.contains("### `engine::functions::info`"),
-                "dispatch-only grants are not seeded"
-            );
             assert!(policy.allows("engine::functions::info"));
             assert!(child
                 .dispatch_only
@@ -1906,5 +1907,25 @@ mod tests {
             seed_contracts(&deps, vec!["engine::register_trigger".into()], &denied).await,
             (None, BTreeMap::new())
         );
+        // A task-named id only the internal inventory knows is never seeded,
+        // and costs no lookup (the disconnected engine would hang it).
+        let internal = "harness::on-functions-change";
+        crate::discovery::apply_with_internal(
+            &deps.functions,
+            vec![],
+            Some(std::collections::BTreeSet::from([internal.to_string()])),
+        )
+        .await;
+        let all = crate::policy::CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let seeded = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            seed_contracts(&deps, vec![internal.into()], &all),
+        )
+        .await
+        .expect("an internal-only id is dropped without a lookup");
+        assert_eq!(seeded, (None, BTreeMap::new()));
     }
 }

@@ -817,9 +817,15 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
 /// in-turn, so the engine's own registration (raw: `function_id` required, no
 /// `once`/`lifecycle`/`conditions`) is NOT the contract an agent calls.
 /// Discovery must describe the intercept, or an agent that reads
-/// `functions::info` "learns" its tool schema is wrong.
+/// `functions::info` "learns" its tool schema is wrong. Only the schema keys
+/// the engine sent are replaced: an info detail gets the intercepted request
+/// (and, for the raw details — console, hooks, contract ledger — its response;
+/// the model-visible copy strips response schemas), a list row carries no
+/// schema and gets the description only.
 fn overlay_control_contract(item: &mut Value, id: &str) {
-    // A real engine/auth failure must never be dressed up as a contract.
+    // Decided: the engine's negative wins over the harness's own offer. An
+    // RBAC `forbidden` or a foreign-`namespace` `not_found` passes through;
+    // an overlay never turns an error into a contract.
     if item.get("error").is_some() {
         return;
     }
@@ -828,12 +834,11 @@ fn overlay_control_contract(item: &mut Value, id: &str) {
     };
     if let Some(map) = item.as_object_mut() {
         map.insert("description".into(), Value::String(description.into()));
-        for key in ["parameters", "request_format"] {
+        for key in ["request_schema", "parameters", "request_format"] {
             if map.contains_key(key) {
                 map.insert(key.into(), schema.clone());
             }
         }
-        map.insert("request_schema".into(), schema);
         if let Some(response) = crate::functions::subscribe::control_response_schema(id) {
             for key in ["response_schema", "response_format"] {
                 if map.contains_key(key) {
@@ -2249,16 +2254,25 @@ mod tests {
                     crate::agents::contract_digest(
                         id,
                         detail["description"].as_str(),
-                        Some(detail["request_schema"].clone())
+                        Some(detail[key].clone())
                     ),
-                    crate::agents::contract_digest(
-                        id,
-                        expected.description.as_deref(),
-                        expected.request_schema.clone()
-                    )
+                    crate::agents::digest_of(&expected)
                 );
-                assert_eq!(detail[key], detail["request_schema"]);
+                assert_eq!(
+                    detail.as_object().unwrap().len(),
+                    3,
+                    "only the keys the engine sent: {detail}"
+                );
             }
+            // A list row carries no schema: the description only.
+            let mut list = json!({"functions":[{"function_id":id, "description":"native"}]});
+            post_filter_discovery(&mut list, &policy);
+            let row = &list["functions"][0];
+            assert!(row.get("request_schema").is_none(), "{row}");
+            assert_eq!(
+                row["description"],
+                crate::functions::subscribe::control_contract(id).unwrap().0
+            );
             // The native `{ id }` response is not what the intercept returns.
             let mut detail = json!({
                 "function_id": id, "description": "native",
@@ -2304,14 +2318,16 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn denied_controls_in_both_exposures_have_no_dispatch_or_subscription_effect() {
+    /// The production gate is `turn_loop`'s `if !policy.allows(&call.function_id)`,
+    /// which answers `denied_result` before `subscribe::invoke` can intercept:
+    /// both exposures must plan the control under its own id, and that id must
+    /// fail the gate. (End to end, AC3 of MOT-4861 was observed live.)
+    #[test]
+    fn denied_controls_in_both_exposures_fail_the_turn_loop_gate_under_their_own_id() {
         use crate::types::{
             content::ContentBlock,
             turn::{ExposeMode, FunctionPolicy},
         };
-        let iii = std::sync::Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:0"));
-        let engine = EngineClient::new(iii, 5);
         for expose in [ExposeMode::Native, ExposeMode::AgentTrigger] {
             for raw_policy in [
                 None,
@@ -2324,11 +2340,8 @@ mod tests {
             ] {
                 let policy = CompiledPolicy::from(raw_policy.as_ref());
                 for id in ["engine::register_trigger", "engine::unregister_trigger"] {
-                    let args = if id.ends_with("::register_trigger") {
-                        json!({"trigger_type":"state","config":{"scope":"test","key":"done"}})
-                    } else {
-                        json!({"id":"not-owned"})
-                    };
+                    let args =
+                        json!({"trigger_type":"state","config":{"scope":"test","key":"done"}});
                     let mut message = crate::types::message::empty_assistant("fixture", "fixture");
                     message.content = vec![ContentBlock::FunctionCall {
                         id: "call".into(),
@@ -2345,15 +2358,11 @@ mod tests {
                     }];
                     let calls = crate::policy::plan_calls(&message, expose);
                     assert_eq!(calls[0].function_id, id);
-                    let result = tokio::time::timeout(
-                        std::time::Duration::from_millis(100),
-                        trigger_call(&engine, &policy, id, &calls[0].arguments),
-                    )
-                    .await
-                    .expect("denial is local");
-                    let TriggerResult::Result(result) = result else {
-                        panic!("unexpected pending")
-                    };
+                    assert!(
+                        !policy.allows(&calls[0].function_id),
+                        "{id} passed the gate"
+                    );
+                    let result = denied_result(&calls[0].function_id);
                     assert!(result.is_error);
                     assert_eq!(result.details["error"], "policy_denied");
                     assert_eq!(result.details["function_id"], id);

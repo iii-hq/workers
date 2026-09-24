@@ -111,51 +111,42 @@ impl EngineClient {
         })
     }
 
-    /// List registry function descriptors (best-effort; empty on failure).
-    pub async fn functions_list(&self) -> Vec<FunctionDescriptor> {
+    /// One `engine::functions::list` call (`None` on failure) — the single
+    /// RPC behind both the public inventory and the internal id set.
+    async fn list(&self, payload: Value) -> Option<Value> {
         let resp = self
             .iii
             .trigger(TriggerRequest {
                 function_id: "engine::functions::list".into(),
-                payload: json!({}),
+                payload: payload.clone(),
                 action: None,
                 timeout_ms: Some(self.timeout_ms),
             })
             .await;
-        match resp {
-            Ok(v) => parse_descriptor_list(&v),
-            Err(e) => {
-                tracing::warn!(error = %e, "engine::functions::list failed");
-                Vec::new()
-            }
-        }
+        resp.map_err(|e| tracing::warn!(error = %e, %payload, "engine::functions::list failed"))
+            .ok()
+    }
+
+    /// List registry function descriptors (best-effort; empty on failure).
+    pub async fn functions_list(&self) -> Vec<FunctionDescriptor> {
+        self.list(json!({}))
+            .await
+            .map(|v| parse_descriptor_list(&v))
+            .unwrap_or_default()
     }
 
     /// Every id the registry knows, public or internal (`include_internal:
-    /// true`) — presence only, no schemas. `None` on failure so the caller
-    /// keeps its previous set instead of declaring every internal id gone.
+    /// true`) — ids only, no schemas. `None` on failure so the caller keeps
+    /// its previous set instead of declaring every internal id gone.
     pub async fn internal_function_ids(&self) -> Option<std::collections::BTreeSet<String>> {
-        let resp = self
-            .iii
-            .trigger(TriggerRequest {
-                function_id: "engine::functions::list".into(),
-                payload: json!({ "include_internal": true }),
-                action: None,
-                timeout_ms: Some(self.timeout_ms),
-            })
-            .await;
-        match resp {
-            Ok(v) => Some(
-                parse_descriptor_list(&v)
-                    .into_iter()
-                    .map(|d| d.function_id)
-                    .collect(),
-            ),
-            Err(e) => {
-                tracing::warn!(error = %e, "engine::functions::list (include_internal) failed");
-                None
-            }
-        }
+        let v = self.list(json!({ "include_internal": true })).await?;
+        Some(
+            descriptor_items(&v)
+                .into_iter()
+                .filter_map(descriptor_id)
+                .map(str::to_string)
+                .collect(),
+        )
     }
 
     /// Read one function's descriptor (`None` when unknown).
@@ -420,7 +411,15 @@ fn parse_dispatch_error_json(value: &Value) -> Option<DispatchError> {
 }
 
 fn parse_descriptor_list(v: &Value) -> Vec<FunctionDescriptor> {
-    let items: Vec<&Value> = match v {
+    descriptor_items(v)
+        .into_iter()
+        .filter_map(descriptor_of)
+        .collect()
+}
+
+/// The descriptor items of a list response, in the envelopes engines return.
+fn descriptor_items(v: &Value) -> Vec<&Value> {
+    match v {
         Value::Array(items) => items.iter().collect(),
         Value::Object(map) => map
             .get("functions")
@@ -428,21 +427,23 @@ fn parse_descriptor_list(v: &Value) -> Vec<FunctionDescriptor> {
             .and_then(Value::as_array)
             .map(|a| a.iter().collect())
             .unwrap_or_else(|| map.values().collect()),
-        _ => return Vec::new(),
-    };
-    items.iter().filter_map(|d| descriptor_of(d)).collect()
+        _ => Vec::new(),
+    }
+}
+
+/// A descriptor's id (`function_id`, `id` or `name`).
+fn descriptor_id(v: &Value) -> Option<&str> {
+    v.get("function_id")
+        .or_else(|| v.get("id"))
+        .or_else(|| v.get("name"))
+        .and_then(Value::as_str)
 }
 
 /// Extract id + description + parameters schema from a descriptor in the
 /// shapes engines return (`function_id` or `id`; parameters at the top level,
 /// under `request_format`, or `request_schema`).
 fn descriptor_of(v: &Value) -> Option<FunctionDescriptor> {
-    let function_id = v
-        .get("function_id")
-        .or_else(|| v.get("id"))
-        .or_else(|| v.get("name"))
-        .and_then(Value::as_str)?
-        .to_string();
+    let function_id = descriptor_id(v)?.to_string();
     let description = v
         .get("description")
         .and_then(Value::as_str)

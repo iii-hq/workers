@@ -30,7 +30,7 @@
 //! [`Deps::functions`](crate::deps::Deps::functions).
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,31 +110,50 @@ fn fingerprint_of(functions: &[FunctionDescriptor]) -> u64 {
 /// field moves — the schema-aware `functions_hash` named at the safety-reload
 /// ponytail comment is the real fix for that.
 pub async fn apply(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
+    apply_with_internal(cell, functions, None).await;
+}
+
+/// [`apply`] plus the registry's full id set (`include_internal: true`) in ONE
+/// write, so both halves of a snapshot always describe the same registry.
+/// `None` — or an empty set, which a live registry never returns because it
+/// also lists its public ids — means the internal list is unknown this round:
+/// the previous set is kept minus every id the public list just dropped, so a
+/// stale superset never hides a real removal. The internal set is presence
+/// only, for [`crate::agents::effective_contract`], and never moves the
+/// generation: per-console ephemeral internals churn constantly.
+pub async fn apply_with_internal(
+    cell: &FunctionsCell,
+    functions: Vec<FunctionDescriptor>,
+    internal_ids: Option<BTreeSet<String>>,
+) {
     let fingerprint = fingerprint_of(&functions);
     let mut guard = cell.write().await;
-    if fingerprint == guard.fingerprint {
+    let internal_ids = match internal_ids.filter(|ids| !ids.is_empty()) {
+        Some(ids) => ids,
+        None => {
+            let listed: HashSet<&str> = functions.iter().map(|d| d.function_id.as_str()).collect();
+            let dropped: HashSet<&str> = guard
+                .functions
+                .iter()
+                .map(|d| d.function_id.as_str())
+                .filter(|id| !listed.contains(id))
+                .collect();
+            guard
+                .internal_ids
+                .iter()
+                .filter(|id| !dropped.contains(id.as_str()))
+                .cloned()
+                .collect()
+        }
+    };
+    if fingerprint == guard.fingerprint && internal_ids == guard.internal_ids {
         return;
     }
-    let generation = guard.generation + 1;
+    let generation = guard.generation + u64::from(fingerprint != guard.fingerprint);
     *guard = Arc::new(FunctionsSnapshot {
         functions,
         generation,
         fingerprint,
-        internal_ids: guard.internal_ids.clone(),
-    });
-}
-
-/// Swap in the registry's full id set (`include_internal: true`). Presence
-/// only, for [`crate::agents::effective_contract`]; never bumps the generation.
-pub async fn apply_internal_ids(cell: &FunctionsCell, internal_ids: BTreeSet<String>) {
-    let mut guard = cell.write().await;
-    if guard.internal_ids == internal_ids {
-        return;
-    }
-    *guard = Arc::new(FunctionsSnapshot {
-        functions: guard.functions.clone(),
-        generation: guard.generation,
-        fingerprint: guard.fingerprint,
         internal_ids,
     });
 }
@@ -233,10 +252,7 @@ async fn reload(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) -> 
         tokio::join!(engine.functions_list(), engine.internal_function_ids());
     let functions = hydrate(&engine, cell, functions).await;
     let count = functions.len();
-    apply(cell, functions).await;
-    if let Some(ids) = internal_ids {
-        apply_internal_ids(cell, ids).await;
-    }
+    apply_with_internal(cell, functions, internal_ids).await;
     count
 }
 
@@ -248,10 +264,7 @@ pub async fn seed(iii: &Arc<IIIClient>, cell: &FunctionsCell, timeout_ms: u64) {
     let engine = EngineClient::new(iii.clone(), timeout_ms);
     let (functions, internal_ids) =
         tokio::join!(engine.functions_list(), engine.internal_function_ids());
-    apply(cell, functions.clone()).await;
-    if let Some(ids) = internal_ids {
-        apply_internal_ids(cell, ids).await;
-    }
+    apply_with_internal(cell, functions.clone(), internal_ids).await;
     let hydrated = hydrate(&engine, cell, functions).await;
     let count = hydrated.len();
     apply(cell, hydrated).await;
@@ -360,24 +373,37 @@ mod tests {
     #[tokio::test]
     async fn internal_ids_are_presence_only_and_never_bump_generation() {
         let cell = new_cell();
-        apply(&cell, vec![desc("a::b", Some(json!({ "type": "object" })))]).await;
-        assert_eq!(cell.read().await.generation, 1);
-        let info = BTreeSet::from(["engine::functions::info".to_string()]);
-        apply_internal_ids(&cell, info.clone()).await;
+        let fns = vec![desc("a::b", Some(json!({ "type": "object" })))];
+        let ids = |extra: &[&str]| -> BTreeSet<String> {
+            ["a::b", "engine::functions::info"]
+                .iter()
+                .chain(extra)
+                .map(|id| id.to_string())
+                .collect()
+        };
+        apply_with_internal(&cell, fns.clone(), Some(ids(&[]))).await;
         let snap = cell.read().await.clone();
         assert_eq!(snap.generation, 1);
-        assert_eq!(snap.internal_ids, info);
-        assert_eq!(snap.functions.len(), 1);
-        // The same set again is a no-op: no new snapshot, nothing to invalidate.
-        apply_internal_ids(&cell, info.clone()).await;
+        assert_eq!(snap.internal_ids, ids(&[]));
+        // The same answer again is a no-op: no new snapshot, nothing to invalidate.
+        apply_with_internal(&cell, fns.clone(), Some(ids(&[]))).await;
         assert!(Arc::ptr_eq(&snap, &*cell.read().await));
-        // A public reload keeps the internal set; internal churn keeps the generation.
-        apply(&cell, vec![desc("a::c", Some(json!({ "type": "object" })))]).await;
-        assert_eq!(cell.read().await.internal_ids, info);
-        assert_eq!(cell.read().await.generation, 2);
-        apply_internal_ids(&cell, BTreeSet::new()).await;
-        assert_eq!(cell.read().await.generation, 2);
-        assert!(cell.read().await.internal_ids.is_empty());
+        // Internal churn alone (a console watch) never moves the generation.
+        let churned = ids(&["console::watch::r1"]);
+        apply_with_internal(&cell, fns.clone(), Some(churned.clone())).await;
+        assert_eq!(cell.read().await.generation, 1);
+        assert_eq!(cell.read().await.internal_ids, churned);
+        // A failed or empty internal list is unknown, not "everything gone".
+        apply_with_internal(&cell, fns.clone(), Some(BTreeSet::new())).await;
+        apply(&cell, fns).await;
+        assert_eq!(cell.read().await.internal_ids, churned);
+        // ...but the kept set loses what the public list just dropped, so a
+        // stale superset never masks a real removal.
+        apply(&cell, vec![]).await;
+        let snap = cell.read().await.clone();
+        assert_eq!(snap.generation, 2);
+        assert!(!snap.internal_ids.contains("a::b"));
+        assert!(snap.internal_ids.contains("engine::functions::info"));
     }
 
     #[tokio::test]

@@ -561,7 +561,12 @@ async fn generate_step(
     let current_generation = functions.generation;
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record);
-    let registry_changed = registry_notice(record.functions_generation, current_generation);
+    let registry_changed = registry_notice(
+        record.functions_generation,
+        current_generation,
+        &policy,
+        &functions,
+    );
     // Preloaded contracts that drifted from the live registry: named per id,
     // every step while the drift lasts (the frozen block is never rewritten).
     let preloaded_stale = preloaded_stale_notice(
@@ -570,13 +575,26 @@ async fn generate_step(
         &policy,
     );
     // The notices are ephemeral tail messages no transcript or hook ever sees,
-    // so the log is the one place their exact text can be verified.
+    // so the log is the one place their exact text can be verified. A drift
+    // repeats the same text on every step, so it is logged at info only on a
+    // turn's first step or when the registry moved; debug otherwise.
+    let transition = record.step == 0 || record.functions_generation != Some(current_generation);
     for (kind, notice) in [
         ("registry-changed", &registry_changed),
         ("preloaded-stale", &preloaded_stale),
     ] {
-        if let Some(notice) = notice {
+        let Some(notice) = notice else { continue };
+        if transition {
             tracing::info!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                step = record.step,
+                kind,
+                %notice,
+                "contract notice appended to the generate request"
+            );
+        } else {
+            tracing::debug!(
                 session_id = %record.session_id,
                 turn_id = %record.turn_id,
                 step = record.step,
@@ -3364,7 +3382,23 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
 
 /// The single-line notice delivered as a tail message when the registry
 /// changed under a session that had already acknowledged an earlier generation.
-const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — confirm the contracts you rely on through an available, authorized discovery path before calling them again; if none is available, report that limitation.";
+const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale.";
+
+/// How either notice tells the model to re-check contracts: name
+/// `engine::functions::info` only when this session can actually call it —
+/// permitted AND present (public or internal); permission alone is not
+/// availability.
+fn refetch_hint(
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> &'static str {
+    if crate::agents::effective_contract("engine::functions::info", policy, snapshot).is_some() {
+        "Re-fetch the contracts you rely on with engine::functions::info before calling them."
+    } else {
+        "This session cannot re-fetch contracts; if you need one that changed, say so rather \
+         than guessing its schema."
+    }
+}
 
 /// Wrap the notice as an ephemeral tail user message for the generate request.
 /// `timestamp` is mandatory — the router's message types have no serde default
@@ -3381,9 +3415,17 @@ fn notice_message(text: String) -> Value {
 /// matches the live generation, or is being stamped for the first time; `Some`
 /// only when the registry changed under a session that acknowledged an earlier
 /// generation. The caller stamps `functions_generation = current` regardless.
-pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
+pub(crate) fn registry_notice(
+    record_gen: Option<u64>,
+    current: u64,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Option<String> {
     match record_gen {
-        Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
+        Some(g) if g != current => Some(format!(
+            "{REGISTRY_CHANGED_NOTICE} {}",
+            refetch_hint(policy, snapshot)
+        )),
         _ => None,
     }
 }
@@ -3413,12 +3455,7 @@ pub(crate) fn preloaded_stale_notice(
         match (digest, descriptor) {
             (Some(_), None) => removed.push(id.as_str()),
             (Some(frozen_digest), Some(d)) if d.request_schema.is_some() => {
-                let live_digest = crate::agents::contract_digest(
-                    id,
-                    d.description.as_deref(),
-                    d.request_schema.clone(),
-                );
-                if live_digest != *frozen_digest {
+                if crate::agents::digest_of(&d) != *frozen_digest {
                     changed.push(id.as_str());
                 }
             }
@@ -3446,24 +3483,13 @@ pub(crate) fn preloaded_stale_notice(
         parts.push(format!("now available: {}", list(&available)));
     }
     if !denied.is_empty() {
-        parts.push(format!("no longer permitted: {}", list(&denied)));
+        parts.push(format!("not permitted in this session: {}", list(&denied)));
     }
-    // Name the discovery path only when this session can actually call it:
-    // permitted AND present (public or internal); permission alone is not
-    // availability.
-    let refetch = if crate::agents::effective_contract("engine::functions::info", policy, snapshot)
-        .is_some()
-    {
-        "Re-fetch changed or newly available contracts with engine::functions::info before \
-         calling them."
-    } else {
-        "This session cannot re-fetch contracts; if you need a changed or newly available one, \
-         say so rather than guessing its schema."
-    };
     Some(format!(
         "NOTE: preloaded function contracts in your instructions are out of date — {}. \
-         {refetch} Do not call removed or denied functions.",
-        parts.join("; ")
+         {} Do not call removed or denied functions.",
+        parts.join("; "),
+        refetch_hint(policy, snapshot)
     ))
 }
 
@@ -3473,14 +3499,13 @@ pub(crate) fn preloaded_stale_notice(
 /// does not list). This is the decision surface hooks reason over,
 /// independent of how tools reach the provider. `hidden` are the spawn's
 /// dispatch-only grants (`TurnRecord::dispatch_only_functions`): still
-/// callable by id, never a tool — the intercepted controls included.
+/// callable by id, never a tool.
 fn concrete_allowed_tools(
     policy: &CompiledPolicy,
     descriptors: &[crate::clients::FunctionDescriptor],
     hidden: &[String],
 ) -> Vec<crate::types::model::AgentFunction> {
     let mut tools = crate::functions::subscribe::native_control_tools(policy);
-    tools.retain(|tool| !hidden.contains(&tool.name));
     for descriptor in descriptors {
         if !policy.allows(&descriptor.function_id)
             || hidden.iter().any(|id| id == &descriptor.function_id)
@@ -3788,11 +3813,7 @@ mod tests {
     fn dispatch_only_grants_stay_callable_but_never_become_native_tools() {
         let policy =
             crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
-                allow: vec![
-                    "db::x".into(),
-                    "directory::skills::get".into(),
-                    "engine::register_trigger".into(),
-                ],
+                allow: vec!["db::x".into(), "directory::skills::get".into()],
                 deny: vec![],
                 expose: Default::default(),
             }));
@@ -3808,18 +3829,16 @@ mod tests {
                 parameters: None,
             },
         ];
-        let hidden = vec![
-            "directory::skills::get".to_string(),
-            "engine::register_trigger".to_string(),
-        ];
+        let hidden = vec!["directory::skills::get".to_string()];
         let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors, &hidden)
             .into_iter()
             .map(|tool| tool.name)
             .collect();
         assert_eq!(names, vec!["db::x"], "the grant is not a tool");
-        for id in ["directory::skills::get", "engine::register_trigger"] {
-            assert!(policy.allows(id), "{id} is still callable by id");
-        }
+        assert!(
+            policy.allows("directory::skills::get"),
+            "but it is still callable by id"
+        );
     }
 
     #[test]
@@ -4054,8 +4073,8 @@ mod tests {
             notice,
             "NOTE: preloaded function contracts in your instructions are out of date — \
              changed: `changed::fn`; no longer registered: `gone::fn`; now available: `late::fn`. \
-             Re-fetch changed or newly available contracts with engine::functions::info before \
-             calling them. Do not call removed or denied functions."
+             Re-fetch the contracts you rely on with engine::functions::info before calling them. \
+             Do not call removed or denied functions."
         );
         // Nothing frozen, or nothing drifted: no notice.
         assert!(super::preloaded_stale_notice(None, &snapshot, &policy).is_none());
@@ -4303,12 +4322,24 @@ mod tests {
 
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {
+        let all = crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let mut with_info = snap(&[]);
+        with_info
+            .internal_ids
+            .insert("engine::functions::info".to_string());
         // First sighting (None): stamp, no notice.
-        assert!(super::registry_notice(None, 7).is_none());
+        assert!(super::registry_notice(None, 7, &all, &with_info).is_none());
         // Acknowledged generation still current: no notice.
-        assert!(super::registry_notice(Some(7), 7).is_none());
-        // Registry moved on: notice fires.
-        assert!(super::registry_notice(Some(6), 7).is_some());
+        assert!(super::registry_notice(Some(7), 7, &all, &with_info).is_none());
+        // Registry moved on: notice fires, with the same re-fetch rule as the
+        // preloaded-stale notice.
+        let notice = super::registry_notice(Some(6), 7, &all, &with_info).unwrap();
+        assert!(notice.contains("with engine::functions::info"), "{notice}");
+        let blind = super::registry_notice(Some(6), 7, &all, &snap(&[])).unwrap();
+        assert!(blind.contains("cannot re-fetch"), "{blind}");
     }
 
     #[test]
@@ -4717,7 +4748,8 @@ mod tests {
             internal_only.internal_ids.insert(id.to_string());
             assert!(
                 super::preloaded_stale_notice(Some(&frozen), &internal_only, &all).is_none(),
-                "an id the registry knows but the public inventory hides is present, not removed"
+                "an id the registry knows but the public inventory hides is present, not \
+                 removed (its schema is not judged: see effective_contract)"
             );
             let changed = super::preloaded_stale_notice(
                 Some(&frozen),
@@ -4785,11 +4817,45 @@ mod tests {
             }));
             assert!(super::preloaded_stale_notice(Some(&missing), &with_info, &denied).is_none());
             let notice = super::preloaded_stale_notice(Some(&frozen), &with_info, &denied).unwrap();
-            assert!(notice.contains("no longer permitted"));
+            assert!(notice.contains("not permitted in this session"));
             assert!(
                 !notice.contains("engine::functions::info"),
                 "present but denied introspection is not recommended: {notice}"
             );
         }
+    }
+
+    #[test]
+    fn unchanged_contract_is_not_changed_even_when_compaction_is_not_idempotent() {
+        use crate::{agents, clients::FunctionDescriptor, policy::CompiledPolicy};
+        // compact_schema keeps `definitions.A` on the first pass (referenced
+        // twice, once from unreachable `B`) and inlines it on the second.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "a": { "$ref": "#/definitions/A" } },
+            "definitions": {
+                "A": { "type": "string" },
+                "B": { "type": "array", "items": { "$ref": "#/definitions/A" } }
+            }
+        });
+        let id = "x::fn";
+        let live = snap(&[FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("d".into()),
+            parameters: Some(schema.clone()),
+        }]);
+        let all = CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let once = agents::effective_contract(id, &all, &live).unwrap();
+        let frozen_digest = agents::contract_digest(id, Some("d"), Some(schema));
+        assert_ne!(
+            agents::contract_digest(id, Some("d"), once.request_schema.clone()),
+            frozen_digest,
+            "fixture must be non-idempotent under compaction to guard anything"
+        );
+        let frozen = std::collections::BTreeMap::from([(id.to_string(), Some(frozen_digest))]);
+        assert!(super::preloaded_stale_notice(Some(&frozen), &live, &all).is_none());
     }
 }

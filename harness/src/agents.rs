@@ -303,10 +303,11 @@ impl PreloadedContract {
 }
 
 /// Content identity of one preloaded contract as the model sees it:
-/// whitespace-collapsed description + compacted request schema. The stale
-/// check builds the live registry's contract through the same constructor,
-/// so compaction alone can never read as a change.
-fn digest_of(contract: &PreloadedContract) -> String {
+/// whitespace-collapsed description + compacted request schema. Both sides of
+/// the stale check hash a contract built ONCE by [`PreloadedContract::new`]:
+/// `compact_schema` is not idempotent, so re-compacting either side could read
+/// an unchanged contract as changed.
+pub(crate) fn digest_of(contract: &PreloadedContract) -> String {
     crate::skills::fingerprint(&format!(
         "{}\n{}",
         contract.description.as_deref().unwrap_or_default(),
@@ -318,7 +319,8 @@ fn digest_of(contract: &PreloadedContract) -> String {
     ))
 }
 
-/// [`digest_of`] for a live registry descriptor (`turn_loop::preloaded_stale_notice`).
+/// [`digest_of`] for a raw descriptor, compacted once — what the freeze records.
+#[cfg(test)]
 pub(crate) fn contract_digest(
     function_id: &str,
     description: Option<&str>,
@@ -355,6 +357,10 @@ pub(crate) fn effective_contract(
             descriptor.parameters.clone(),
         ));
     }
+    // ponytail: an internal-only id is presence without a schema, so a frozen
+    // internal contract that later changes is never reported `changed` (and
+    // internal churn never moves the generation). Hydrate the frozen internal
+    // ids in discovery::reload if a profile ever depends on one drifting.
     snapshot
         .internal_ids
         .contains(id)
@@ -381,11 +387,20 @@ async fn attach_preloaded_functions(
     }
     let (ordered, unavailable, digests) = preload_contracts(deps, &agent.functions, policy).await;
     agent.contract_digests = digests;
-    if !unavailable.is_empty() {
+    let (denied, unknown): (Vec<&String>, Vec<&String>) =
+        unavailable.iter().partition(|id| !policy.allows(id));
+    if !unknown.is_empty() {
         tracing::warn!(
             agent = %agent.identity.id,
-            unavailable = ?unavailable,
-            "agent profile names preloaded functions unavailable to this session"
+            unavailable = ?unknown,
+            "agent profile names preloaded functions the engine does not know"
+        );
+    }
+    if !denied.is_empty() {
+        tracing::debug!(
+            agent = %agent.identity.id,
+            denied = ?denied,
+            "agent profile preloads functions this session's policy denies"
         );
     }
     agent.prompt = append_block(
@@ -715,7 +730,7 @@ impl ResolvedAgent {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     fn wire(json: serde_json::Value) -> AgentGetWire {
@@ -1045,27 +1060,13 @@ pub(crate) mod tests {
         );
     }
 
-    pub(crate) fn disconnected_contract_deps() -> Deps {
-        let iii = std::sync::Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:0"));
-        Deps::new(
-            iii.clone(),
-            std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(
-                WorkerConfig::default(),
-            ))),
-            crate::discovery::new_cell(),
-            crate::skills::new_cell(),
-            crate::events::TurnEvents::register(&iii),
-            crate::hooks::HookRegistry::register(&iii),
-        )
-    }
-
     #[tokio::test]
     async fn effective_preload_matrix_uses_virtual_contracts_and_final_policy_without_rpc() {
         use crate::{
             policy::CompiledPolicy,
             types::turn::{ExposeMode, FunctionPolicy},
         };
-        let deps = disconnected_contract_deps();
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
         let ids: Vec<String> = ["engine::register_trigger", "engine::unregister_trigger"]
             .into_iter()
             .map(str::to_string)
@@ -1144,7 +1145,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn profile_freezes_only_effectively_authorized_controls() {
-        let deps = disconnected_contract_deps();
+        let deps = crate::functions::subscribe::tests::disconnected_deps();
         let mut agent = normalize(
             "fixture",
             wire(json!({

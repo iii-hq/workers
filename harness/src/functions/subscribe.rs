@@ -180,8 +180,8 @@ pub fn control_contract(function_id: &str) -> Option<(&'static str, Value)> {
 
 /// What the intercept actually answers for a control id —
 /// `{ subscription_id, once, note? }` / `{ removed }` — never the engine's
-/// native `{ id }`, so `functions::info` describes both halves of the contract
-/// an agent calls.
+/// native `{ id }`. It keeps the raw `functions::info` details (console, hooks,
+/// contract ledger) honest; the model-visible copy strips response schemas.
 pub fn control_response_schema(function_id: &str) -> Option<Value> {
     match function_id {
         REGISTER_TRIGGER_ID => Some(crate::surface::schema_value::<SubscribeResponse>()),
@@ -1519,7 +1519,7 @@ fn error_result(msg: String) -> ResultData {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// An ordinary delivery trigger rides the worker channel with both
@@ -2269,7 +2269,7 @@ mod tests {
         "provider-openai-codex::state::future-operation",
     ];
 
-    fn disconnected_deps() -> Deps {
+    pub(crate) fn disconnected_deps() -> Deps {
         let iii = std::sync::Arc::new(iii_sdk::IIIClient::new("ws://127.0.0.1:0"));
         Deps::new(
             iii.clone(),
