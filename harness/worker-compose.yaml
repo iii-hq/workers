@@ -186,6 +186,7 @@ containers:
       - cron
       - ade
       - ide
+      - judge-typesafe
       - judge
     environment:
       RUST_LOG: info

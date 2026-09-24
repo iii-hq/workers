@@ -193,6 +193,7 @@ containers:
       - ade
       - ide
       - browser
+      - judge-typesafe
       - judge
     environment:
       RUST_LOG: info
