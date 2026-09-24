@@ -42,6 +42,7 @@ const COMPACT_BELOW_TOKENS: u64 = 4096;
 // another default provider gets matching options within 60 s.
 const WINDOW_TTL: Duration = Duration::from_secs(60);
 
+#[derive(Clone, Copy)]
 pub struct JudgeOptions {
     /// Noul: the minimum relevance. Choice: the probability every document
     /// but the best of its evaluation needs.
@@ -307,7 +308,7 @@ impl JudgeSearch {
     ) -> Result<JudgeOutcome, JudgeFailure> {
         let started = Instant::now();
         let result = if self.available() {
-            timeout_at(deadline, self.evaluate(lanes, options, deadline))
+            timeout_at(deadline, self.evaluate_rounds(lanes, options, deadline))
                 .await
                 .unwrap_or_else(|_| Err((JudgeError::Deadline, Stats::default())))
         } else {
@@ -334,6 +335,82 @@ impl JudgeSearch {
                 Err(JudgeFailure { error, stats })
             }
         }
+    }
+
+    /// Tournament: every lane with more than `JUDGE_SHORTLIST` documents plays
+    /// a round of Choice questions over groups of at most `JUDGE_SHORTLIST`
+    /// (sorted by id); only each group's winner goes on. Rounds repeat until
+    /// every lane fits one final Choice, admitted like `choice`. Other
+    /// questions are one pass.
+    async fn evaluate_rounds(
+        &self,
+        lanes: &[(String, Vec<ToolSchema>)],
+        options: &JudgeOptions,
+        deadline: Instant,
+    ) -> Result<JudgeOutcome, (JudgeError, Stats)> {
+        if options.question != JudgeQuestion::Tournament {
+            return self.evaluate(lanes, options, deadline).await;
+        }
+        let choice = JudgeOptions {
+            question: JudgeQuestion::Choice,
+            ..*options
+        };
+        // Only the best of each group survives a round.
+        let winners_only = JudgeOptions {
+            min_relevance: f64::INFINITY,
+            ..choice
+        };
+        let mut lanes: Vec<(String, Vec<ToolSchema>)> = lanes
+            .iter()
+            .map(|(capability, documents)| {
+                let mut documents = documents.clone();
+                documents.sort_by(|a, b| a.name.cmp(&b.name));
+                (capability.clone(), documents)
+            })
+            .collect();
+        let mut stats = Stats {
+            usage_complete: true,
+            ..Stats::default()
+        };
+        while lanes
+            .iter()
+            .any(|(_, documents)| documents.len() > JUDGE_SHORTLIST)
+        {
+            let mut round = Vec::new();
+            let mut owners = Vec::new();
+            for (lane, (capability, documents)) in lanes.iter().enumerate() {
+                if documents.len() > JUDGE_SHORTLIST {
+                    for group in groups(documents) {
+                        round.push((capability.clone(), group.to_vec()));
+                        owners.push(lane);
+                    }
+                }
+            }
+            let outcome = self
+                .evaluate(&round, &winners_only, deadline)
+                .await
+                .map_err(|(error, partial)| (error, add_stats(stats.clone(), &partial)))?;
+            stats = add_stats(stats, &outcome.stats);
+            let mut winners = vec![Vec::new(); lanes.len()];
+            for (lane, ranking) in owners.into_iter().zip(outcome.rankings) {
+                if let Some((id, _)) = ranking.first() {
+                    if let Some(document) = lanes[lane].1.iter().find(|d| &d.name == id) {
+                        winners[lane].push(document.clone());
+                    }
+                }
+            }
+            for ((_, documents), winners) in lanes.iter_mut().zip(winners) {
+                if documents.len() > JUDGE_SHORTLIST {
+                    *documents = winners;
+                }
+            }
+        }
+        let mut outcome = self
+            .evaluate(&lanes, &choice, deadline)
+            .await
+            .map_err(|(error, partial)| (error, add_stats(stats.clone(), &partial)))?;
+        outcome.stats = add_stats(stats, &outcome.stats);
+        Ok(outcome)
     }
 
     async fn evaluate(
@@ -469,7 +546,7 @@ fn parse_reply(
                 }
                 rankings[block.lane].extend(admit(scored, options.min_relevance));
             }
-            JudgeQuestion::Choice => {
+            JudgeQuestion::Choice | JudgeQuestion::Tournament => {
                 let distribution = answers
                     .filter(|answers| answers.len() == 1)
                     .and_then(|answers| answers.get("c0"))
@@ -495,7 +572,9 @@ fn parse_reply(
             JudgeQuestion::Noul => admit(ranked, 0.0),
             // One capability may span several Choice blocks (a split
             // shortlist): admit once, so it keeps a single best document.
-            JudgeQuestion::Choice => admit_choice(ranked, options.min_relevance),
+            JudgeQuestion::Choice | JudgeQuestion::Tournament => {
+                admit_choice(ranked, options.min_relevance)
+            }
         };
     }
     Ok(JudgeOutcome {
@@ -503,6 +582,23 @@ fn parse_reply(
         model: model.to_owned(),
         stats,
     })
+}
+
+/// `documents` in `ceil(n / JUDGE_SHORTLIST)` runs of near-equal size.
+fn groups(documents: &[ToolSchema]) -> std::slice::Chunks<'_, ToolSchema> {
+    let count = documents.len().div_ceil(JUDGE_SHORTLIST).max(1);
+    documents.chunks(documents.len().div_ceil(count).max(1))
+}
+
+/// Usage summed over the rounds of one ranking.
+fn add_stats(mut total: Stats, more: &Stats) -> Stats {
+    total.attempts += more.attempts;
+    total.requests += more.requests;
+    total.questions += more.questions;
+    total.input_tokens += more.input_tokens;
+    total.output_tokens += more.output_tokens;
+    total.usage_complete &= more.usage_complete;
+    total
 }
 
 /// Known usage from the reply; absent or foreign counters read as zero.
@@ -668,7 +764,7 @@ fn evaluation(
         };
         questions.insert(format!("c0_f{f}"), question);
     }
-    if options.question == JudgeQuestion::Choice {
+    if options.question != JudgeQuestion::Noul {
         return choice_evaluation(
             capability,
             options.corpus,
@@ -1075,6 +1171,69 @@ mod tests {
             let body = serde_json::to_value(&requests.lock().unwrap()[0]).unwrap();
             assert!(body["evaluations"][0]["questions"]["c0"]["criteria"]["f1"].is_object());
         }
+    }
+
+    #[tokio::test]
+    async fn a_tournament_narrows_the_whole_corpus_to_one_final_choice() {
+        let tools: Vec<ToolSchema> = (0..40).map(|i| tool(&format!("t::n{i:02}"))).collect();
+        // Favour t::n27 wherever it is offered; otherwise the first option.
+        let (client, requests) = recorder(|request| {
+            let results: serde_json::Map<String, Value> = request
+                .evaluations
+                .iter()
+                .map(|evaluation| {
+                    let Question::Choice { criteria, .. } = &evaluation.questions["c0"] else {
+                        panic!("choice question")
+                    };
+                    let target = criteria.iter().position(|(_, option)| {
+                        serde_json::to_value(option).unwrap()["function_id"] == "t::n27"
+                    });
+                    let n = criteria.len();
+                    let probabilities: serde_json::Map<String, Value> = criteria
+                        .keys()
+                        .enumerate()
+                        .map(|(i, key)| {
+                            let p = match target {
+                                Some(t) if t == i => 0.9,
+                                Some(_) => 0.1 / (n - 1) as f64,
+                                None if i == 0 => 0.5,
+                                None => 0.5 / (n - 1) as f64,
+                            };
+                            (key.clone(), json!(p))
+                        })
+                        .collect();
+                    let answer = json!({"type":"choice","choice":"f0","probabilities":probabilities,"confidence":0.5});
+                    (evaluation.id.clone(), json!({"answers": {"c0": answer}}))
+                })
+                .collect();
+            Ok(json!({"status":"ok","model":"laya","results":results,"stats":stats()}))
+        });
+        let tournament = JudgeOptions {
+            question: JudgeQuestion::Tournament,
+            ..choice()
+        };
+        let outcome = client
+            .rank(&lanes(&["pick"], &tools), &tournament, deadline())
+            .await
+            .unwrap();
+        assert_eq!(outcome.rankings[0][0].0, "t::n27");
+        let requests = requests.lock().unwrap();
+        // 40 documents: three groups of at most 14, then one final Choice over the three winners.
+        let sizes = |request: &EvaluateRequest| -> Vec<usize> {
+            request
+                .evaluations
+                .iter()
+                .map(|evaluation| match &evaluation.questions["c0"] {
+                    Question::Choice { criteria, .. } => criteria.len(),
+                    _ => 0,
+                })
+                .collect()
+        };
+        assert_eq!(requests.len(), 2);
+        assert_eq!(sizes(&requests[0]), vec![14, 14, 12]);
+        assert_eq!(sizes(&requests[1]), vec![3]);
+        // Usage sums both rounds.
+        assert_eq!(outcome.stats.requests, 2);
     }
 
     #[test]

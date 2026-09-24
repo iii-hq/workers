@@ -151,6 +151,11 @@ pub enum FunctionSearchJudgeQuestion {
     // function_search_judge_choice_min_probability.
     #[default]
     Choice,
+    // Choice without the Hybrid shortlist: the whole function catalog plays
+    // rounds of Choice questions over groups of at most 16 (sorted by id),
+    // each group's winner goes on, and the last 16 get the final Choice.
+    // Measured for laya: 21/22 searches against 15-17 with the shortlist.
+    Tournament,
 }
 
 /// `hybrid`, and the Hybrid fallback `judge` uses whenever the judge worker
@@ -777,7 +782,7 @@ mod tests {
         let schema = SkillsConfig::json_schema();
         assert_eq!(
             schema["definitions"]["FunctionSearchJudgeQuestion"]["enum"],
-            serde_json::json!(["noul", "choice"])
+            serde_json::json!(["noul", "choice", "tournament"])
         );
     }
 

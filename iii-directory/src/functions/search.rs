@@ -1880,7 +1880,9 @@ fn judge_options(cfg: &SkillsConfig, corpus: JudgeCorpus, noul_threshold: f64) -
     JudgeOptions {
         min_relevance: match question {
             FunctionSearchJudgeQuestion::Noul => noul_threshold,
-            FunctionSearchJudgeQuestion::Choice => cfg.function_search_judge_choice_min_probability,
+            FunctionSearchJudgeQuestion::Choice | FunctionSearchJudgeQuestion::Tournament => {
+                cfg.function_search_judge_choice_min_probability
+            }
         },
         question,
         corpus,
@@ -1903,12 +1905,16 @@ async fn rank_with_judge(
                 .unwrap_or_default()
         })
         .collect();
-    let (positions, lanes): (Vec<usize>, Vec<_>) =
-        judge_lanes(queries, corpus, dense, JUDGE_SHORTLIST)
-            .into_iter()
-            .enumerate()
-            .filter(|(position, _)| rankings[*position].is_empty())
-            .unzip();
+    // A tournament judges the whole catalog; the other questions its shortlist.
+    let depth = match cfg.function_search_judge_question {
+        FunctionSearchJudgeQuestion::Tournament => usize::MAX,
+        _ => JUDGE_SHORTLIST,
+    };
+    let (positions, lanes): (Vec<usize>, Vec<_>) = judge_lanes(queries, corpus, dense, depth)
+        .into_iter()
+        .enumerate()
+        .filter(|(position, _)| rankings[*position].is_empty())
+        .unzip();
     let options = judge_options(
         cfg,
         JudgeCorpus::Functions,
@@ -1944,7 +1950,10 @@ async fn installed_search(
     };
     if let Some(deadline) = judge {
         // The dense lane only matters when the catalog needs a shortlist.
-        let dense = if corpus.len() > JUDGE_SHORTLIST && deps.semantic.is_production_minilm() {
+        let dense = if corpus.len() > JUDGE_SHORTLIST
+            && cfg.function_search_judge_question != FunctionSearchJudgeQuestion::Tournament
+            && deps.semantic.is_production_minilm()
+        {
             deps.semantic.rank(fingerprint, queries, -1.0).await.ok()
         } else {
             None

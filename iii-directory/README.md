@@ -157,7 +157,7 @@ function_search_mode: judge                  # lexical | hybrid | judge (default
 function_search_judge_timeout_ms: 3000        # integer 1..30000; shared judge deadline per public search
 function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; noul floor (initial calibration value)
 function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; noul floor for the skills and triggers sections
-function_search_judge_question: choice       # choice (default: one question per capability) | noul (one yes/no per shortlisted document)
+function_search_judge_question: choice       # choice (default: one question per capability) | noul (one yes/no per shortlisted document) | tournament (whole catalog in rounds of 16, no Hybrid shortlist)
 function_search_judge_choice_min_probability: 0.1 # finite 0..1 inclusive; with choice, the floor for all but the best document
 ```
 
@@ -628,6 +628,14 @@ the full description object. laya (512 tokens) shares about 190 of them among
 the sixteen options, so the objects cut the function ids themselves: live, it
 found the expected function in 13/22 searches with objects and 17/22 compact.
 SemIf (16384) and judges that advertise no window keep the objects.
+
+`tournament` skips the Hybrid shortlist: the whole function catalog, sorted by
+id, plays rounds of Choice questions over groups of at most 16, each group's
+winner goes on, and the last 16 or fewer get one final Choice admitted like
+`choice`. A 260-function catalog takes three rounds (260 → 17 → 2 → final).
+Measured on 22 English capabilities: laya found the function in 21/22
+(15–17 with the shortlist) at about 1.2 s per search on a GPU; JEV 21/22;
+SemIf 18/22 and 6 s. Skills, triggers and registry pools keep their shortlists.
 
 `function_search_model_path: null` is valid in judge mode and makes the Hybrid
 fallback BM25-only, without the local-model warning. With a configured path,
