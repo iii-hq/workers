@@ -1,3 +1,5 @@
+import { $createCodeNode, $isCodeNode } from '@lexical/code-core'
+import { $isListItemNode } from '@lexical/list'
 import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin'
 import { ClearEditorPlugin } from '@lexical/react/LexicalClearEditorPlugin'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
@@ -5,19 +7,32 @@ import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext
 import { ContentEditable } from '@lexical/react/LexicalContentEditable'
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary'
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin'
+import { ListPlugin } from '@lexical/react/LexicalListPlugin'
+import { MarkdownShortcutPlugin } from '@lexical/react/LexicalMarkdownShortcutPlugin'
 import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin'
-import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin'
+import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin'
 import {
   $createParagraphNode,
   $createTextNode,
   $getRoot,
-  $isElementNode,
+  $getSelection,
+  $isParagraphNode,
+  $isRangeSelection,
   CLEAR_EDITOR_COMMAND,
+  COMMAND_PRIORITY_HIGH,
   COMMAND_PRIORITY_LOW,
+  type ElementNode,
+  INDENT_CONTENT_COMMAND,
+  INSERT_TAB_COMMAND,
+  isDOMNode,
+  isSelectionCapturedInDecoratorInput,
   KEY_ARROW_DOWN_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
+  KEY_TAB_COMMAND,
   type LexicalEditor,
+  OUTDENT_CONTENT_COMMAND,
+  PASTE_COMMAND,
 } from 'lexical'
 import {
   type RefObject,
@@ -30,11 +45,22 @@ import { onComposerFocusRequest, onComposerInsert } from '@/lib/composer-insert'
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
+import { bindingMatchesEvent } from '@/lib/keybindings/bindings'
 import {
   type ComposerEditorSize,
   classifyComposerResize,
 } from './composer-resize'
-import { $appendComposerText } from './lexical/composer-text'
+import { $insertCodeLine, $isOnLastCodeLine } from './lexical/code-block'
+import {
+  $composerNodesFromMarkdown,
+  $exportComposerMarkdown,
+  $fillComposerMarkdown,
+  $getComposerContainer,
+  COMPOSER_MARKDOWN_NODES,
+  COMPOSER_SHORTCUT_TRANSFORMERS,
+  FENCE_ONLY_LINE,
+  looksLikeComposerMarkdown,
+} from './lexical/composer-markdown'
 import { FileMentionNode } from './lexical/FileMentionNode'
 import { FileMentionsPlugin } from './lexical/FileMentionsPlugin'
 import { FileMentionTransformPlugin } from './lexical/FileMentionTransformPlugin'
@@ -49,6 +75,7 @@ import { SlashCommandTransformPlugin } from './lexical/SlashCommandTransformPlug
 
 interface LexicalShellProps {
   onChange: (text: string) => void
+  /** Called on `SEND_BINDING`; the send button is the other way in. */
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
@@ -56,20 +83,43 @@ interface LexicalShellProps {
   autoFocus?: boolean
 }
 
+/**
+ * The one keyboard chord that sends: the platform's primary modifier and
+ * Enter (⌘↵ on a Mac, Ctrl+Enter on Windows and Linux). Exported so the send
+ * button can say so.
+ */
+export const SEND_BINDING = 'Mod+Enter'
+
 const baseConfig = {
   namespace: 'iii-chat',
-  /* no theme classes — surface inherits Inter from <body> */
-  theme: {},
+  /* Only the WYSIWYG blocks get classes (styled in index.css next to
+     `.composer-editor`); the surface itself inherits Inter from <body>. */
+  theme: {
+    code: 'composer-code',
+    list: {
+      listitem: 'composer-li',
+      nested: { listitem: 'composer-li-nested' },
+      ol: 'composer-ol',
+      ul: 'composer-ul',
+    },
+    text: { code: 'composer-inline-code' },
+  },
   /* Decorator nodes must be registered up-front so importJSON/restore work. */
-  nodes: [FunctionMentionNode, FileMentionNode, SlashCommandNode],
+  nodes: [
+    FunctionMentionNode,
+    FileMentionNode,
+    SlashCommandNode,
+    ...COMPOSER_MARKDOWN_NODES,
+  ],
   onError(error: Error) {
     console.error(error)
   },
 }
 
 /**
- * Lifts the editor text out on every change. The text is whatever
- * `root.getTextContent()` returns — plain text, no marks.
+ * Lifts the editor text out on every change, as composer markdown (see
+ * `lexical/composer-markdown`): lists and code blocks come out as the
+ * markdown the message renders from, prose comes out verbatim.
  */
 function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
   return (
@@ -77,7 +127,7 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
       ignoreHistoryMergeTagChange
       onChange={(state) => {
         state.read(() => {
-          onChange($getRoot().getTextContent())
+          onChange($exportComposerMarkdown())
         })
       }}
     />
@@ -86,14 +136,29 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
 
 /**
  * Enter and Cmd+Enter submit; Shift+Enter inserts a newline (Lexical's default).
+ * With `enabled` false (touch keyboards) EVERY Enter falls through to that
+ * default, so the key only ever adds a line and the send button does the
+ * sending.
+ *
+ * Only `SEND_BINDING` sends — ⌘↵ on a Mac, Ctrl+Enter elsewhere — from
+ * anywhere in the draft, structure or not. A bare Enter is always a new
+ * line: the message is markdown with lists and code blocks, where Enter has
+ * to mean "next item" or "next line", and a key that sometimes sends and
+ * sometimes doesn't is the worst of both. So, Enter: "```" alone on a line
+ * opens a code block; inside a code block, the next line (a second blank
+ * line at the end leaves the block — see `$insertCodeLine`); inside a list,
+ * the next item (ListPlugin; on an empty item it leaves the list); in
+ * prose, a new paragraph, or a line break with Shift (RichTextPlugin).
+ * Every shape exports as one `\n`.
+ *
  * We listen at LOW priority. While a typeahead menu is open we swallow Enter
- * here (return true) so it can't fall through to PlainTextPlugin's
- * KEY_ENTER_COMMAND at EDITOR priority (which would insert a newline). The
+ * here (return true) so it can't fall through to RichTextPlugin's
+ * KEY_ENTER_COMMAND at EDITOR priority (which would insert a paragraph). The
  * typeahead runs at NORMAL and gets first shot at consuming Enter for option
  * selection; this branch is the safety net for the brief window where the
  * menu is open but the typeahead's Enter handler isn't (yet) consuming.
  */
-function SubmitOnEnterPlugin({
+function ComposerEnterPlugin({
   onSubmit,
   menuOpenRef,
 }: {
@@ -109,12 +174,35 @@ function SubmitOnEnterPlugin({
           event?.preventDefault()
           return true
         }
-        if (event && (event.shiftKey || event.ctrlKey)) {
+        if (event && bindingMatchesEvent(SEND_BINDING, event)) {
+          event.preventDefault()
+          onSubmit()
+          return true
+        }
+        const selection = $getSelection()
+        if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
           return false
         }
-        event?.preventDefault()
-        onSubmit()
-        return true
+        const anchor = selection.anchor.getNode()
+        const block = anchor.getTopLevelElement()
+        if ($isParagraphNode(block)) {
+          const fence = block.getTextContent().match(FENCE_ONLY_LINE)
+          if (fence) {
+            event?.preventDefault()
+            const code = $createCodeNode(fence[2] || undefined)
+            block.replace(code)
+            code.select()
+            return true
+          }
+        }
+        const container = $getComposerContainer(anchor)
+        if ($isCodeNode(container)) {
+          event?.preventDefault()
+          $insertCodeLine(container, selection)
+          return true
+        }
+        // A list item goes to ListPlugin, prose to RichTextPlugin.
+        return false
       },
       COMMAND_PRIORITY_LOW,
     )
@@ -122,15 +210,99 @@ function SubmitOnEnterPlugin({
   return null
 }
 
+/**
+ * Tab inside a list nests the item under the one above (Shift+Tab lifts it
+ * back out); inside a code block it inserts a tab. Anywhere else the key
+ * keeps its meaning — moving focus — so the composer is never a keyboard
+ * trap. LOW priority: an open typeahead takes Tab first to pick its option.
+ */
+function ComposerTabPlugin() {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    return editor.registerCommand(
+      KEY_TAB_COMMAND,
+      (event) => {
+        const selection = $getSelection()
+        if (!$isRangeSelection(selection)) return false
+        const container = $getComposerContainer(selection.anchor.getNode())
+        if ($isListItemNode(container)) {
+          event.preventDefault()
+          if (event.shiftKey) {
+            return editor.dispatchCommand(OUTDENT_CONTENT_COMMAND, undefined)
+          }
+          // Nesting needs an item above to nest under; the first stays put.
+          if (container.getPreviousSibling() === null) return true
+          return editor.dispatchCommand(INDENT_CONTENT_COMMAND, undefined)
+        }
+        if ($isCodeNode(container) && !event.shiftKey) {
+          event.preventDefault()
+          return editor.dispatchCommand(INSERT_TAB_COMMAND, undefined)
+        }
+        return false
+      },
+      COMMAND_PRIORITY_LOW,
+    )
+  }, [editor])
+  return null
+}
+
+/**
+ * Paste is text, never rich HTML: bold or a heading copied from a web page
+ * would show in the editor and vanish from the message. Text dropped on an
+ * empty line is read as composer markdown, so a prompt pasted whole shows
+ * its lists and code blocks; anywhere else it is inserted literally (into
+ * a code block, line by line). HIGH priority, ahead of RichTextPlugin's
+ * HTML-aware paste.
+ */
+function ComposerPastePlugin() {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    return editor.registerCommand(
+      PASTE_COMMAND,
+      (event) => {
+        if (!(event instanceof ClipboardEvent) || !event.clipboardData) {
+          return false
+        }
+        if (
+          isDOMNode(event.target) &&
+          isSelectionCapturedInDecoratorInput(event.target)
+        ) {
+          return false
+        }
+        const text = event.clipboardData.getData('text/plain')
+        if (text.length === 0) return false
+        const selection = $getSelection()
+        if (!$isRangeSelection(selection)) return false
+        event.preventDefault()
+        const block = selection.anchor.getNode().getTopLevelElement()
+        if (
+          $isParagraphNode(block) &&
+          block.getTextContent().length === 0 &&
+          looksLikeComposerMarkdown(text)
+        ) {
+          let last: ElementNode = block
+          for (const node of $composerNodesFromMarkdown(text)) {
+            last.insertAfter(node)
+            last = node
+          }
+          block.remove()
+          last.selectEnd()
+          return true
+        }
+        selection.insertRawText(text)
+        return true
+      },
+      COMMAND_PRIORITY_HIGH,
+    )
+  }, [editor])
+  return null
+}
+
 /** Replace the whole editor with `text` (empty string clears it), caret at end. */
 function loadEditorText(editor: LexicalEditor, text: string) {
   editor.update(() => {
-    const root = $getRoot()
-    root.clear()
-    const paragraph = $createParagraphNode()
-    $appendComposerText(paragraph, text)
-    root.append(paragraph)
-    paragraph.selectEnd()
+    $fillComposerMarkdown(text)
+    $getRoot().getLastChild()?.selectEnd()
   })
 }
 
@@ -180,6 +352,44 @@ function HistoryNavPlugin({
 }
 
 /**
+ * Down on the last line of a code block that ends the draft steps out into
+ * a fresh paragraph after it. The block is usually the last thing typed,
+ * and short of this the only ways out are three Enters or the mouse.
+ * LOW priority, mounted right after HistoryNavPlugin so it registers after
+ * it: on a pristine draft the queue still browses first, and this runs only
+ * once the arrow has nowhere else to go.
+ */
+function ArrowOutOfCodePlugin({
+  menuOpenRef,
+}: {
+  menuOpenRef: React.MutableRefObject<boolean>
+}) {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    return editor.registerCommand(
+      KEY_ARROW_DOWN_COMMAND,
+      (event) => {
+        if (menuOpenRef.current) return false
+        const selection = $getSelection()
+        if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
+          return false
+        }
+        const code = $getComposerContainer(selection.anchor.getNode())
+        if (!$isCodeNode(code) || code.getNextSibling() !== null) return false
+        if (!$isOnLastCodeLine(code, selection.anchor)) return false
+        event.preventDefault()
+        const paragraph = $createParagraphNode()
+        code.insertAfter(paragraph)
+        paragraph.select()
+        return true
+      },
+      COMMAND_PRIORITY_LOW,
+    )
+  }, [editor, menuOpenRef])
+  return null
+}
+
+/**
  * Imperatively expose a "clear" so the parent can wipe the editor after submit.
  * We use Lexical's CLEAR_EDITOR_COMMAND, which the ClearEditorPlugin handles.
  */
@@ -209,8 +419,10 @@ function ExternalInsertPlugin() {
       editor.update(() => {
         const root = $getRoot()
         if (inline) {
+          // A list or a code block is not a sentence to join: the reference
+          // starts a paragraph of its own after it.
           const lastChild = root.getLastChild()
-          const last = $isElementNode(lastChild)
+          const last = $isParagraphNode(lastChild)
             ? lastChild
             : $createParagraphNode()
           if (last !== lastChild) root.append(last)
@@ -483,7 +695,7 @@ export function LexicalShell({
           provider has to sit inside the composer for them to see it. */}
       <ComposerMentionContext.Provider value={mentionActions}>
         <div ref={frameRef} className="relative">
-          <PlainTextPlugin
+          <RichTextPlugin
             contentEditable={
               <ContentEditable
                 ref={editorRef}
@@ -504,9 +716,17 @@ export function LexicalShell({
         <ClearEditorPlugin />
         <ClearOnDemandPlugin token={clearToken} />
         <ChangePlugin onChange={onChange} />
-        <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
+        {/* The WYSIWYG blocks: `- ` / `1. ` start a list, "``` " a code
+            block, `` `x` `` inline code (see lexical/composer-markdown). */}
+        <ListPlugin />
+        <MarkdownShortcutPlugin transformers={COMPOSER_SHORTCUT_TRANSFORMERS} />
+        <ComposerTabPlugin />
+        <ComposerPastePlugin />
+        <ComposerEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
         <PillArrowNavPlugin />
         <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
+        {/* After HistoryNavPlugin on purpose: same priority, later registration. */}
+        <ArrowOutOfCodePlugin menuOpenRef={menuOpenRef} />
         <ExternalInsertPlugin />
         {/* Opening a session is a request to write in it, so the first
           keystroke should land in the message rather than be spent aiming.

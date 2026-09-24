@@ -813,7 +813,9 @@ mod tests {
     #[tokio::test]
     async fn failed_rebind_keeps_old_port_and_listener() {
         let (old_port, occupied_port) = two_free_ports();
-        let occupied = tokio::net::TcpListener::bind(("0.0.0.0", occupied_port))
+        // Reserve the exact interface rebind uses. On macOS a wildcard
+        // listener does not necessarily prevent a loopback bind to the same port.
+        let occupied = tokio::net::TcpListener::bind((server::bind_host(), occupied_port))
             .await
             .unwrap();
         let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);

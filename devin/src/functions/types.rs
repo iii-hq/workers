@@ -18,6 +18,10 @@ pub struct Message {
 pub struct RunRequest {
     /// iii session id; reuse to keep the same local record. Omit to generate one.
     pub session_id: Option<String>,
+    /// The session delegating this run. Written to the session-manager session
+    /// metadata on creation, which nests the run under its parent in the
+    /// console — the same link a harness sub-agent carries.
+    pub parent_session_id: Option<String>,
     /// The prompt handed to the `devin` CLI for this turn.
     pub prompt: Option<String>,
     /// Alternative to prompt: role/content messages; the last user entry becomes the prompt.
@@ -26,6 +30,9 @@ pub struct RunRequest {
     pub cwd: Option<String>,
     /// Prepend the iii runtime discovery prompt as leading instructions (default from config).
     pub iii_context: Option<bool>,
+    /// Record this turn as a session-manager session listed in the console
+    /// (default from config `session_recording`).
+    pub session_recording: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

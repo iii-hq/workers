@@ -207,6 +207,34 @@ sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 Other keys (RPC timeouts, stream coalescing, idempotency TTL, validation
 retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
+## Anonymous usage reporting
+
+The harness announces its own usage on the durable `harness:usage` topic. The
+engine subscribes to that topic and sends one anonymous product event for each
+message. Two moments report:
+
+- `harness_session_progress`, at root turn 1, 2, 5, 10, 25 and 50. Each report
+  carries the cumulative totals that `harness::metrics` aggregates over the
+  session tree: turns, function calls, tokens and cost. A later report
+  supersedes the one before it.
+- `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
+  and `max_turns` outcomes. This keeps the reason a run stopped exact when it
+  stopped between two milestones.
+
+One session reports at most 9 messages, however many turns it runs, and
+sub-agent turns report nothing of their own. A message carries the model name,
+the provider name, the counters above and a fixed failure class. It carries no
+message text, no prompt, no file path and no function id.
+
+The `harness_usage/<session_id>` state row records the milestones and outcomes
+a session announced, so a restart does not announce one again. Each step is best
+effort: a failed read or publish is logged at debug level and the turn
+continues.
+
+To stop the reports, set `III_TELEMETRY_ENABLED=false` on the engine. The engine
+then takes the messages from the topic and discards them, so an opted-out
+deployment stores nothing.
+
 ## System prompt
 
 The identity prompt is assembled once at send/spawn time. EVERY agent —
@@ -257,6 +285,12 @@ too). Naming either field resolves fresh — an explicit bare
 `system_prompt_strategy` (e.g. `"enrich"`) is the reset-to-default escape
 hatch. The inherited string is frozen at its original resolution — resend
 the prompt fields to re-resolve.
+
+Reasoning is sticky the same way: a send that names neither
+`thinking_level` nor `provider_options` keeps the prior turn's pair, so an
+omitted field never silently resets the effort (which would also bust the
+provider's messages cache). Naming either field replaces the pair —
+`provider_options: {}` resets to the provider default.
 
 The prompt reaches `router::chat` in two forms: the flat `system_prompt`,
 and `system_sections` — the STABLE prefix (the frozen profile or identity
@@ -331,6 +365,21 @@ names is the prompt's decision — the profile body steers it, nothing gates it.
 Spawning
 with `agent` into an already RUNNING session of the caller's own tree merges
 the task like any reuse and does not re-apply the profile.
+
+A spawned child also starts with the contracts it would otherwise look up
+first, in a `<preloaded_functions>` block of its own (MOT-4851). The block
+holds, capped at 30 contracts:
+- its whole allow-list, when that is a short (≤ 30), glob-free list of
+  explicit ids;
+- then every function id its task names verbatim (for example
+  `` `coder::read-file` ``).
+
+Only ids the child may dispatch are seeded, and only when the registry lists
+them. Discovery grants and ids its profile already preloads are skipped, and
+`expose: native` seeds nothing, because the tools already carry the schemas.
+The block is frozen at spawn and rides after the cache seam (the runtime aid),
+so default-identity sessions keep sharing their stable prefix. Its digests join
+the preloaded-contract stale notice.
 
 The harness ships one profile of its own, `worker-builder`
 ([`agents/worker-builder.md`](agents/worker-builder.md)): an identity that

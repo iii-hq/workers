@@ -66,6 +66,20 @@
   flex: none;
   color: var(--color-ink-ghost);
 }
+/* Pane width, not viewport: the chat root (`ChatView`'s `@container`
+   section) is the nearest container — the `data-iii-ui` wrapper is
+   `display: contents`, so it is not one. Under 30rem, the design system's
+   narrow-container threshold (a phone, or a narrow split), the chip keeps
+   what you act on: the counts and the caret. The bar and the `ctx` eyebrow
+   go; the button's aria-label still says all of it. Only the states that
+   carry counts (`data-has-counts`) compact — the waiting `ctx —` keeps its
+   eyebrow, since a bare dash says nothing. */
+@container (max-width: 30rem) {
+  [data-iii-ui="harness"] .harness-ui-chip[data-has-counts] .harness-ui-chip-label,
+  [data-iii-ui="harness"] .harness-ui-chip[data-has-counts] .harness-ui-chip-bar {
+    display: none;
+  }
+}
 
 /* --- context breakdown (dialog on desktop, sheet on phones) ----------- */
 [data-iii-ui="harness"] .harness-ui-dialog {

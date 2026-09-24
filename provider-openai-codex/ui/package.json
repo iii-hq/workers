@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "pnpm dlx @biomejs/biome@2.4.10 ci .",
     "test": "vitest run"
   },
   "dependencies": {

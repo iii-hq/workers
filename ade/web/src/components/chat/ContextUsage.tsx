@@ -96,13 +96,17 @@ export function ContextUsage({
         onClick={() => setOpen((current) => !current)}
         className="flex self-stretch items-center gap-1.5 rounded-sm font-sans text-sm text-ink-faint hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
       >
-        <span>ctx</span>
+        {/* Under a 30rem pane (`@container` on the chat root) the meter
+            keeps only the counts you act on — `12.3k/200k`: the label, the
+            bar and the percentage hide. Without a capacity the lone number
+            needs its label to read as context, so `ctx` stays. */}
+        <span className={cn(hasCapacity && '@max-[30rem]:hidden')}>ctx</span>
         {hasCapacity ? (
           <>
             <span
               // `surface-active`, not `surface`: the header group this sits in
               // is itself `bg-surface`, so the track needs added contrast.
-              className="relative h-[6px] w-14 overflow-hidden bg-surface-active"
+              className="relative h-[6px] w-14 overflow-hidden bg-surface-active @max-[30rem]:hidden"
               role="progressbar"
               aria-label="context window usage"
               aria-valuenow={pct}
@@ -111,8 +115,12 @@ export function ContextUsage({
             >
               <span className={fillClass} style={{ width: `${pct}%` }} />
             </span>
-            <span className={cn('tabular-nums', labelToneClass)}>{pct}%</span>
-            <span className="text-ink-faint">
+            <span
+              className={cn('tabular-nums @max-[30rem]:hidden', labelToneClass)}
+            >
+              {pct}%
+            </span>
+            <span className="tabular-nums text-ink-faint">
               {formatTokenCount(tokens)}/{formatTokenCount(capacity)}
             </span>
           </>

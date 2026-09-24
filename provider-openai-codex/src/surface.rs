@@ -30,6 +30,12 @@ pub const ON_ROUTER_READY_ID: &str = "provider::openai-codex::on_router_ready";
 pub const ON_ROUTER_READY_DESC: &str =
     "Internal: router::ready subscriber that re-declares this provider and refreshes its catalog.";
 
+pub const IMAGE_GENERATE_ID: &str = "provider::openai-codex::image::generate";
+pub const IMAGE_GENERATE_DESC: &str = "Generate one image from a text prompt with gpt-image-2.5-sunburst or gpt-image-2.5-flare on the ChatGPT subscription backend (a Codex chat model hosts the image_generation tool). Returns viewable content blocks (image + caption) that render inline, and saves the file under data/provider-openai-codex/images/ (details.path) for other processes to pick up.";
+
+pub const IMAGE_READ_ID: &str = "provider::openai-codex::image::read";
+pub const IMAGE_READ_DESC: &str = "Read back an image saved by image::generate (its details.path or bare file name under data/provider-openai-codex/images/) as viewable content blocks: a JPEG preview (default, fits the harness result cap) or the full bytes. Refuses any path outside that folder.";
+
 pub const COUNT_TOKENS_ID: &str = "provider::openai-codex::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
     "Count prompt tokens for {model, system_prompt?, tools?, messages} locally with the \
@@ -87,6 +93,14 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<crate::count_tokens::CountTokensRequest, crate::count_tokens::CountTokensResponse>(
             COUNT_TOKENS_ID,
             COUNT_TOKENS_DESC,
+        ),
+        spec::<crate::image::ImageGenerateRequest, crate::image::ImageGenerateResponse>(
+            IMAGE_GENERATE_ID,
+            IMAGE_GENERATE_DESC,
+        ),
+        spec::<crate::image::ImageReadRequest, crate::image::ImageReadResponse>(
+            IMAGE_READ_ID,
+            IMAGE_READ_DESC,
         ),
         spec::<crate::session::EmptyRequest, crate::session::LoginStartResponse>(
             LOGIN_START_ID,

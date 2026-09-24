@@ -9,5 +9,7 @@ pub mod events;
 pub mod functions;
 pub mod iii_prompt;
 pub mod manifest;
+pub mod optional;
+pub mod session_link;
 pub mod state;
 pub mod wire;

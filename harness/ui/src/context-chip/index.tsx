@@ -7,6 +7,12 @@
  * binding, GC'd with the tab), which fires on every generate step. Click opens
  * the breakdown — a `Dialog` on desktop, a `BottomSheet` on phones — with a
  * stacked segment bar, legend, and last-turn actuals.
+ *
+ * The chip answers to the PANE, not the viewport: under a 30rem-wide chat
+ * pane (a phone, or a narrow split) it drops to its counts — the bar and the
+ * `ctx` eyebrow hide (styles.css, `@container`), `12.3k/200k` and the caret
+ * stay. `data-has-counts` marks the states that have counts to fall back to;
+ * the waiting state (`ctx —`) keeps its eyebrow.
  */
 
 import {
@@ -431,6 +437,9 @@ interface ContextChipSurfaceProps {
   triggerLabel: string
   trigger: ReactNode
   popover: ReactNode
+  /** The trigger carries a `used/usable` count — what a narrow pane keeps
+      when it hides the bar and the eyebrow (see styles.css). */
+  hasCounts?: boolean
 }
 
 /**
@@ -444,12 +453,13 @@ function ContextChipSurface({
   triggerLabel,
   trigger,
   popover,
+  hasCounts = false,
 }: ContextChipSurfaceProps) {
   const phone = usePhone()
   const Root = phone ? BottomSheet : Dialog
   const Trigger = phone ? BottomSheetTrigger : DialogTrigger
   return (
-    <div className="harness-ui-chip">
+    <div className="harness-ui-chip" data-has-counts={hasCounts ? '' : undefined}>
       <Root open={open} onOpenChange={onOpenChange}>
         <Trigger asChild>
           <button type="button" className="harness-ui-chip-btn" aria-label={triggerLabel}>
@@ -532,7 +542,9 @@ export function createContextChip(host: Host) {
     }, [host, sessionId])
 
     const caret = <ChevronDown className="harness-ui-chip-caret" size={16} aria-hidden />
-    const label = <span className={uiClasses.eyebrow}>ctx</span>
+    const label = (
+      <span className={`${uiClasses.eyebrow} harness-ui-chip-label`}>ctx</span>
+    )
 
     if (!snapshot || snapshot.usable <= 0) {
       if (contextWindow && contextWindow > 0) {
@@ -541,6 +553,7 @@ export function createContextChip(host: Host) {
             open={open}
             onOpenChange={setOpen}
             triggerLabel={`context: waiting for usage, ${contextWindow.toLocaleString()} token window — click for the breakdown`}
+            hasCounts
             trigger={
               <>
                 {label}
@@ -596,6 +609,7 @@ export function createContextChip(host: Host) {
         open={open}
         onOpenChange={setOpen}
         triggerLabel={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%) — click for the breakdown`}
+        hasCounts
         trigger={
           <>
             {label}

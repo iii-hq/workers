@@ -28,10 +28,10 @@ scripts:
   # edit reaches the worker on the next prepare (`iii compose --up`), not on a
   # plain restart.
   #
-  # npm and esbuild only. The guest gets the worker directory alone, so the
-  # build must not need the repo's pnpm workspace: `pnpm --dir ui build` adds
-  # `tsc --noEmit` against `@iii-dev/console-ui`, which lives in that
-  # workspace and is types-only anyway (esbuild treats it as external).
+  # The page builds through the repo's shared console-UI workspace
+  # (`@iii-dev/console-ui` is not published), so a guest that gets the worker
+  # directory alone cannot run `build:bundle`; run the published artifact
+  # there.
   install: if [ -f src/index.mjs ]; then npm install && npm run build:bundle; fi
   start: node ./dist/bundle/index.mjs
 

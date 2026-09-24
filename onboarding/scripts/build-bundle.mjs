@@ -6,6 +6,10 @@
  * The assets stay separate files rather than string constants in the bundle,
  * because `onboarding::ui-content` reads them from disk at call time — the
  * same code path the watcher uses in development.
+ *
+ * The page itself is not built here: `build:bundle` runs the shared
+ * console-UI builder into `ui/dist` first, so the published page is the one
+ * every other worker UI gets (same externals, same checks).
  */
 
 import { copyFile, mkdir, readFile } from 'node:fs/promises'
@@ -15,17 +19,6 @@ import { build } from 'esbuild'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const bundleDir = join(root, 'dist', 'bundle')
-
-// 1. The injected page, the same build the console loads in development.
-await build({
-  entryPoints: [join(root, 'ui', 'page.tsx'), join(root, 'ui', 'styles.css')],
-  bundle: true,
-  format: 'esm',
-  jsx: 'automatic',
-  outdir: join(root, 'ui', 'dist'),
-  external: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', '@iii-dev/console-ui'],
-  logLevel: 'info',
-})
 
 /**
  * iii-sdk reads its own version through `createRequire(import.meta.url)` on
@@ -53,7 +46,7 @@ const inlinePackageJson = {
   },
 }
 
-// 2. The worker itself.
+// 1. The worker itself.
 await build({
   entryPoints: [join(root, 'src', 'index.mjs')],
   outfile: join(bundleDir, 'index.mjs'),
@@ -71,7 +64,7 @@ await build({
   logLevel: 'info',
 })
 
-// 3. The assets, beside the bundle, where `ui-content` looks for them first.
+// 2. The page assets from `ui/dist`, beside the bundle, where `ui-content` looks for them first.
 await mkdir(bundleDir, { recursive: true })
 for (const file of ['page.js', 'styles.css']) {
   await copyFile(join(root, 'ui', 'dist', file), join(bundleDir, file))

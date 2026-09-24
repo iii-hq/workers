@@ -155,8 +155,10 @@ hint_min_workers: 2                          # minimum surface width before the 
 registry_search: true                        # include installable registry workers in every search
 function_search_mode: judge                  # lexical | hybrid | judge (default)
 function_search_judge_timeout_ms: 3000        # integer 1..30000; shared judge deadline per public search
-function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; initial calibration value
-function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; floor for the skills and triggers sections
+function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; noul floor (initial calibration value)
+function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; noul floor for the skills and triggers sections
+function_search_judge_question: choice       # choice (default: one question per capability) | noul (one yes/no per shortlisted document)
+function_search_judge_choice_min_probability: 0.1 # finite 0..1 inclusive; with choice, the floor for all but the best document
 ```
 
 The writable `skills_folder` and `agents_folder` roots are created when needed.
@@ -261,12 +263,30 @@ agents_folder/                 # ← where agents::create writes
   frontend-design.md           # ← `extends: iii` builds on the bundled base
 ```
 
-Two base agent profiles ship inside the worker binary: `iii` (the harness
-default identity, verbatim) and `iii-minimal` (the minimal directory-first
-identity — the same text as the bundled system prompt of that name). Each is
-always listed (`builtin: true`), a local `agents_folder/<id>.md` shadows it,
-`update` on it copy-on-writes that local file, and deleting the file falls
-back to the bundled copy. No file is ever seeded on disk.
+Three agent profiles ship inside the worker binary:
+
+- `default` — shown as **Default** in the chat's new-session gallery: the
+  minimal directory-first identity (the same text as the bundled
+  `iii-minimal` system prompt), with a composer example. New sessions in the
+  ADE start on it.
+- `iii` — the harness default identity, verbatim. `hidden: true` keeps it
+  out of the gallery; it stays a valid `extends` parent and runs by id.
+- `iii-minimal` — the previous id of `default`, kept as a hidden alias
+  (`extends: default`, no body of its own) so existing `extends:
+  iii-minimal` chains, saved sessions, and explicit invocations resolve to
+  the same identity. New profiles should use `extends: default`.
+
+Each is always listed (`builtin: true`), a local `agents_folder/<id>.md`
+shadows it, `update` on it copy-on-writes that local file, and deleting the
+file falls back to the bundled copy. No file is ever seeded on disk.
+
+An optional `composer_placeholder:` frontmatter string is the example request
+the chat shows in an EMPTY composer while that profile is selected. It is
+presentation only — never sent, never added to the prompt — and
+profile-local: it does not inherit through `extends`, so a child without its
+own example gets the chat's generic hint. Whitespace collapses to single
+spaces, blank means absent, and more than 200 characters is rejected like any
+other invalid frontmatter.
 
 A second, READ-ONLY root — `agents_skills_folder` (default `.agents/skills`
 under the same Compose or standalone base) — serves agent skills. It is
@@ -423,8 +443,8 @@ other adapter.
 
 | Function ID | Description |
 |---|---|
-| `directory::agents::list` | Metadata-only listing of every agent profile — fs-backed plus the bundled `iii` / `iii-minimal` bases (`builtin: true` until a local file shadows one): `{ id, name, description, logo, skill_count, model, reasoning_effort, icon, color, extends, modified_at }` per row, `skill_count`/`model`/`reasoning_effort` resolved through `extends` (`skill_count: null` = every skill; `model: null` = the send decides). A row whose chain does not resolve carries `inheritance_error`. |
-| `directory::agents::get` | Fetch one agent profile by `{ id }`: the RESOLVED `system_prompt` (each ancestor's body root-first, then this file's body), `skills` + `unknown_skills` (filter entries matching no visible skill — warnings), `model` (`null` = the send decides), provider-native `reasoning_effort`, display `icon`/`color`, `extends`, `builtin`, `modified_at`, and `inheritance_error` when the chain does not resolve (own file served meanwhile). Pass `raw: true` to additionally get this profile's FULL on-disk file as `raw`. |
+| `directory::agents::list` | Metadata-only listing of every agent profile — fs-backed plus the bundled `default` / `iii` / `iii-minimal` profiles (`builtin: true` until a local file shadows one): `{ id, name, description, logo, skill_count, model, reasoning_effort, icon, color, extends, hidden, composer_placeholder, modified_at }` per row (`hidden` and `composer_placeholder` omitted when unset; `composer_placeholder` never inherits), `skill_count`/`model`/`reasoning_effort` resolved through `extends` (`skill_count: null` = every skill; `model: null` = the send decides). A row whose chain does not resolve carries `inheritance_error`. |
+| `directory::agents::get` | Fetch one agent profile by `{ id }`: the RESOLVED `system_prompt` (each ancestor's body root-first, then this file's body), `skills` + `unknown_skills` (filter entries matching no visible skill — warnings), `model` (`null` = the send decides), provider-native `reasoning_effort`, display `icon`/`color`, `extends`, `hidden`, the profile's own `composer_placeholder` (omitted when unset), `builtin`, `modified_at`, and `inheritance_error` when the chain does not resolve (own file served meanwhile). Pass `raw: true` to additionally get this profile's FULL on-disk file as `raw`. |
 | `directory::agents::update` | Overwrite one EXISTING agent profile file with new full-file content: `{ id, content }`. Same rules the scanner enforces (required frontmatter with non-empty `name`, emoji-only `logo`; the body — the system prompt — may be empty); the id stays the file stem. Updating a bundled profile creates the local file that shadows it. Atomic write; fans out `directory::agents::on-change` with `op: "update"`. |
 | `directory::agents::create` | Create a NEW agent profile at `<agents_folder>/<id>.md` from full-file content: `{ id, content }`. Refuses an `id` that already exists in the configured agent-profile root, and a target path that already exists on disk even if the scanner would skip it; creating a bundled id shadows the bundled copy. Atomic write; fans out `directory::agents::on-change` with `op: "create"`. Returns `{ id, name, description, logo, bytes, modified_at }`. |
 | `directory::agents::delete` | Permanently remove one EXISTING agent profile file by `{ id }`. Resolves against the same configured root as `list`/`get`, fans out `directory::agents::on-change` with `op: "delete"`, and returns `{ id }`. Deleting the local shadow of a bundled profile falls back to the bundled copy; a bundled profile with no local file has nothing to delete (`D414`). Sessions already using the profile are unaffected; profiles extending it stop resolving until fixed. |
@@ -565,6 +585,8 @@ function_search_mode: judge
 function_search_judge_timeout_ms: 3000
 function_search_judge_min_relevance: 0.5
 function_search_judge_side_lane_min_relevance: 0.3
+function_search_judge_question: choice
+function_search_judge_choice_min_probability: 0.1
 ```
 
 These fields apply without a restart. The timeout is an integer from 1 to
@@ -583,7 +605,20 @@ the provider answers them together with one model, and cancels the rest when
 one fails. Requests carry normalized capabilities, function IDs, short
 descriptions and parameter names; no conversation history or argument values.
 Exact eligible IDs, internal-function exclusions, session deduplication and
-result limits stay local. Providers register their `judge-<provider>::*`
+result limits stay local.
+
+`function_search_judge_question` sets how each capability's shortlist is
+asked. `choice` (the default) asks one multiple-choice question per capability
+whose options are the shortlisted documents: 16× fewer questions, and the
+documents compete. The best document is always kept and every other needs
+`function_search_judge_choice_min_probability` (the relevance floors do not
+apply). `noul` asks one yes/no question per document and admits each by the
+relevance floors. Local judges need `choice` to fit the deadline: judge-semif answers a
+capability in about 0.3 s on a GPU, where the Noul shortlist of every lane
+takes it past 30 s. On 22 English capabilities over the 16-document
+shortlist, `choice` with 0.1 kept a correct function in every search for both
+`jev-1.13.0` (precision 0.98, 1.2 functions per capability) and judge-semif
+(precision 0.87, 1.5 functions). Providers register their `judge-<provider>::*`
 functions as internal, so search results show only the hub's `judge::*`.
 
 `function_search_model_path: null` is valid in judge mode and makes the Hybrid

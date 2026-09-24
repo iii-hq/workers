@@ -26,6 +26,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { normalizeComposerPlaceholder } from '@/components/chat/agent-defaults'
 import {
   agentIdFromSystemPrompt,
   DEFAULT_SYSTEM_PROMPT_STATE,
@@ -93,6 +94,7 @@ import {
 } from '@/lib/storage'
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
+  type AgentProfileChangeOptions,
   type AgentProfileSnapshot,
   type Attachment,
   type Conversation,
@@ -396,6 +398,9 @@ function decodeAgentProfile(value: unknown): AgentProfileSnapshot | undefined {
       : typeof raw.reasoningEffort === 'string'
         ? raw.reasoningEffort.trim()
         : ''
+  const composerPlaceholder = normalizeComposerPlaceholder(
+    raw.composer_placeholder,
+  )
   return {
     id,
     name: name || id,
@@ -403,6 +408,7 @@ function decodeAgentProfile(value: unknown): AgentProfileSnapshot | undefined {
     ...(reasoningEffort ? { reasoningEffort } : {}),
     ...(icon ? { icon } : {}),
     ...(color ? { color } : {}),
+    ...(composerPlaceholder ? { composerPlaceholder } : {}),
   }
 }
 
@@ -556,6 +562,9 @@ export function metadataFor(
           : {}),
         ...(c.agentProfile.icon ? { icon: c.agentProfile.icon } : {}),
         ...(c.agentProfile.color ? { color: c.agentProfile.color } : {}),
+        ...(c.agentProfile.composerPlaceholder
+          ? { composer_placeholder: c.agentProfile.composerPlaceholder }
+          : {}),
       }
     : undefined
   // session::set-meta replaces metadata wholesale. Keep keys owned by the
@@ -1109,6 +1118,7 @@ export interface ConversationsApi {
   setAgentProfile: (
     id: string,
     agentProfile: AgentProfileSnapshot | undefined,
+    options?: AgentProfileChangeOptions,
   ) => void
   setSkills: (id: string, skills: string[] | undefined) => void
   /** Per-session working directory; null clears a scope that is no longer usable. */
@@ -2688,11 +2698,20 @@ export function useConversations(
   )
 
   const setAgentProfile = useCallback(
-    (id: string, agentProfile: AgentProfileSnapshot | undefined) => {
+    (
+      id: string,
+      agentProfile: AgentProfileSnapshot | undefined,
+      options?: AgentProfileChangeOptions,
+    ) => {
+      // An automatic selection keeps the user's reasoning effort unless the
+      // profile pins one; an explicit pick adopts the profile's (or resets).
+      const adoptThinkingLevel =
+        !!agentProfile &&
+        (!options?.keepThinkingLevel || !!agentProfile.reasoningEffort)
       const patch: ConversationMetadataEdits = {
         agentProfile,
         ...(agentProfile?.model ? { model: agentProfile.model } : {}),
-        ...(agentProfile
+        ...(adoptThinkingLevel && agentProfile
           ? {
               thinkingLevel:
                 agentProfile.reasoningEffort ?? DEFAULT_THINKING_LEVEL,
@@ -2707,7 +2726,7 @@ export function useConversations(
         const updated = applyConversationMetadataPatch(conversation, patch)
         writeMeta(updated)
         if (agentProfile?.model) saveLastModel(agentProfile.model)
-        if (agentProfile) {
+        if (adoptThinkingLevel && agentProfile) {
           saveLastThinkingLevel(
             agentProfile.reasoningEffort ?? DEFAULT_THINKING_LEVEL,
           )

@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -55,8 +56,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 46
-    assert len(frontends) == 49
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 47
+    assert len(frontends) == 51
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -69,6 +70,36 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         assert frontend["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
         assert frontend["build_command"] == ["pnpm", "run", "build"]
         assert frontend["outputs"] == ["dist"]
+
+
+def test_rust_release_declares_every_frontend_its_build_compiles():
+    # PR CI finds ui/ and web/ bundles on disk and installs pnpm for them; the
+    # release build installs pnpm only for declared frontends. An undeclared
+    # bundle passes every PR and then panics in build.rs at release time.
+    def build_crates(crate: Path, seen: set[Path]) -> set[Path]:
+        if crate not in seen:
+            seen.add(crate)
+            manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+            for table in [manifest, *manifest.get("target", {}).values()]:
+                for section in ("dependencies", "build-dependencies"):
+                    for dependency in table.get(section, {}).values():
+                        if isinstance(dependency, dict) and "path" in dependency:
+                            build_crates((crate / dependency["path"]).resolve(), seen)
+        return seen
+
+    document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+    for slug, worker in document["workers"].items():
+        artifact = worker["artifact"]
+        if artifact["kind"] != "rust-binary":
+            continue
+        compiled = {
+            (crate / bundle).relative_to(ROOT).as_posix()
+            for crate in build_crates((ROOT / worker["source"]["path"]).resolve(), set())
+            for bundle in ("ui", "web")
+            if (crate / bundle / "package.json").is_file()
+        }
+        declared = {frontend["source_path"] for frontend in artifact.get("frontends", [])}
+        assert compiled <= declared, f"{slug}: declare {sorted(compiled - declared)} in artifact.frontends"
 
 
 def test_release_toolchains_and_bundle_locks_are_explicit():
@@ -97,22 +128,18 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
     assert bundles == 14
 
 
-def test_claude_code_release_installs_its_shared_ui_workspace():
+def test_claude_code_release_builds_its_ui_from_the_root_workspace():
+    # A private claude-code workspace re-lists ../packages/console-ui, whose
+    # `catalog:` specifiers only the root workspace defines, and the frozen
+    # install then rejects the lockfile. The ui lives in the root workspace.
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
     artifact = document["workers"]["claude-code"]["artifact"]
-    workspace = yaml.safe_load(
-        (ROOT / "claude-code" / "pnpm-workspace.yaml").read_text(encoding="utf-8")
-    )
+    root_workspace = yaml.safe_load((ROOT / "pnpm-workspace.yaml").read_text(encoding="utf-8"))
 
     assert artifact["workspace_root"] == "claude-code"
-    assert artifact["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
-    assert set(workspace["packages"]) == {
-        ".",
-        "ui",
-        "../packages/agent-terminal-ui",
-        "../packages/console-ui",
-        "../packages/terminal-font",
-    }
+    assert artifact["install_command"] == ["pnpm", "install", "--ignore-workspace", "--frozen-lockfile"]
+    assert not (ROOT / "claude-code" / "pnpm-workspace.yaml").exists()
+    assert "claude-code/ui" in root_workspace["packages"]
 
 
 def test_worker_bundle_start_commands_target_packaged_entrypoints():
@@ -185,6 +212,8 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "quick-tunnel",  # New Unix-only worker; child lifecycle is not supported on Windows.
         "sandbox-code-runner",
         "ide",
+        # New worker, never published for Windows: llama.cpp from source.
+        "judge-semif",
         "voice",
         "workflow",
     }

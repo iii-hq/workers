@@ -1,6 +1,11 @@
 import { isValidElement, type ReactElement, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentFormSkeleton } from './agent-fields'
+import {
+  AgentFormSkeleton,
+  COMPOSER_PLACEHOLDER_MAX_CHARS,
+  withComposerPlaceholder,
+} from './agent-fields'
+import { frontmatterBody, readFrontmatterField } from './frontmatter'
 // @ts-expect-error Vite exposes source files imported with the raw query.
 import agentFieldsSource from './agent-fields.tsx?raw'
 
@@ -31,13 +36,70 @@ describe('AgentFormSkeleton', () => {
     expect(props['aria-label']).toBe('Loading agent profile')
     expect(classes).toContain('t-skel-skeleton is-pulsing')
     expect(classes).toContain('dir-ui-af-profile')
-    expect(classes).toContain('dir-ui-af-model-row')
+    expect(classes).toContain('dir-ui-af-settings')
+    // Model + Extends pair up; composer example and the Hidden switch span the row.
+    expect(classes.filter((name) => name === 'dir-ui-af-field')).toHaveLength(2)
+    expect(classes).toContain('dir-ui-af-field is-wide')
+    expect(classes).toContain('dir-ui-af-field is-wide is-switch')
     expect(classes).toContain('dir-ui-af-prompt dir-ui-af-skeleton-prompt')
     expect(classes).toContain('dir-ui-af-skills')
     // Two pickers (skills, preloaded functions) × two lists (selected, available).
     expect(
       classes.filter((name) => name === 'dir-ui-af-skill-list-wrap'),
     ).toHaveLength(4)
+  })
+})
+
+describe('composer example field', () => {
+  const draft =
+    '---\nname: Helper\ndescription: "Helps."\nhidden: true\n---\nYou help.\n'
+
+  it('writes a YAML-safe value and keeps every other key and the body', () => {
+    const next = withComposerPlaceholder(draft, 'Example: add a task, then "done"')
+    expect(readFrontmatterField(next, ['composer_placeholder']).value).toBe(
+      'Example: add a task, then "done"',
+    )
+    expect(readFrontmatterField(next, ['name']).value).toBe('Helper')
+    expect(readFrontmatterField(next, ['hidden']).value).toBe('true')
+    expect(frontmatterBody(next)).toBe(frontmatterBody(draft))
+  })
+
+  it('drops the key when cleared, so the chat uses its generic hint', () => {
+    const withValue = withComposerPlaceholder(draft, 'Example: one')
+    for (const blank of ['', '   ']) {
+      const cleared = withComposerPlaceholder(withValue, blank)
+      expect(readFrontmatterField(cleared, ['composer_placeholder']).present).toBe(false)
+      expect(readFrontmatterField(cleared, ['name']).value).toBe('Helper')
+    }
+  })
+
+  it('caps input at the server limit and keeps an accessible label', () => {
+    expect(COMPOSER_PLACEHOLDER_MAX_CHARS).toBe(200)
+    expect(agentFieldsSource).toContain('maxLength={COMPOSER_PLACEHOLDER_MAX_CHARS}')
+    expect(agentFieldsSource).toContain('>Composer example</label>')
+    expect(agentFieldsSource).toContain('aria-describedby=')
+  })
+})
+
+describe('AgentForm settings grid', () => {
+  const formSource = agentFieldsSource.slice(agentFieldsSource.indexOf('export function AgentForm'))
+
+  it('lays the four profile settings out as grid fields, not fixed-width rows', () => {
+    expect(formSource).toContain('className="dir-ui-af-settings"')
+    expect(formSource).not.toContain('dir-ui-af-model-row')
+    for (const label of ['>Model</span>', '>Extends</span>', '>Composer example</label>']) {
+      expect(formSource).toContain(label)
+    }
+    // Both pickers stretch to their cell instead of a 280px cap.
+    expect(formSource.match(/className="dir-ui-af-field-picker"/g)).toHaveLength(2)
+  })
+
+  it('names the Hidden switch by its visible label and describes it with the hint', () => {
+    expect(formSource).toMatch(/<Switch\s+id=\{`\$\{fieldId\}-hidden`\}/)
+    expect(formSource).toMatch(/htmlFor=\{`\$\{fieldId\}-hidden`\}/)
+    expect(formSource).toMatch(/aria-describedby=\{`\$\{fieldId\}-hidden-hint`\}/)
+    expect(formSource).toMatch(/id=\{`\$\{fieldId\}-hidden-hint`\}/)
+    expect(formSource).not.toContain('aria-label="Hide from the new-session gallery"')
   })
 })
 

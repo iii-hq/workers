@@ -693,6 +693,31 @@ describe('metadataFor', () => {
     expect(restored.thinkingLevel).toBe('ultra')
   })
 
+  it('round-trips the profile composer example and omits it when absent', () => {
+    const agentProfile = {
+      id: 'default',
+      name: 'Default',
+      composerPlaceholder: 'Example: Explain this project.',
+    }
+    const metadata = metadataFor(conversation({ agentProfile }))
+    expect(metadata.agent_profile).toEqual({
+      id: 'default',
+      name: 'Default',
+      composer_placeholder: 'Example: Explain this project.',
+    })
+    const restored = mergeConversationMeta(
+      undefined,
+      sessionMeta({ metadata, message_count: 0 }),
+    )
+    expect(restored.agentProfile).toEqual(agentProfile)
+
+    // Sessions written before the field existed restore without it.
+    const legacy = metadataFor(
+      conversation({ agentProfile: { id: 'default', name: 'Default' } }),
+    )
+    expect(legacy.agent_profile).toEqual({ id: 'default', name: 'Default' })
+  })
+
   it('preserves harness linkage and appearance across whole-object writes', () => {
     const next = metadataFor(
       conversation({
