@@ -2045,6 +2045,13 @@ async fn finalize_completed(
             record.context_snapshot.as_ref(),
         )
         .await;
+    // An exhausted step cap is reported as its own outcome: `completed` alone
+    // would hide the one ending that looks like success and is not.
+    let outcome = match record.stop_reason.as_deref() {
+        Some("max_turns") => "max_turns",
+        _ => "completed",
+    };
+    crate::usage_report::report(deps, record, outcome, None).await;
     // Sub-agent turns resolve the parent's pending call with their result.
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "completed", result.as_ref(), None).await;
@@ -2284,6 +2291,7 @@ async fn finalize_failed(
             record.context_snapshot.as_ref(),
         )
         .await;
+    crate::usage_report::report(deps, record, "failed", Some(failure_class(failure))).await;
     if let Some(parent) = record.parent.clone() {
         // Settle any parked parent call. Fire-and-forget spawns settled `Done`
         // at spawn time, so this usually no-ops — and that is the whole story:
@@ -2480,6 +2488,7 @@ async fn finalize_cancelled(
             record.context_snapshot.as_ref(),
         )
         .await;
+    crate::usage_report::report(deps, record, "cancelled", None).await;
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "cancelled", None, Some(reason)).await;
     }

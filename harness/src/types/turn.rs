@@ -436,11 +436,11 @@ pub struct IdemRecord {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    fn record() -> TurnRecord {
+    pub(crate) fn record() -> TurnRecord {
         TurnRecord {
             turn_id: "t_1".into(),
             session_id: "s_1".into(),
