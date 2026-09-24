@@ -174,6 +174,16 @@ pub async fn handle(
         }
     };
 
+    if super::delete_session_tree::guard_owner(deps, &binding.owner.session_id)
+        .await?
+        .is_some()
+    {
+        return Ok(DeliverResult::stopped(
+            "deleting",
+            "owner session is being deleted",
+        ));
+    }
+
     // A record that predates the spawn-target removal must never dispatch:
     // retire it on both sides and tell the owner what to register instead.
     // The startup sweep mass-retires these; this is the race backstop for a
@@ -492,6 +502,13 @@ async fn call_target(
     // rejected payload — is recorded as delivered and "why did nothing
     // happen?" becomes unanswerable from the timeline. The dispatch timeout
     // bounds the wait.
+    let witness =
+        match super::delete_session_tree::begin_dispatch(deps, &binding.owner.session_id, target)
+            .await
+        {
+            Ok(id) => id,
+            Err(error) => return (payload, Err(error.to_string())),
+        };
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
     let outcome = deps
         .iii
@@ -504,6 +521,23 @@ async fn call_target(
         .await
         .map(|_| ())
         .map_err(|e| e.to_string());
+    let ambiguous = outcome.as_ref().err().is_some_and(|error| {
+        let message = error.to_ascii_lowercase();
+        [
+            "timeout",
+            "timed out",
+            "connection",
+            "transport",
+            "websocket",
+        ]
+        .iter()
+        .any(|word| message.contains(word))
+    });
+    if !ambiguous {
+        if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
+            return (payload, Err(error.to_string()));
+        }
+    }
     (payload, outcome)
 }
 

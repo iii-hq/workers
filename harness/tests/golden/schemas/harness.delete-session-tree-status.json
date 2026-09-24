@@ -1,0 +1,78 @@
+{
+  "function_id": "harness::delete-session-tree-status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "operation_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "operation_id"
+    ],
+    "title": "StatusRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "$ref": "#/definitions/Snapshot"
+      },
+      {
+        "type": "null"
+      }
+    ],
+    "definitions": {
+      "DeletionStatus": {
+        "enum": [
+          "deleting",
+          "completed",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "Snapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "description": "Initial attempt is 1; only an explicit failed-operation retry increments it.",
+            "format": "uint32",
+            "minimum": 1.0,
+            "type": "integer"
+          },
+          "deleted_session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/DeletionStatus"
+          }
+        },
+        "required": [
+          "attempt",
+          "deleted_session_ids",
+          "operation_id",
+          "session_id",
+          "status"
+        ],
+        "type": "object"
+      }
+    },
+    "title": "Nullable_Snapshot"
+  }
+}

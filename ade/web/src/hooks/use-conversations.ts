@@ -15,8 +15,8 @@
  *   `session::set-meta`. The console owns the metadata convention
  *   `{ surface, model, thinking_level, skills, title_manual }`;
  *   metadata replaces WHOLESALE, so the full object is always sent.
- * - delete writes through `session::delete`; the sidebar prunes on the
- *   `session::deleted` event (and optimistically).
+ * - delete delegates the entire subtree to the harness; local cleanup waits
+ *   for completion. Authoritative `session::deleted` events still reconcile.
  * - transcript content reconciles `message-added` / `message-updated`
  *   snapshots by entry, keeping the highest revision per entry
  *   (at-least-once, unordered delivery).
@@ -50,7 +50,6 @@ import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
   deleteAttachment,
-  deleteSession,
   ensureSession as ensureSessionApi,
   fetchTranscript,
   fetchTranscriptRange,
@@ -64,6 +63,10 @@ import {
   TRANSCRIPT_OLDER_PAGE_LIMIT,
   TRANSCRIPT_TAIL_PAGE_LIMIT,
 } from '@/lib/sessions/api'
+import {
+  type DeleteSessionTreeOptions,
+  deleteSessionTree,
+} from '@/lib/sessions/delete-tree'
 import {
   applyEntryUpsert,
   belongsToEntry,
@@ -1106,7 +1109,7 @@ export interface ConversationsApi {
   /** Keep one session hydrated and subscribed while a chat panel is mounted. */
   watchConversation: (id: string) => () => void
   rename: (id: string, title: string) => void
-  remove: (id: string) => void
+  remove: (id: string, options?: DeleteSessionTreeOptions) => Promise<void>
   setModel: (id: string, model: ModelId) => void
   /** Persist this session's reasoning effort and remember it for new chats. */
   setThinkingLevel: (id: string, level: ThinkingLevel) => void
@@ -2593,48 +2596,55 @@ export function useConversations(
   )
 
   const remove = useCallback(
-    (id: string) => {
-      const conv = conversations.find((c) => c.id === id)
-      setConversations((list) => list.filter((c) => c.id !== id))
-      markConversationMissing(id)
-      invalidateSessionMetaLookup(id)
-      missingSessionLookupGenerationRef.current.set(id, {
-        lookupGeneration: sessionMetaLookupGenerationRef.current.get(id) ?? 0,
-        directoryRefreshGeneration: directoryRefreshGenerationRef.current,
-      })
-      cancelHydrationRunsForSessions(
-        [id],
-        hydrationRunsRef.current,
-        hydrationBuffersRef.current,
+    async (id: string, options?: DeleteSessionTreeOptions): Promise<void> => {
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      // Unknown ids must still reach the idempotent backend: session::deleted
+      // can arrive while the dialog is open or before a failed wait is retried.
+      const deletedIds = new Set(
+        !serverEnabled || conv?.draft
+          ? [id]
+          : (await deleteSessionTree(id, options)).deleted_session_ids,
       )
-      transcriptSubscriptionsRef.current.get(id)?.()
-      transcriptSubscriptionsRef.current.delete(id)
-      transcriptSubscriptionEpochsRef.current.delete(id)
-      const retryTimer = hydrationRetryTimersRef.current.get(id)
-      if (retryTimer) clearTimeout(retryTimer)
-      hydrationRetryTimersRef.current.delete(id)
-      revisionsRef.current.delete(id)
-      draftTextsRef.current.delete(id)
-      draftAttachmentsRef.current.delete(id)
-      draftUploadChainRef.current.delete(id)
-      lastSavedDraftRef.current.delete(id)
-      if (pendingDraftRef.current?.id === id) pendingDraftRef.current = null
-      setActiveId((current) => (current === id ? null : current))
-      // Closing the conversation orphans any worktree claim this console
-      // flow made for it; release best-effort (no-op for other claims).
-      void releaseConsoleClaimIfAny(id)
-      if (!serverEnabled || !conv || conv.draft) return
-      void deleteSession(id).catch((err) => {
-        if (import.meta.env.DEV)
-          console.warn('[conversations] delete failed', err)
-      })
+      // Never infer descendants from the bounded sidebar directory. Only the
+      // completed backend snapshot authorizes this operation's local cleanup.
+      setConversations((list) => list.filter((c) => !deletedIds.has(c.id)))
+      for (const deletedId of deletedIds) {
+        markConversationMissing(deletedId)
+        invalidateSessionMetaLookup(deletedId)
+        pendingCompletionBellRef.current.delete(deletedId)
+        missingSessionLookupGenerationRef.current.set(deletedId, {
+          lookupGeneration:
+            sessionMetaLookupGenerationRef.current.get(deletedId) ?? 0,
+          directoryRefreshGeneration: directoryRefreshGenerationRef.current,
+        })
+        cancelHydrationRunsForSessions(
+          [deletedId],
+          hydrationRunsRef.current,
+          hydrationBuffersRef.current,
+        )
+        transcriptSubscriptionsRef.current.get(deletedId)?.()
+        transcriptSubscriptionsRef.current.delete(deletedId)
+        transcriptSubscriptionEpochsRef.current.delete(deletedId)
+        const retryTimer = hydrationRetryTimersRef.current.get(deletedId)
+        if (retryTimer) clearTimeout(retryTimer)
+        hydrationRetryTimersRef.current.delete(deletedId)
+        revisionsRef.current.delete(deletedId)
+        draftTextsRef.current.delete(deletedId)
+        draftAttachmentsRef.current.delete(deletedId)
+        draftUploadChainRef.current.delete(deletedId)
+        lastSavedDraftRef.current.delete(deletedId)
+        if (pendingDraftRef.current?.id === deletedId)
+          pendingDraftRef.current = null
+        if (pendingSelectIdRef.current === deletedId)
+          pendingSelectIdRef.current = null
+        // Deletion is confirmed; release only claims for the reported subtree.
+        void releaseConsoleClaimIfAny(deletedId)
+      }
+      setActiveId((current) =>
+        current && deletedIds.has(current) ? null : current,
+      )
     },
-    [
-      serverEnabled,
-      conversations,
-      invalidateSessionMetaLookup,
-      markConversationMissing,
-    ],
+    [serverEnabled, invalidateSessionMetaLookup, markConversationMissing],
   )
 
   const writeMeta = useCallback(

@@ -24,6 +24,54 @@ pub struct StopResponse {
 
 pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
     let cfg = deps.cfg().await;
+    if let Some(want) = &req.turn_id {
+        if crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms)
+            .await?
+            .is_none_or(|r| &r.turn_id != want)
+        {
+            return Ok(StopResponse { stopping: false });
+        }
+    }
+    let tree = super::session_tree::collect(deps, &req.session_id).await?;
+    if !tree.complete && !tree.sessions.is_empty() {
+        return Err(HarnessError::InvalidRequest(
+            "incomplete cancellation tree".into(),
+        ));
+    }
+    // Signal all descendants before waiting for a single busy session lock.
+    for node in &tree.sessions {
+        if let Some(record) =
+            crate::state::get_turn(&deps.iii, &node.session_id, cfg.session_timeout_ms).await?
+        {
+            if !record.status.is_terminal() {
+                deps.cancels.fire(&record.turn_id);
+            }
+        }
+    }
+    let mut stopping = false;
+    let mut errors = Vec::new();
+    for node in tree.sessions {
+        match stop_one(
+            deps,
+            StopRequest {
+                session_id: node.session_id,
+                turn_id: None,
+            },
+        )
+        .await
+        {
+            Ok(response) => stopping |= response.stopping,
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(HarnessError::Dependency(errors.join("; ")));
+    }
+    Ok(StopResponse { stopping })
+}
+
+pub(crate) async fn stop_one(deps: &Deps, req: StopRequest) -> Result<StopResponse, HarnessError> {
+    let cfg = deps.cfg().await;
 
     // Lock-free pre-read: discover the in-flight stream + spawned children and
     // fast-out for a missing/mismatched/terminal turn. This drives the prompt,
@@ -52,11 +100,6 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
         crate::session_status::spawn_project(deps, record);
         return Ok(StopResponse { stopping: false });
     }
-    // Idempotent: a prior stop already fired the cancel signal, cascaded to
-    // children, and requested the router abort — repeat clicks become one read.
-    if record.abort {
-        return Ok(StopResponse { stopping: true });
-    }
     // Pin the turn we observed so the write under the lock can't land on a newer
     // turn that started in between (matters when `turn_id` was omitted).
     let target_turn = record.turn_id.clone();
@@ -67,31 +110,19 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     // flag write below is blocked on the session lock.
     deps.cancels.fire(&target_turn);
 
-    // Cascade to spawned children BEFORE taking this session's lock
-    // (harness.md § Cancellation cascade): each child stop acquires its OWN
-    // session lock, so holding the parent lock here could deadlock against a
-    // child-side write. Holding at most one session lock at a time keeps
-    // cancellation lock-order-free. Stopping a child that already finished is
-    // a harmless no-op (fire-and-forget spawns settle Done instantly, so the
-    // checkpoint no longer tracks child liveness).
-    for child in record.spawned_children() {
-        Box::pin(handle(
-            deps,
-            StopRequest {
-                session_id: child.session_id.clone(),
-                turn_id: Some(child.turn_id.clone()),
-            },
-        ))
-        .await
-        .ok();
-    }
-
     // Prompt stream interruption (lock-free): aborting a stale or already
     // finished request_id is a harmless no-op, so the pre-read id is safe to
     // use without the lock.
     if let Some(request_id) = &record.stream_request_id {
-        let router = deps.router().await;
-        router.abort(request_id).await;
+        deps.iii
+            .trigger(iii_sdk::protocol::TriggerRequest {
+                function_id: "router::abort".into(),
+                payload: serde_json::json!({"request_id": request_id}),
+                action: None,
+                timeout_ms: Some(cfg.session_timeout_ms),
+            })
+            .await
+            .map_err(|e| HarnessError::Dependency(format!("router::abort {request_id}: {e}")))?;
     }
 
     // Authoritative abort write UNDER the per-session lock (see locks.rs): the
@@ -121,6 +152,29 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
     record.abort = true;
     record.updated_at = crate::types::message::AgentMessage::now_ms();
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+
+    // A parked approval has no queued step to observe abort. Finalize it
+    // under the same lock, but refuse unknown external pending work.
+    if record.status == crate::types::turn::TurnStatus::AwaitingFunctions {
+        if record.calls.values().any(|call| {
+            call.state == crate::types::turn::CallState::Pending
+                && call.held_by.is_none()
+                && call.child_session_id.is_none()
+        }) {
+            return Err(HarnessError::Dependency(
+                "pending external tool has no confirmed cancellation".into(),
+            ));
+        }
+        crate::turn_loop::finalize_cancelled(
+            deps,
+            &deps.session().await,
+            &mut record,
+            "cancelled by user",
+        )
+        .await?;
+        deps.deletion_changed.notify_waiters();
+        return Ok(StopResponse { stopping: true });
+    }
 
     // "stopping" ack on the existing phase-reason channel (status stays
     // "working" — same semantics as "waiting for <model>"). UNDER the lock and

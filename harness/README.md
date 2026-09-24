@@ -426,14 +426,34 @@ Harness default without consulting session or runtime state. Static
 `inject_prompt`; request-dependent hook functions and compaction are not run
 by the read-only preview and may change content when the prompt is sent.
 
+## Delete a session subtree
+
+Console/operator callers use `harness::delete-session-tree { session_id }`, not
+raw session deletion. The selected session is the root; parents and siblings
+remain. The command returns `{ operation_id, attempt, session_id, status,
+deleted_session_ids, error? }` quickly. Subscribe to
+`harness::session-tree-deletion { session_id?, operation_id? }` first, read
+`harness::delete-session-tree-status { operation_id }` once for race recovery,
+then wait for `completed` or `failed`. Pending/completed requests are idempotent;
+failed requests retry under the same operation id with an incremented required
+`attempt` (starting at 1). Correlate terminal events by `operation_id` **and**
+`attempt`, ignoring terminal events from older attempts. Pending/completed
+repeats and recovery retain the attempt.
+
+The durable queue operation closes admission, cancels every durable descendant,
+waits for terminal turns/in-flight tools, delivers one consolidated message to
+the surviving direct parent, and deletes child-first. Unconfirmed work fails
+closed with data retained. See [recovery, safety boundaries and tests](architecture/session-tree-deletion.md).
+
 ## Custom trigger types
 
-The harness emits two async orchestration trigger types siblings and consumers
+The harness emits async orchestration trigger types siblings and consumers
 bind to, and registers five synchronous hook points operator-trusted siblings
 plug into in-path. Bind with the standard two-step pattern.
 
 | Trigger type | Kind | Fires / runs |
 |---|---|---|
+| `harness::session-tree-deletion` | async event | A subtree deletion snapshot; config `{ session_id?, operation_id? }`. Terminal statuses are `completed` and `failed`. |
 | `harness::turn-started` | async event | A turn began executing (first loop step). Payload: `session_id`, `turn_id`, `timestamp`, `depth` (0 = top level), `message_preview` (first characters of the message that started the turn, when there is one), and `parent` / `parent_session_id` for sub-agents. Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
 | `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |

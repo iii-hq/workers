@@ -35,6 +35,12 @@ pub async fn resolve(
     let _guard = deps.locks.guard(&req.session_id).await;
     let cfg = deps.cfg().await;
     let session = deps.session().await;
+    if crate::functions::delete_session_tree::guard_owner(deps, &req.session_id)
+        .await?
+        .is_some()
+    {
+        return Ok(not_resolved());
+    }
 
     let Some(mut record) =
         crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?

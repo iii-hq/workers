@@ -2,11 +2,23 @@ import { Plus } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
 import { Button } from '@/components/ui/Button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from '@/components/ui/Dialog'
 import { IconButton } from '@/components/ui/IconButton'
 import { PageHeader, PageSidebar } from '@/components/ui/PageChrome'
+import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useContainerNarrow } from '@/hooks/use-container-narrow'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtx } from '@/lib/conversations-context'
+import { errText } from '@/lib/errors'
+import {
+  getRemovalPreview,
+  type RemovalPreview,
+} from '@/lib/sessions/removal-preview'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 import { ChatView } from './ChatView'
 import { ConversationLoadNotice } from './ConversationLoadNotice'
@@ -100,6 +112,31 @@ export function ChatPanel({
   // Which page the narrow flow shows. Only consulted while narrow; kept
   // across resizes so widening and re-squeezing lands where you left off.
   const [narrowView, setNarrowView] = useState<'list' | 'chat'>('chat')
+  // Snapshot the identity: server deletion events can remove the sidebar row
+  // before the tree operation is terminal, without dismissing this dialog.
+  const [pendingRemoval, setPendingRemoval] = useState<RemovalPreview | null>(
+    null,
+  )
+  const [checkingRemoval, setCheckingRemoval] = useState(false)
+  const [previewError, setPreviewError] = useState<{
+    id: string
+    message: string
+  } | null>(null)
+  const previewWaitRef = useRef<symbol | null>(null)
+  const [removalPending, setRemovalPending] = useState(false)
+  const [removalError, setRemovalError] = useState<string | null>(null)
+  const removalWaitRef = useRef<AbortController | null>(null)
+  const cancelRemovalRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(
+    () => () => {
+      // Unmount only ends the browser subscription; it never stops a backend turn.
+      previewWaitRef.current = null
+      removalWaitRef.current?.abort()
+      removalWaitRef.current = null
+    },
+    [],
+  )
 
   // Header-level actions can create/select a conversation outside this
   // component. On phones, follow that new active id into the chat page.
@@ -154,6 +191,79 @@ export function ChatPanel({
   const handleBack = useCallback(() => {
     setNarrowView('list')
   }, [])
+
+  const performRemoval = useCallback(
+    async (target: RemovalPreview, silent = false) => {
+      if (removalWaitRef.current) return
+      const wait = new AbortController()
+      removalWaitRef.current = wait
+      setRemovalPending(true)
+      setRemovalError(null)
+      try {
+        await remove(target.id, { signal: wait.signal })
+        if (!wait.signal.aborted) setPendingRemoval(null)
+      } catch (error) {
+        if (!wait.signal.aborted) {
+          // Empty chats skip confirmation, not error reporting or safe retry.
+          if (silent) setPendingRemoval(target)
+          setRemovalError(errText(error))
+        }
+      } finally {
+        if (removalWaitRef.current === wait) {
+          removalWaitRef.current = null
+          setRemovalPending(false)
+        }
+      }
+    },
+    [remove],
+  )
+
+  const requestRemoval = useCallback(
+    async (id: string) => {
+      if (removalWaitRef.current || previewWaitRef.current) return
+      const conversation = conversations.find((item) => item.id === id)
+      if (!conversation) return
+      const request = Symbol(id)
+      previewWaitRef.current = request
+      setCheckingRemoval(true)
+      setPreviewError(null)
+      setRemovalError(null)
+      try {
+        const preview = await getRemovalPreview(conversation)
+        if (previewWaitRef.current !== request) return
+        previewWaitRef.current = null
+        setCheckingRemoval(false)
+        if (preview.empty) {
+          await performRemoval(preview, true)
+        } else {
+          setPendingRemoval(preview)
+        }
+      } catch (error) {
+        if (previewWaitRef.current !== request) return
+        previewWaitRef.current = null
+        setCheckingRemoval(false)
+        setPreviewError({ id, message: errText(error) })
+      }
+    },
+    [conversations, performRemoval],
+  )
+
+  const cancelRemoval = useCallback(() => {
+    if (removalWaitRef.current) return
+    setPendingRemoval(null)
+    setRemovalError(null)
+  }, [])
+
+  const confirmRemoval = useCallback(async () => {
+    if (pendingRemoval) await performRemoval(pendingRemoval)
+  }, [pendingRemoval, performRemoval])
+
+  const removalAction = pendingRemoval?.hasRunningWork
+    ? 'Stop and delete'
+    : 'Delete'
+  const removalProgress = pendingRemoval?.hasRunningWork
+    ? 'Stopping and deleting…'
+    : 'Deleting…'
 
   // Narrow: one page at a time — the session list, or the open chat.
   // With no active conversation the list is the only meaningful page.
@@ -225,7 +335,7 @@ export function ChatPanel({
               narrow={narrow}
               onSelect={handleSelect}
               onRename={rename}
-              onRemove={remove}
+              onRemove={requestRemoval}
             />
           </PageSidebar>
         ) : null}
@@ -267,6 +377,111 @@ export function ChatPanel({
           </section>
         ) : null}
       </div>
+      {checkingRemoval || (removalPending && !pendingRemoval) ? (
+        <StatusPanel
+          role="status"
+          headline={checkingRemoval ? 'Checking conversation…' : 'Deleting…'}
+        />
+      ) : null}
+      {previewError ? (
+        <StatusPanel
+          variant="alert"
+          role="alert"
+          headline="Could not check this conversation."
+          detail={previewError.message}
+          action={
+            <Button
+              variant="ghost"
+              onClick={() => void requestRemoval(previewError.id)}
+            >
+              Try again
+            </Button>
+          }
+        />
+      ) : null}
+      <Dialog
+        open={pendingRemoval !== null}
+        onOpenChange={(open) => !open && cancelRemoval()}
+      >
+        <DialogContent
+          data-chat-delete-dialog=""
+          aria-busy={removalPending}
+          onOpenAutoFocus={(event) => {
+            event.preventDefault()
+            cancelRemovalRef.current?.focus()
+          }}
+          onEscapeKeyDown={(event) => {
+            if (removalPending) event.preventDefault()
+          }}
+          onInteractOutside={(event) => {
+            if (removalPending) event.preventDefault()
+          }}
+        >
+          <DialogTitle className="pr-8">
+            {removalAction} conversation?
+          </DialogTitle>
+          <DialogDescription className="mt-2 break-words leading-relaxed">
+            <span className="font-medium text-ink">
+              “{pendingRemoval?.title}”
+            </span>
+            {pendingRemoval?.hasChildren
+              ? ' and its subagent conversations will be permanently deleted.'
+              : ' will be permanently deleted.'}{' '}
+            This cannot be undone.
+            {pendingRemoval?.hasRunningWork || pendingRemoval?.parentId ? (
+              <span className="mt-2 block">
+                {pendingRemoval.hasRunningWork
+                  ? 'Running work will be stopped first. '
+                  : null}
+                {pendingRemoval.parentId
+                  ? 'The parent will be notified, not stopped or deleted.'
+                  : null}
+              </span>
+            ) : null}
+          </DialogDescription>
+          {removalPending ? (
+            <StatusPanel
+              className="mt-3"
+              role="status"
+              headline={removalProgress}
+              detail="Waiting for confirmation. Closing the panel won't cancel deletion."
+            />
+          ) : null}
+          {removalError ? (
+            <StatusPanel
+              className="mt-3"
+              variant="alert"
+              role="alert"
+              headline="Deletion could not be confirmed."
+              data-chat-delete-error=""
+              detail={removalError}
+            />
+          ) : null}
+          <div data-chat-delete-actions="">
+            <Button
+              ref={cancelRemovalRef}
+              type="button"
+              variant="ghost"
+              disabled={removalPending}
+              onClick={cancelRemoval}
+            >
+              {removalError ? 'Close' : 'Cancel'}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              disabled={removalPending}
+              onClick={() => void confirmRemoval()}
+            >
+              {removalPending
+                ? removalProgress
+                : removalError
+                  ? `Retry ${removalAction.toLowerCase()}`
+                  : removalAction}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

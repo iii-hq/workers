@@ -252,6 +252,20 @@ pub async fn invoke(
     caller_holds_session_lock: bool,
     caller: Option<CallerModel<'_>>,
 ) -> ResultData {
+    if agent_call_forbidden(function_id) {
+        return trigger::denied_result(function_id);
+    }
+    if function_id == REGISTER_TRIGGER_ID {
+        return intercept_register(deps, arguments, session_id, caller, policy).await;
+    }
+    let witness = match super::delete_session_tree::begin_dispatch(deps, session_id, function_id)
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            return trigger::invocation_error_result(Some(error.code().into()), error.to_string())
+        }
+    };
     let send = send_invocation_context(
         function_id,
         arguments,
@@ -277,6 +291,14 @@ pub async fn invoke(
             _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
         }
     };
+    // A timeout or broken transport does not cancel the remote invocation.
+    // Keep its witness until an operator can establish completion; deletion
+    // fails closed instead of treating the local error result as tool exit.
+    if !super::delete_session_tree::ambiguous_dispatch(&result) {
+        if let Err(error) = super::delete_session_tree::end_dispatch(deps, &witness).await {
+            return trigger::invocation_error_result(Some(error.code().into()), error.to_string());
+        }
+    }
     trigger::cap_result(result, deps.cfg().await.max_result_bytes)
 }
 
@@ -286,7 +308,8 @@ pub async fn invoke(
 /// likewise reserved for the worker itself. Console/operator calls bypass
 /// this agent boundary; ordinary provider and public state calls remain valid.
 fn agent_call_forbidden(function_id: &str) -> bool {
-    function_id == crate::state::CLAIM_NAMESPACE_ID
+    function_id.starts_with("harness::delete-session-tree")
+        || function_id == crate::state::CLAIM_NAMESPACE_ID
         || [
             "harness::state::",
             "provider::openai-codex::login::",
@@ -659,6 +682,8 @@ async fn handle(
     let target = resolve_target(deps, &req, session_id, policy).await?;
     authorize_conditions(deps, &req.conditions, session_id, policy).await?;
 
+    let _topology = deps.topology.lock().await;
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     // Idempotency: an identical re-registration (a model retry, a re-run
     // prompt in the same session) returns the standing binding instead of
     // wiring a twin that double-delivers forever.
@@ -1154,6 +1179,8 @@ async fn register_post_turn_hook(
     );
     let config = serde_json::to_value(&cfg)
         .map_err(|e| HarnessError::InvalidRequest(format!("hook config serialize: {e}")))?;
+    let _topology = deps.topology.lock().await;
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     let handle = deps
         .iii
         .register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
