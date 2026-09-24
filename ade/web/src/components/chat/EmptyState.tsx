@@ -1,5 +1,5 @@
 import { Bot, Check, Settings2 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
@@ -285,7 +285,11 @@ function SessionSetupControls({
     : null
   const selectRef = useRef(select)
   selectRef.current = select
-  useEffect(() => {
+  // A layout effect, not a passive one: the card is marked during render,
+  // so the session state must hold the same profile before the browser
+  // paints — otherwise a send in that window would omit `agent` and run a
+  // different identity than the one shown.
+  useLayoutEffect(() => {
     if (preselect) selectRef.current(preselect, { keepThinkingLevel: true })
   }, [preselect])
 
