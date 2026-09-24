@@ -484,6 +484,27 @@ test('telegram null timeout aliases follow Option fallback without coercion', as
   assert.equal(next.state_timeout_ms, undefined)
 })
 
+test('github normalization shows effective notification defaults without overriding stored values', async () => {
+  const normalization = await loadConfigurationNormalization()
+  const stored = {
+    token: '',
+    webhooks: { enabled: true, notifications: { profile: 'agent_actionable', quiet_ms: 5000 }, future: 1 },
+  }
+  const shown = normalization.normalizeWorkerConfiguration('github', stored)
+  assert.equal(shown.webhooks.enabled, true)
+  assert.equal(shown.webhooks.future, 1)
+  assert.equal(shown.webhooks.queue, 'github-webhooks')
+  assert.equal(shown.webhooks.notifications.profile, 'agent_actionable')
+  assert.equal(shown.webhooks.notifications.quiet_ms, 5000)
+  assert.equal(shown.webhooks.notifications.max_wait_ms, 120000)
+  assert.equal(shown.webhooks.notifications.suppress_bot_noise, true)
+  assert.deepEqual(shown.webhooks.notifications.ignored_actors, [])
+  assert.equal(stored.webhooks.notifications.max_wait_ms, undefined, 'input is not mutated')
+  const legacy = normalization.normalizeWorkerConfiguration('github', { token: '' })
+  assert.equal(legacy.webhooks.notifications.profile, 'all')
+  assert.equal(normalization.normalizeWorkerConfiguration('github', shown), shown, 'complete values are stable')
+})
+
 test('normalization leaves unrelated and already canonical values untouched', async () => {
   const normalization = await loadConfigurationNormalization()
   const canonical = {

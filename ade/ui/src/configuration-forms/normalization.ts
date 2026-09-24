@@ -54,9 +54,60 @@ export function normalizeTelegramBotConfiguration(value: JsonValue): JsonValue {
   return normalized
 }
 
+// Mirrors github/src/webhooks (WebhookConfig / NotificationPolicy ::default).
+const GITHUB_WEBHOOK_DEFAULTS: JsonObject = {
+  enabled: false,
+  storage_path: './data/github-webhooks/store.sqlite3',
+  tunnel_id: 'webhooks',
+  queue: 'github-webhooks',
+  max_body_bytes: 1048576,
+  max_pending: 10000,
+}
+const GITHUB_NOTIFICATION_DEFAULTS: JsonObject = {
+  profile: 'all',
+  ignore_self: false,
+  quiet_ms: 15000,
+  max_wait_ms: 120000,
+  max_items: 30,
+  max_comment_chars: 2000,
+  ignored_actors: [],
+  suppress_bot_noise: true,
+  batch_window_ms: 10000,
+  success_checks: [],
+  notify_ci_failures: true,
+  notify_ci_success: true,
+  notify_resolved_threads: false,
+}
+
+function withMissing(value: JsonObject, defaults: JsonObject): JsonObject {
+  const missing = Object.keys(defaults).filter((key) => !Object.hasOwn(value, key))
+  if (missing.length === 0) return value
+  const next: JsonObject = { ...value }
+  for (const key of missing) next[key] = structuredClone(defaults[key])
+  return next
+}
+
+/**
+ * The github worker fills absent webhook/notification keys with serde
+ * defaults, so an unset field is not "empty" at runtime. Materialize those
+ * effective values for display; stored and unknown keys are never changed.
+ */
+export function normalizeGithubConfiguration(value: JsonValue): JsonValue {
+  if (!isObject(value)) return value
+  const webhooks = isObject(value.webhooks) ? value.webhooks : {}
+  const notifications = isObject(webhooks.notifications) ? webhooks.notifications : {}
+  const nextNotifications = withMissing(notifications, GITHUB_NOTIFICATION_DEFAULTS)
+  const nextWebhooks = withMissing(webhooks, GITHUB_WEBHOOK_DEFAULTS)
+  if (nextWebhooks === value.webhooks && nextNotifications === webhooks.notifications) return value
+  return { ...value, webhooks: { ...nextWebhooks, notifications: nextNotifications } }
+}
+
 export function normalizeWorkerConfiguration(configurationId: string, value: JsonValue): JsonValue {
   if (configurationId === 'telegram-bot') {
     return normalizeTelegramBotConfiguration(value)
+  }
+  if (configurationId === 'github') {
+    return normalizeGithubConfiguration(value)
   }
   return value
 }

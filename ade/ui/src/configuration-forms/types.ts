@@ -8,11 +8,20 @@ export interface Choice {
   description?: string
 }
 
+export interface VisibleWhen {
+  /** Dotted path relative to the field's parent object. */
+  path: string
+  /** Show the field only while that value is one of these strings. */
+  in: readonly string[]
+}
+
 interface FieldBase {
   path: ConfigPath
   label: string
   description?: string
   optional?: boolean
+  /** Display-only condition; a hidden field keeps its stored value. */
+  visibleWhen?: VisibleWhen
 }
 
 export interface TextFieldSpec extends FieldBase {
