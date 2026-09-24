@@ -3272,6 +3272,10 @@ pub(crate) fn preloaded_stale_notice(
     for (id, digest) in frozen {
         let descriptor = live.iter().find(|d| d.function_id == *id);
         match (digest, descriptor) {
+            // The engine's public `engine::functions::list` never lists its own
+            // functions (`engine::register_trigger` is served by this harness's
+            // intercept, discovery by the engine), so their absence is not removal.
+            (Some(_), None) if id.starts_with("engine::") => {}
             (Some(_), None) => removed.push(id.as_str()),
             (Some(frozen_digest), Some(d)) if d.parameters.is_some() => {
                 let live_digest = crate::agents::contract_digest(
@@ -3832,6 +3836,17 @@ mod tests {
         );
         // Nothing frozen, or nothing drifted: no notice.
         assert!(super::preloaded_stale_notice(None, &live).is_none());
+        let engine_owned = std::collections::BTreeMap::from([
+            (
+                "engine::register_trigger".to_string(),
+                digest("engine::register_trigger", "hidden from the public list"),
+            ),
+            (
+                "engine::functions::info".to_string(),
+                digest("engine::functions::info", "hidden from the public list"),
+            ),
+        ]);
+        assert!(super::preloaded_stale_notice(Some(&engine_owned), &live).is_none());
         let steady = std::collections::BTreeMap::from([(
             "same::fn".to_string(),
             digest("same::fn", "unchanged"),
