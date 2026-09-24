@@ -148,7 +148,8 @@ pub enum FunctionSearchJudgeQuestion {
     Noul,
     // The default: one Choice per capability over its shortlist; the
     // documents compete, the best is always kept, the others need
-    // function_search_judge_choice_min_probability.
+    // function_search_judge_choice_min_probability. A judge that advertises
+    // a context window under 4096 tokens (laya) gets a tournament instead.
     #[default]
     Choice,
     // Choice without the Hybrid shortlist: the whole function catalog plays

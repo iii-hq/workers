@@ -636,7 +636,10 @@ winner goes on, and the last 16 or fewer get one final Choice admitted like
 `choice`. A 260-function catalog takes three rounds (260 → 17 → 2 → final).
 Measured on 22 English capabilities: laya found the function in 21/22
 (15–17 with the shortlist) at about 1.2 s per search on a GPU; JEV 21/22;
-SemIf 18/22 and 6 s. Skills, triggers and registry pools keep their shortlists.
+SemIf 18/22 and 6 s. The installed functions and the registry pools play it;
+skills and triggers keep their shortlists. With `choice` (the default), a judge
+that advertises a context window under 4096 tokens gets a tournament
+automatically; SemIf and hosted judges keep `choice`.
 
 `function_search_model_path: null` is valid in judge mode and makes the Hybrid
 fallback BM25-only, without the local-model warning. With a configured path,

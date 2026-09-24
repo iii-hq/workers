@@ -37,7 +37,7 @@ export const JUDGE_QUESTION_OPTIONS = [
   {
     value: 'choice',
     label: 'One choice per capability',
-    description: 'Let the shortlisted functions compete in a single question; needed by local judges.',
+    description: 'Let the shortlisted functions compete in a single question; needed by local judges. A judge with a small context window (laya) plays a tournament instead.',
   },
   {
     value: 'tournament',

@@ -232,7 +232,7 @@ impl JudgeSearch {
     /// description objects. Read through `judge::models::list` (the hub's
     /// default provider, the one `judge::evaluate` uses) and cached for
     /// `WINDOW_TTL`; a failed read means full objects and is retried next time.
-    async fn small_window(&self, deadline: Instant) -> bool {
+    pub(crate) async fn small_window(&self, deadline: Instant) -> bool {
         let cached = *self.window.lock().expect("judge window");
         let window = match cached {
             Some((read, window)) if read.elapsed() < WINDOW_TTL => window,
