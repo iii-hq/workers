@@ -10,6 +10,7 @@ pub mod cookies;
 pub mod doctor;
 pub mod dom;
 pub mod downloads;
+pub mod elements;
 pub mod evaluate;
 pub mod execute;
 pub mod find_in_page;
@@ -93,6 +94,13 @@ pub const SNAPSHOT_DESC: &str =
     "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that \
      browser::act accepts; refs stay valid until the next navigation. Prefer this over \
      browser::screenshot; it is cheaper and machine-readable.";
+pub const ELEMENTS_ID: &str = "browser::elements";
+pub const ELEMENTS_DESC: &str =
+    "The page's visible, enabled controls in the viewport as an indexed table (ref, role, \
+     label, current value, checked/expanded state, what browser::act can do with each, and \
+     <select> options), plus the visible text, from one read. Cheaper and flatter than \
+     browser::snapshot: use it to drive forms and read what an action changed. Refs (`n4`) \
+     stay valid while the element stays in the document.";
 pub const SCREENSHOT_ID: &str = "browser::screenshot";
 pub const SCREENSHOT_DESC: &str =
     "Screenshot the session's current page as a JPEG (or a lossless PNG with \
@@ -100,9 +108,13 @@ pub const SCREENSHOT_DESC: &str =
      screenshot when layout or rendering matters.";
 pub const ACT_ID: &str = "browser::act";
 pub const ACT_DESC: &str =
-    "Interact with the page: click (left/right/middle, single or double), hover, type, press, \
-     scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with \
-     a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.";
+    "Interact with the page: click (left/right/middle, single or double), hover, type, select \
+     a native <select> option, press, scroll, or drag (press at the start point, glide to \
+     x2/y2, release). Address elements with a ref from browser::elements (`n4`), \
+     browser::snapshot (`e3`) or a pick, or raw viewport coordinates. A ref is scrolled into \
+     view first, and a click, type or select on a disabled, hidden or covered element is \
+     refused instead of landing on whatever is on top. Typing into an input or textarea by \
+     ref replaces its value. Returns once the page had a moment to react.";
 pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
@@ -286,6 +298,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<doctor::DoctorInput, doctor::DoctorOutput>(DOCTOR_ID, DOCTOR_DESC),
         spec::<navigate::NavigateInput, navigate::NavigateOutput>(NAVIGATE_ID, NAVIGATE_DESC),
         spec::<snapshot::SnapshotInput, snapshot::SnapshotOutput>(SNAPSHOT_ID, SNAPSHOT_DESC),
+        spec::<elements::ElementsInput, elements::ElementsOutput>(ELEMENTS_ID, ELEMENTS_DESC),
         spec::<screenshot::ScreenshotInput, screenshot::ScreenshotOutput>(
             SCREENSHOT_ID,
             SCREENSHOT_DESC,
@@ -387,6 +400,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_doctor(iii, sessions);
     register_navigate(iii, sessions);
     register_snapshot(iii, sessions);
+    register_elements(iii, sessions);
     register_screenshot(iii, sessions);
     register_act(iii, sessions);
     register_evaluate(iii, sessions);
@@ -881,6 +895,22 @@ fn register_snapshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
+fn register_elements(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        ELEMENTS_ID,
+        RegisterFunction::new_async(move |req: elements::ElementsInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id).await?;
+                session.touch();
+                observe(&session).await
+            }
+        })
+        .description(ELEMENTS_DESC),
+    );
+}
+
 fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -957,15 +987,186 @@ async fn move_ghost_cursor(session: &Session, x: f64, y: f64, click: bool) {
     }
 }
 
-/// Resolve the target point for a ref- or coordinate-addressed action.
-async fn action_point(session: &Session, req: &act::ActInput) -> Result<(f64, f64), Error> {
+/// Unique Runtime object group per ref-addressed call, released when the call
+/// ends so page handles never pile up.
+fn object_group() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "iii-ref-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+async fn release_group(session: &Session, group: &str) {
+    let _ = session
+        .page
+        .execute(cdp_rt::ReleaseObjectGroupParams::new(group))
+        .await;
+}
+
+/// Page-side handle for a ref, in `group`. `n` refs resolve through the
+/// page's element registry (`browser::elements`); the rest through their
+/// backend node id.
+async fn ref_object(
+    session: &Session,
+    r: &str,
+    group: &str,
+) -> Result<cdp_rt::RemoteObjectId, Error> {
+    if let Some(id) = elements::registry_id(r) {
+        let params = cdp_rt::EvaluateParams::builder()
+            .expression(format!("window.__iiiElements?.nodes.get({id}) ?? null"))
+            .object_group(group)
+            .return_by_value(false)
+            .build()
+            .map_err(handler_err)?;
+        let found = session
+            .page
+            .execute(params)
+            .await
+            .map_err(|e| handler_err(format!("ref lookup failed: {e}")))?;
+        return found
+            .result
+            .result
+            .object_id
+            .clone()
+            .ok_or_else(|| session.unknown_ref(r));
+    }
+    let backend_id = session.resolve_ref_or_err(r)?;
+    let resolved = session
+        .page
+        .execute(
+            cdp_dom::ResolveNodeParams::builder()
+                .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
+                .object_group(group)
+                .build(),
+        )
+        .await
+        .map_err(|e| handler_err(format!("node resolve failed: {e}")))?;
+    resolved
+        .object
+        .object_id
+        .clone()
+        .ok_or_else(|| handler_err("element has no JS object"))
+}
+
+/// Backend node id for any ref; `n` refs go through the page registry.
+async fn ref_backend_id(session: &Session, r: &str) -> Result<i64, Error> {
+    if elements::registry_id(r).is_none() {
+        return session.resolve_ref_or_err(r);
+    }
+    let group = object_group();
+    let described = async {
+        let object = ref_object(session, r, &group).await?;
+        let node = session
+            .page
+            .execute(
+                cdp_dom::DescribeNodeParams::builder()
+                    .object_id(object)
+                    .build(),
+            )
+            .await
+            .map_err(|e| handler_err(format!("describe node failed: {e}")))?;
+        Ok::<_, Error>(*node.node.backend_node_id.inner())
+    }
+    .await;
+    release_group(session, &group).await;
+    described
+}
+
+/// Run `elements::GUARD_FN` on the element; `{error}` becomes a refusal.
+async fn guard(
+    session: &Session,
+    object: &cdp_rt::RemoteObjectId,
+    r: &str,
+    kind: &str,
+    option: Option<&str>,
+) -> Result<serde_json::Value, Error> {
+    let call = cdp_rt::CallFunctionOnParams::builder()
+        .function_declaration(elements::GUARD_FN)
+        .object_id(object.clone())
+        .argument(cdp_rt::CallArgument {
+            value: Some(json!(kind)),
+            unserializable_value: None,
+            object_id: None,
+        })
+        .argument(cdp_rt::CallArgument {
+            value: Some(json!(option)),
+            unserializable_value: None,
+            object_id: None,
+        })
+        .return_by_value(true)
+        .build()
+        .map_err(handler_err)?;
+    let out = session
+        .page
+        .execute(call)
+        .await
+        .map_err(|e| handler_err(format!("element check failed: {e}")))?;
+    if let Some(details) = &out.exception_details {
+        return Err(handler_err(format!(
+            "element check failed: {}",
+            details.text
+        )));
+    }
+    let value = out
+        .result
+        .result
+        .value
+        .clone()
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
+        return Err(handler_err(format!(
+            "{kind} on {r} refused: {error}. Re-read the page (browser::elements or \
+             browser::snapshot) and act on what is there now."
+        )));
+    }
+    Ok(value)
+}
+
+/// Let the page react to input before anyone reads it (`settle_script`).
+/// Best effort: a navigation or a throttled tab just ends the wait.
+async fn settle(session: &Session, typed: bool) {
+    let Ok(params) = cdp_rt::EvaluateParams::builder()
+        .expression(elements::settle_script(typed))
+        .await_promise(true)
+        .return_by_value(true)
+        .build()
+    else {
+        return;
+    };
+    let _ = timeout(Duration::from_millis(400), session.page.execute(params)).await;
+}
+
+/// The `browser::elements` table for the session's current page.
+async fn observe(session: &Session) -> Result<elements::ElementsOutput, Error> {
+    let value = evaluate_json(session, elements::OBSERVE_JS.to_string(), "elements").await?;
+    if value.is_null() {
+        return Err(handler_err(
+            "the page has no document body yet; retry once it has loaded",
+        ));
+    }
+    let mut out: elements::ElementsOutput = serde_json::from_value(value)
+        .map_err(|e| handler_err(format!("elements returned an unexpected shape: {e}")))?;
+    out.generation = session.generation();
+    Ok(out)
+}
+
+/// Resolve the target point for a ref- or coordinate-addressed action. A
+/// ref is first checked by `elements::GUARD_FN` (scrolled into view; for
+/// click/type/select refused when disabled, hidden or covered).
+async fn action_point(
+    session: &Session,
+    req: &act::ActInput,
+    group: &str,
+) -> Result<(f64, f64), Error> {
     if let Some(r) = &req.r#ref {
-        let backend_id = session.resolve_ref_or_err(r)?;
+        let object = ref_object(session, r, group).await?;
+        guard(session, &object, r, &req.action, None).await?;
         let model = session
             .page
             .execute(
                 cdp_dom::GetBoxModelParams::builder()
-                    .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
+                    .object_id(object)
                     .build(),
             )
             .await
@@ -1120,136 +1321,180 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::act")?;
                 session.touch();
-
-                let detail = match req.action.as_str() {
-                    "click" => {
-                        let (x, y) = action_point(&session, &req).await?;
-                        let button = req.button.as_deref().unwrap_or("left");
-                        let clicks = i64::from(req.click_count.unwrap_or(1));
-                        dispatch_click(&session, x, y, button, clicks).await?;
-                        move_ghost_cursor(&session, x, y, true).await;
-                        format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
-                    }
-                    "hover" => {
-                        let (x, y) = action_point(&session, &req).await?;
-                        dispatch_hover(&session, x, y).await?;
-                        move_ghost_cursor(&session, x, y, false).await;
-                        format!("hovering at ({x:.0}, {y:.0})")
-                    }
-                    "type" => {
-                        let text = req
-                            .text
-                            .clone()
-                            .ok_or_else(|| handler_err("type needs text"))?;
-                        if let Some(r) = &req.r#ref {
-                            let backend_id = session.resolve_ref_or_err(r)?;
-                            session
-                                .page
-                                .execute(
-                                    cdp_dom::FocusParams::builder()
-                                        .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
-                                        .build(),
-                                )
-                                .await
-                                .map_err(|e| handler_err(format!("focus failed: {e}")))?;
-                        }
-                        session
-                            .page
-                            .execute(
-                                input::InsertTextParams::builder()
-                                    .text(text.clone())
-                                    .build()
-                                    .map_err(handler_err)?,
-                            )
-                            .await
-                            .map_err(|e| handler_err(format!("insert text failed: {e}")))?;
-                        format!("typed {} chars", text.chars().count())
-                    }
-                    "press" => {
-                        let name = req
-                            .key
-                            .clone()
-                            .ok_or_else(|| handler_err("press needs key"))?;
-                        let spec = act::key_spec(&name)
-                            .ok_or_else(|| handler_err(format!("unsupported key '{name}'")))?;
-                        use input::{DispatchKeyEventParams, DispatchKeyEventType};
-                        let mut down = DispatchKeyEventParams::builder()
-                            .r#type(DispatchKeyEventType::KeyDown)
-                            .key(spec.key)
-                            .code(spec.code)
-                            .windows_virtual_key_code(spec.windows_virtual_key_code)
-                            .native_virtual_key_code(spec.windows_virtual_key_code);
-                        if let Some(text) = spec.text {
-                            down = down.text(text);
-                        }
-                        let up = DispatchKeyEventParams::builder()
-                            .r#type(DispatchKeyEventType::KeyUp)
-                            .key(spec.key)
-                            .code(spec.code)
-                            .windows_virtual_key_code(spec.windows_virtual_key_code)
-                            .native_virtual_key_code(spec.windows_virtual_key_code)
-                            .build()
-                            .map_err(handler_err)?;
-                        session
-                            .page
-                            .execute(down.build().map_err(handler_err)?)
-                            .await
-                            .map_err(|e| handler_err(format!("key down failed: {e}")))?;
-                        session
-                            .page
-                            .execute(up)
-                            .await
-                            .map_err(|e| handler_err(format!("key up failed: {e}")))?;
-                        format!("pressed {name}")
-                    }
-                    "scroll" => {
-                        let (x, y) = if req.r#ref.is_some() || (req.x.is_some() && req.y.is_some())
-                        {
-                            action_point(&session, &req).await?
-                        } else {
-                            (
-                                session.viewport().0 as f64 / 2.0,
-                                session.viewport().1 as f64 / 2.0,
-                            )
-                        };
-                        let delta_y = req.delta_y.unwrap_or(600.0);
-                        use input::{DispatchMouseEventParams, DispatchMouseEventType};
-                        let wheel = DispatchMouseEventParams::builder()
-                            .r#type(DispatchMouseEventType::MouseWheel)
-                            .x(x)
-                            .y(y)
-                            .delta_x(0.0)
-                            .delta_y(delta_y)
-                            .build()
-                            .map_err(handler_err)?;
-                        session
-                            .page
-                            .execute(wheel)
-                            .await
-                            .map_err(|e| handler_err(format!("scroll failed: {e}")))?;
-                        format!("scrolled {delta_y:.0}px")
-                    }
-                    "drag" => {
-                        let (x1, y1) = action_point(&session, &req).await?;
-                        let (x2, y2) = match (req.x2, req.y2) {
-                            (Some(x), Some(y)) => (x, y),
-                            _ => return Err(handler_err("drag needs x2 and y2")),
-                        };
-                        dispatch_drag(&session, x1, y1, x2, y2).await?;
-                        format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
-                    }
-                    other => {
-                        return Err(handler_err(format!(
-                            "unknown action '{other}' (click, hover, type, press, scroll, drag)"
-                        )))
-                    }
-                };
+                let detail = perform(&session, &req).await?;
                 session.touch();
                 Ok::<_, Error>(act::ActOutput { ok: true, detail })
             }
         })
         .description(ACT_DESC),
     );
+}
+
+/// One `browser::act` action; shared with `browser::run`. Page handles the
+/// action takes are released before it returns.
+async fn perform(session: &Session, req: &act::ActInput) -> Result<String, Error> {
+    let group = object_group();
+    let done = perform_in(session, req, &group).await;
+    if req.r#ref.is_some() {
+        release_group(session, &group).await;
+    }
+    done
+}
+
+/// Key down + up for a `press` key name (`act::key_spec`).
+async fn press_key(session: &Session, name: &str) -> Result<(), Error> {
+    let spec =
+        act::key_spec(name).ok_or_else(|| handler_err(format!("unsupported key '{name}'")))?;
+    use input::{DispatchKeyEventParams, DispatchKeyEventType};
+    let mut down = DispatchKeyEventParams::builder()
+        .r#type(DispatchKeyEventType::KeyDown)
+        .key(spec.key)
+        .code(spec.code)
+        .windows_virtual_key_code(spec.windows_virtual_key_code)
+        .native_virtual_key_code(spec.windows_virtual_key_code);
+    if let Some(text) = spec.text {
+        down = down.text(text);
+    }
+    let up = DispatchKeyEventParams::builder()
+        .r#type(DispatchKeyEventType::KeyUp)
+        .key(spec.key)
+        .code(spec.code)
+        .windows_virtual_key_code(spec.windows_virtual_key_code)
+        .native_virtual_key_code(spec.windows_virtual_key_code)
+        .build()
+        .map_err(handler_err)?;
+    session
+        .page
+        .execute(down.build().map_err(handler_err)?)
+        .await
+        .map_err(|e| handler_err(format!("key down failed: {e}")))?;
+    session
+        .page
+        .execute(up)
+        .await
+        .map_err(|e| handler_err(format!("key up failed: {e}")))?;
+    Ok(())
+}
+
+async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Result<String, Error> {
+    let detail = match req.action.as_str() {
+        "click" => {
+            let (x, y) = action_point(session, req, group).await?;
+            let button = req.button.as_deref().unwrap_or("left");
+            let clicks = i64::from(req.click_count.unwrap_or(1));
+            dispatch_click(session, x, y, button, clicks).await?;
+            move_ghost_cursor(session, x, y, true).await;
+            settle(session, false).await;
+            format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
+        }
+        "hover" => {
+            let (x, y) = action_point(session, req, group).await?;
+            dispatch_hover(session, x, y).await?;
+            move_ghost_cursor(session, x, y, false).await;
+            format!("hovering at ({x:.0}, {y:.0})")
+        }
+        "type" => {
+            let text = req
+                .text
+                .clone()
+                .ok_or_else(|| handler_err("type needs text"))?;
+            // The guard focuses the element and selects an input's value, so
+            // the inserted text replaces it.
+            let mut replaced = false;
+            if let Some(r) = &req.r#ref {
+                let object = ref_object(session, r, group).await?;
+                replaced = guard(session, &object, r, "type", None).await?["replaced"] == true;
+            }
+            session
+                .page
+                .execute(
+                    input::InsertTextParams::builder()
+                        .text(text.clone())
+                        .build()
+                        .map_err(handler_err)?,
+                )
+                .await
+                .map_err(|e| handler_err(format!("insert text failed: {e}")))?;
+            if replaced && text.is_empty() {
+                // Inserting nothing leaves the old value selected: delete it.
+                press_key(session, "Backspace").await?;
+            }
+            settle(session, true).await;
+            let verb = if replaced {
+                "replaced the value with"
+            } else {
+                "typed"
+            };
+            format!("{verb} {} chars", text.chars().count())
+        }
+        "select" => {
+            let r = req
+                .r#ref
+                .as_deref()
+                .ok_or_else(|| handler_err("select needs the <select> element's ref"))?;
+            let option = req
+                .option
+                .as_deref()
+                .ok_or_else(|| handler_err("select needs option (a value or label)"))?;
+            let object = ref_object(session, r, group).await?;
+            let chosen = guard(session, &object, r, "select", Some(option)).await?;
+            settle(session, false).await;
+            format!(
+                "selected '{}'",
+                chosen["selected"].as_str().unwrap_or(option)
+            )
+        }
+        "press" => {
+            let name = req
+                .key
+                .clone()
+                .ok_or_else(|| handler_err("press needs key"))?;
+            press_key(session, &name).await?;
+            settle(session, false).await;
+            format!("pressed {name}")
+        }
+        "scroll" => {
+            let (x, y) = if req.r#ref.is_some() || (req.x.is_some() && req.y.is_some()) {
+                action_point(session, req, group).await?
+            } else {
+                (
+                    session.viewport().0 as f64 / 2.0,
+                    session.viewport().1 as f64 / 2.0,
+                )
+            };
+            let delta_y = req.delta_y.unwrap_or(600.0);
+            use input::{DispatchMouseEventParams, DispatchMouseEventType};
+            let wheel = DispatchMouseEventParams::builder()
+                .r#type(DispatchMouseEventType::MouseWheel)
+                .x(x)
+                .y(y)
+                .delta_x(0.0)
+                .delta_y(delta_y)
+                .build()
+                .map_err(handler_err)?;
+            session
+                .page
+                .execute(wheel)
+                .await
+                .map_err(|e| handler_err(format!("scroll failed: {e}")))?;
+            format!("scrolled {delta_y:.0}px")
+        }
+        "drag" => {
+            let (x1, y1) = action_point(session, req, group).await?;
+            let (x2, y2) = match (req.x2, req.y2) {
+                (Some(x), Some(y)) => (x, y),
+                _ => return Err(handler_err("drag needs x2 and y2")),
+            };
+            dispatch_drag(session, x1, y1, x2, y2).await?;
+            format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
+        }
+        other => {
+            return Err(handler_err(format!(
+                "unknown action '{other}' (click, hover, type, select, press, scroll, drag)"
+            )))
+        }
+    };
+    Ok(detail)
 }
 
 fn register_evaluate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
@@ -2616,7 +2861,7 @@ fn register_dom_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 
                 let node = match &req.r#ref {
                     Some(r) => {
-                        let backend_id = session.resolve_ref_or_err(r)?;
+                        let backend_id = ref_backend_id(&session, r).await?;
                         session
                             .page
                             .execute(
@@ -2686,7 +2931,7 @@ fn register_styles_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
-                let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
+                let backend_id = ref_backend_id(&session, &req.r#ref).await?;
                 let node_id = frontend_node_id(&session, backend_id).await?;
 
                 let computed = session
@@ -2745,7 +2990,7 @@ fn register_styles_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::styles::write")?;
                 session.touch();
-                let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
+                let backend_id = ref_backend_id(&session, &req.r#ref).await?;
 
                 let resolved = session
                     .page

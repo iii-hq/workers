@@ -904,14 +904,18 @@ impl Session {
     /// "unknown ref" error every ref-taking handler shares. The message is
     /// load-bearing for agent self-correction, so it lives in one place.
     pub fn resolve_ref_or_err(&self, r: &str) -> Result<i64, iii_sdk::errors::Error> {
-        self.resolve_ref(r).ok_or_else(|| {
-            iii_sdk::errors::Error::Handler(format!(
-                "unknown ref '{r}' (document generation {}); refs come from browser::snapshot / \
-                 browser::dom::read / a pick and die on navigation. Re-snapshot, then use a \
-                 fresh ref.",
-                self.generation()
-            ))
-        })
+        self.resolve_ref(r).ok_or_else(|| self.unknown_ref(r))
+    }
+
+    /// The canonical "unknown ref" error, also used for `n` refs the page's
+    /// element registry no longer holds.
+    pub fn unknown_ref(&self, r: &str) -> iii_sdk::errors::Error {
+        iii_sdk::errors::Error::Handler(format!(
+            "unknown ref '{r}' (document generation {}); refs come from browser::snapshot / \
+             browser::elements / browser::dom::read / a pick and die on navigation. Re-read \
+             the page, then use a fresh ref.",
+            self.generation()
+        ))
     }
 
     pub fn generation(&self) -> u64 {

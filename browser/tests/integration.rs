@@ -870,3 +870,184 @@ async fn lightpanda_engine_drives_the_dom_surface() {
 
     client.shutdown_async().await;
 }
+
+/// Form fixture for the element table and the act guards: a text field, a
+/// native select, a Save button that records both values in the title, a
+/// disabled button, a password field, and a hidden full-page shield that
+/// covers everything once shown.
+const FORM_HTML: &str = r#"<!doctype html><title>form</title>
+<style>#shield{position:fixed;inset:0;background:rgba(0,0,0,.3)}</style>
+<form onsubmit="event.preventDefault()">
+<label>Title <input id="summary" value="old"></label>
+<label>Type <select id="kind"><option>Feature</option><option value="bug">Bug</option></select></label>
+<button type="button" id="save" onclick="document.title='saved:'+document.getElementById('summary').value+':'+document.getElementById('kind').value">Save</button>
+<button type="button" disabled>Archive</button>
+<input type="password" aria-label="Secret" value="x">
+</form>
+<div id="shield" hidden></div>"#;
+
+fn element<'a>(table: &'a serde_json::Value, label: &str) -> &'a serde_json::Value {
+    table["elements"]
+        .as_array()
+        .expect("elements array")
+        .iter()
+        .find(|e| e["label"] == label)
+        .unwrap_or_else(|| panic!("no element labelled {label:?}: {table}"))
+}
+
+#[tokio::test]
+async fn elements_table_guards_select_and_replace() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let try_call = |function_id: &str, payload: serde_json::Value| {
+        let client = &client;
+        let function_id = function_id.to_string();
+        async move {
+            timeout(
+                Duration::from_secs(30),
+                client.trigger(TriggerRequest {
+                    function_id,
+                    payload,
+                    action: None,
+                    timeout_ms: Some(20_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+        }
+    };
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let pending = try_call(function_id, payload);
+        async move { pending.await.expect("trigger failed") }
+    };
+
+    let url = serve_html(FORM_HTML);
+    let started = call("browser::sessions::start", json!({ "url": url })).await;
+    let sid = started["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
+    let eval = |expression: &'static str| {
+        let payload = json!({ "session_id": sid, "expression": expression });
+        async move { call("browser::evaluate", payload).await["value"].clone() }
+    };
+
+    // one read: controls with refs and operations, disabled ones left out,
+    // password values never exposed
+    let table = call("browser::elements", json!({ "session_id": sid })).await;
+    let title = element(&table, "Title");
+    assert_eq!(title["value"], "old", "{table}");
+    assert_eq!(title["operations"], json!(["type", "click"]), "{table}");
+    let kind = element(&table, "Type");
+    assert_eq!(kind["operations"], json!(["select"]), "{table}");
+    assert_eq!(kind["options"], json!(["Feature", "Bug"]), "{table}");
+    assert_eq!(element(&table, "Secret")["value"], "(set)", "{table}");
+    assert!(
+        !table["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["label"] == "Archive"),
+        "a disabled button is not actionable: {table}"
+    );
+    let (title_ref, kind_ref, save_ref) = (
+        title["ref"].as_str().unwrap().to_string(),
+        kind["ref"].as_str().unwrap().to_string(),
+        element(&table, "Save")["ref"].as_str().unwrap().to_string(),
+    );
+
+    // type by ref replaces the value; empty text clears it
+    call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "type", "ref": title_ref, "text": "" }),
+    )
+    .await;
+    assert_eq!(eval("summary.value").await, "");
+    let typed = call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "type", "ref": title_ref, "text": "Hello" }),
+    )
+    .await;
+    assert!(
+        typed["detail"].as_str().unwrap().contains("replaced"),
+        "{typed}"
+    );
+    assert_eq!(eval("summary.value").await, "Hello");
+
+    // native select by label
+    let selected = call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "select", "ref": kind_ref, "option": "Bug" }),
+    )
+    .await;
+    assert_eq!(selected["detail"], "selected 'Bug'", "{selected}");
+    assert_eq!(eval("kind.value").await, "bug");
+
+    // a covered button refuses the click instead of clicking the cover
+    eval("shield.hidden = false").await;
+    let covered = try_call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": save_ref }),
+    )
+    .await
+    .expect_err("click on a covered element must be refused");
+    assert!(
+        covered.to_string().contains("covered by div#shield"),
+        "{covered}"
+    );
+    eval("shield.hidden = true").await;
+    call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": save_ref }),
+    )
+    .await;
+    assert_eq!(eval("document.title").await, "saved:Hello:bug");
+
+    // n refs work wherever refs do
+    let dom = call(
+        "browser::dom::read",
+        json!({ "session_id": sid, "ref": save_ref }),
+    )
+    .await;
+    assert_eq!(dom["root"]["tag"], "button", "{dom}");
+
+    // snapshot refs still act (and pass the same guard)
+    let snap = call("browser::snapshot", json!({ "session_id": sid })).await;
+    let e_ref = snap["tree"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .find(|l| l.contains("button \"Save\""))
+        .and_then(|l| l.split("[ref=").nth(1))
+        .and_then(|rest| rest.split(']').next())
+        .expect("Save in snapshot")
+        .to_string();
+    eval("document.title = 'x'").await;
+    call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": e_ref }),
+    )
+    .await;
+    assert_eq!(eval("document.title").await, "saved:Hello:bug");
+
+    // navigation kills n refs
+    call(
+        "browser::navigate",
+        json!({ "session_id": sid, "url": url }),
+    )
+    .await;
+    let stale = try_call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": save_ref }),
+    )
+    .await
+    .expect_err("an n ref from the previous document must not resolve");
+    assert!(stale.to_string().contains("unknown ref"), "{stale}");
+
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}

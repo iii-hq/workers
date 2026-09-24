@@ -172,8 +172,12 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-The rest of the surface: `browser::act` (click/hover/type/press/scroll by
-ref or coordinates, left/right/middle and double-click), `browser::evaluate`
+The rest of the surface: `browser::elements` (visible controls as an
+indexed table with `n` refs, plus the visible text, from one read),
+`browser::act` (click/hover/type/select/press/scroll by ref or coordinates,
+left/right/middle and double-click; ref targets are scrolled into view and
+refused when disabled, hidden or covered; typing into a field by ref replaces
+its value), `browser::evaluate`
 (JS expression), `browser::screenshot` (viewable JPEG), `browser::history`
 (back/forward/reload, surviving sleep and restarts), `browser::history::list`
 (visited pages for a history panel), `browser::find-in-page` (find bar:
