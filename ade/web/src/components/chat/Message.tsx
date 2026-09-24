@@ -50,6 +50,12 @@ interface MessageProps {
     action: FilesystemAccessAction,
   ) => Promise<void>
   onManageFilesystemAccess?: () => void
+  /**
+   * Interrupt a running call from its card (`harness::function::cancel`).
+   * Absent on backends without per-call cancellation — the card then renders
+   * no stop button.
+   */
+  onCancelCall?: (sessionId: string, functionTriggerId: string) => Promise<void>
   workingDir?: string | null
   /** Copy payload for an assistant turn (prose + its function calls). Lazy so
       the string is built on click, not on every streaming re-render. */
@@ -88,6 +94,7 @@ export function Message({
   onAlwaysAllow,
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
+  onCancelCall,
   workingDir,
   copyText,
   defaultOpenCalls,
@@ -147,6 +154,12 @@ export function Message({
         onResolveFilesystemAccessHandler = (action) =>
           onResolveFilesystemAccess(sessionId, functionTriggerId, action)
       }
+      // Only a call the harness can address (session + call id) gets a stop
+      // button; entry-derived rows without ids render as before.
+      const onCancel =
+        onCancelCall && sessionId && functionTriggerId
+          ? () => onCancelCall(sessionId, functionTriggerId)
+          : undefined
       return (
         <FunctionTriggerCard
           message={message}
@@ -157,6 +170,7 @@ export function Message({
           onAlwaysAllow={onAlwaysAllowHandler}
           onResolveFilesystemAccess={onResolveFilesystemAccessHandler}
           onManageFilesystemAccess={onManageFilesystemAccess}
+          onCancel={onCancel}
           workingDir={workingDir}
         />
       )

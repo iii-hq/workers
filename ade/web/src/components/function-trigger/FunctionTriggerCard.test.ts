@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isCancelledOutput,
   isDeniedOutput,
   parseEmbeddedJson,
   resultEnvelope,
@@ -18,6 +19,52 @@ describe('parseEmbeddedJson', () => {
     expect(parseEmbeddedJson('true')).toBeUndefined()
     expect(parseEmbeddedJson('plain text')).toBeUndefined()
     expect(parseEmbeddedJson('{broken')).toBeUndefined()
+  })
+})
+
+describe('isCancelledOutput', () => {
+  it('recognizes the harness cancelled_result envelope in the error details', () => {
+    // Shape per harness trigger::cancelled_result → entry-mapper
+    // functionResultOutput: the tag rides in the paired result's `details`.
+    expect(
+      isCancelledOutput({
+        error: {
+          kind: 'function_error',
+          message: 'shell::exec was cancelled by the user before it returned.',
+          details: {
+            error: 'cancelled',
+            cancelled_by: 'user',
+            function_id: 'shell::exec',
+            message:
+              'shell::exec was cancelled by the user before it returned.',
+          },
+        },
+      }),
+    ).toBe(true)
+  })
+
+  it('leaves genuine run errors, denials and non-errors alone', () => {
+    expect(
+      isCancelledOutput({
+        error: { kind: 'function_error', message: 'boom', details: {} },
+      }),
+    ).toBe(false)
+    // The tag without its author is not the harness envelope.
+    expect(
+      isCancelledOutput({
+        error: { kind: 'function_error', details: { error: 'cancelled' } },
+      }),
+    ).toBe(false)
+    expect(
+      isCancelledOutput({
+        error: {
+          kind: 'function_error',
+          details: { status: 'denied', denied_by: 'user' },
+        },
+      }),
+    ).toBe(false)
+    expect(isCancelledOutput({ content: [], details: null })).toBe(false)
+    expect(isCancelledOutput(undefined)).toBe(false)
   })
 })
 

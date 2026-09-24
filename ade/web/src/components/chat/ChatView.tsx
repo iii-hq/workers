@@ -1211,6 +1211,34 @@ export function ChatView({
     }
   }, [backend, approvalSettings, announcer])
 
+  /* Per-call stop (the card's button): `harness::function::cancel` stops the
+     harness awaiting ONE call without ending the turn — the call settles as a
+     `cancelled` error result the model reasons over next, and its card flips
+     off `running` when that result pairs in from the transcript. Distinct
+     from `handleStop`, which aborts the whole turn. A refused cancel (the
+     call settled first, or is parked for approval) rejects so the card
+     re-enables its button and says why. */
+  const handleCancelCall = useMemo(() => {
+    const cancelFn = backend.cancelCall
+    if (!cancelFn) return undefined
+    return async (sId: string, functionTriggerId: string) => {
+      const functionId = messagesRef.current.find(
+        (m): m is FunctionTriggerMessage =>
+          m.role === 'function-trigger' &&
+          m.functionTriggerId === functionTriggerId,
+      )?.functionId
+      const cancelling = await cancelFn(sId, functionTriggerId)
+      if (!cancelling) {
+        throw new Error(
+          'nothing to cancel — the call already finished or is waiting for approval',
+        )
+      }
+      announcer.announce(
+        functionId ? `cancelling ${functionId}` : 'cancelling the call',
+      )
+    }
+  }, [backend, announcer])
+
   const filesystemGrants = useFilesystemGrants(sessionId)
   const [filesystemDialogOpen, setFilesystemDialogOpen] = useState(false)
   const handleManageFilesystemAccess = useCallback(() => {
@@ -2663,6 +2691,7 @@ export function ChatView({
           onAlwaysAllow={handleAlwaysAllow}
           onResolveFilesystemAccess={handleFilesystemResolve}
           onManageFilesystemAccess={handleManageFilesystemAccess}
+          onCancelCall={handleCancelCall}
           onConfigureProvider={handleOpenModelPicker}
           workingDir={conversation.workingDir ?? null}
           onWorkingDirChange={

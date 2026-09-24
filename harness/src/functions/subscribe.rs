@@ -268,6 +268,29 @@ pub async fn invoke(
     trigger::cap_result(result, deps.cfg().await.max_result_bytes)
 }
 
+/// Whether [`invoke`] would settle this call inside the harness — a
+/// control-plane interception with its own multi-step writes (`harness::send`
+/// into the running turn, trigger registration = engine binding + durable
+/// record) — rather than dispatch it to the engine. Interceptions are short
+/// and NOT safe to drop midway, so the per-call cancel race
+/// (`harness::function::cancel`) skips them: only an engine dispatch, the
+/// long-running case, is interruptible. Mirrors the match in [`invoke`].
+pub fn is_locally_intercepted(
+    function_id: &str,
+    arguments: &Value,
+    session_id: &str,
+    caller_holds_session_lock: bool,
+) -> bool {
+    send_invocation_context(
+        function_id,
+        arguments,
+        session_id,
+        caller_holds_session_lock,
+    )
+    .is_some()
+        || matches!(function_id, REGISTER_TRIGGER_ID | UNREGISTER_TRIGGER_ID)
+}
+
 /// Agent calls carry the harness worker's authority. Private state accessors
 /// do not check their caller, so neither those nor credential-management RPCs
 /// may be reached by agents, even with `allow = ["*"]`. Namespace claims are

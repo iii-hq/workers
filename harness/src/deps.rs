@@ -27,6 +27,11 @@ pub struct Deps {
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub cancels: TurnCancels,
+    /// Per-call cancel signals fired by `harness::function::cancel`, keyed by
+    /// [`crate::locks::call_cancel_key`]; the tool phase races each target
+    /// invocation against its key so one in-flight call can be interrupted
+    /// without cancelling the turn.
+    pub call_cancels: TurnCancels,
     /// Harness-owned JSON project catalog, serialized across concurrent
     /// console requests while allowing its configured file path to hot-reload.
     pub projects: ProjectStore,
@@ -53,6 +58,7 @@ impl Deps {
             hooks,
             locks: SessionLocks::new(),
             cancels: TurnCancels::new(),
+            call_cancels: TurnCancels::new(),
             projects: ProjectStore::default(),
             trigger_handles: crate::bindings::TriggerHandles::default(),
         }

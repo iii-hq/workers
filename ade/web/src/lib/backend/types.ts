@@ -393,6 +393,17 @@ export interface ChatBackend {
    */
   abortRun?(sessionId: string): Promise<void>
   /**
+   * Interrupt ONE in-flight function call without ending the turn
+   * (`harness::function::cancel`) — the card's stop button. The harness stops
+   * awaiting the target and settles the call as a `cancelled` error result
+   * the model reasons over next; the target itself may keep running on its
+   * worker (the engine has no cancel primitive), so the card copy says
+   * "cancelled", never "stopped". Resolves `false` when there was nothing to
+   * interrupt (already settled, pending approval, no live turn). Backends
+   * without per-call cancellation omit this and the card renders no button.
+   */
+  cancelCall?(sessionId: string, functionTriggerId: string): Promise<boolean>
+  /**
    * Powers `/compact`. Compacts the session-manager transcript (the single
    * source of truth) directly. `contextWindow` skips the server's
    * `models::get` lookup when known. `instructions` is the free text typed

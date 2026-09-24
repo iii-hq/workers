@@ -136,7 +136,8 @@ rules:
   # harness: deny-by-default for in-run agents (harness.md § Agent exposure).
   # send/run let a model start arbitrary turns outside any max_turns guard;
   # turn is the internal loop step; function::trigger/resolve forge call ids
-  # and parked results; stop cancels turns. harness::spawn is the only
+  # and parked results; function::cancel interrupts calls (the console's
+  # per-card stop); stop cancels turns. harness::spawn is the only
   # model-reachable way to start new turns and is left at the needs_approval
   # default (the harness self-enforces depth/fan-out and walls spawned
   # children out of the control plane unless the spawn passes
@@ -147,6 +148,7 @@ rules:
   - '!harness::turn'
   - '!harness::function::trigger'
   - '!harness::function::resolve'
+  - '!harness::function::cancel'
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'

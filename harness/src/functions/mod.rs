@@ -4,6 +4,7 @@
 //! the same `handle` functions directly (SOP §7).
 
 pub mod filesystem;
+pub mod function_cancel;
 pub mod function_resolve;
 pub mod function_trigger;
 pub mod metrics;
@@ -59,6 +60,11 @@ pub const FUNCTION_TRIGGER_DESC: &str =
 pub const FUNCTION_RESOLVE_ID: &str = "harness::function::resolve";
 pub const FUNCTION_RESOLVE_DESC: &str =
     "Internal: settle a pending call's result (or release a held call) and resume the parked turn.";
+
+pub const FUNCTION_CANCEL_ID: &str = "harness::function::cancel";
+pub const FUNCTION_CANCEL_DESC: &str =
+    "Control-plane: interrupt one in-flight function call by function_call_id without cancelling \
+     the turn; the call settles as a `cancelled` error result the model sees next.";
 
 pub const STOP_ID: &str = "harness::stop";
 pub const STOP_DESC: &str =
@@ -304,6 +310,13 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         FUNCTION_RESOLVE_ID,
         FUNCTION_RESOLVE_DESC,
         |d, r| async move { function_resolve::handle(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        FUNCTION_CANCEL_ID,
+        FUNCTION_CANCEL_DESC,
+        |d, r| async move { function_cancel::handle(&d, r).await },
     );
     register_internal(iii, deps, STOP_ID, STOP_DESC, |d, r| async move {
         stop::handle(&d, r).await

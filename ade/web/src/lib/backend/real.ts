@@ -28,6 +28,7 @@ import {
 import { loadApprovalGateDefaults } from './approval-gate-config'
 import { compactionWindow, latestCompactionAnchor } from './compaction-window'
 import {
+  cancelCall,
   getTurnStatus,
   type HarnessFileBlock,
   type HarnessFunctionPolicy,
@@ -664,6 +665,14 @@ async function realAbortRun(sessionId: string): Promise<void> {
   await stopTurn(client, sessionId)
 }
 
+async function realCancelCall(
+  sessionId: string,
+  functionTriggerId: string,
+): Promise<boolean> {
+  const client = await getIiiClient()
+  return cancelCall(client, sessionId, functionTriggerId)
+}
+
 /** `context::compact` response, discriminated on `status`. */
 type CompactResponse =
   | {
@@ -814,5 +823,6 @@ export const realBackend: ChatBackend = {
   watchApprovals: realWatchApprovals,
   resolveApproval: realResolveApproval,
   abortRun: realAbortRun,
+  cancelCall: realCancelCall,
   compactSession: realCompactSession,
 }

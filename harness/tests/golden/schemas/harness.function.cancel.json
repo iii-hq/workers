@@ -1,0 +1,42 @@
+{
+  "function_id": "harness::function::cancel",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "function_call_id": {
+        "description": "The iii `function_call_id` of the call to interrupt (the id the console's card carries as `functionTriggerId`).",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "turn_id": {
+        "description": "Omit to target the session's current turn.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "function_call_id",
+      "session_id"
+    ],
+    "title": "FunctionCancelRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cancelling": {
+        "description": "True when the cancel signal was fired for a call this turn is still running (or about to run). False when there is nothing to interrupt: no turn, a different/terminal turn, a call already settled, or a call parked for approval — a parked call is cancelled by denying it (`harness::function::resolve`), not here.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "cancelling"
+    ],
+    "title": "FunctionCancelResponse",
+    "type": "object"
+  }
+}

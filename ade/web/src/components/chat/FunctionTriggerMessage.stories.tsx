@@ -167,6 +167,43 @@ const ftriggerDoneMulti: FTriggerType = {
   createdAt: Date.now(),
 }
 
+/** A long-running call the console can address (session + call id): the
+ *  header shows the stop button (`harness::function::cancel`). */
+const ftriggerRunningCancellable: FTriggerType = {
+  id: 'f1c',
+  role: 'function-trigger',
+  functionId: 'shell::exec',
+  functionTriggerId: 'call_make',
+  sessionId: 's-demo',
+  input: { command: 'make', args: ['-j8', 'all'] },
+  running: true,
+  createdAt: Date.now(),
+}
+
+/** Interrupted from the card's stop button: the harness settled the call with
+ *  its `cancelled` envelope — the user's choice, so the header says
+ *  "Cancelled", not "Failed". */
+const ftriggerCancelled: FTriggerType = {
+  id: 'f1d',
+  role: 'function-trigger',
+  functionId: 'shell::exec',
+  input: { command: 'make', args: ['-j8', 'all'] },
+  output: {
+    error: {
+      kind: 'function_error',
+      message:
+        'shell::exec was cancelled by the user before it returned. Its result was discarded and the function may still be running on its worker.',
+      details: {
+        error: 'cancelled',
+        cancelled_by: 'user',
+        function_id: 'shell::exec',
+      },
+    },
+  },
+  durationMs: 42_310,
+  createdAt: Date.now(),
+}
+
 /** Denied at the approval gate: the gate's DenialEnvelope rides in the error
  *  details — the call never ran, so the header makes no "triggered" claim. */
 const ftriggerDenied: FTriggerType = {
@@ -263,6 +300,20 @@ export const PendingMultiArg: Story = {
 export const Running: Story = {
   name: 'triggering',
   args: { message: ftriggerRunning },
+}
+
+export const RunningCancellable: Story = {
+  name: 'triggering (cancellable)',
+  args: {
+    message: ftriggerRunningCancellable,
+    defaultOpen: true,
+    onCancel: () => new Promise<void>(() => {}),
+  },
+}
+
+export const Cancelled: Story = {
+  name: 'cancelled by the user',
+  args: { message: ftriggerCancelled, defaultOpen: true },
 }
 
 export const DoneCollapsed: Story = {
