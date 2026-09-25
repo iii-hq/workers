@@ -157,7 +157,7 @@ function_search_mode: judge                  # lexical | hybrid | judge (default
 function_search_judge_timeout_ms: 3000        # integer 1..30000; shared judge deadline per public search
 function_search_judge_min_relevance: 0.5      # finite 0..1 inclusive; noul floor (initial calibration value)
 function_search_judge_side_lane_min_relevance: 0.3 # finite 0..1 inclusive; noul floor for the skills and triggers sections
-function_search_judge_question: choice       # choice (default: one question per capability) | noul (one yes/no per shortlisted document) | tournament (whole catalog in rounds of 16, no Hybrid shortlist)
+function_search_judge_question: choice       # choice (default: one question per capability) | noul (one yes/no per shortlisted document) | tournament (whole catalog: compact rounds, then a final choice; no Hybrid shortlist)
 function_search_judge_choice_min_probability: 0.1 # finite 0..1 inclusive; with choice, the floor for all but the best document
 ```
 
@@ -631,13 +631,19 @@ the sixteen options, so the objects cut the function ids themselves: live, it
 found the expected function in 13/22 searches with objects and 17/22 compact.
 SemIf (16384) and judges that advertise no window keep the objects.
 
-`tournament` skips the Hybrid shortlist: the whole function catalog, sorted by
-id, plays rounds of Choice questions over groups of at most 16, each group's
-winner goes on, and the last 16 or fewer get one final Choice admitted like
-`choice`. A 260-function catalog takes three rounds (260 → 17 → 2 → final).
-Measured on 22 English capabilities: laya found the function in 21/22
-(15–17 with the shortlist) at about 1.2 s per search on a GPU; JEV 21/22;
-SemIf 18/22 and 6 s. The installed functions and the registry pools play it;
+`tournament` skips the Hybrid shortlist, following TypeSafe's skill-suggestion
+pattern (skim everything cheaply, then read the few in detail). The whole
+function catalog, sorted by id, is skimmed in rounds of compact Choices (the
+function id and the first eight words of its description) over groups of up
+to 128, or 16 for a judge that advertises a context window under 4096 tokens;
+each group's three best go on until 16 or fewer remain, and those get one
+final Choice with their full descriptions, admitted like `choice`. A
+260-function catalog takes one round of three groups, then the final Choice
+over nine. It needs no local semantic model. Measured through `judge::evaluate`
+over 260 functions and 22 English capabilities, the round's nine survivors
+held the expected function every time; decider and JEV then picked it in
+21/22 (decider 2.7 s per capability on a GPU, JEV 0.5 s), at half the tokens
+of the former winner-only rounds of 16. The installed functions and the registry pools play it;
 skills and triggers keep their shortlists. With `choice` (the default), a judge
 that advertises a context window under 4096 tokens gets a tournament
 automatically; SemIf and hosted judges keep `choice`.

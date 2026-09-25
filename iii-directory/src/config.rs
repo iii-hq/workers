@@ -152,10 +152,11 @@ pub enum FunctionSearchJudgeQuestion {
     // a context window under 4096 tokens (laya) gets a tournament instead.
     #[default]
     Choice,
-    // Choice without the Hybrid shortlist: the whole function catalog plays
-    // rounds of Choice questions over groups of at most 16 (sorted by id),
-    // each group's winner goes on, and the last 16 get the final Choice.
-    // Measured for laya: 21/22 searches against 15-17 with the shortlist.
+    // Choice without the Hybrid shortlist: the whole function catalog is
+    // skimmed in rounds of compact Choices (function id and eight words) over
+    // groups of up to 128 (16 for small-window judges), each group's three
+    // best go on, and the last 16 or fewer get the final Choice with their
+    // full descriptions. Needs no local semantic model.
     Tournament,
 }
 
