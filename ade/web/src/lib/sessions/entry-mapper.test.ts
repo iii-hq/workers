@@ -900,6 +900,78 @@ describe('entrySegments', () => {
     })
   })
 
+  it('renders a model_notice as a quiet notice with the text collapsed', () => {
+    const live = entrySegments({
+      entry_id: 'e_t1_notice_0',
+      custom: {
+        custom_type: 'model_notice',
+        data: {
+          text: 'Functions changed: fs::read added.',
+          kind: 'registry-changed',
+        },
+      },
+    })
+    const readBack = entrySegments({
+      entry_id: 'e_t1_notice_0',
+      message: {
+        role: 'custom',
+        custom_type: 'model_notice',
+        content: [],
+        details: {
+          text: 'Functions changed: fs::read added.',
+          kind: 'registry-changed',
+        },
+        timestamp: 7,
+      },
+    })
+    for (const [notice] of [live, readBack]) {
+      expect(notice).toMatchObject({
+        id: 'e_t1_notice_0',
+        role: 'system',
+        kind: 'notice',
+        tone: 'info',
+        content: 'Note to the model — registry changed',
+        technicalDetails: { detail: 'Functions changed: fs::read added.' },
+      })
+    }
+    expect(readBack[0]?.createdAt).toBe(7)
+    const [plain] = entrySegments({
+      entry_id: 'e-n',
+      custom: { custom_type: 'model_notice', data: { text: 'hi' } },
+    })
+    expect(plain).toMatchObject({ content: 'Note to the model' })
+    expect(
+      entrySegments({
+        entry_id: 'e-empty',
+        custom: { custom_type: 'model_notice', data: {} },
+      }),
+    ).toEqual([])
+  })
+
+  it('never renders harness bookkeeping custom entries', () => {
+    for (const custom_type of ['message_order', 'runtime_context']) {
+      expect(
+        entrySegments({
+          entry_id: `e-${custom_type}`,
+          custom: { custom_type, data: { order: ['e1'] } },
+        }),
+      ).toEqual([])
+      // Read-backs would otherwise fall back to their display text.
+      expect(
+        entrySegments({
+          entry_id: `e-${custom_type}`,
+          message: {
+            role: 'custom',
+            custom_type,
+            content: [],
+            display: 'bookkeeping',
+            timestamp: 1,
+          },
+        }),
+      ).toEqual([])
+    }
+  })
+
   it('maps harness error/notice custom entries to visible system notices', () => {
     const [err] = entrySegments({
       entry_id: 'e_t1_error',
