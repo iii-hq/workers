@@ -43,10 +43,12 @@ const COMPACT_BELOW_TOKENS: u64 = 4096;
 const WINDOW_TTL: Duration = Duration::from_secs(60);
 /// A tournament's elimination rounds skim the whole corpus cheaply, then the
 /// final Choice reads the few survivors in detail (TypeSafe's skill-suggestion
-/// pattern): compact Choices over groups of up to `ROUND_GROUP` documents
-/// (`JUDGE_SHORTLIST` for small-window judges), each passing its `ROUND_KEEP`
-/// best on. Live, over 260 functions: 22/22 survivors hold the answer, and
-/// the judge reads half the tokens of winner-only groups of 16.
+/// pattern): compact Choices over groups of up to `ROUND_GROUP` documents,
+/// each passing its `ROUND_KEEP` best on. Live, over 260 functions: 22/22
+/// survivors hold the answer, and the judge reads half the tokens of
+/// winner-only groups of 16. Small-window judges (laya) play groups of
+/// `JUDGE_SHORTLIST` and pass only each winner on: a longer final Choice
+/// confuses them (live: 18/22 with three survivors, 20/22 with winners only).
 const ROUND_GROUP: usize = 128;
 const ROUND_KEEP: usize = 3;
 
@@ -402,22 +404,23 @@ impl JudgeSearch {
             min_relevance: 0.0,
             ..choice
         };
-        // Small-window judges read groups of a shortlist's size; none exceeds
-        // what the judge advertises one Choice can offer (SemIf: 16).
+        // Small-window judges read groups of a shortlist's size and keep one
+        // winner each; no group exceeds what the judge advertises one Choice
+        // can offer (SemIf: 16).
         let limits = self.limits(deadline).await;
-        let mut group = if limits
+        let small = limits
             .window
-            .is_some_and(|tokens| tokens < COMPACT_BELOW_TOKENS)
-        {
-            JUDGE_SHORTLIST
+            .is_some_and(|tokens| tokens < COMPACT_BELOW_TOKENS);
+        let (mut group, keep) = if small {
+            (JUDGE_SHORTLIST, 1)
         } else {
-            ROUND_GROUP
+            (ROUND_GROUP, ROUND_KEEP)
         };
         if let Some(options) = limits.options {
             group = group.min(options as usize);
         }
         // A round must shrink its lanes.
-        let group = group.max(ROUND_KEEP + 1);
+        let group = group.max(keep + 1);
         let mut lanes: Vec<(String, Vec<ToolSchema>)> = lanes
             .iter()
             .map(|(capability, documents)| {
@@ -451,7 +454,7 @@ impl JudgeSearch {
             stats = add_stats(stats, &outcome.stats);
             let mut survivors = vec![Vec::new(); lanes.len()];
             for (lane, ranking) in owners.into_iter().zip(outcome.rankings) {
-                for (id, _) in ranking.iter().take(ROUND_KEEP) {
+                for (id, _) in ranking.iter().take(keep) {
                     if let Some(document) = lanes[lane].1.iter().find(|d| &d.name == id) {
                         survivors[lane].push(document.clone());
                     }
@@ -1391,10 +1394,10 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.rankings[0][0].0, "t::n27");
         let requests = requests.lock().unwrap();
-        // Three groups of at most 16, three survivors each, one final Choice.
+        // Three groups of at most 16, one winner each, one final Choice.
         assert_eq!(requests.len(), 2);
         assert_eq!(sizes(&requests[0]), vec![14, 14, 12]);
-        assert_eq!(sizes(&requests[1]), vec![9]);
+        assert_eq!(sizes(&requests[1]), vec![3]);
     }
 
     #[test]

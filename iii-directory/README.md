@@ -634,20 +634,22 @@ SemIf (16384) and judges that advertise no window keep the objects.
 `tournament` skips the Hybrid shortlist, following TypeSafe's skill-suggestion
 pattern (skim everything cheaply, then read the few in detail). The whole
 function catalog, sorted by id, is skimmed in rounds of compact Choices (the
-function id and the first eight words of its description) over groups of up
-to 128, or 16 for a judge that advertises a context window under 4096 tokens,
-and never more than the judge's advertised `max_options` (SemIf: 16);
-each group's three best go on until 16 or fewer remain, and those get one
-final Choice with their full descriptions, admitted like `choice`. A
-260-function catalog takes one round of three groups, then the final Choice
-over nine. It needs no local semantic model. Measured through `judge::evaluate`
-over 260 functions and 22 English capabilities, the round's nine survivors
-held the expected function every time; decider and JEV then picked it in
-21/22 (decider 2.7 s per capability on a GPU, JEV 0.5 s), at half the tokens
-of the former winner-only rounds of 16. The installed functions and the registry pools play it;
-skills and triggers keep their shortlists. With `choice` (the default), a judge
-that advertises a context window under 4096 tokens gets a tournament
-automatically; SemIf and hosted judges keep `choice`.
+function id and the first eight words of its description) over groups of up to
+128, or 16 for a judge that advertises a context window under 4096 tokens, and
+never more than the judge's advertised `max_options` (SemIf: 16); each group's
+three best go on (only the winner, for a small-window judge, whose final Choice
+degrades with more options) until 16 or fewer remain, and those get one final
+Choice with their full descriptions, admitted like `choice`. A 260-function
+catalog takes one round of three groups, then the final Choice over nine. It
+needs no local semantic model. Live through `directory::search_functions` over
+22 English capabilities (RX 6900 XT), hit / top-1 / precision and median search
+time: JEV 22 / 22 / 1.00 at 2.2 s, SemIf 22 / 22 / 0.90 at 6.1 s, decider 22 /
+21 / 0.88 at 3.7 s, laya 20 / 19 / 0.80 at 2.2 s; the former winner-only rounds
+of 16 gave JEV 22 / 22 / 0.98, decider 21 / 21 / 0.81 at 9.1 s, and timed SemIf
+out at 10 s. The installed functions and the registry pools play it; skills and
+triggers keep their shortlists. With `choice` (the default), a judge that
+advertises a context window under 4096 tokens gets a tournament automatically;
+SemIf and hosted judges keep `choice`.
 
 `function_search_model_path: null` is valid in judge mode and makes the Hybrid
 fallback BM25-only, without the local-model warning. With a configured path,

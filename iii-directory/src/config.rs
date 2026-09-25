@@ -154,9 +154,9 @@ pub enum FunctionSearchJudgeQuestion {
     Choice,
     // Choice without the Hybrid shortlist: the whole function catalog is
     // skimmed in rounds of compact Choices (function id and eight words) over
-    // groups of up to 128 (16 for small-window judges), each group's three
-    // best go on, and the last 16 or fewer get the final Choice with their
-    // full descriptions. Needs no local semantic model.
+    // groups of up to 128 whose three best go on (16 and winners only for
+    // small-window judges), and the last 16 or fewer get the final Choice
+    // with their full descriptions. Needs no local semantic model.
     Tournament,
 }
 
