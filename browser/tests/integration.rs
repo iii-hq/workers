@@ -1150,13 +1150,202 @@ async fn elements_table_guards_select_and_replace() {
     }
     assert_eq!(eval("document.title").await, "form");
 
+    // the scraping session closer refuses a tab id instead of a silent
+    // `closed: false`, and names the function that closes it
+    let mixed_up = try_call("browser::session-close", json!({ "session_id": sid }))
+        .await
+        .expect_err("session-close must not report an open tab as a no-op");
+    assert!(
+        mixed_up.to_string().contains("browser::sessions::stop"),
+        "{mixed_up}"
+    );
+
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}
+
+/// Back and forward return once the page is there, including a page the
+/// back/forward cache restores, which never fires a load event (the call
+/// used to sit out its whole 30 s timeout).
+#[tokio::test]
+async fn history_moves_return_promptly_even_from_the_back_forward_cache() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(30),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(25_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+    let a = serve_html("<!doctype html><title>a</title><p>page a</p>");
+    let b = serve_html("<!doctype html><title>b</title><p>page b</p>");
+    let started = call("browser::sessions::start", json!({ "url": a })).await;
+    let sid = started["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
+    let eval = |expression: &'static str| {
+        let payload = json!({ "session_id": sid, "expression": expression });
+        async move { call("browser::evaluate", payload).await["value"].clone() }
+    };
+    // survives only a back/forward-cache restore
+    eval("window.kept = true").await;
+    call("browser::navigate", json!({ "session_id": sid, "url": b })).await;
+
+    let t = std::time::Instant::now();
+    let back = call(
+        "browser::history",
+        json!({ "session_id": sid, "action": "back" }),
+    )
+    .await;
+    let back_ms = t.elapsed().as_millis();
+    assert_eq!(back["url"], a, "{back}");
+    assert_eq!(eval("document.title").await, "a");
+    let restored = eval("window.kept === true").await == json!(true);
+    eprintln!("back took {back_ms} ms (back/forward cache: {restored})");
+    assert!(back_ms < 10_000, "back took {back_ms} ms");
+
+    let t = std::time::Instant::now();
+    let forward = call(
+        "browser::history",
+        json!({ "session_id": sid, "action": "forward" }),
+    )
+    .await;
+    assert_eq!(forward["url"], b, "{forward}");
+    assert!(
+        t.elapsed().as_millis() < 10_000,
+        "forward took {:?}",
+        t.elapsed()
+    );
+
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}
+
+/// `d` refs name nodes from a tab counter: Chrome's own node ids restart in
+/// the new renderer process a cross-site navigation gets, so naming refs by
+/// them let a ref from the old page name an unrelated node on the new one.
+#[tokio::test]
+async fn dom_refs_never_name_a_node_on_another_page() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let try_call = |function_id: &str, payload: serde_json::Value| {
+        let client = &client;
+        let function_id = function_id.to_string();
+        async move {
+            timeout(
+                Duration::from_secs(30),
+                client.trigger(TriggerRequest {
+                    function_id,
+                    payload,
+                    action: None,
+                    timeout_ms: Some(20_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+        }
+    };
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let pending = try_call(function_id, payload);
+        async move { pending.await.expect("trigger failed") }
+    };
+    fn refs(node: &serde_json::Value, out: &mut Vec<(String, String)>) {
+        out.push((
+            node["ref"].as_str().unwrap_or_default().to_string(),
+            node["tag"].as_str().unwrap_or_default().to_string(),
+        ));
+        for child in node["children"].as_array().into_iter().flatten() {
+            refs(child, out);
+        }
+    }
+    let read = |sid: String| async move {
+        let tree = call(
+            "browser::dom::read",
+            json!({ "session_id": sid, "depth": 20 }),
+        )
+        .await;
+        let mut out = Vec::new();
+        refs(&tree["root"], &mut out);
+        out
+    };
+
+    let a = serve_html(
+        r#"<!doctype html><title>a</title><p>Alpha page</p><button onclick="document.title='alpha'">Alpha</button>"#,
+    );
+    let many: String = (0..60).map(|i| format!("<li>item {i}</li>")).collect();
+    // localhost vs 127.0.0.1: another site, so another renderer process
+    let b = serve_html(Box::leak(
+        format!(
+        r#"<!doctype html><title>b</title><ul>{many}</ul><button onclick="document.title='bravo'">Bravo</button>"#
+    ).into_boxed_str(),
+    ))
+    .replace("127.0.0.1", "localhost");
+    let started = call("browser::sessions::start", json!({ "url": a })).await;
+    let sid = started["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
+
+    let on_a = read(sid.clone()).await;
+    let alpha = on_a
+        .iter()
+        .find(|(_, tag)| tag == "button")
+        .map(|(r, _)| r.clone())
+        .expect("Alpha button");
+    // a node read twice keeps its name
+    assert_eq!(read(sid.clone()).await, on_a);
+
+    call("browser::navigate", json!({ "session_id": sid, "url": b })).await;
+    let on_b = read(sid.clone()).await;
+    let a_names: std::collections::HashSet<&String> = on_a.iter().map(|(r, _)| r).collect();
+    let reused: Vec<&(String, String)> = on_b.iter().filter(|(r, _)| a_names.contains(r)).collect();
+    assert!(
+        reused.is_empty(),
+        "names from page A reused on page B: {reused:?}"
+    );
+    let stale = try_call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": alpha }),
+    )
+    .await
+    .expect_err("a ref from the previous page must not resolve");
+    assert!(stale.to_string().contains("unknown ref"), "{stale}");
+    let title = call(
+        "browser::evaluate",
+        json!({ "session_id": sid, "expression": "document.title" }),
+    )
+    .await;
+    assert_eq!(title["value"], "b", "{title}");
+
     call("browser::sessions::stop", json!({ "session_id": sid })).await;
     client.shutdown_async().await;
 }
 
 /// A scripted `judge::evaluate`: select Bug, type the title, click Save,
 /// then DONE once the page title says saved. Answers every head the way a
-/// real judge does, but only the chosen operation's head matters.
+/// real judge does, but only the chosen operation's head matters. Like a
+/// small judge, it calls DONE as soon as the fields match (before Save);
+/// its `complete` check says no until the page shows the save.
 fn scripted_judge(request: &serde_json::Value) -> serde_json::Value {
     let evaluation = &request["evaluations"][0];
     let state = &evaluation["state"];
@@ -1195,10 +1384,25 @@ fn scripted_judge(request: &serde_json::Value) -> serde_json::Value {
     } else {
         ("CLICK", Some(("click_target", r(&save))))
     };
+    let saved = operation == "DONE";
     let mut answers = serde_json::Map::new();
-    answers.insert("operation".into(), pick("operation", operation));
+    if operation == "CLICK" {
+        // premature DONE, Save the runner-up
+        let mut premature = pick("operation", "DONE");
+        premature["probabilities"]["DONE"] = json!(0.6);
+        premature["probabilities"]["CLICK"] = json!(0.4);
+        answers.insert("operation".into(), premature);
+    } else {
+        answers.insert("operation".into(), pick("operation", operation));
+    }
     if let Some((question, target)) = head {
         answers.insert(question.into(), pick(question, &target));
+    }
+    if questions.get("complete").is_some() {
+        answers.insert(
+            "complete".into(),
+            json!({ "type": "noul", "noul": if saved { 0.95 } else { 0.05 } }),
+        );
     }
     json!({
         "status": "ok",
@@ -1298,7 +1502,8 @@ async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
     assert!(!requests[n]["evaluations"][0]["state"]
         .to_string()
         .contains("Crash on save"));
-    // each request asks the operation plus one head per offered operation
+    // each request asks the operation, the completion check, and one head
+    // per offered operation
     let heads: Vec<&String> = requests[n]["evaluations"][0]["questions"]
         .as_object()
         .unwrap()
@@ -1308,6 +1513,7 @@ async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
         heads,
         [
             "click_target",
+            "complete",
             "operation",
             "select_target",
             "type_text_target"

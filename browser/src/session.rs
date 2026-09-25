@@ -432,7 +432,7 @@ pub struct Tab {
     /// ignores frames older than the last one it saw keeps working after
     /// the tab slept and woke into a fresh page.
     frame_seq: AtomicU64,
-    /// Ref name counters: snapshot `e` refs, pick `p` refs, and the floor
+    /// Ref name counters: snapshot `e` refs, pick `p` refs, dom `d` refs, and the floor
     /// above every `n` element id (a new document's registry numbers from
     /// there). Never reset, so a ref name is never reused for another node:
     /// one from an earlier snapshot, page or pick fails as unknown instead of
@@ -441,6 +441,10 @@ pub struct Tab {
     pub ref_counter: AtomicU64,
     pick_counter: AtomicU64,
     next_element_id: AtomicU64,
+    /// Behind `d` refs (`browser::dom::read`). Chrome's node ids restart in
+    /// every renderer process (a cross-site navigation, a wake), so they
+    /// cannot name refs themselves.
+    dom_counter: AtomicU64,
     url: Mutex<String>,
     title: Mutex<String>,
     /// Visited pages, newest last, for the history panel. Capped.
@@ -770,6 +774,9 @@ pub struct Session {
     /// earlier snapshot of the same document still resolves to the node it
     /// named instead of colliding with a newer snapshot's numbering.
     pub refs: Mutex<HashMap<String, i64>>,
+    /// This document's `d` ref per DOM node (backend node id → name), so a
+    /// node read twice keeps its name. Cleared with `refs` on navigation.
+    dom_names: Mutex<HashMap<i64, String>>,
     /// Bumped on every top-document navigation. Snapshots report it so a
     /// caller can tell which document epoch its refs belong to.
     generation: AtomicU64,
@@ -971,6 +978,24 @@ impl Session {
         refs.extend(map);
     }
 
+    /// The `d` ref for a DOM node: one name per node for the document's
+    /// life, numbered from the tab's counter so a name never comes back for
+    /// another node (on another page, or after the tab wakes).
+    pub fn dom_ref(&self, backend_node_id: i64) -> String {
+        let mut names = self.dom_names.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(name) = names.get(&backend_node_id) {
+            return name.clone();
+        }
+        let name = format!(
+            "d{}",
+            self.tab.dom_counter.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        names.insert(backend_node_id, name.clone());
+        drop(names);
+        self.add_ref(name.clone(), backend_node_id);
+        name
+    }
+
     pub fn add_ref(&self, r: String, backend_node_id: i64) {
         self.refs
             .lock()
@@ -983,6 +1008,10 @@ impl Session {
     /// state, not document state.
     fn clear_refs(&self) {
         self.refs.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.dom_names
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         *self.snapshot_keys.lock().unwrap_or_else(|p| p.into_inner()) = None;
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
@@ -1211,6 +1240,7 @@ impl Sessions {
                 ref_counter: AtomicU64::new(0),
                 pick_counter: AtomicU64::new(0),
                 next_element_id: AtomicU64::new(1),
+                dom_counter: AtomicU64::new(0),
                 url: Mutex::new(record.url),
                 title: Mutex::new(record.title),
                 history: Mutex::new(record.history),
@@ -1330,6 +1360,7 @@ impl Sessions {
             ref_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
             next_element_id: AtomicU64::new(1),
+            dom_counter: AtomicU64::new(0),
             url: Mutex::new("about:blank".to_string()),
             title: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
@@ -1506,6 +1537,7 @@ impl Sessions {
             refs: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
+            dom_names: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
@@ -1816,6 +1848,7 @@ impl Sessions {
             ref_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
             next_element_id: AtomicU64::new(1),
+            dom_counter: AtomicU64::new(0),
             url: Mutex::new(url.clone().unwrap_or_else(|| "about:blank".to_string())),
             title: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
@@ -1845,6 +1878,7 @@ impl Sessions {
             refs: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
+            dom_names: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),

@@ -171,7 +171,8 @@ a second call to parse what you fetched. Each takes a single `url` or a bulk
   `session-list` — keep cookies and browser state across fetches.
   HTTP, dynamic and stealthy types are private FIFO sessions with UUID4 hex
   ids; they never appear in `browser::sessions::list` and reject interactive
-  ids. Close sessions when done.
+  ids (`session-close` on a tab id fails: tabs close with
+  `browser::sessions::stop`). Close sessions when done.
 - `browser::crawl` — breadth-first from `start_urls`, same-domain by
   default, capped by `max_pages` (20) and `max_depth` (2). The response holds
   only a ≤10-item sample; read the rest from the stream it names.
@@ -260,9 +261,10 @@ click:
    value to type in `inputs` (`email`, `password` or the field labels work).
    Values go to the page only; the judge sees the keys. The run waits for
    the requests each click starts, so the page it returns is the outcome.
-2. `done`: check `page` (the final table) against the goal before you
-   report success; the judge's done is not proof (a login can end on
-   "invalid password"). `page.busy` means it was still loading. `needs_text`: type the named field with
+2. `done`: the judge chose it and a separate "is the goal complete on this
+   page?" check agreed (fields filled but not saved do not pass). Still check
+   `page` (the final table) against the goal before you report success; the
+   judge's done is not proof (a login can end on "invalid password"). `page.busy` means it was still loading. `needs_text`: type the named field with
    `browser::act` or rerun with that input. `blocked`/`stalled`/`max_steps`:
    read `steps` (each has `error` when an action was refused) and continue
    by hand.

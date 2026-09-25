@@ -285,7 +285,7 @@
             ]
           },
           {
-            "description": "The judge saw every requirement satisfied. Verify on `page`; DONE is the judge's reading, not proof.",
+            "description": "The judge chose DONE and its completion check rated the goal complete on the page. Verify on `page`; it is the judge's reading, not proof.",
             "type": "string",
             "enum": [
               "done"
