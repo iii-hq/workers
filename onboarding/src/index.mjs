@@ -291,6 +291,31 @@ if (URL.parse(SIGNUP_URL)?.protocol !== 'https:') {
 // be listening.
 const SIGNUP_ORIGIN = process.env.III_ONBOARDING_SIGNUP_ORIGIN ?? 'http://127.0.0.1'
 
+/**
+ * The topic a captured address is announced on. The engine's telemetry worker
+ * subscribes and writes it to the person keyed by that machine's `device_id`,
+ * which only the engine knows.
+ */
+const IDENTIFY_TOPIC = 'email:signup'
+
+/**
+ * Best effort, and after the list has taken the address: an engine with
+ * telemetry off drains this topic, and a project without the `queue` worker
+ * never delivers it. Neither outcome may fail the signup the operator asked
+ * for.
+ */
+const publishIdentify = (email, source) =>
+  iii
+    .trigger({
+      function_id: 'iii::durable::publish',
+      payload: { topic: IDENTIFY_TOPIC, data: { email, source } },
+      timeoutMs: STATE_TIMEOUT_MS,
+    })
+    .catch((cause) => {
+      // The address itself is never logged.
+      console.error(`[${WORKER}] could not publish ${IDENTIFY_TOPIC}: ${cause?.message ?? cause}`)
+    })
+
 iii.registerFunction(
   'onboarding::subscribe',
   async (input) => {
@@ -328,6 +353,7 @@ iii.registerFunction(
     }
     // Mailmodo answers 200 "added/updated" for an address already on the list,
     // so there is nothing to tell the caller apart from success.
+    await publishIdentify(email, String(input.source ?? 'onboarding'))
     return { subscribed: true }
   },
   {

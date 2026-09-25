@@ -202,6 +202,23 @@ fn origin(turn_id: &str) -> Value {
 
 /// `{ turn_id }` with hook annotations merged in (audit trail — harness.md §
 /// Cautions: mutations are silent; annotations record what ran).
+/// The `description` the model gave an `agent_trigger` call (dropped by
+/// `plan_calls`): the call's stated purpose, used as reconciliation intent.
+fn call_description<'a>(content: &'a [ContentBlock], call_id: &str) -> Option<&'a str> {
+    content.iter().find_map(|block| match block {
+        // Only the wrapper's field: in native exposure `description` would
+        // be one of the target's own parameters.
+        ContentBlock::FunctionCall {
+            id,
+            function_id,
+            arguments,
+        } if id == call_id && function_id == policy::AGENT_TRIGGER_NAME => {
+            arguments.get("description").and_then(Value::as_str)
+        }
+        _ => None,
+    })
+}
+
 fn origin_with(turn_id: &str, annotations: &serde_json::Map<String, Value>) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("turn_id".to_string(), json!(turn_id));
@@ -544,15 +561,51 @@ async fn generate_step(
     let current_generation = functions.generation;
     let (stable_prompt, assembly_system_prompt) =
         with_runtime_context(record.options.system_prompt.clone(), &record);
-    let registry_notice_message =
-        registry_notice(record.functions_generation, current_generation).map(notice_message);
+    let registry_changed = registry_notice(
+        record.functions_generation,
+        current_generation,
+        &policy,
+        &functions,
+    );
     // Preloaded contracts that drifted from the live registry: named per id,
     // every step while the drift lasts (the frozen block is never rewritten).
-    let preloaded_stale_message = preloaded_stale_notice(
+    let preloaded_stale = preloaded_stale_notice(
         record.options.preloaded_contracts.as_ref(),
-        &functions.functions,
-    )
-    .map(notice_message);
+        &functions,
+        &policy,
+    );
+    // The notices are ephemeral tail messages no transcript or hook ever sees,
+    // so the log is the one place their exact text can be verified. A drift
+    // repeats the same text on every step, so it is logged at info only on a
+    // turn's first step or when the registry moved; debug otherwise.
+    let transition = record.step == 0 || record.functions_generation != Some(current_generation);
+    for (kind, notice) in [
+        ("registry-changed", &registry_changed),
+        ("preloaded-stale", &preloaded_stale),
+    ] {
+        let Some(notice) = notice else { continue };
+        if transition {
+            tracing::info!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                step = record.step,
+                kind,
+                %notice,
+                "contract notice appended to the generate request"
+            );
+        } else {
+            tracing::debug!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                step = record.step,
+                kind,
+                %notice,
+                "contract notice appended to the generate request"
+            );
+        }
+    }
+    let registry_notice_message = registry_changed.map(notice_message);
+    let preloaded_stale_message = preloaded_stale.map(notice_message);
     record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
@@ -1411,13 +1464,58 @@ async fn finish_step(
                 continue;
             }
 
+            // A call that already failed identically this turn is answered
+            // locally before any hook or approval runs: re-running it would
+            // only return the error the model has already seen.
+            let failure_key = trigger::call_digest(&call.function_id, &call.arguments);
+            if let Some(data) = failure_key.as_deref().and_then(|key| {
+                trigger::repeated_failure_result(&record.failed_calls, key, &call.function_id)
+            }) {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin(&record.turn_id),
+                )
+                .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
+            // Reconcile malformed arguments against the target's schema
+            // (MOT-4847) before hooks and approvers see them, so they review
+            // what will actually run. Fail-open: `None` dispatches the
+            // model's arguments unchanged. The breaker above keys on the
+            // model's original arguments, so a repaired call that still fails
+            // the same way is still counted.
+            let reconciled = crate::reconcile::reconcile(
+                deps,
+                &cfg,
+                &call.function_id,
+                &call.arguments,
+                call_description(&outcome.message.content, &call.id),
+            )
+            .await;
+            let call_args = reconciled
+                .as_ref()
+                .map_or(&call.arguments, |r| &r.arguments);
+
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
             // re-applied after the chain so a hook rewrite can never widen it.
             let trusted_call_args = crate::filesystem_scope::inject(
                 &call.function_id,
-                call.arguments.clone(),
+                call_args.clone(),
                 filesystem_root.as_deref(),
                 &session_grants,
                 deps.hooks.filesystem_boundary(&call.function_id),
@@ -1448,11 +1546,21 @@ async fn finish_step(
                     (arguments, annotations)
                 }
                 crate::hooks::runner::PreTriggerOutcome::Deny(reason) => {
-                    let data = trigger::ResultData {
+                    let mut data = trigger::ResultData {
                         content: vec![ContentBlock::text(reason.clone())],
                         is_error: true,
                         details: json!({ "error": "hook_denied", "message": reason }),
                     };
+                    // The hook judged the repaired arguments: say so.
+                    let mut deny_annotations = serde_json::Map::new();
+                    if let Some(r) = &reconciled {
+                        crate::reconcile::note_result(
+                            &mut data,
+                            &mut deny_annotations,
+                            &r.changes,
+                            &call.function_id,
+                        );
+                    }
                     let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                     append_function_result(
                         &session,
@@ -1460,7 +1568,7 @@ async fn finish_step(
                         call,
                         &data,
                         &entry_id,
-                        &origin(&record.turn_id),
+                        &origin_with(&record.turn_id, &deny_annotations),
                     )
                     .await?;
                     trigger::apply_contract_updates_after_append(
@@ -1479,6 +1587,7 @@ async fn finish_step(
                         pending_timeout_ms: None,
                         held_by: Some(held_by),
                         held_arguments: Some(arguments),
+                        reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1494,7 +1603,7 @@ async fn finish_step(
             // Guard failures skip post_trigger.
             if call.function_id == crate::functions::SPAWN_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                let (data, child) = match crate::subagent::spawn_from_turn(
+                let (mut data, child) = match crate::subagent::spawn_from_turn(
                     deps, &record, &call.id, &eff_args,
                 )
                 .await
@@ -1502,13 +1611,24 @@ async fn finish_step(
                     Ok(child) => (crate::subagent::spawned_result(&child), Some(child)),
                     Err(data) => (data, None),
                 };
+                let mut spawn_annotations = pre_ann;
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut spawn_annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &call.function_id,
+                    call_args,
+                )
+                .await;
                 append_function_result(
                     &session,
                     &record,
                     call,
                     &data,
                     &entry_id,
-                    &origin(&record.turn_id),
+                    &origin_with(&record.turn_id, &spawn_annotations),
                 )
                 .await?;
                 trigger::apply_contract_updates_after_append(
@@ -1531,6 +1651,7 @@ async fn finish_step(
                         child_session_reused: child.as_ref().is_some_and(|c| c.reused),
                         held_by: None,
                         held_arguments: None,
+                        reconciled: None,
                         pending_timeout_ms: None,
                         pending_at: None,
                     },
@@ -1551,6 +1672,7 @@ async fn finish_step(
                     child_session_reused: false,
                     held_by: None,
                     held_arguments: None,
+                    reconciled: None,
                     pending_timeout_ms: None,
                     pending_at: None,
                 },
@@ -1601,6 +1723,7 @@ async fn finish_step(
                         // A post-trigger release re-invokes the target: keep
                         // the fully pre-mutated args, not the model originals.
                         held_arguments: Some(eff_args.clone()),
+                        reconciled: reconciled.as_ref().map(|r| r.changes.clone()),
                         child_session_id: None,
                         child_turn_id: None,
                     };
@@ -1612,7 +1735,7 @@ async fn finish_step(
             for (k, v) in post_ann {
                 annotations.insert(k, v);
             }
-            let (data, contract_updates) = match info_raw {
+            let (mut data, contract_updates) = match info_raw {
                 Some(raw) => trigger::prepare_info_result(
                     &call.id,
                     &eff_args,
@@ -1622,6 +1745,21 @@ async fn finish_step(
                 ),
                 None => (data, Vec::new()),
             };
+            // The breaker digests the target's own result, before the harness
+            // adds its reconciliation note or schema diagnosis.
+            if let Some(key) = &failure_key {
+                trigger::note_call_result(&mut record.failed_calls, key, &data);
+            }
+            crate::reconcile::settle_result(
+                deps,
+                &cfg,
+                &mut data,
+                &mut annotations,
+                reconciled.as_ref().map(|r| r.changes.as_slice()),
+                &call.function_id,
+                call_args,
+            )
+            .await;
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
@@ -2015,6 +2153,13 @@ async fn finalize_completed(
             record.context_snapshot.as_ref(),
         )
         .await;
+    // An exhausted step cap is reported as its own outcome: `completed` alone
+    // would hide the one ending that looks like success and is not.
+    let outcome = match record.stop_reason.as_deref() {
+        Some("max_turns") => "max_turns",
+        _ => "completed",
+    };
+    crate::usage_report::report(deps, record, outcome, None).await;
     // Sub-agent turns resolve the parent's pending call with their result.
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "completed", result.as_ref(), None).await;
@@ -2254,6 +2399,7 @@ async fn finalize_failed(
             record.context_snapshot.as_ref(),
         )
         .await;
+    crate::usage_report::report(deps, record, "failed", Some(failure_class(failure))).await;
     if let Some(parent) = record.parent.clone() {
         // Settle any parked parent call. Fire-and-forget spawns settled `Done`
         // at spawn time, so this usually no-ops — and that is the whole story:
@@ -2450,6 +2596,7 @@ async fn finalize_cancelled(
             record.context_snapshot.as_ref(),
         )
         .await;
+    crate::usage_report::report(deps, record, "cancelled", None).await;
     if let Some(parent) = record.parent.clone() {
         crate::deferred::resolve_parent(deps, &parent, "cancelled", None, Some(reason)).await;
     }
@@ -2516,6 +2663,7 @@ fn checkpoint_pending(
             child_session_reused: false,
             held_by: info.held_by.clone(),
             held_arguments: info.held_arguments.clone(),
+            reconciled: info.reconciled.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
             pending_at: Some(AgentMessage::now_ms()),
         },
@@ -2537,6 +2685,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             child_session_reused: false,
             held_by: None,
             held_arguments: None,
+            reconciled: None,
             pending_timeout_ms: None,
             pending_at: None,
         },
@@ -3233,7 +3382,23 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
 
 /// The single-line notice delivered as a tail message when the registry
 /// changed under a session that had already acknowledged an earlier generation.
-const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale.";
+
+/// How either notice tells the model to re-check contracts: name
+/// `engine::functions::info` only when this session can actually call it —
+/// permitted AND present (public or internal); permission alone is not
+/// availability.
+fn refetch_hint(
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> &'static str {
+    if crate::agents::effective_contract("engine::functions::info", policy, snapshot).is_some() {
+        "Re-fetch the contracts you rely on with engine::functions::info before calling them."
+    } else {
+        "This session cannot re-fetch contracts; if you need one that changed, say so rather \
+         than guessing its schema."
+    }
+}
 
 /// Wrap the notice as an ephemeral tail user message for the generate request.
 /// `timestamp` is mandatory — the router's message types have no serde default
@@ -3250,9 +3415,17 @@ fn notice_message(text: String) -> Value {
 /// matches the live generation, or is being stamped for the first time; `Some`
 /// only when the registry changed under a session that acknowledged an earlier
 /// generation. The caller stamps `functions_generation = current` regardless.
-pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
+pub(crate) fn registry_notice(
+    record_gen: Option<u64>,
+    current: u64,
+    policy: &CompiledPolicy,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+) -> Option<String> {
     match record_gen {
-        Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
+        Some(g) if g != current => Some(format!(
+            "{REGISTRY_CHANGED_NOTICE} {}",
+            refetch_hint(policy, snapshot)
+        )),
         _ => None,
     }
 }
@@ -3265,33 +3438,32 @@ pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<S
 /// no schema (`parameters: None`) are not judged.
 pub(crate) fn preloaded_stale_notice(
     frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
-    live: &[crate::clients::FunctionDescriptor],
+    snapshot: &crate::discovery::FunctionsSnapshot,
+    policy: &CompiledPolicy,
 ) -> Option<String> {
     let frozen = frozen?;
-    let (mut changed, mut removed, mut available) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut changed, mut removed, mut available, mut denied) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for (id, digest) in frozen {
-        let descriptor = live.iter().find(|d| d.function_id == *id);
+        if !policy.allows(id) {
+            if digest.is_some() {
+                denied.push(id.as_str());
+            }
+            continue;
+        }
+        let descriptor = crate::agents::effective_contract(id, policy, snapshot);
         match (digest, descriptor) {
-            // The engine's public `engine::functions::list` never lists its own
-            // functions (`engine::register_trigger` is served by this harness's
-            // intercept, discovery by the engine), so their absence is not removal.
-            (Some(_), None) if id.starts_with("engine::") => {}
             (Some(_), None) => removed.push(id.as_str()),
-            (Some(frozen_digest), Some(d)) if d.parameters.is_some() => {
-                let live_digest = crate::agents::contract_digest(
-                    id,
-                    d.description.as_deref(),
-                    d.parameters.clone(),
-                );
-                if live_digest != *frozen_digest {
+            (Some(frozen_digest), Some(d)) if d.request_schema.is_some() => {
+                if crate::agents::digest_of(&d) != *frozen_digest {
                     changed.push(id.as_str());
                 }
             }
-            (None, Some(d)) if d.parameters.is_some() => available.push(id.as_str()),
+            (None, Some(d)) if d.request_schema.is_some() => available.push(id.as_str()),
             _ => {}
         }
     }
-    if changed.is_empty() && removed.is_empty() && available.is_empty() {
+    if changed.is_empty() && removed.is_empty() && available.is_empty() && denied.is_empty() {
         return None;
     }
     let list = |ids: &[&str]| {
@@ -3310,11 +3482,14 @@ pub(crate) fn preloaded_stale_notice(
     if !available.is_empty() {
         parts.push(format!("now available: {}", list(&available)));
     }
+    if !denied.is_empty() {
+        parts.push(format!("not permitted in this session: {}", list(&denied)));
+    }
     Some(format!(
         "NOTE: preloaded function contracts in your instructions are out of date — {}. \
-         Re-fetch changed or newly available contracts with engine::functions::info before \
-         calling them; do not call the removed ones.",
-        parts.join("; ")
+         {} Do not call removed or denied functions.",
+        parts.join("; "),
+        refetch_hint(policy, snapshot)
     ))
 }
 
@@ -3409,15 +3584,39 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
+    fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {
+        crate::discovery::snapshot_of(live.to_vec())
+    }
+
     use std::sync::Arc;
 
     use async_trait::async_trait;
     use tokio::sync::Mutex;
 
     use super::{
-        cancel_requested, concrete_allowed_tools, count_model_visible,
+        call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
         retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
     };
+
+    #[test]
+    fn call_description_reads_only_the_agent_trigger_wrapper() {
+        let blocks = vec![
+            ContentBlock::FunctionCall {
+                id: "c1".into(),
+                function_id: "agent_trigger".into(),
+                arguments: serde_json::json!({ "function": "x::y", "description": "look up" }),
+            },
+            ContentBlock::FunctionCall {
+                id: "c2".into(),
+                function_id: "directory::skills::create".into(),
+                arguments: serde_json::json!({ "name": "s", "description": "a skill that…" }),
+            },
+        ];
+
+        assert_eq!(call_description(&blocks, "c1"), Some("look up"));
+        assert_eq!(call_description(&blocks, "c2"), None);
+        assert_eq!(call_description(&blocks, "c3"), None);
+    }
     use crate::clients::router::ChatError;
     use crate::error::HarnessError;
     use crate::types::content::ContentBlock;
@@ -3791,7 +3990,46 @@ mod tests {
     }
 
     #[test]
+    fn authorized_virtual_controls_are_not_removed_by_public_catalog() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec![
+                    "engine::register_trigger".into(),
+                    "engine::unregister_trigger".into(),
+                ],
+                deny: vec![],
+                expose: crate::types::turn::ExposeMode::Native,
+            }));
+        let public_catalog = crate::discovery::snapshot_of(vec![]);
+        let tools = concrete_allowed_tools(&policy, &public_catalog.functions, &[]);
+        assert_eq!(tools.len(), 2, "both controls are effectively offered");
+        let frozen = tools
+            .iter()
+            .map(|tool| {
+                (
+                    tool.name.clone(),
+                    Some(crate::agents::contract_digest(
+                        &tool.name,
+                        Some(&tool.description),
+                        Some(tool.parameters.clone()),
+                    )),
+                )
+            })
+            .collect();
+        let notice = super::preloaded_stale_notice(Some(&frozen), &public_catalog, &policy);
+        assert!(
+            notice.is_none(),
+            "authorized effective contracts must not be removed by the public catalog: {notice:?}"
+        );
+    }
+
+    #[test]
     fn preloaded_stale_notice_names_changed_removed_and_now_available_only() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                ..Default::default()
+            }));
         use crate::clients::FunctionDescriptor;
         let schema =
             serde_json::json!({ "type": "object", "properties": { "k": { "type": "string" } } });
@@ -3826,32 +4064,25 @@ mod tests {
             descriptor("late::fn", "now registered", Some(schema.clone())),
             descriptor("unrelated::fn", "never preloaded", Some(schema.clone())),
         ];
-        let notice = super::preloaded_stale_notice(Some(&frozen), &live).unwrap();
+        let mut snapshot = snap(&live);
+        snapshot
+            .internal_ids
+            .insert("engine::functions::info".to_string());
+        let notice = super::preloaded_stale_notice(Some(&frozen), &snapshot, &policy).unwrap();
         assert_eq!(
             notice,
             "NOTE: preloaded function contracts in your instructions are out of date — \
              changed: `changed::fn`; no longer registered: `gone::fn`; now available: `late::fn`. \
-             Re-fetch changed or newly available contracts with engine::functions::info before \
-             calling them; do not call the removed ones."
+             Re-fetch the contracts you rely on with engine::functions::info before calling them. \
+             Do not call removed or denied functions."
         );
         // Nothing frozen, or nothing drifted: no notice.
-        assert!(super::preloaded_stale_notice(None, &live).is_none());
-        let engine_owned = std::collections::BTreeMap::from([
-            (
-                "engine::register_trigger".to_string(),
-                digest("engine::register_trigger", "hidden from the public list"),
-            ),
-            (
-                "engine::functions::info".to_string(),
-                digest("engine::functions::info", "hidden from the public list"),
-            ),
-        ]);
-        assert!(super::preloaded_stale_notice(Some(&engine_owned), &live).is_none());
+        assert!(super::preloaded_stale_notice(None, &snapshot, &policy).is_none());
         let steady = std::collections::BTreeMap::from([(
             "same::fn".to_string(),
             digest("same::fn", "unchanged"),
         )]);
-        assert!(super::preloaded_stale_notice(Some(&steady), &live).is_none());
+        assert!(super::preloaded_stale_notice(Some(&steady), &snapshot, &policy).is_none());
     }
 
     #[test]
@@ -4091,12 +4322,24 @@ mod tests {
 
     #[test]
     fn registry_notice_stamps_silently_then_fires_on_mismatch() {
+        let all = crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let mut with_info = snap(&[]);
+        with_info
+            .internal_ids
+            .insert("engine::functions::info".to_string());
         // First sighting (None): stamp, no notice.
-        assert!(super::registry_notice(None, 7).is_none());
+        assert!(super::registry_notice(None, 7, &all, &with_info).is_none());
         // Acknowledged generation still current: no notice.
-        assert!(super::registry_notice(Some(7), 7).is_none());
-        // Registry moved on: notice fires.
-        assert!(super::registry_notice(Some(6), 7).is_some());
+        assert!(super::registry_notice(Some(7), 7, &all, &with_info).is_none());
+        // Registry moved on: notice fires, with the same re-fetch rule as the
+        // preloaded-stale notice.
+        let notice = super::registry_notice(Some(6), 7, &all, &with_info).unwrap();
+        assert!(notice.contains("with engine::functions::info"), "{notice}");
+        let blind = super::registry_notice(Some(6), 7, &all, &snap(&[])).unwrap();
+        assert!(blind.contains("cannot re-fetch"), "{blind}");
     }
 
     #[test]
@@ -4448,5 +4691,171 @@ mod tests {
     fn no_signal_does_not_cancel() {
         assert!(!cancel_requested(false, false, StopReason::End));
         assert!(!cancel_requested(false, false, StopReason::FunctionCall));
+    }
+
+    #[test]
+    fn effective_notice_matrix_keeps_true_drift_and_rejects_prefix_exceptions() {
+        use crate::{
+            agents::{contract_digest, effective_contract},
+            clients::FunctionDescriptor,
+            policy::CompiledPolicy,
+            types::turn::FunctionPolicy,
+        };
+        let all = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let desc = |id: &str, schema| FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("real internal".into()),
+            parameters: schema,
+        };
+        let schema = serde_json::json!({"type":"object"});
+        let mut with_info = snap(&[]);
+        with_info
+            .internal_ids
+            .insert("engine::functions::info".to_string());
+        for id in [
+            "engine::functions::info",
+            "engine::arbitrary",
+            "common::action",
+        ] {
+            let live = vec![desc(id, Some(schema.clone()))];
+            let frozen = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(
+                    id,
+                    Some("real internal"),
+                    Some(schema.clone()),
+                )),
+            )]);
+            assert!(super::preloaded_stale_notice(Some(&frozen), &snap(&live), &all).is_none());
+            let removed = super::preloaded_stale_notice(Some(&frozen), &snap(&[]), &all).unwrap();
+            assert!(removed.contains(&format!("no longer registered: `{id}`")));
+            assert!(
+                !removed.contains("with engine::functions::info"),
+                "permitted but absent introspection is not recommended: {removed}"
+            );
+            if id != "engine::functions::info" {
+                let removed =
+                    super::preloaded_stale_notice(Some(&frozen), &with_info, &all).unwrap();
+                assert!(
+                    removed.contains("with engine::functions::info"),
+                    "permitted and present introspection is named: {removed}"
+                );
+            }
+            let mut internal_only = snap(&[]);
+            internal_only.internal_ids.insert(id.to_string());
+            assert!(
+                super::preloaded_stale_notice(Some(&frozen), &internal_only, &all).is_none(),
+                "an id the registry knows but the public inventory hides is present, not \
+                 removed (its schema is not judged: see effective_contract)"
+            );
+            let changed = super::preloaded_stale_notice(
+                Some(&frozen),
+                &snap(&[desc(id, Some(serde_json::json!({"type":"string"})))]),
+                &all,
+            )
+            .unwrap();
+            assert!(changed.contains(&format!("changed: `{id}`")));
+            for schema in [None, Some(serde_json::Value::Null)] {
+                assert!(
+                    super::preloaded_stale_notice(Some(&frozen), &snap(&[desc(id, schema)]), &all)
+                        .is_none(),
+                    "no schema is unjudged"
+                );
+            }
+            let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
+            assert!(
+                super::preloaded_stale_notice(Some(&missing), &snap(&live), &all)
+                    .unwrap()
+                    .contains("now available")
+            );
+            assert!(super::preloaded_stale_notice(
+                Some(&missing),
+                &snap(&live),
+                &CompiledPolicy::from(None)
+            )
+            .is_none());
+        }
+        for id in ["engine::register_trigger", "engine::unregister_trigger"] {
+            let effective = effective_contract(id, &all, &snap(&[])).unwrap();
+            let frozen = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(
+                    id,
+                    effective.description.as_deref(),
+                    effective.request_schema.clone(),
+                )),
+            )]);
+            assert!(
+                super::preloaded_stale_notice(
+                    Some(&frozen),
+                    &snap(&[desc(id, Some(schema.clone()))]),
+                    &all
+                )
+                .is_none(),
+                "virtual beats native"
+            );
+            let legacy = std::collections::BTreeMap::from([(
+                id.to_string(),
+                Some(contract_digest(id, Some("native"), Some(schema.clone()))),
+            )]);
+            let changed = super::preloaded_stale_notice(Some(&legacy), &snap(&[]), &all).unwrap();
+            assert!(changed.contains("changed:"));
+            assert!(!changed.contains("no longer registered"));
+            let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
+            assert!(
+                super::preloaded_stale_notice(Some(&missing), &snap(&[]), &all)
+                    .unwrap()
+                    .contains("now available")
+            );
+            let denied = CompiledPolicy::from(Some(&FunctionPolicy {
+                allow: vec!["*".into()],
+                deny: vec![id.into(), "engine::functions::info".into()],
+                ..Default::default()
+            }));
+            assert!(super::preloaded_stale_notice(Some(&missing), &with_info, &denied).is_none());
+            let notice = super::preloaded_stale_notice(Some(&frozen), &with_info, &denied).unwrap();
+            assert!(notice.contains("not permitted in this session"));
+            assert!(
+                !notice.contains("engine::functions::info"),
+                "present but denied introspection is not recommended: {notice}"
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_contract_is_not_changed_even_when_compaction_is_not_idempotent() {
+        use crate::{agents, clients::FunctionDescriptor, policy::CompiledPolicy};
+        // compact_schema keeps `definitions.A` on the first pass (referenced
+        // twice, once from unreachable `B`) and inlines it on the second.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "a": { "$ref": "#/definitions/A" } },
+            "definitions": {
+                "A": { "type": "string" },
+                "B": { "type": "array", "items": { "$ref": "#/definitions/A" } }
+            }
+        });
+        let id = "x::fn";
+        let live = snap(&[FunctionDescriptor {
+            function_id: id.into(),
+            description: Some("d".into()),
+            parameters: Some(schema.clone()),
+        }]);
+        let all = CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let once = agents::effective_contract(id, &all, &live).unwrap();
+        let frozen_digest = agents::contract_digest(id, Some("d"), Some(schema));
+        assert_ne!(
+            agents::contract_digest(id, Some("d"), once.request_schema.clone()),
+            frozen_digest,
+            "fixture must be non-idempotent under compaction to guard anything"
+        );
+        let frozen = std::collections::BTreeMap::from([(id.to_string(), Some(frozen_digest))]);
+        assert!(super::preloaded_stale_notice(Some(&frozen), &live, &all).is_none());
     }
 }

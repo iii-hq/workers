@@ -5,6 +5,8 @@ mod agent_identity;
 mod agent_preloaded_functions;
 mod agent_preloaded_skills;
 mod agent_shared_prompt_prefix;
+mod call_argument_diagnosis;
+mod call_argument_reconciliation;
 mod child_discovery_granted;
 mod condition_failure_notice;
 mod console_streamed_text;
@@ -22,6 +24,7 @@ mod oversized_function_result;
 mod provider_family_errors;
 mod provider_startup_timeout;
 mod queued_message_edit_unqueue;
+mod repeated_failed_call_breaker;
 mod reseed_parked_message;
 mod router_midstream_terminal_error;
 mod spawn_reuse_guard;
@@ -66,9 +69,12 @@ pub fn all() -> Vec<ScenarioFixture> {
         leaf_denied_control_plane::scenario(),
         multi_turn_traces::scenario(),
         oversized_function_result::scenario(),
+        call_argument_reconciliation::scenario(),
+        call_argument_diagnosis::scenario(),
         provider_startup_timeout::scenario(),
         standing_wake_delivery::scenario(),
         state_worker_sidecar::scenario(),
+        repeated_failed_call_breaker::scenario(),
         reseed_parked_message::scenario(),
         router_midstream_terminal_error::scenario(),
         spawn_reuse_guard::scenario(),
@@ -90,7 +96,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 33);
+        assert_eq!(fixtures.len(), 36);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

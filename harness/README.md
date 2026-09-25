@@ -75,6 +75,10 @@ The agent-facing function surface is deny-by-default: with no `functions.allow`
 globs, every model-requested call is refused and the harness is a plain chat
 loop. Allow functions in per-send (`options.functions.allow`) and gate them
 with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) sibling.
+Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
+schema rejects is parsed. When the optional
+[`judge`](https://github.com/iii-hq/workers/tree/main/judge) worker is deployed, it also settles
+misnamed keys, off-enum values and unknown arguments. Every repair is noted in the call's result.
 
 The full function reference (every `harness::*` id and its request/response
 schema) lives in the code and `iii worker info harness`.
@@ -200,12 +204,41 @@ max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
 max_result_bytes: 262144         # function-result byte cap at capture; oversized results become an elision marker (0 = off)
 prompt_cache_sections: true      # send the frozen profile prefix as its own cacheable section (+ digest) on router::chat
+call_reconciliation: judge       # repair malformed call arguments before dispatch: off | coerce (lossless parses) | judge (+ judge::evaluate when deployed)
 projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
 
 Other keys (RPC timeouts, stream coalescing, idempotency TTL, validation
 retries) and their defaults live in [`src/config.rs`](src/config.rs).
+
+## Anonymous usage reporting
+
+The harness announces its own usage on the durable `harness:usage` topic. The
+engine subscribes to that topic and sends one anonymous product event for each
+message. Two moments report:
+
+- `harness_session_progress`, at root turn 1, 2, 5, 10, 25 and 50. Each report
+  carries the cumulative totals that `harness::metrics` aggregates over the
+  session tree: turns, function calls, tokens and cost. A later report
+  supersedes the one before it.
+- `harness_turn_failed`, once per session for each of the `failed`, `cancelled`
+  and `max_turns` outcomes. This keeps the reason a run stopped exact when it
+  stopped between two milestones.
+
+One session reports at most 9 messages, however many turns it runs, and
+sub-agent turns report nothing of their own. A message carries the model name,
+the provider name, the counters above and a fixed failure class. It carries no
+message text, no prompt, no file path and no function id.
+
+The `harness_usage/<session_id>` state row records the milestones and outcomes
+a session announced, so a restart does not announce one again. Each step is best
+effort: a failed read or publish is logged at debug level and the turn
+continues.
+
+To stop the reports, set `III_TELEMETRY_ENABLED=false` on the engine. The engine
+then takes the messages from the topic and discards them, so an opted-out
+deployment stores nothing.
 
 ## System prompt
 

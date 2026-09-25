@@ -17,6 +17,19 @@ use serde_json::Value;
 
 use crate::types::turn::FunctionPolicy;
 
+/// How [`WorkerConfig::call_reconciliation`] repairs malformed call arguments.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CallReconciliation {
+    /// Dispatch arguments exactly as the model wrote them.
+    Off,
+    /// Lossless repairs only: parse stringified JSON the schema rejects.
+    Coerce,
+    /// `coerce`, then ask the judge worker (when deployed) about the rest.
+    #[default]
+    Judge,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
@@ -62,6 +75,15 @@ pub struct WorkerConfig {
     /// sends the flat string only.
     #[serde(default = "default_prompt_cache_sections")]
     pub prompt_cache_sections: bool,
+
+    /// Repair malformed function-call arguments against the target's request
+    /// schema before dispatch (MOT-4847). `coerce` parses values the model
+    /// sent as stringified JSON (`"true"`, `"[...]"`, `"{...}"`) where the
+    /// schema wants another type; `judge` also asks `judge::evaluate`, when
+    /// it is deployed, to settle renamed keys, off-enum values and unknown
+    /// fields; `off` dispatches arguments exactly as written.
+    #[serde(default)]
+    pub call_reconciliation: CallReconciliation,
 
     /// TTL for `harness_idem` webhook-dedupe rows. Seconds.
     #[serde(default = "default_idem_ttl_secs")]
@@ -327,6 +349,7 @@ impl Default for WorkerConfig {
             max_transient_resumes: default_max_transient_resumes(),
             max_result_bytes: default_max_result_bytes(),
             prompt_cache_sections: default_prompt_cache_sections(),
+            call_reconciliation: CallReconciliation::default(),
             idem_ttl_secs: default_idem_ttl_secs(),
             session_timeout_ms: default_session_timeout_ms(),
             context_timeout_ms: default_context_timeout_ms(),

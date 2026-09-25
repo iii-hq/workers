@@ -50,7 +50,7 @@ Do the one task you are given, then stop.
 const BLOCK_OPEN: &str = "<preloaded_functions>";
 const BLOCK_CLOSE: &str = "</preloaded_functions>";
 const UNAVAILABLE_LINE: &str =
-    "Declared by the profile but NOT registered right now — do not call: `nope::missing`.";
+    "Declared by the profile but NOT available in this session — do not call: `nope::missing`.";
 
 /// The resolved identity (lead body, engineer body), the block right after
 /// it, the two contracts root-first, the live `state::set` schema, and the
@@ -58,7 +58,7 @@ const UNAVAILABLE_LINE: &str =
 /// not anchored: the harness's own runtime context may follow the block.
 const PROMPT_REGEX: &str = "(?s)^You are the integration lead\\.\\n\\nDo the one task you are given, then stop\\.\\n\\n\
      <preloaded_functions>\\n.*### `state::get`\\n.*### `state::set`\\n.*request_schema: \\{.*\"scope\".*\
-     NOT registered right now — do not call: `nope::missing`\\..*\\n</preloaded_functions>";
+     NOT available in this session — do not call: `nope::missing`\\..*\\n</preloaded_functions>";
 
 const REPLY: &str = "preloaded contracts acknowledged";
 
@@ -149,7 +149,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         // The unknown id is named as unavailable — and nothing else is.
         let unavailable = block
             .lines()
-            .find(|line| line.starts_with("Declared by the profile but NOT registered"))
+            .find(|line| line.starts_with("Declared by the profile but NOT available"))
             .ok_or_else(|| anyhow::anyhow!("no unavailable line in the block: {block}"))?;
         anyhow::ensure!(
             unavailable.starts_with(UNAVAILABLE_LINE),
@@ -202,7 +202,7 @@ mod tests {
         {\"properties\":{\"key\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\"}},\"required\":[\"key\",\"scope\"],\"type\":\"object\"}\n\n\
         ### `state::set`\nStore or write a value at a key in a state scope\nrequest_schema: \
         {\"properties\":{\"key\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\"},\"value\":{}},\"required\":[\"key\",\"scope\",\"value\"],\"type\":\"object\"}\n\n\
-        Declared by the profile but NOT registered right now — do not call: `nope::missing`. If the task needs one of them, say so rather than improvising a substitute.\n\
+        Declared by the profile but NOT available in this session — do not call: `nope::missing`. If the task needs one of them, say so rather than improvising a substitute.\n\
         </preloaded_functions>\n\nWorking directory: /tmp/run";
 
     #[test]
