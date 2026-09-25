@@ -2,7 +2,7 @@
 
 [package]
 name = "voice"
-version = "0.1.0-experimental"
+version = "0.1.1"
 edition = "2021"
 description = "Voice worker for iii — bundled or whisper.cpp speech-to-text for dictation and file transcription, plus read-aloud, with a console mic chip and voice page"
 license = "Apache-2.0"

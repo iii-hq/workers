@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "provider-xai"
-version = "1.3.7-rc.3"
+version = "1.3.17"
 dependencies = [
  "clap",
  "futures",

@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "document"
-version = "0.1.2"
+version = "0.1.11"
 dependencies = [
  "anydoc",
  "anyhow",

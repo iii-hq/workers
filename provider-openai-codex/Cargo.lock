@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai-codex"
-version = "0.4.6-rc.4"
+version = "0.4.17"
 dependencies = [
  "base64 0.22.1",
  "clap",

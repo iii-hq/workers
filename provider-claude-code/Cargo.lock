@@ -1230,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "provider-claude-code"
-version = "0.1.8-rc.3"
+version = "0.1.14"
 dependencies = [
  "clap",
  "futures",
