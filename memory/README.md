@@ -39,14 +39,14 @@ All fields hot-reload through the `configuration` worker and are editable in the
 - **Pinning.** A pinned memory ranks higher in recall and is untouchable by every automatic path.
 - **Tags.** Topical labels WITHIN a bank ("iii", "billing") for filtering — organization, not ranking. Set them on save/update, extraction suggests them automatically, and `memory::list`/`memory::recall` take a `tag` filter.
 - **One LLM call per turn, zero at query time.** Extraction runs in the background after a turn completes (ADD-only, content-fingerprinted so redelivery reinforces instead of duplicating). Recall is BM25 + entity match + corroboration + recency, plus a semantic signal when `router::embed` is available: sub-millisecond at this scale.
-- **Rules learn from corrections.** Extraction classifies standing instructions (style directives, workflow corrections) separately from memories and appends them to the bank's auto-managed `learned` rule — correcting the agent in chat updates the system prompt for every later turn. Hand-authored rules are never touched; dedup by content fingerprint; `rule_learning_enabled` turns it off.
+- **Rules learn from corrections.** Extraction classifies standing instructions (style directives, workflow corrections) separately from memories and appends them to the bank's auto-managed `learned` rule — correcting the agent in chat reaches every later turn (new sessions in the system prompt, running ones as an appended rules update). Hand-authored rules are never touched; dedup by content fingerprint; `rule_learning_enabled` turns it off.
 - **Honest health.** `memory::doctor` runs a real save→recall→trash roundtrip and reports sibling reachability. `memory::recall` names the retrieval mode it ran. Degradation is explicit, never silent.
 
 ## How it hooks into the harness
 
 | Seam | What happens |
 |---|---|
-| `harness::hook::pre-generate` (fail-open, priority 100) | Injects the session bank's rules into the system prompt (stable per session: keeps the provider prompt cache warm) and up to `recall_limit` recalled memories as one appended message |
+| `harness::hook::pre-generate` (fail-open, priority 100) | Injects the session bank's rules into the system prompt once per session (sent verbatim after that; a later rule change arrives as one appended update message, so the prefix stays append-only) and, on each turn's first step, up to `recall_limit` recalled memories as one appended message |
 | `harness::turn-completed` | Spawns one background `router::complete` extraction pass over the last `extraction_window` user/assistant messages |
 
 Bank selection order: turn metadata `memory_bank` → session metadata `memory_bank` (`session::set-meta`) → configured `default_bank`. A session-lookup failure injects nothing rather than falling back across banks.
