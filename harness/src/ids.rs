@@ -65,6 +65,27 @@ pub fn compaction_entry_id(turn_id: &str, step: u64) -> String {
     format!("e_{turn_id}_{step}_compaction")
 }
 
+/// Text the model was shown at a step, persisted so later steps replay it:
+/// `e_<turn_id>_<step>_notice_<index>`.
+pub fn notice_entry_id(turn_id: &str, step: u64, index: usize) -> String {
+    format!("{}{index}", notice_entry_prefix(turn_id, step))
+}
+
+/// The id prefix every notice of one step shares.
+pub fn notice_entry_prefix(turn_id: &str, step: u64) -> String {
+    format!("e_{turn_id}_{step}_notice_")
+}
+
+/// A message-order decision: `e_<turn_id>_<step>_order`.
+pub fn order_entry_id(turn_id: &str, step: u64) -> String {
+    format!("e_{turn_id}_{step}_order")
+}
+
+/// The session's frozen runtime context: `e_<turn_id>_<step>_runtime_context`.
+pub fn runtime_context_entry_id(turn_id: &str, step: u64) -> String {
+    format!("e_{turn_id}_{step}_runtime_context")
+}
+
 /// A names-only skill correction for one model generation. Redelivery of the
 /// same generation appends to the same transcript entry.
 pub fn skill_update_entry_id(turn_id: &str, generation: u32) -> String {
@@ -123,6 +144,12 @@ mod tests {
         assert_eq!(assistant_entry_id("t_1", 3), "e_t_1_3_assistant");
         assert_eq!(function_result_entry_id("t_1", "fc_9"), "e_t_1_fc_9");
         assert_eq!(compaction_entry_id("t_1", 4), "e_t_1_4_compaction");
+        assert_eq!(notice_entry_id("t_1", 4, 0), "e_t_1_4_notice_0");
+        assert_eq!(order_entry_id("t_1", 4), "e_t_1_4_order");
+        assert_eq!(
+            runtime_context_entry_id("t_1", 0),
+            "e_t_1_0_runtime_context"
+        );
         assert_eq!(queued_entry_id("q_abc"), "e_q_abc");
         assert_eq!(skill_update_entry_id("t_1", 4), "e_t_1_skills_4");
         assert_eq!(

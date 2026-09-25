@@ -41,6 +41,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
             "INT-033",
             "INT-034",
             "INT-035",
+            "INT-036",
             "UI-001",
             "UI-002",
             "UI-003",

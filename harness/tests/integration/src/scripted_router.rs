@@ -450,9 +450,9 @@ async fn wait_for_gate_state(
     }
 }
 
-/// Drop the harness's ephemeral advisory tail messages from the MATCHED view
-/// of a request: iii-directory's `<discovery_assist>` hint and the harness
-/// registry-changed notice. Both ride as tail user messages whose presence
+/// Drop the harness's advisory messages from the MATCHED view of a request:
+/// iii-directory's `<discovery_assist>` hint and the harness registry-changed
+/// notice. Both first ride as tail user messages whose presence
 /// depends on the booted stack (inject_hint config, worker count, per-turn
 /// gates, registration timing while the stack settles), so no fixture can pin
 /// them deterministically — exactly as before, when they were unpinned
@@ -467,8 +467,9 @@ fn without_advisory_tail_messages(input: &Value) -> Value {
     matched
 }
 
-/// True for the hint / registry-notice user messages the harness appends per
-/// generation (never persisted to the transcript).
+/// True for the hint / registry-notice user messages the harness appends to a
+/// generation. They are persisted as `model_notice` entries and replayed where
+/// they were first sent, so every later request carries them mid-`messages`.
 pub fn is_advisory_message(message: &Value) -> bool {
     message.get("role").and_then(Value::as_str) == Some("user")
         && message

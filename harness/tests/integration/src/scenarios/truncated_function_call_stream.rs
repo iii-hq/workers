@@ -184,6 +184,20 @@ pub(super) fn scenario() -> ScenarioFixture {
             "recovery and the follow-up must consume exactly four generations: {}",
             run.router_evidence
         );
+        // MOT-4845 residual: orphan result flip (follow-up). The cut call's
+        // synthetic result reads "result unknown" while it is the tail call and
+        // "result elided" from step 2 on, rewriting a message already sent.
+        let edits: Vec<String> = run
+            .append_only_violations()
+            .iter()
+            .map(|(request_id, what)| {
+                format!("step {} {what}", request_id.rsplit(':').next().unwrap_or_default())
+            })
+            .collect();
+        anyhow::ensure!(
+            edits == ["step 2 messages[2] changed"],
+            "only the orphan result flip may edit the bound prefix: {edits:?}"
+        );
         Ok(())
     })
     .scenario_timeout_ms(60_000)
