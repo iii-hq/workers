@@ -1667,6 +1667,16 @@ async fn drive(
             },
             _ => None,
         };
+        if run::repeats_a_no_op(&steps, &decision) {
+            break (
+                RunStatus::Stalled,
+                Some(format!(
+                    "the judge chose {} again after it changed nothing",
+                    decision.operation
+                )),
+                None,
+            );
+        }
         // The page may have moved while the judge thought: act only if the
         // chosen element still reads as it did.
         if let Some(chosen) = decision.element() {

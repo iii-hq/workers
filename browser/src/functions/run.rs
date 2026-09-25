@@ -42,7 +42,9 @@ WAIT only when the needed control is absent/disabled, or submitted results are s
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.
 DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
-a matching link is not enough. BLOCKED means no supported operation can make progress.";
+a matching link is not enough. BLOCKED means no supported operation can make progress.
+A visible error after a submit (invalid credentials, a rejected value) means the given values
+were refused: choose BLOCKED, never submit the same values again.";
 
 pub const TARGET: &str = "Choose the best observed target if the next operation is the one specified in this question.
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
@@ -453,6 +455,23 @@ pub fn text_for<'a>(element: &Element, inputs: &'a BTreeMap<String, String>) -> 
     None
 }
 
+/// The judge chose again the action whose last run changed nothing: doing
+/// it twice repeats a side effect (a refused login) for no progress.
+pub fn repeats_a_no_op(steps: &[RunStep], decision: &Decision) -> bool {
+    let Some(last) = steps.last() else {
+        return false;
+    };
+    let option = match &decision.action {
+        Action::Select(_, option) => Some(option.as_str()),
+        _ => None,
+    };
+    !last.page_changed
+        && last.operation != "WAIT"
+        && last.operation == decision.operation
+        && last.r#ref.as_deref() == decision.element().map(|e| e.r#ref.as_str())
+        && last.option.as_deref() == option
+}
+
 /// The last `STALL_STEPS` executed steps changed nothing (WAIT excluded).
 pub fn stalled(steps: &[RunStep]) -> bool {
     steps.len() >= STALL_STEPS
@@ -704,6 +723,37 @@ mod tests {
         p.busy = true;
         let e = evaluation("log in", &p, &[], &BTreeMap::new());
         assert_eq!(e.state["page"]["loading"], true);
+    }
+
+    #[test]
+    fn a_repeated_no_op_is_caught_before_it_runs_again() {
+        let p = page();
+        let save = Decision {
+            operation: "CLICK".into(),
+            action: Action::Click(p.elements[2].clone()),
+            probability: 0.8,
+        };
+        let step = |changed: bool| RunStep {
+            operation: "CLICK".into(),
+            r#ref: Some("n3".into()),
+            label: Some("Save".into()),
+            option: None,
+            probability: 0.9,
+            page_changed: changed,
+            error: None,
+            judge_ms: 0,
+        };
+        assert!(!repeats_a_no_op(&[], &save));
+        // the first click changed the page (the error showed): may retry once
+        assert!(!repeats_a_no_op(&[step(true)], &save));
+        // that retry changed nothing: a third identical click is refused
+        assert!(repeats_a_no_op(&[step(true), step(false)], &save));
+        // a different target is fine
+        let other = Decision {
+            action: Action::Click(p.elements[0].clone()),
+            ..save.clone()
+        };
+        assert!(!repeats_a_no_op(&[step(false)], &other));
     }
 
     #[test]
