@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     ));
     let seed = JudgeConfig {
         provider: cli.provider,
+        preload_all: false,
     };
     configuration::register_config(&iii, Some(&seed))
         .await

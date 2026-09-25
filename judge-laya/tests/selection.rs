@@ -1,5 +1,6 @@
 //! The worker loads its checkpoints only while the judge hub's default
-//! provider is laya, and releases them when the hub moves elsewhere.
+//! provider is laya or the hub preloads every provider, and releases them
+//! when neither holds.
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::{
@@ -146,9 +147,22 @@ async fn checkpoints_load_only_while_the_hub_selects_laya() {
         .await,
         "judge-laya::evaluate registers once laya is the default"
     );
-    // 3. The hub moves away: the functions unregister (and the model is released).
-    *hub.lock().unwrap() = json!({"provider": "semif"});
+    // 3. The hub moves away but preloads every provider: laya stays loaded.
+    *hub.lock().unwrap() = json!({"provider": "semif", "preload_all": true});
     send_tx.send(changed(2)).unwrap();
+    assert!(
+        !expect(
+            &mut frames,
+            Duration::from_secs(2),
+            |f| f["type"] == "unregisterfunction",
+            |_| false
+        )
+        .await,
+        "preload_all keeps laya loaded while another provider is the default"
+    );
+    // 4. Preloading off: the functions unregister (and the model is released).
+    *hub.lock().unwrap() = json!({"provider": "semif"});
+    send_tx.send(changed(3)).unwrap();
     assert!(
         expect(
             &mut frames,

@@ -70,9 +70,12 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 
 **Settings → Workers → judge** selects the default provider from the workers
 registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`).
-Two ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV) and
-[`judge-laya`](../judge-laya/) (the open laya model running inside the worker);
-a request may name its own with a top-level `provider`. A new provider is a
+Three ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
+[`judge-semif`](../judge-semif/) and [`judge-laya`](../judge-laya/) (open models
+running inside the worker); a request may name its own with a top-level
+`provider`. Local providers load their model only while they are the default,
+unless **Keep every local provider loaded** (`preload_all`) is on, which lets
+requests route between them at run time. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
 `::cancel` with the [`judge-contract`](../crates/judge-contract/) types,
 marked `metadata.internal: true` so default discovery shows only the hub, and
@@ -81,6 +84,6 @@ accepts request ids up to 512 bytes; the hub needs no change. See
 [Cancellation](reference.md#cancellation).
 
 The hub holds no credentials; its configuration entry (`judge`, or
-`III_CONFIG_NAME`) carries only the default provider. For the full API,
+`III_CONFIG_NAME`) carries only the default provider and `preload_all`. For the full API,
 read [reference.md](reference.md); for the provider's build, configuration and
 tests, read [judge-typesafe](../judge-typesafe/README.md).

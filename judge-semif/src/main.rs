@@ -77,7 +77,8 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 /// Load the model and register the judge functions only while the judge hub's
-/// default provider is SemIf; release both when it moves elsewhere. Functions
+/// default provider is SemIf or it preloads every provider (`preload_all`);
+/// release both when neither holds. Functions
 /// register only once the model answers: until then the hub reports
 /// provider_unavailable, which is the honest state. A hub that does not expose
 /// its configuration id leaves the model loaded for good.
@@ -88,11 +89,12 @@ async fn serve(
     model: String,
     options: engine::Options,
 ) -> anyhow::Result<()> {
+    // Loaded while the hub routes its default here or keeps every local model loaded.
     let selected = |hub: &Option<Value>| {
-        hub.as_ref()
-            .and_then(|hub| hub.get("provider"))
-            .and_then(Value::as_str)
-            == Some(PROVIDER)
+        hub.as_ref().is_some_and(|hub| {
+            hub.get("provider").and_then(Value::as_str) == Some(PROVIDER)
+                || hub.get("preload_all").and_then(Value::as_bool) == Some(true)
+        })
     };
     let mut hub = match iii_config_client::follow(
         &iii,
@@ -115,7 +117,7 @@ async fn serve(
         if let Some(hub) = &mut hub {
             if !selected(&hub.borrow()) {
                 tracing::info!(
-                    "the judge hub's default provider is not semif; the model stays unloaded"
+                    "the judge hub neither defaults to semif nor preloads every provider; the model stays unloaded"
                 );
             }
             hub.wait_for(|value| selected(value)).await?;
@@ -148,7 +150,7 @@ async fn serve(
         for function in functions {
             function.unregister();
         }
-        tracing::info!("the judge hub's default provider moved; SemIf model released");
+        tracing::info!("the judge hub no longer selects this provider; SemIf model released");
     }
 }
 

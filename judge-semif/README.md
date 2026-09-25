@@ -41,7 +41,9 @@ again when SemIf is selected. The first load downloads the pinned GGUF
 hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`). The functions
 register only once the model answers; until then, and while another provider
 is the default, the hub reports `provider_unavailable`, also for calls that
-name `"provider": "semif"`. A hub build that does not expose
+name `"provider": "semif"`. To keep it loaded while another provider is the
+default, turn on **Keep every local provider loaded** (`preload_all`) in the
+judge settings. A hub build that does not expose
 `judge::configuration-id` leaves the model loaded from the start.
 Air-gapped installs set `III_SEMIF_GGUF` to a local GGUF file.
 

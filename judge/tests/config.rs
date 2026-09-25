@@ -38,7 +38,8 @@ async fn apply_replaces_the_snapshot_and_keeps_it_on_invalid_reloads() {
         configuration::apply_config(
             &cell,
             JudgeConfig {
-                provider: "local-llm".into()
+                provider: "local-llm".into(),
+                preload_all: false,
             }
         )
         .await
@@ -48,10 +49,30 @@ async fn apply_replaces_the_snapshot_and_keeps_it_on_invalid_reloads() {
         !configuration::apply_config(
             &cell,
             JudgeConfig {
-                provider: "Bad Name".into()
+                provider: "Bad Name".into(),
+                preload_all: false,
             }
         )
         .await
     );
     assert_eq!(cell.read().await.provider, "local-llm");
+}
+
+#[test]
+fn preload_all_is_off_by_default_and_round_trips() {
+    assert!(!JudgeConfig::default().preload_all);
+    // Off is not stored: the seeded entry stays `{"provider": ...}`.
+    assert!(JudgeConfig::default()
+        .to_json()
+        .get("preload_all")
+        .is_none());
+    let config =
+        JudgeConfig::from_json(&serde_json::json!({"provider": "laya", "preload_all": true}))
+            .unwrap();
+    assert!(config.preload_all);
+    assert_eq!(config.to_json()["preload_all"], true);
+    assert_eq!(
+        JudgeConfig::json_schema()["properties"]["preload_all"]["type"],
+        "boolean"
+    );
 }

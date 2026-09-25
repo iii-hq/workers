@@ -31,10 +31,11 @@ describes when an agent should invoke evaluation.
 
 The hub requires `configuration` at startup (engine **`iii/v0.24.0-rc.2`** or
 later, with `configuration::ensure`). Its entry, `judge` by default or the
-worker's `III_CONFIG_NAME`, holds one field:
+worker's `III_CONFIG_NAME`, holds two fields:
 
 ```yaml
 provider: typesafe   # judge-<provider> worker used when a request omits provider
+preload_all: false   # keep every local provider's model loaded, not only the default's
 ```
 
 Edit it under **Settings → Workers → judge** in the Console; valid changes apply
@@ -45,6 +46,17 @@ seeds the entry only when nothing is stored yet; it is `typesafe` unless set, so
 with a top-level `provider` string (lowercase letters, digits and hyphens, at
 most 64 bytes). A provider that is not registered on the engine returns
 `{"status":"error","code":"provider_unavailable"}`.
+
+Local providers (`judge-semif`, `judge-laya`) follow this entry: each loads its
+model and registers its functions only while it is the default `provider`, and
+releases both (memory and VRAM included) when another provider becomes the
+default, so a request naming a local provider that is not the default answers
+`provider_unavailable`. `preload_all: true` keeps every local provider loaded
+instead, so requests can route between them at run time; each holds its memory
+(on a GPU, about 6 GB for SemIf and 1.5 GB for laya). Hosted providers such as
+`judge-typesafe` are always registered. Switching takes a few seconds (the model
+loads from the hf-hub cache); the Console lists a local provider on standby as
+selectable.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read

@@ -25,7 +25,9 @@ GGUF (791 MB for `laya`, from `iii-dev/laya-encoder-gguf`) from the Hugging
 Face Hub into the hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`).
 The functions register only once the model answers; until then, and while
 another provider is the default, the hub reports `provider_unavailable`, also
-for calls that name `"provider": "laya"`. A hub build that does not expose
+for calls that name `"provider": "laya"`. To keep the checkpoints loaded while another
+provider is the default, turn on **Keep every local provider loaded**
+(`preload_all`) in the judge settings. A hub build that does not expose
 `judge::configuration-id` leaves the checkpoints loaded from the start.
 Air-gapped installs point `III_LAYA_CHECKPOINT_DIR` at
 a directory holding `model.safetensors`, `encoder/config.json`,
