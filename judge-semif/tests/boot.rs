@@ -177,6 +177,9 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                         "judge-semif::on-config-change"
                             | "judge-semif::ui-content"
                             | "judge-semif::configuration-id"
+                            | "judge-semif::evaluate"
+                            | "judge-semif::models::list"
+                            | "judge-semif::cancel"
                     ) {
                         assert_eq!(value["metadata"]["internal"], true);
                     }

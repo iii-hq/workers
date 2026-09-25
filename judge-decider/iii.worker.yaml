@@ -1,0 +1,18 @@
+iii: v1
+name: judge-decider
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: judge-decider
+tags: [evaluation, judge, decider, llama.cpp, noul, choice, score, local, gpu]
+description: decider provider for the judge hub (judge-decider::evaluate, judge-decider::models::list, judge-decider::cancel) — decider-4b v2 (a Qwen3.5-4B-Base fine-tune for typed decisions, GGUF) downloaded from the Hugging Face Hub and run in-process through llama.cpp, answering from the next-token logits of the option labels at its fitted temperature; picks Metal (macOS), Vulkan (Linux, when a driver is present) or the CPU automatically; no API key or external service.
+config:
+  model: decider-4b-v2
+  threads: 8
+  context_tokens: 16384
+  parallel_questions: 8
+  max_request_bytes: 8388608
+  max_timeout_ms: 300000
+dependencies:
+  configuration: "latest"

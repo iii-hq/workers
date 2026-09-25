@@ -75,7 +75,10 @@ pub fn register(iii: &Arc<IIIClient>, config: SharedConfig) {
             }))
         }
     });
-    iii.register_function(MODELS_FUNCTION_ID, registration.request_format(request_schema::<ModelsRequest>()).description("List the selected provider's available model names, descriptions and release dates; performs no inference."));
+    // Internal: agents have no use for the catalog; iii-directory and the
+    // Console read it by id (`engine::functions::list` shows it only with
+    // `include_internal`).
+    iii.register_function(MODELS_FUNCTION_ID, registration.request_format(request_schema::<ModelsRequest>()).description("List the selected provider's available model names, descriptions and release dates; performs no inference.").metadata(json!({ "internal": true })));
 
     let (engine, cell) = (iii.clone(), config);
     let registration = RegisterFunction::new_async(move |payload: Value| {

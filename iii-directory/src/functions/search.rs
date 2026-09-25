@@ -1880,10 +1880,28 @@ fn judge_options(cfg: &SkillsConfig, corpus: JudgeCorpus, noul_threshold: f64) -
     JudgeOptions {
         min_relevance: match question {
             FunctionSearchJudgeQuestion::Noul => noul_threshold,
-            FunctionSearchJudgeQuestion::Choice => cfg.function_search_judge_choice_min_probability,
+            FunctionSearchJudgeQuestion::Choice | FunctionSearchJudgeQuestion::Tournament => {
+                cfg.function_search_judge_choice_min_probability
+            }
         },
         question,
         corpus,
+    }
+}
+
+/// `tournament`, or `choice` asked of a judge whose advertised context window
+/// is small (laya): such a judge confuses the Hybrid shortlist's near-duplicates
+/// but finds the function when the whole catalog competes in rounds
+/// (live: 20/22 against 17/22 with the shortlist).
+async fn judge_tournament(
+    judge: &JudgeSearch,
+    cfg: &SkillsConfig,
+    deadline: tokio::time::Instant,
+) -> bool {
+    match cfg.function_search_judge_question {
+        FunctionSearchJudgeQuestion::Tournament => true,
+        FunctionSearchJudgeQuestion::Choice => judge.small_window(deadline).await,
+        FunctionSearchJudgeQuestion::Noul => false,
     }
 }
 
@@ -1903,17 +1921,26 @@ async fn rank_with_judge(
                 .unwrap_or_default()
         })
         .collect();
-    let (positions, lanes): (Vec<usize>, Vec<_>) =
-        judge_lanes(queries, corpus, dense, JUDGE_SHORTLIST)
-            .into_iter()
-            .enumerate()
-            .filter(|(position, _)| rankings[*position].is_empty())
-            .unzip();
-    let options = judge_options(
+    // A tournament judges the whole catalog; the other questions its shortlist.
+    let tournament = judge_tournament(judge, cfg, deadline).await;
+    let depth = if tournament {
+        usize::MAX
+    } else {
+        JUDGE_SHORTLIST
+    };
+    let (positions, lanes): (Vec<usize>, Vec<_>) = judge_lanes(queries, corpus, dense, depth)
+        .into_iter()
+        .enumerate()
+        .filter(|(position, _)| rankings[*position].is_empty())
+        .unzip();
+    let mut options = judge_options(
         cfg,
         JudgeCorpus::Functions,
         cfg.function_search_judge_min_relevance,
     );
+    if tournament {
+        options.question = FunctionSearchJudgeQuestion::Tournament;
+    }
     let mut outcome = judge.rank(&lanes, &options, deadline).await?;
     for (position, lane) in positions
         .into_iter()
@@ -1944,7 +1971,10 @@ async fn installed_search(
     };
     if let Some(deadline) = judge {
         // The dense lane only matters when the catalog needs a shortlist.
-        let dense = if corpus.len() > JUDGE_SHORTLIST && deps.semantic.is_production_minilm() {
+        let dense = if corpus.len() > JUDGE_SHORTLIST
+            && deps.semantic.is_production_minilm()
+            && !judge_tournament(&deps.judge, cfg, deadline).await
+        {
             deps.semantic.rank(fingerprint, queries, -1.0).await.ok()
         } else {
             None
@@ -2359,6 +2389,24 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Deps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn choice_becomes_a_tournament_for_small_window_judges() {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let cfg = |question| SkillsConfig {
+            function_search_judge_question: question,
+            ..SkillsConfig::default()
+        };
+        let small = JudgeSearch::default().with_window(Some(512));
+        let large = JudgeSearch::default().with_window(Some(16384));
+        let silent = JudgeSearch::default().with_window(None);
+        use FunctionSearchJudgeQuestion::{Choice, Noul, Tournament};
+        assert!(judge_tournament(&small, &cfg(Choice), deadline).await);
+        assert!(!judge_tournament(&large, &cfg(Choice), deadline).await);
+        assert!(!judge_tournament(&silent, &cfg(Choice), deadline).await);
+        assert!(!judge_tournament(&small, &cfg(Noul), deadline).await);
+        assert!(judge_tournament(&large, &cfg(Tournament), deadline).await);
+    }
 
     #[test]
     fn trigger_candidate_skips_console_plumbing_and_keeps_bindings() {

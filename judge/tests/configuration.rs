@@ -82,6 +82,7 @@ fn ids(calls: &[Value]) -> Vec<&str> {
 async fn empty_entry_receives_the_seed_and_stored_values_win_afterwards() {
     let seed = JudgeConfig {
         provider: "local-llm".into(),
+        preload_all: false,
     };
     let (config, calls) = register_and_fetch(Value::Null, Some(seed.clone()), None).await;
     assert_eq!(config.unwrap().provider, "local-llm");
@@ -144,7 +145,8 @@ async fn reload_applies_valid_values_and_keeps_the_last_valid_snapshot() {
         configuration::apply_config(
             &cell,
             JudgeConfig {
-                provider: "local-llm".into()
+                provider: "local-llm".into(),
+                preload_all: false,
             }
         )
         .await
@@ -153,7 +155,8 @@ async fn reload_applies_valid_values_and_keeps_the_last_valid_snapshot() {
         !configuration::apply_config(
             &cell,
             JudgeConfig {
-                provider: "".into()
+                provider: "".into(),
+                preload_all: false,
             }
         )
         .await

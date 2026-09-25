@@ -906,6 +906,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-llama-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "llama-cpp-2",
+ "llama-cpp-sys-2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-sdk"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1016,10 +1027,9 @@ dependencies = [
  "hf-hub",
  "iii-config-client",
  "iii-console-ui",
+ "iii-llama-runtime",
  "iii-sdk",
  "judge-contract",
- "llama-cpp-2",
- "llama-cpp-sys-2",
  "schemars",
  "serde",
  "serde_json",

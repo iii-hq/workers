@@ -1,0 +1,44 @@
+[workspace]
+
+[package]
+name = "judge-laya"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Self-contained laya provider for the judge hub: ModernBERT + typed decision head via candle."
+
+[features]
+default = ["console-ui"]
+console-ui = ["dep:iii-console-ui"]
+
+[dependencies]
+judge-contract = { path = "../crates/judge-contract" }
+iii-sdk = "=0.23.0"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui", optional = true }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+candle-core = "0.11"
+candle-nn = "0.11"
+half = "2"
+memmap2 = "0.9"
+safetensors = "0.8"
+iii-llama-runtime = { path = "../crates/llama-runtime" }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tracing = "0.1"
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+tokio-tungstenite = "0.28"
+
+# The model runs here: keep full optimization, no size-first profile.
+[profile.release]
+opt-level = 3

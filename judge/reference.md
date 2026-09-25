@@ -18,7 +18,10 @@ builds, credentials and local tests live with each provider, for example
 - [Limits and compatibility](#limits-and-compatibility)
 - [Provider compatibility notes](#provider-compatibility-notes)
 
-The public functions are `judge::evaluate`, `judge::models::list` and `judge::cancel`.
+The public functions are `judge::evaluate` and `judge::cancel`; `judge::models::list`
+is internal: agents have no use for the catalog, so `engine::functions::list`
+shows it only with `include_internal: true`, and tools such as iii-directory
+and the Console call it by id.
 Each forwards to `judge-<provider>::evaluate`, `judge-<provider>::models::list`
 and `judge-<provider>::cancel`; provider workers register exactly those ids
 (`judge_contract::provider_function_id`) as internal functions, so
@@ -31,10 +34,11 @@ describes when an agent should invoke evaluation.
 
 The hub requires `configuration` at startup (engine **`iii/v0.24.0-rc.2`** or
 later, with `configuration::ensure`). Its entry, `judge` by default or the
-worker's `III_CONFIG_NAME`, holds one field:
+worker's `III_CONFIG_NAME`, holds two fields:
 
 ```yaml
 provider: typesafe   # judge-<provider> worker used when a request omits provider
+preload_all: false   # keep every local provider's model loaded, not only the default's
 ```
 
 Edit it under **Settings → Workers → judge** in the Console; valid changes apply
@@ -45,6 +49,17 @@ seeds the entry only when nothing is stored yet; it is `typesafe` unless set, so
 with a top-level `provider` string (lowercase letters, digits and hyphens, at
 most 64 bytes). A provider that is not registered on the engine returns
 `{"status":"error","code":"provider_unavailable"}`.
+
+Local providers (`judge-decider`, `judge-semif`, `judge-laya`) follow this entry: each loads its
+model and registers its functions only while it is the default `provider`, and
+releases both (memory and VRAM included) when another provider becomes the
+default, so a request naming a local provider that is not the default answers
+`provider_unavailable`. `preload_all: true` keeps every local provider loaded
+instead, so requests can route between them at run time; each holds its memory
+(on a GPU, about 6 GB for decider or SemIf and 1.5 GB for laya). Hosted providers such as
+`judge-typesafe` are always registered. Switching takes a few seconds (the model
+loads from the hf-hub cache); the Console lists a local provider on standby as
+selectable.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read
@@ -248,7 +263,13 @@ differ from 1 by up to 0.02 to accommodate provider rounding. Duplicate answer,
 probability or legend keys, missing answers and mismatched types/IDs fail the
 whole batch. The worker returns provider scores and confidence without
 recalculating them. Choose a caller-specific decision threshold; JEV imposes
-no eligibility threshold.
+no eligibility threshold. The local providers (`judge-decider`, `judge-semif`,
+`judge-laya`) compute `confidence` from their probabilities as TypeSafe
+defines it (`judge_contract::confidence`): `(n·p_max − 1) / (n − 1)` for a
+Choice, 0 for a uniform distribution and 1 for all mass on one option; for a
+Score, 1 − the expected distance from the likeliest level over the mean
+distance of the levels from the middle of the scale. A threshold therefore
+means the same whichever provider answers.
 
 A complete, low-scoring evaluation can mean **no match**. A missing answer,
 deadline or service error cannot. Discard all partial answers when any evaluation
@@ -275,6 +296,9 @@ cost. Record the effective model and failures alongside scores when comparing ru
 
 ## List models
 
+`judge::models::list` is internal: callable by id, absent from default
+discovery.
+
 ```bash
 iii trigger judge::models::list --json '{}'
 ```
@@ -289,7 +313,11 @@ iii trigger judge::models::list --json '{"timeout_ms":5000}'
 ```
 
 Success has `status: "ok"`, a `models` array and `stats`. Each model card has
-string fields `name`, `description` and `release_date`; cards and aliases are
+string fields `name`, `description` and `release_date`, plus an optional
+`context_window` (tokens one evaluation row can hold, for providers with a
+fixed window such as `laya`) and an optional `max_options` (most options one
+Choice can offer, for providers with a fixed limit below 255, such as SemIf's
+16); cards and aliases are
 returned without filtering to locally known versions. An example reply
 (illustrative values):
 

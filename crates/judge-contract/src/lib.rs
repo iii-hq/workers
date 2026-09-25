@@ -1,6 +1,7 @@
 //! Typed judge messages shared by the `judge` hub and every `judge-<provider>`
 //! worker; no SDK, credentials, transport or retrieval policy.
 mod answers;
+pub mod confidence;
 mod encoding;
 mod options;
 mod questions;
@@ -166,6 +167,15 @@ pub struct ModelCard {
     pub name: String,
     pub description: String,
     pub release_date: String,
+    /// Tokens one evaluation row can hold (question, options and state), when
+    /// the provider has a fixed window. Callers size their states from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Most options one Choice question (or levels one Score) can offer,
+    /// when the provider has a fixed limit below the contract's 255. Callers
+    /// size their option groups from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_options: Option<u32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]

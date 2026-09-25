@@ -37,14 +37,19 @@ export const JUDGE_QUESTION_OPTIONS = [
   {
     value: 'choice',
     label: 'One choice per capability',
-    description: 'Let the shortlisted functions compete in a single question; needed by local judges.',
+    description: 'Let the shortlisted functions compete in a single question; needed by local judges. A judge with a small context window (laya) plays a tournament instead.',
+  },
+  {
+    value: 'tournament',
+    label: 'Tournament over the whole catalog',
+    description: 'Skip the Hybrid shortlist: all functions compete in groups of 16, winners go on to a final choice. Automatic under Choice for small-window judges (laya); several questions per capability.',
   },
 ] as const
 
 export type JudgeQuestion = (typeof JUDGE_QUESTION_OPTIONS)[number]['value']
 
 export function judgeQuestionWithDefault(value: unknown): JudgeQuestion {
-  return value === 'noul' ? 'noul' : 'choice'
+  return value === 'noul' || value === 'tournament' ? value : 'choice'
 }
 
 /** Keys the worker no longer reads. A stored config can still carry them,

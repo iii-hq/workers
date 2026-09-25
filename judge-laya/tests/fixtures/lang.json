@@ -1,0 +1,222 @@
+{
+ "english": {
+  "input": "The customer says the invoice was billed twice and asks for a refund before Friday.",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "short_en": {
+  "input": "ok thanks",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "empty": {
+  "input": "",
+  "expected": {
+   "script": "unknown",
+   "script_profile": {},
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "digits": {
+  "input": "12345 !!! ???",
+  "expected": {
+   "script": "unknown",
+   "script_profile": {},
+   "language": null,
+   "is_english": true,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "portuguese": {
+  "input": "O cliente diz que a fatura foi cobrada duas vezes e pede o reembolso até sexta-feira, não é possível esperar.",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "pt",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0367,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "spanish": {
+  "input": "El cliente dice que la factura fue cobrada dos veces y pide un reembolso para el viernes.",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "es",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "french": {
+  "input": "Le client dit que la facture a été facturée deux fois et demande un remboursement pour vendredi.",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "fr",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0312,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "german": {
+  "input": "Der Kunde sagt, die Rechnung wurde zweimal berechnet und bittet um eine Rückerstattung bis Freitag.",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "de",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0101,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "romanian": {
+  "input": "Clientul spune că factura a fost facturată de două ori și cere o rambursare până vineri.",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "ro",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0682,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "turkish_no_stop": {
+  "input": "Müşteri faturanın iki kez kesildiğini söylüyor ve cuma gününe kadar iade istiyor.",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0988,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "hindi": {
+  "input": "ग्राहक का कहना है कि चालान दो बार भेजा गया और वह शुक्रवार से पहले धनवापसी चाहता है।",
+  "expected": {
+   "script": "devanagari",
+   "script_profile": {
+    "devanagari": 1.0
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0
+  }
+ },
+ "japanese": {
+  "input": "顧客は請求書が二重に発行されたと言い、金曜日までに返金を求めています。",
+  "expected": {
+   "script": "kana",
+   "script_profile": {
+    "han": 0.48484848484848486,
+    "kana": 0.5151515151515151
+   },
+   "language": null,
+   "is_english": false,
+   "language_undecided": true,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 1.0
+  }
+ },
+ "mixed_dict": {
+  "input": {
+   "subject": "Refund",
+   "body": "Veuillez rembourser la facture en double, merci beaucoup pour votre aide.",
+   "n": 3,
+   "tags": [
+    "urgent",
+    "facture"
+   ]
+  },
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "fr",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "nested_list": {
+  "input": [
+   {
+    "text": "hola, necesito ayuda con la factura porque me cobraron dos veces"
+   },
+   "y quiero el reembolso"
+  ],
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "es",
+   "is_english": false,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0
+  }
+ },
+ "html_like": {
+  "input": "<p>The <b>report</b> is due</p>",
+  "expected": {
+   "script": "latin",
+   "script_profile": {
+    "latin": 1.0
+   },
+   "language": "en",
+   "is_english": true,
+   "language_undecided": false,
+   "diacritic_rate": 0.0,
+   "non_latin_fraction": 0.0
+  }
+ }
+}

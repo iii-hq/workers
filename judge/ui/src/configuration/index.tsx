@@ -9,24 +9,28 @@ import {
   SettingsList,
   SettingsSection,
   StatusPanel,
+  Switch,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 /** What the hub uses when the entry stores no provider. */
 export const BUILT_IN_PROVIDER = 'typesafe'
-const PROVIDER_FUNCTION = /^judge-([a-z0-9-]{1,64})::evaluate$/
+const PROVIDER_FUNCTION = /^judge-([a-z0-9-]{1,64})::(evaluate|configuration-id)$/
 
 export interface RegisteredProvider {
   provider: string
   worker: string
   namespace: string
+  /** False for a local provider on standby: its model loads once the hub selects it. */
+  loaded: boolean
 }
 interface FunctionsList {
   functions?: { function_id: string; namespace?: string; worker_name?: string }[]
 }
 type Engine = Pick<ExtensionIii, 'trigger'>
 
-/** Every worker currently answering `judge-<provider>::evaluate`, one row per provider. */
+/** Every `judge-<provider>` worker, one row per provider: answering `evaluate`
+ * (loaded), or only its configuration id (a local provider on standby). */
 export async function listProviders(iii: Engine): Promise<RegisteredProvider[]> {
   // Providers register their functions as internal (callers use the hub), so
   // they only show up when internal registrations are included.
@@ -37,10 +41,12 @@ export async function listProviders(iii: Engine): Promise<RegisteredProvider[]> 
   )
   const seen = new Map<string, RegisteredProvider>()
   for (const fn of reply?.functions ?? []) {
-    const provider = PROVIDER_FUNCTION.exec(fn.function_id)?.[1]
-    if (provider && !seen.has(provider)) {
-      seen.set(provider, { provider, worker: fn.worker_name ?? `judge-${provider}`, namespace: fn.namespace ?? '' })
-    }
+    const match = PROVIDER_FUNCTION.exec(fn.function_id)
+    if (!match) continue
+    const [, provider, kind] = match
+    const entry = seen.get(provider) ?? { provider, worker: fn.worker_name ?? `judge-${provider}`, namespace: fn.namespace ?? '', loaded: false }
+    entry.loaded ||= kind === 'evaluate'
+    seen.set(provider, entry)
   }
   return [...seen.values()].sort((a, b) => a.provider.localeCompare(b.provider))
 }
@@ -91,6 +97,13 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
   const stored = typeof value.provider === 'string' ? value.provider : undefined
   const effective = stored ?? BUILT_IN_PROVIDER
   const registered = providers?.find((entry) => entry.provider === effective)
+  const preloadAll = value.preload_all === true
+  const setPreloadAll = (on: boolean) => {
+    const draft = { ...value }
+    if (on) draft.preload_all = true
+    else delete draft.preload_all
+    props.onChange(draft)
+  }
   const setProvider = (next: string | undefined) => {
     const draft = { ...value }
     if (next === undefined) delete draft.provider
@@ -101,12 +114,14 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
   const options: SelectOption[] = (providers ?? []).map((entry) => ({
     value: entry.provider,
     label: entry.provider,
-    description: entry.namespace ? `${entry.worker} · ${entry.namespace}` : entry.worker,
+    description: [entry.worker, entry.namespace, entry.loaded ? '' : 'loads its model when selected'].filter(Boolean).join(' · '),
   }))
   if (stored && !options.some((option) => option.value === stored)) {
     options.push({ value: stored, label: stored, description: 'Not registered on the engine' })
   }
-  const unassociatedErrors = [...(props.errors?.entries() ?? [])].filter(([pointer]) => pointer !== '/provider')
+  const unassociatedErrors = [...(props.errors?.entries() ?? [])].filter(
+    ([pointer]) => pointer !== '/provider' && pointer !== '/preload_all',
+  )
 
   return (
     <div className="judge-ui-form" ref={rootRef}>
@@ -129,11 +144,13 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
             meta={
               providers === null ? (
                 <Chip tone="neutral">Checking registrations…</Chip>
-              ) : registered ? (
+              ) : registered?.loaded ? (
                 <Chip tone="success">
                   {registered.worker}
                   {registered.namespace ? ` · ${registered.namespace}` : ''}
                 </Chip>
+              ) : registered ? (
+                <Chip tone="neutral">{registered.worker} · loading its model</Chip>
               ) : (
                 <Chip tone="warning">judge-{effective} not registered</Chip>
               )
@@ -150,6 +167,21 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
                 onChange={setProvider}
                 aria-label="Default provider"
                 aria-busy={providers === null}
+              />
+            )}
+          />
+          <SettingsField
+            id="judge-cfg-preload_all"
+            field="preload_all"
+            label="Keep every local provider loaded"
+            description="Local providers (judge-decider, judge-semif, judge-laya) load their model only while they are the default. On, every local provider keeps its model loaded, so a request can name any of them in `provider` without waiting; each one holds its memory (on a GPU, about 6 GB for decider or SemIf and 1.5 GB for laya). Hosted providers are unaffected."
+            error={props.errors?.get('/preload_all')}
+            renderControl={(controlProps) => (
+              <Switch
+                {...controlProps}
+                checked={preloadAll}
+                aria-label="Keep every local provider loaded"
+                onChange={(event) => setPreloadAll(event.currentTarget.checked)}
               />
             )}
           />

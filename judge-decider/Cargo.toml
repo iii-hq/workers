@@ -1,0 +1,43 @@
+[workspace]
+
+[package]
+name = "judge-decider"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "decider provider for the judge hub: option-label logits from decider-4b (GGUF) run in-process through llama.cpp."
+
+[features]
+default = ["console-ui"]
+console-ui = ["dep:iii-console-ui"]
+
+[dependencies]
+judge-contract = { path = "../crates/judge-contract" }
+iii-sdk = "=0.23.0"
+iii-config-client = { path = "../crates/config-client" }
+iii-console-ui = { path = "../crates/console-ui", optional = true }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+iii-llama-runtime = { path = "../crates/llama-runtime" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tracing = "0.1"
+
+# macOS: Metal GPU offload is always compiled in.
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+tokio-tungstenite = "0.28"
+
+# Size-first like the other judge workers: inference runs in llama.cpp, which
+# CMake compiles with its own Release flags whatever the Rust opt-level.
+[profile.release]
+opt-level = "z"
+strip = true
+lto = "fat"
+codegen-units = 1

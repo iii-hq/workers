@@ -9,8 +9,8 @@ use crate::{
 };
 use anyhow::Result;
 use judge_contract::{
-    encode_evaluation_with_limits, validate_answer, validate_request_with_limits, Answer,
-    CancelRequest, CancelResponse, Content, ErrorCode, EvaluateRequest, EvaluateResponse,
+    confidence, encode_evaluation_with_limits, validate_answer, validate_request_with_limits,
+    Answer, CancelRequest, CancelResponse, Content, ErrorCode, EvaluateRequest, EvaluateResponse,
     EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage,
     DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
@@ -283,6 +283,8 @@ impl SemifClient {
                     self.engine.device, self.engine.context_tokens
                 ),
                 release_date: self.revision.to_string(),
+                context_window: Some(self.engine.context_tokens),
+                max_options: Some(MAX_OPTIONS as u32),
             }],
             stats: stats(true),
         }
@@ -412,11 +414,10 @@ fn plan(question: &Question) -> Result<(String, Vec<String>, Plan), ErrorCode> {
     Ok((criterion, options, plan))
 }
 
-/// Readout: probabilities in option order, entropy confidence (1 - H/ln k).
+/// Readout: probabilities in option order, TypeSafe's confidence
+/// (`judge_contract::confidence`).
 fn answer(plan: &Plan, p: &[f64]) -> Answer {
     let k = p.len();
-    let entropy: f64 = -p.iter().map(|&x| x * x.max(1e-12).ln()).sum::<f64>();
-    let confidence = (1.0 - entropy / (k as f64).ln()).clamp(0.0, 1.0);
     let probabilities: BTreeMap<String, f64> =
         plan.keys.iter().cloned().zip(p.iter().cloned()).collect();
     let best = (0..k).max_by(|&a, &b| p[a].total_cmp(&p[b])).unwrap_or(0);
@@ -425,12 +426,12 @@ fn answer(plan: &Plan, p: &[f64]) -> Answer {
         Kind::Choice => Answer::Choice {
             choice: plan.keys[best].clone(),
             probabilities,
-            confidence,
+            confidence: confidence::choice(p),
         },
         Kind::Score(legend) => Answer::Score {
             score: p.iter().enumerate().map(|(i, x)| i as f64 * x).sum(),
             probabilities,
-            confidence,
+            confidence: confidence::score(p),
             legend: legend.clone(),
         },
     }

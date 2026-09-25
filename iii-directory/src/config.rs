@@ -148,9 +148,16 @@ pub enum FunctionSearchJudgeQuestion {
     Noul,
     // The default: one Choice per capability over its shortlist; the
     // documents compete, the best is always kept, the others need
-    // function_search_judge_choice_min_probability.
+    // function_search_judge_choice_min_probability. A judge that advertises
+    // a context window under 4096 tokens (laya) gets a tournament instead.
     #[default]
     Choice,
+    // Choice without the Hybrid shortlist: the whole function catalog is
+    // skimmed in rounds of compact Choices (function id and eight words) over
+    // groups of up to 128 whose three best go on (16 and winners only for
+    // small-window judges), and the last 16 or fewer get the final Choice
+    // with their full descriptions. Needs no local semantic model.
+    Tournament,
 }
 
 /// `hybrid`, and the Hybrid fallback `judge` uses whenever the judge worker
@@ -777,7 +784,7 @@ mod tests {
         let schema = SkillsConfig::json_schema();
         assert_eq!(
             schema["definitions"]["FunctionSearchJudgeQuestion"]["enum"],
-            serde_json::json!(["noul", "choice"])
+            serde_json::json!(["noul", "choice", "tournament"])
         );
     }
 
