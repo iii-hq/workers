@@ -17,8 +17,11 @@ export interface CompactionAnchor {
   entryId: string
   /** The persisted summary, or null when the entry carried none. */
   summary: string | null
-  /** First entry of the verbatim tail; null when everything before the entry was summarised. */
-  tailStartEntryId: string | null
+  /**
+   * First entry of the verbatim tail; null when everything before the entry
+   * was summarised; undefined when the record carries no usable boundary.
+   */
+  tailStartEntryId: string | null | undefined
 }
 
 /** One model-bound row of the window: the entry id keeps `tail_start_index` mappable. */
@@ -45,9 +48,10 @@ export function latestCompactionAnchor(
       entryId: item.entry_id,
       summary: typeof data.summary === 'string' ? data.summary : null,
       tailStartEntryId:
-        typeof data.tail_start_entry_id === 'string'
+        typeof data.tail_start_entry_id === 'string' ||
+        data.tail_start_entry_id === null
           ? data.tail_start_entry_id
-          : null,
+          : undefined,
     }
   }
   return anchor
@@ -57,24 +61,26 @@ export function latestCompactionAnchor(
  * Model-bound message entries of the candidate window — the same one the
  * harness assembles for the next turn. It opens at the anchor's
  * `tailStartEntryId`, or right after the anchor entry when that is null
- * (everything before it was summarised). A never-compacted session, or a
- * boundary no longer on the path (a hand-written entry, a session forked
- * before fork rewrote the anchor), means the whole path rather than
- * compacting nothing.
+ * (everything before it was summarised). A never-compacted session, a
+ * record without a summary or a usable boundary, or a boundary no longer on
+ * the path (a hand-written entry, a session forked before fork rewrote the
+ * anchor), means the whole path rather than compacting nothing.
  */
 export function compactionWindow(
   items: readonly TranscriptItem[],
   anchor: CompactionAnchor | null,
 ): WindowEntry[] {
   let start = 0
-  if (anchor?.tailStartEntryId === null) {
-    start = items.findIndex((item) => item.entry_id === anchor.entryId) + 1
-  } else if (anchor) {
+  if (anchor && anchor.summary !== null) {
     const tail = anchor.tailStartEntryId
-    start = Math.max(
-      0,
-      items.findIndex((item) => item.entry_id === tail),
-    )
+    if (tail === null) {
+      start = items.findIndex((item) => item.entry_id === anchor.entryId) + 1
+    } else if (typeof tail === 'string') {
+      start = Math.max(
+        0,
+        items.findIndex((item) => item.entry_id === tail),
+      )
+    }
   }
   const out: WindowEntry[] = []
   for (const item of items.slice(start)) {

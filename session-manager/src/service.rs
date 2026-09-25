@@ -1292,13 +1292,17 @@ impl SessionService {
 
         let new_session_id = self.ids.session_id();
         let now = self.clock.now_ms();
-        let mut id_map: HashMap<String, String> = HashMap::new();
+        // Fresh ids for the whole path first, so a custom record may name any
+        // entry of the path, earlier or later, and still be remapped.
+        let id_map: HashMap<String, String> = path
+            .iter()
+            .map(|entry| (entry.id().to_string(), self.ids.entry_id()))
+            .collect();
         let mut copies = Vec::with_capacity(path.len());
         let mut message_count: u64 = 0;
 
         for entry in &path {
-            let new_id = self.ids.entry_id();
-            id_map.insert(entry.id().to_string(), new_id.clone());
+            let new_id = id_map[entry.id()].clone();
             let new_parent = entry.parent_id().map(|p| {
                 id_map
                     .get(p)

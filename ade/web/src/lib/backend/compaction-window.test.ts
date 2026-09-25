@@ -72,7 +72,12 @@ describe('latestCompactionAnchor', () => {
       latestCompactionAnchor([
         { entry_id: 'c', custom: { custom_type: 'compaction', data: 'junk' } },
       ]),
-    ).toEqual({ entryId: 'c', summary: null, tailStartEntryId: null })
+    ).toEqual({ entryId: 'c', summary: null, tailStartEntryId: undefined })
+    expect(
+      latestCompactionAnchor([
+        compaction('c1', { summary: 's', tail_start_entry_id: 7 }),
+      ]),
+    ).toEqual({ entryId: 'c1', summary: 's', tailStartEntryId: undefined })
   })
 })
 
@@ -123,6 +128,22 @@ describe('compactionWindow', () => {
     expect(
       compactionWindow(items, anchor(null)).map((e) => e.entry_id),
     ).toEqual(['u2', 'a2'])
+  })
+
+  it('a record without a summary or a usable boundary is the whole path', () => {
+    // Only an explicit null opens after the record; a malformed record must
+    // not drop the history it never summarised.
+    for (const bad of [
+      { entryId: 'c1', summary: null, tailStartEntryId: null },
+      { entryId: 'c1', summary: 's', tailStartEntryId: undefined },
+    ]) {
+      expect(compactionWindow(items, bad).map((e) => e.entry_id)).toEqual([
+        'u1',
+        'a1',
+        'u2',
+        'a2',
+      ])
+    }
   })
 
   it('a boundary missing from the path falls back to the whole path', () => {

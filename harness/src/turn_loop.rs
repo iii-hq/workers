@@ -3007,7 +3007,10 @@ struct CompactionAnchor {
 ///   (`context::compact` with `tail_turns: 0`), so the window opens after it;
 /// - `tail_start_entry_id` not on the path (a hand-written entry, a session
 ///   forked before `session::fork` rewrote the anchor): the whole path, since
-///   re-sending summarised history beats an empty context.
+///   re-sending summarised history beats an empty context;
+/// - a record without a summary, or whose boundary is missing or not a
+///   string: the whole path too — only an explicit JSON `null` opens the
+///   window after the record.
 fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
     let latest = entries.iter().enumerate().rev().find_map(|(index, entry)| {
         let custom = entry.custom.as_ref()?;
@@ -3016,11 +3019,22 @@ fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnc
     let Some((index, data)) = latest else {
         return CompactionAnchor::default();
     };
-    let window_start = match data.get("tail_start_entry_id").and_then(Value::as_str) {
-        None => index + 1,
-        Some(tail) => entries
+    let summary = data
+        .get("summary")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let window_start = match (&summary, data.get("tail_start_entry_id")) {
+        (None, _) => {
+            tracing::warn!(
+                session_id,
+                "compaction record carries no summary; sending the whole path"
+            );
+            0
+        }
+        (Some(_), Some(Value::Null)) => index + 1,
+        (Some(_), Some(Value::String(tail))) => entries
             .iter()
-            .position(|entry| entry.entry_id == tail)
+            .position(|entry| &entry.entry_id == tail)
             .unwrap_or_else(|| {
                 tracing::warn!(
                     session_id,
@@ -3029,12 +3043,16 @@ fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnc
                 );
                 0
             }),
+        (Some(_), _) => {
+            tracing::warn!(
+                session_id,
+                "compaction record has no usable boundary; sending the whole path"
+            );
+            0
+        }
     };
     CompactionAnchor {
-        summary: data
-            .get("summary")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        summary,
         window_start,
         // The console's entry carries only `tokens_before` (the head size).
         summarized_head_tokens: data
@@ -3693,6 +3711,37 @@ mod tests {
         assert_eq!(
             start(&[msg("u1"), compaction("c1", "s", json!("gone")), msg("u2")]),
             0
+        );
+        // Only an explicit null is the after-record boundary: a missing or
+        // non-string field, or a record without a summary, is the whole path.
+        let raw = |data: Value| -> LoadedEntry {
+            serde_json::from_value(json!({ "entry_id": "c1", "custom": {
+                "custom_type": "compaction", "data": data
+            }}))
+            .unwrap()
+        };
+        assert_eq!(
+            start(&[msg("u1"), raw(json!({ "summary": "s" })), msg("u2")]),
+            0
+        );
+        assert_eq!(
+            start(&[
+                msg("u1"),
+                raw(json!({ "summary": "s", "tail_start_entry_id": 7 })),
+                msg("u2")
+            ]),
+            0
+        );
+        assert_eq!(
+            compaction_anchor(
+                "s",
+                &[
+                    msg("u1"),
+                    raw(json!({ "tail_start_entry_id": null })),
+                    msg("u2")
+                ]
+            ),
+            CompactionAnchor::default()
         );
     }
 

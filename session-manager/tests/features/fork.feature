@@ -190,6 +190,32 @@ Feature: session::fork — copy history up to an entry into a new session
     And the response field "messages.3.custom.data.tail_start_entry_id" is "e_006"
     And the response field "messages.3.custom.data.summary" is "s"
 
+  # Prevents: a record that names an entry LATER on the path (ids are
+  # caller-supplied) keeping the source id because the map was still being
+  # built when the record was copied.
+  Scenario: fork rewrites an anchor that names a later entry on the path
+    Given I call "session::append" with:
+      """
+      { "session_id": "s_001", "custom": { "custom_type": "compaction",
+        "data": { "summary": "s", "tail_start_entry_id": "e_next" } } }
+      """
+    And I call "session::append" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_next",
+        "message": { "role": "user", "content": [{ "type": "text", "text": "later" }], "timestamp": 0 } }
+      """
+    When I call "session::fork" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_next" }
+      """
+    And I call "session::messages" with:
+      """
+      { "session_id": "s_002", "include_custom": true }
+      """
+    Then the response field "messages" has length 5
+    And the response field "messages.4.entry_id" is "e_009"
+    And the response field "messages.3.custom.data.tail_start_entry_id" is "e_009"
+
   # Prevents: an anchor that is not on the copied path being rewritten to
   # null, which readers take as "everything before this entry was summarised".
   Scenario: an unknown compaction anchor is copied unchanged
