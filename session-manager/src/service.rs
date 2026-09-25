@@ -1292,13 +1292,17 @@ impl SessionService {
 
         let new_session_id = self.ids.session_id();
         let now = self.clock.now_ms();
-        let mut id_map: HashMap<String, String> = HashMap::new();
+        // Fresh ids for the whole path first, so a custom record may name any
+        // entry of the path, earlier or later, and still be remapped.
+        let id_map: HashMap<String, String> = path
+            .iter()
+            .map(|entry| (entry.id().to_string(), self.ids.entry_id()))
+            .collect();
         let mut copies = Vec::with_capacity(path.len());
         let mut message_count: u64 = 0;
 
         for entry in &path {
-            let new_id = self.ids.entry_id();
-            id_map.insert(entry.id().to_string(), new_id.clone());
+            let new_id = id_map[entry.id()].clone();
             let new_parent = entry.parent_id().map(|p| {
                 id_map
                     .get(p)
@@ -1337,7 +1341,7 @@ impl SessionService {
                     revision: 0,
                     origin: origin.clone(),
                     custom_type: custom_type.clone(),
-                    data: data.clone(),
+                    data: remap_custom_data(custom_type, data, &id_map),
                 },
             };
             copies.push(copy);
@@ -1519,6 +1523,30 @@ fn draft_response(meta: &SessionMeta) -> SetDraftResponse {
         draft: meta.draft.clone(),
         attachments: meta.draft_attachments.clone().unwrap_or_default(),
     }
+}
+
+/// Copy-on-fork rewrite of the entry ids a custom record stores: the
+/// compaction record's `tail_start_entry_id` names the first entry of the
+/// verbatim tail, so it must follow that entry's fresh id. An id not on the
+/// copied path is left as it is — readers treat an unknown id as "whole
+/// path", while `null` means "everything before this entry was summarised".
+fn remap_custom_data(
+    custom_type: &str,
+    data: &serde_json::Value,
+    id_map: &HashMap<String, String>,
+) -> serde_json::Value {
+    let mut data = data.clone();
+    if custom_type == "compaction" {
+        let tail = data
+            .get("tail_start_entry_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|tail| id_map.get(tail))
+            .cloned();
+        if let Some(new_id) = tail {
+            data["tail_start_entry_id"] = serde_json::Value::String(new_id);
+        }
+    }
+    data
 }
 
 /// Every attachment id the messages on `path` reference, in first-seen

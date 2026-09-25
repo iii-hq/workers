@@ -42,6 +42,7 @@ No provider key or network access is required.
 | INT-032 | `repeated-failed-call-breaker` | direct | after a function fails twice with the identical error (same function and arguments), the third identical call is answered locally with `is_error` and `details.error: "repeated_failure"`; the target runs exactly twice and the turn completes |
 | INT-033 | `call-argument-reconciliation` | direct | a call whose arguments carry stringified JSON the schema rejects (`"true"`, `"5"`) is repaired before dispatch: the target receives typed values, the call succeeds first time, and the result notes the repair (MOT-4847) |
 | INT-034 | `call-argument-diagnosis` | direct | a malformed call the harness cannot repair (`"many"` for an integer) runs and fails; the result names the violating field from the schema, and a valid retry that fails the same way gets no diagnosis (MOT-4847) |
+| INT-035 | `compaction-anchor` | direct | a `compaction` record whose `tail_start_entry_id` is not on the path anchors the next turn on the whole path under its summary instead of an empty context; a `null` boundary opens the window after the record; the snapshot reports `compacted` |
 | UI-001 | `console-streamed-text` | playground | a message sent by the Console streams to durable completion |
 | UI-002 | `multi-turn-traces` | playground | a native function turn and a Console turn expose distinct traces and function-call events |
 | UI-003 | `console-anthropic-messages-error` | playground | an Anthropic Messages permanent provider failure is shown and the chat recovers |

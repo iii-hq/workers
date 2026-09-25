@@ -425,7 +425,11 @@ bespoke in-harness compaction side-car with a reusable worker.
   entry id at that position in the history you sent. On the next turn, read it
   back (`session::messages { include_custom: true }`, scan for the latest
   `compaction` entry), pass its `summary` as `previous_summary` and the
-  messages from `tail_start_entry_id` onward as `messages`.
+  messages from `tail_start_entry_id` onward as `messages`. A `null`
+  boundary (a `compact` with `tail_turns: 0` summarised everything) means
+  the messages after the compaction entry; a boundary no longer on the path
+  (a hand-written entry, a session forked before fork rewrote the anchor)
+  means the whole path.
 - **Why a lease.** Two harness instances (or a retried turn) on the same
   session must not double-summarise. The lease keyed on the session id makes
   the second caller skip compaction (`assemble`) or see `busy` (`compact`)
