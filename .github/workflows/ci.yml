@@ -252,9 +252,13 @@ jobs:
       # judge-semif, judge-decider and judge-laya compile llama.cpp (cmake) and its bindings
       # (bindgen needs libclang) through crates/llama-runtime; Linux x86_64
       # always builds the Vulkan module (loader headers, SPIR-V headers, glslc).
+      # llama-cpp-sys-2 hard-links its shared libraries into target/ unless the
+      # name exists, and fails on a symlink the cache restore left dangling.
       - name: Provision llama.cpp build tools (llama-runtime workers)
         if: matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya'
-        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          find target -xtype l -print -delete 2>/dev/null || true
 
       - name: Run clippy
         if: matrix.worker != 'browser'
@@ -379,7 +383,9 @@ jobs:
       # headers, SPIR-V headers, glslc), as for the llama-runtime workers.
       - name: Provision llama.cpp build tools (llama-runtime)
         if: matrix.crate == 'llama-runtime'
-        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          find target -xtype l -print -delete 2>/dev/null || true
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -713,9 +719,13 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
+      # A symlink the cache restore left dangling in target/ fails
+      # llama-cpp-sys-2's hard-link step: drop them first.
       - name: Provision llama.cpp build tools (llama-runtime workers)
         if: steps.optout.outputs.skip != 'true' && (matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya')
-        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          find "${{ matrix.worker }}/target" -xtype l -print -delete 2>/dev/null || true
 
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (the release build uses default features).

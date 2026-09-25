@@ -247,7 +247,11 @@ jobs:
       # backend module (headers + glslc); macOS links Metal (Xcode ships libclang).
       - name: Provision llama.cpp build tools (llama-runtime workers, Linux)
         if: inputs.kind == 'rust-binary' && (inputs.worker == 'judge-semif' || inputs.worker == 'judge-decider' || inputs.worker == 'judge-laya') && runner.os == 'Linux'
-        run: sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+        # A symlink a cache restore left dangling in target/ fails
+        # llama-cpp-sys-2's hard-link step: drop them first.
+        run: |
+          sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+          find . -path '*/target/*' -xtype l -print -delete 2>/dev/null || true
 
       - name: Build immutable artifact
         env:
