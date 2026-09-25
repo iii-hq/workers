@@ -622,7 +622,8 @@ shortlist, `choice` with 0.1 kept a correct function in every search for both
 functions as internal, so search results show only the hub's `judge::*`.
 
 With `choice`, a judge whose models advertise a context window under 4096
-tokens (`context_window` in `judge::models::list`, read at most once a minute)
+tokens (`context_window` in `judge::models::list`, re-read when the judge
+hub's configuration changes and at least once a minute)
 gets compact options instead of the full description objects: each option is
 keyed by the function id and reads the first eight words of its description,
 and the state names the capability plainly (`{"capability": …}`). laya (512 tokens) shares about 190 of them among

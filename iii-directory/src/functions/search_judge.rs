@@ -221,6 +221,12 @@ impl JudgeSearch {
         }
     }
 
+    /// Drop the cached context window: the next search re-reads it. Called when
+    /// the judge hub's configuration changes (another default provider).
+    pub fn forget_window(&self) {
+        *self.window.lock().expect("judge window") = None;
+    }
+
     /// Pretend the judge advertised `tokens` as its context window.
     #[cfg(test)]
     pub(crate) fn with_window(self, tokens: Option<u64>) -> Self {
