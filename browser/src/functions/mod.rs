@@ -1154,7 +1154,11 @@ async fn settle(session: &Session, typed: bool) {
 
 /// The `browser::elements` table for the session's current page.
 async fn observe(session: &Session) -> Result<elements::ElementsOutput, Error> {
-    let value = evaluate_json(session, elements::OBSERVE_JS.to_string(), "elements").await?;
+    let script = elements::observe_script(session.next_element_id());
+    let value = evaluate_json(session, script, "elements").await?;
+    if let Some(next) = value.get("next").and_then(serde_json::Value::as_u64) {
+        session.saw_element_ids(next);
+    }
     if value.is_null() {
         return Err(handler_err(
             "the page has no document body yet; retry once it has loaded",

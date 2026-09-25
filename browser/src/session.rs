@@ -767,6 +767,10 @@ pub struct Session {
     /// Bumped on every top-document navigation. Snapshots report it so a
     /// caller can tell which document epoch its refs belong to.
     generation: AtomicU64,
+    /// Above every `n` element id handed out in this session: a new
+    /// document's registry numbers from here, so `n` refs, like snapshot
+    /// refs, are unique across documents and a stale one never resolves.
+    next_element_id: AtomicU64,
     /// Ref-stripped outline lines of the latest snapshot, the baseline for
     /// `browser::snapshot` diff mode. None before the first snapshot and
     /// after a navigation.
@@ -923,6 +927,16 @@ impl Session {
 
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
+    }
+
+    /// The first `n` element id a new document's registry hands out.
+    pub fn next_element_id(&self) -> u64 {
+        self.next_element_id.load(Ordering::Relaxed)
+    }
+
+    /// Record a registry's next id after a read (ids only move up).
+    pub fn saw_element_ids(&self, next: u64) {
+        self.next_element_id.fetch_max(next, Ordering::Relaxed);
     }
 
     /// Requests started at or after `since_ms` that have not finished.
@@ -1482,6 +1496,7 @@ impl Sessions {
             refs: Mutex::new(HashMap::new()),
             ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
+            next_element_id: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
@@ -1820,6 +1835,7 @@ impl Sessions {
             refs: Mutex::new(HashMap::new()),
             ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
+            next_element_id: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
@@ -2821,6 +2837,43 @@ async fn spawn_event_pumps(
         }));
     }
 
+    // In-flight requests, for the post-action network settle. One task owns
+    // every update and drains starts before finishes (`biased`): the CDP
+    // handler delivers a request's start to its channel before its finish,
+    // so a fast request can never be finished first and then left pending.
+    if let (Ok(mut started), Ok(mut finished), Ok(mut failed)) = (
+        page.event_listener::<cdp_network::EventRequestWillBeSent>()
+            .await,
+        page.event_listener::<cdp_network::EventLoadingFinished>()
+            .await,
+        page.event_listener::<cdp_network::EventLoadingFailed>()
+            .await,
+    ) {
+        let s = session.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                let done = tokio::select! {
+                    biased;
+                    Some(event) = started.next() => {
+                        let mut inflight = s.inflight.lock().unwrap_or_else(|p| p.into_inner());
+                        if inflight.len() >= 2_048 {
+                            inflight.clear();
+                        }
+                        inflight.insert(event.request_id.inner().to_string(), now_ms());
+                        continue;
+                    }
+                    Some(event) = finished.next() => event.request_id.inner().to_string(),
+                    Some(event) = failed.next() => event.request_id.inner().to_string(),
+                    else => break,
+                };
+                s.inflight
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&done);
+            }
+        }));
+    }
+
     // network: request → response/failure, correlated by request id
     let pending: Arc<Mutex<HashMap<String, (String, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -2830,17 +2883,9 @@ async fn spawn_event_pumps(
         .await
     {
         let pending = pending.clone();
-        let s = session.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
                 let id = event.request_id.inner().to_string();
-                {
-                    let mut inflight = s.inflight.lock().unwrap_or_else(|p| p.into_inner());
-                    if inflight.len() >= 2_048 {
-                        inflight.clear();
-                    }
-                    inflight.insert(id.clone(), now_ms());
-                }
                 let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
                 if pending.len() >= 2_048 {
                     pending.clear();
@@ -2849,21 +2894,6 @@ async fn spawn_event_pumps(
                     id,
                     (event.request.method.clone(), event.request.url.clone()),
                 );
-            }
-        }));
-    }
-
-    if let Ok(mut events) = page
-        .event_listener::<cdp_network::EventLoadingFinished>()
-        .await
-    {
-        let s = session.clone();
-        tasks.push(tokio::spawn(async move {
-            while let Some(event) = events.next().await {
-                s.inflight
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(event.request_id.inner());
             }
         }));
     }
@@ -2907,10 +2937,6 @@ async fn spawn_event_pumps(
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
                 let key = event.request_id.inner().to_string();
-                s.inflight
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&key);
                 let (method, url) = {
                     let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
                     pending

@@ -7,9 +7,16 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Reads the table; evaluates to `ElementsOutput` JSON (without
-/// `generation`), or null while the document has no body.
-pub const OBSERVE_JS: &str = include_str!("elements.js");
+/// Reads the table: a function of the first id a new document's registry
+/// hands out (see [`observe_script`]).
+const OBSERVE_JS: &str = include_str!("elements.js");
+
+/// The table read, numbering a new document's refs from `first_id`;
+/// evaluates to `ElementsOutput` JSON (without `generation`) plus `next`, the
+/// registry's next id, or null while the document has no body.
+pub fn observe_script(first_id: u64) -> String {
+    format!("({})({first_id})", OBSERVE_JS.trim_end())
+}
 
 /// Most elements one table lists (`elements.js` enforces it; the rest are
 /// counted in `omitted`). Also keeps every judge `choice` under its 255 cap.
@@ -41,7 +48,11 @@ pub const GUARD_FN: &str = r#"function (kind, option) {
   if (typeof e.checkVisibility === 'function' && !e.checkVisibility({ checkVisibilityCSS: true })) return { error: 'the element is hidden' };
   if (kind === 'type' && (e.readOnly || e.getAttribute('aria-readonly') === 'true')) return { error: 'the element is read-only' };
   if (r.width > 0 && r.height > 0) {
-    const hit = doc.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+    // Hit-test in the element's own tree: the document retargets a hit
+    // inside a shadow root to its host, which would read as "covered".
+    const root = e.getRootNode();
+    const hit = (typeof root.elementFromPoint === 'function' ? root : doc)
+      .elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
     const own = hit && (e.contains(hit) || hit.contains(e) || [...(e.labels || [])].some((l) => l.contains(hit)));
     if (!own) {
       const what = !hit ? 'nothing (outside the viewport)' : hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') +

@@ -3,10 +3,13 @@
 // browser-use/jev-ultrafast's snapshot.js. Each element gets a code-owned `n`
 // ref: a WeakMap keeps one id per real DOM node for the document's lifetime and
 // a Map keeps the live node the ref resolves to, so a ref never names a
-// different element. Worker overlays (`iii-*` ids) are never listed.
-(() => {
+// different element. A new document's registry numbers from `first`, above
+// every id the session handed out before, so a ref read on an earlier page
+// never resolves on a later one. Worker overlays (`iii-*` ids) are never
+// listed. Called with `first`; returns `next` for the session to remember.
+((first) => {
   if (!document.body) return null;
-  const R = (window.__iiiElements ||= { ids: new WeakMap(), nodes: new Map(), next: 1 });
+  const R = (window.__iiiElements ||= { ids: new WeakMap(), nodes: new Map(), next: first });
   const identity = (e) => {
     if (!R.ids.has(e)) R.ids.set(e, R.next++);
     const id = R.ids.get(e);
@@ -152,5 +155,6 @@
     can_scroll_down: scrollY + innerHeight < height - 2,
     elements,
     omitted,
+    next: R.next,
   };
-})()
+})

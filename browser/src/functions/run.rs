@@ -189,7 +189,8 @@ fn targets(page: &ElementsOutput) -> BTreeMap<&'static str, Vec<Candidate<'_>>> 
                 .or_default()
                 .push((e.r#ref.clone(), e, None));
         }
-        if has(e, "select") {
+        // A <select> with no enabled option offers nothing to pick.
+        if has(e, "select") && !e.options.is_empty() {
             let options = out.entry("SELECT").or_default();
             for (i, option) in e.options.iter().enumerate() {
                 options.push((format!("{}:{}", e.r#ref, i + 1), e, Some(option.as_str())));
@@ -582,6 +583,15 @@ mod tests {
             evaluations: vec![e],
         })
         .expect("valid judge request");
+    }
+
+    #[test]
+    fn a_select_without_options_is_never_offered() {
+        let mut p = page();
+        p.elements[1].options.clear();
+        let e = evaluation("file a bug", &p, &[], &BTreeMap::new());
+        assert!(!question_keys(&e, "operation").contains(&"SELECT".to_string()));
+        assert!(!e.questions.contains_key("select_target"));
     }
 
     #[test]

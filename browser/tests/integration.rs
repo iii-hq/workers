@@ -884,6 +884,8 @@ const FORM_HTML: &str = r#"<!doctype html><title>form</title>
 <button type="button" disabled>Archive</button>
 <input type="password" aria-label="Secret" value="x">
 </form>
+<div id="host"></div>
+<script>host.attachShadow({mode: 'open'}).innerHTML = '<button type="button" onclick="document.title=`shadow`">Shadow</button>';</script>
 <div id="shield" hidden></div>"#;
 
 fn element<'a>(table: &'a serde_json::Value, label: &str) -> &'a serde_json::Value {
@@ -1034,7 +1036,25 @@ async fn elements_table_guards_select_and_replace() {
     .await;
     assert_eq!(eval("document.title").await, "saved:Hello:bug");
 
-    // navigation kills n refs
+    // a control inside a shadow root is not "covered" by its host
+    let shadow_ref = snap["tree"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .find(|l| l.contains("button \"Shadow\""))
+        .and_then(|l| l.split("[ref=").nth(1))
+        .and_then(|rest| rest.split(']').next())
+        .expect("Shadow in snapshot")
+        .to_string();
+    call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": shadow_ref }),
+    )
+    .await;
+    assert_eq!(eval("document.title").await, "shadow");
+
+    // navigation kills n refs, even once the new page is read and its own
+    // controls are numbered
     call(
         "browser::navigate",
         json!({ "session_id": sid, "url": url }),
@@ -1047,6 +1067,19 @@ async fn elements_table_guards_select_and_replace() {
     .await
     .expect_err("an n ref from the previous document must not resolve");
     assert!(stale.to_string().contains("unknown ref"), "{stale}");
+    let fresh = call("browser::elements", json!({ "session_id": sid })).await;
+    assert_ne!(element(&fresh, "Save")["ref"], save_ref, "{fresh}");
+    let (old_title, old_kind) = (title_ref.clone(), kind_ref.clone());
+    for stale_ref in [&save_ref, &old_title, &old_kind] {
+        let stale = try_call(
+            "browser::act",
+            json!({ "session_id": sid, "action": "click", "ref": stale_ref }),
+        )
+        .await
+        .expect_err("an n ref from an earlier page must not name a control on this one");
+        assert!(stale.to_string().contains("unknown ref"), "{stale}");
+    }
+    assert_eq!(eval("document.title").await, "form");
 
     call("browser::sessions::stop", json!({ "session_id": sid })).await;
     client.shutdown_async().await;
