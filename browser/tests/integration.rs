@@ -539,6 +539,25 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
         .as_str()
         .expect("the page's button")
         .to_string();
+    let button_ref = |snapshot: &serde_json::Value| {
+        snapshot["tree"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.contains("button \"one\""))
+            .and_then(|l| l.split("[ref=").nth(1))
+            .and_then(|rest| rest.split(']').next())
+            .map(str::to_string)
+            .unwrap_or_else(|| panic!("button in snapshot: {snapshot}"))
+    };
+    let old_snapshot_ref = button_ref(
+        &call(
+            "browser::snapshot",
+            json!({ "session_id": regular_id }),
+            15_000,
+        )
+        .await,
+    );
 
     // Clearing everything closes the pages and the browser; the regular tab
     // stays listed asleep, the private one is gone for good.
@@ -585,6 +604,26 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
         })
         .await
         .expect_err("a ref from before the tab slept must not resolve");
+    assert!(stale.to_string().contains("unknown ref"), "{stale}");
+    // Snapshot refs too: the woken page's snapshot numbers on from before.
+    let new_snapshot_ref = button_ref(
+        &call(
+            "browser::snapshot",
+            json!({ "session_id": regular_id }),
+            15_000,
+        )
+        .await,
+    );
+    assert_ne!(new_snapshot_ref, old_snapshot_ref);
+    let stale = client
+        .trigger(TriggerRequest {
+            function_id: "browser::act".into(),
+            payload: json!({ "session_id": regular_id, "action": "click", "ref": old_snapshot_ref }),
+            action: None,
+            timeout_ms: Some(15_000),
+        })
+        .await
+        .expect_err("a snapshot ref from before the tab slept must not resolve");
     assert!(stale.to_string().contains("unknown ref"), "{stale}");
 
     call(

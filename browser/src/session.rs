@@ -432,10 +432,14 @@ pub struct Tab {
     /// ignores frames older than the last one it saw keeps working after
     /// the tab slept and woke into a fresh page.
     frame_seq: AtomicU64,
-    /// Above every `n` element id handed out in this tab: a new document's
-    /// registry numbers from here, so a ref read on an earlier page never
-    /// resolves on a later one. On the tab, like `frame_seq`, so it holds
-    /// across sleep and wake into a fresh page.
+    /// Ref name counters: snapshot `e` refs, pick `p` refs, and the floor
+    /// above every `n` element id (a new document's registry numbers from
+    /// there). Never reset, so a ref name is never reused for another node:
+    /// one from an earlier snapshot, page or pick fails as unknown instead of
+    /// naming something else. On the tab, like `frame_seq`, so they hold
+    /// across sleep and wake into a fresh page under the same session id.
+    pub ref_counter: AtomicU64,
+    pick_counter: AtomicU64,
     next_element_id: AtomicU64,
     url: Mutex<String>,
     title: Mutex<String>,
@@ -762,13 +766,10 @@ pub struct Session {
     seq: AtomicU64,
     /// Snapshot/pick refs (`e1`, `p3`, …) → CDP backend node ids. Cleared on
     /// navigation — backend ids do not survive a document swap. Snapshot
-    /// refs accumulate (names are session-monotonic), so a ref from an
+    /// refs accumulate (names are tab-monotonic), so a ref from an
     /// earlier snapshot of the same document still resolves to the node it
     /// named instead of colliding with a newer snapshot's numbering.
     pub refs: Mutex<HashMap<String, i64>>,
-    /// Session-monotonic counter behind snapshot ref names; never reset
-    /// within a session so ref names are unique across snapshots.
-    pub ref_counter: AtomicU64,
     /// Bumped on every top-document navigation. Snapshots report it so a
     /// caller can tell which document epoch its refs belong to.
     generation: AtomicU64,
@@ -790,7 +791,6 @@ pub struct Session {
     /// their paths, then removed on stop.
     upload_dirs: Mutex<Vec<PathBuf>>,
     upload_counter: AtomicU64,
-    pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -897,7 +897,10 @@ impl Session {
     }
 
     pub fn next_pick_ref(&self) -> String {
-        format!("p{}", self.pick_counter.fetch_add(1, Ordering::Relaxed) + 1)
+        format!(
+            "p{}",
+            self.tab.pick_counter.fetch_add(1, Ordering::Relaxed) + 1
+        )
     }
 
     pub fn resolve_ref(&self, r: &str) -> Option<i64> {
@@ -1205,6 +1208,8 @@ impl Sessions {
                 ttl_ms: record.ttl_ms,
                 last_used_ms: AtomicU64::new(now_ms() as u64),
                 frame_seq: AtomicU64::new(0),
+                ref_counter: AtomicU64::new(0),
+                pick_counter: AtomicU64::new(0),
                 next_element_id: AtomicU64::new(1),
                 url: Mutex::new(record.url),
                 title: Mutex::new(record.title),
@@ -1322,6 +1327,8 @@ impl Sessions {
             ttl_ms: request.ttl_ms,
             last_used_ms: AtomicU64::new(now_ms() as u64),
             frame_seq: AtomicU64::new(0),
+            ref_counter: AtomicU64::new(0),
+            pick_counter: AtomicU64::new(0),
             next_element_id: AtomicU64::new(1),
             url: Mutex::new("about:blank".to_string()),
             title: Mutex::new(String::new()),
@@ -1497,7 +1504,6 @@ impl Sessions {
             network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
             seq: AtomicU64::new(1),
             refs: Mutex::new(HashMap::new()),
-            ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             inflight: Mutex::new(HashMap::new()),
@@ -1506,7 +1512,6 @@ impl Sessions {
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
-            pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(Vec::new()),
         });
 
@@ -1808,6 +1813,8 @@ impl Sessions {
             ttl_ms: None,
             last_used_ms: AtomicU64::new(now as u64),
             frame_seq: AtomicU64::new(0),
+            ref_counter: AtomicU64::new(0),
+            pick_counter: AtomicU64::new(0),
             next_element_id: AtomicU64::new(1),
             url: Mutex::new(url.clone().unwrap_or_else(|| "about:blank".to_string())),
             title: Mutex::new(String::new()),
@@ -1836,7 +1843,6 @@ impl Sessions {
             network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
             seq: AtomicU64::new(1),
             refs: Mutex::new(HashMap::new()),
-            ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             inflight: Mutex::new(HashMap::new()),
@@ -1845,7 +1851,6 @@ impl Sessions {
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
-            pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
 

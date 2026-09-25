@@ -860,7 +860,7 @@ fn register_snapshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let result = crate::snapshot::serialize(
                     &tree.nodes,
                     cfg.max_snapshot_nodes as usize,
-                    &session.ref_counter,
+                    &session.tab.ref_counter,
                 );
                 session.append_refs(result.refs);
 
