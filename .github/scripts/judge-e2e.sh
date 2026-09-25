@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# judge hub + judge-typesafe + judge-semif + judge-laya over an isolated real engine (TypeSafe mocks, tiny GGUFs).
+# judge hub + judge-typesafe + judge-semif + judge-decider + judge-laya over an isolated real engine (TypeSafe mocks, tiny GGUFs).
 # Build the workers' UIs first (or let their build scripts do so). No inference key is needed.
 set -euo pipefail
 
@@ -40,6 +40,8 @@ run_suite judge-typesafe engine \
   independent_consumer_evaluates_mixed_primitives_and_lists_models \
   cancellation_is_scoped_to_the_persistent_engine_caller
 run_suite judge-semif engine \
+  tiny_gguf_answers_through_a_real_engine
+run_suite judge-decider engine \
   tiny_gguf_answers_through_a_real_engine
 run_suite judge-laya engine \
   tiny_checkpoint_answers_through_a_real_engine

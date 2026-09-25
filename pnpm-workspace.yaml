@@ -8,6 +8,7 @@
 packages:
   - iii-directory/ui
   - judge/ui
+  - judge-decider/ui
   - judge-semif/ui
   - judge-laya/ui
   - judge-typesafe/ui

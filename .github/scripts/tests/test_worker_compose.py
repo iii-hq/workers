@@ -56,8 +56,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 48
-    assert len(frontends) == 52
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 49
+    assert len(frontends) == 53
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -213,6 +213,7 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
         "ide",
         # New workers, never published for Windows: llama.cpp from source.
         "judge-semif",
+        "judge-decider",
         "judge-laya",
         "voice",
         "workflow",

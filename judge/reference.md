@@ -47,13 +47,13 @@ with a top-level `provider` string (lowercase letters, digits and hyphens, at
 most 64 bytes). A provider that is not registered on the engine returns
 `{"status":"error","code":"provider_unavailable"}`.
 
-Local providers (`judge-semif`, `judge-laya`) follow this entry: each loads its
+Local providers (`judge-decider`, `judge-semif`, `judge-laya`) follow this entry: each loads its
 model and registers its functions only while it is the default `provider`, and
 releases both (memory and VRAM included) when another provider becomes the
 default, so a request naming a local provider that is not the default answers
 `provider_unavailable`. `preload_all: true` keeps every local provider loaded
 instead, so requests can route between them at run time; each holds its memory
-(on a GPU, about 6 GB for SemIf and 1.5 GB for laya). Hosted providers such as
+(on a GPU, about 6 GB for decider or SemIf and 1.5 GB for laya). Hosted providers such as
 `judge-typesafe` are always registered. Switching takes a few seconds (the model
 loads from the hf-hub cache); the Console lists a local provider on standby as
 selectable.

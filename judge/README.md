@@ -70,9 +70,9 @@ See the [mixed Noul/Choice/Score example](reference.md#evaluate),
 
 **Settings → Workers → judge** selects the default provider from the workers
 registered as `judge-<provider>` (seeded from `JUDGE_PROVIDER`, else `typesafe`).
-Three ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
-[`judge-semif`](../judge-semif/) and [`judge-laya`](../judge-laya/) (open models
-running inside the worker); a request may name its own with a top-level
+Four ship today: [`judge-typesafe`](../judge-typesafe/) (TypeSafe's hosted JEV),
+[`judge-decider`](../judge-decider/), [`judge-semif`](../judge-semif/) and
+[`judge-laya`](../judge-laya/) (open models running inside the worker); a request may name its own with a top-level
 `provider`. Local providers load their model only while they are the default,
 unless **Keep every local provider loaded** (`preload_all`) is on, which lets
 requests route between them at run time. A new provider is a

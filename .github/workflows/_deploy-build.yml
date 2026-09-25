@@ -242,11 +242,11 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      # judge-semif and judge-laya compile llama.cpp with cmake and generate its bindings with
+      # judge-semif, judge-decider and judge-laya compile llama.cpp with cmake and generate its bindings with
       # bindgen (libclang). Linux x86_64 also builds the runtime-loaded Vulkan
       # backend module (headers + glslc); macOS links Metal (Xcode ships libclang).
       - name: Provision llama.cpp build tools (llama-runtime workers, Linux)
-        if: inputs.kind == 'rust-binary' && (inputs.worker == 'judge-semif' || inputs.worker == 'judge-laya') && runner.os == 'Linux'
+        if: inputs.kind == 'rust-binary' && (inputs.worker == 'judge-semif' || inputs.worker == 'judge-decider' || inputs.worker == 'judge-laya') && runner.os == 'Linux'
         run: sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
 
       - name: Build immutable artifact

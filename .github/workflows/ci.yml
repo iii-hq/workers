@@ -249,11 +249,11 @@ jobs:
             echo "ORT_PREFER_DYNAMIC_LINK=0"
           } >> "$GITHUB_ENV"
 
-      # judge-semif and judge-laya compile llama.cpp (cmake) and its bindings
+      # judge-semif, judge-decider and judge-laya compile llama.cpp (cmake) and its bindings
       # (bindgen needs libclang) through crates/llama-runtime; Linux x86_64
       # always builds the Vulkan module (loader headers, SPIR-V headers, glslc).
       - name: Provision llama.cpp build tools (llama-runtime workers)
-        if: matrix.worker == 'judge-semif' || matrix.worker == 'judge-laya'
+        if: matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya'
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
 
       - name: Run clippy
@@ -707,7 +707,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Provision llama.cpp build tools (llama-runtime workers)
-        if: steps.optout.outputs.skip != 'true' && (matrix.worker == 'judge-semif' || matrix.worker == 'judge-laya')
+        if: steps.optout.outputs.skip != 'true' && (matrix.worker == 'judge-semif' || matrix.worker == 'judge-decider' || matrix.worker == 'judge-laya')
         run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
 
       # Build with default features so we boot the same artifact that ships
@@ -793,6 +793,8 @@ jobs:
           # downloading gigabytes.
           if [[ "$WORKER" == judge-semif ]]; then
             export III_SEMIF_GGUF="$PWD/judge-semif/tests/fixtures/tiny-qwen3.gguf"
+          elif [[ "$WORKER" == judge-decider ]]; then
+            export III_DECIDER_GGUF="$PWD/judge-decider/tests/fixtures/tiny-qwen3.gguf"
           elif [[ "$WORKER" == judge-laya ]]; then
             export III_LAYA_CHECKPOINT_DIR="$PWD/judge-laya/tests/fixtures/tiny"
           fi
