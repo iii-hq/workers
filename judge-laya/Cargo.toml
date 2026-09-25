@@ -22,6 +22,9 @@ schemars = "0.8"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 candle-core = "0.11"
 candle-nn = "0.11"
+half = "2"
+memmap2 = "0.9"
+safetensors = "0.8"
 iii-llama-runtime = { path = "../crates/llama-runtime" }
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }

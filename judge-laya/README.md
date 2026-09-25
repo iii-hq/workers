@@ -20,9 +20,11 @@ The checkpoints load only while laya is the judge hub's **default provider**
 the hub's configuration and, when another provider becomes the default,
 unregisters its functions and releases the checkpoints (VRAM included); they
 load again when laya is selected. The first load downloads the checkpoint
-(843 MB for `laya`, 644 MB for `laya-multilingual`) and its encoder as an f16
-GGUF (791 MB for `laya`, from `iii-dev/laya-encoder-gguf`) from the Hugging
-Face Hub into the hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`).
+(843 MB for `laya`, 644 MB for `laya-multilingual`) from the Hugging Face Hub
+into the hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`) and
+converts its encoder once to the GGUF llama.cpp loads, under
+`$HF_HOME/judge-laya/` (keyed by model and revision; under a second for
+`laya`, 791 MB).
 The functions register only once the model answers; until then, and while
 another provider is the default, the hub reports `provider_unavailable`, also
 for calls that name `"provider": "laya"`. To keep the checkpoints loaded while another
@@ -31,13 +33,17 @@ provider is the default, turn on **Keep every local provider loaded**
 `judge::configuration-id` leaves the checkpoints loaded from the start.
 Air-gapped installs point `III_LAYA_CHECKPOINT_DIR` at
 a directory holding `model.safetensors`, `encoder/config.json`,
-`rl_agent_config.json`, `tokenizer.json` and `encoder.gguf`;
-`III_LAYA_ENCODER_GGUF` swaps only the GGUF of the default model.
+`rl_agent_config.json` and `tokenizer.json` (plus an optional pre-converted
+`encoder.gguf`; without it the encoder is converted into the temporary
+directory); `III_LAYA_ENCODER_GGUF` swaps only the GGUF of the default model,
+and `cargo run --example convert_encoder` converts one ahead of time.
 
-The GGUF holds the checkpoint's own (fine-tuned) `encoder.*` tensors, repacked
-by `scripts/convert-encoder.py` and converted with llama.cpp's
-`convert_hf_to_gguf.py`. Only f16 keeps laya's calibrated probabilities: Q8_0
-moved them by up to 0.04 and flipped one fixture answer at 512 tokens.
+The GGUF holds the checkpoint's own (fine-tuned) `encoder.*` tensors, renamed
+to llama.cpp's `modern-bert` layout by the worker (`src/gguf.rs`): its
+tensors match llama.cpp's `convert_hf_to_gguf.py` byte for byte on all three
+checkpoints (`tests/gguf.rs` checks the tiny one against that converter's
+output). Matrices stay f16: Q8_0 moved laya's calibrated probabilities by up
+to 0.04 and flipped one fixture answer at 512 tokens.
 
 ## Hardware selection
 
