@@ -5,13 +5,17 @@ use judge_contract::{
     CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, ModelsRequest,
     ModelsResponse, Stats,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 #[cfg(feature = "console-ui")]
 use std::sync::Arc;
 
 /// Handlers snapshot config once per call and share the loaded model. The
 /// returned handles unregister them, which releases the model once in-flight
 /// calls end.
+///
+/// Callers go through the `judge` hub, which selects the provider and checks
+/// its replies, so the provider surface stays out of default discovery
+/// (`engine::functions::list` without `include_internal`), as judge-typesafe's.
 pub fn register(iii: &IIIClient, config: SharedConfig, client: DeciderClient) -> Vec<FunctionRef> {
     let models_config = config.clone();
     let models_client = client.clone();
@@ -45,7 +49,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: DeciderClient) ->
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(EvaluateRequest))
         .expect("decider request schema serializes");
-    let evaluate = iii.register_function(crate::EVALUATE_ID, registration.request_format(request_schema).description("Evaluate Noul, Choice and Score questions against arbitrary JSON state with decider-4b (a GGUF LLM fine-tuned for typed decisions, read at the option labels) running inside this worker. Results are atomic; usage counts decoded prompt tokens. No credentials or endpoints are accepted in the request."));
+    let evaluate = iii.register_function(crate::EVALUATE_ID, registration.request_format(request_schema).description("Evaluate Noul, Choice and Score questions against arbitrary JSON state with decider-4b (a GGUF LLM fine-tuned for typed decisions, read at the option labels) running inside this worker. Results are atomic; usage counts decoded prompt tokens. No credentials or endpoints are accepted in the request.").metadata(json!({ "internal": true })));
 
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let config = models_config.clone();
@@ -76,7 +80,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: DeciderClient) ->
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(ModelsRequest))
         .expect("decider models request schema serializes");
-    let models = iii.register_function(crate::MODELS_ID, registration.request_format(request_schema).description("Describe the loaded decider model (name, pinned revision, device, context window); performs no inference."));
+    let models = iii.register_function(crate::MODELS_ID, registration.request_format(request_schema).description("Describe the loaded decider model (name, pinned revision, device, context window); performs no inference.").metadata(json!({ "internal": true })));
 
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let client = cancel_client.clone();
@@ -95,7 +99,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: DeciderClient) ->
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(CancelRequest))
         .expect("decider cancel request schema serializes");
-    let cancel = iii.register_function(crate::CANCEL_ID, registration.request_format(request_schema).description("Signal cancellation of an active evaluation owned by the calling worker; the current batch finishes, later batches are skipped. Requires the same worker replica as the original call."));
+    let cancel = iii.register_function(crate::CANCEL_ID, registration.request_format(request_schema).description("Signal cancellation of an active evaluation owned by the calling worker; the current batch finishes, later batches are skipped. Requires the same worker replica as the original call.").metadata(json!({ "internal": true })));
     vec![evaluate, models, cancel]
 }
 

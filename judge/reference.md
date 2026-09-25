@@ -18,7 +18,10 @@ builds, credentials and local tests live with each provider, for example
 - [Limits and compatibility](#limits-and-compatibility)
 - [Provider compatibility notes](#provider-compatibility-notes)
 
-The public functions are `judge::evaluate`, `judge::models::list` and `judge::cancel`.
+The public functions are `judge::evaluate` and `judge::cancel`; `judge::models::list`
+is internal: agents have no use for the catalog, so `engine::functions::list`
+shows it only with `include_internal: true`, and tools such as iii-directory
+and the Console call it by id.
 Each forwards to `judge-<provider>::evaluate`, `judge-<provider>::models::list`
 and `judge-<provider>::cancel`; provider workers register exactly those ids
 (`judge_contract::provider_function_id`) as internal functions, so
@@ -292,6 +295,9 @@ not total billing; zero observed tokens with incomplete usage do not mean zero
 cost. Record the effective model and failures alongside scores when comparing runs.
 
 ## List models
+
+`judge::models::list` is internal: callable by id, absent from default
+discovery.
 
 ```bash
 iii trigger judge::models::list --json '{}'

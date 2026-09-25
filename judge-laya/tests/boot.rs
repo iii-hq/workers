@@ -174,6 +174,9 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                         "judge-laya::on-config-change"
                             | "judge-laya::ui-content"
                             | "judge-laya::configuration-id"
+                            | "judge-laya::evaluate"
+                            | "judge-laya::models::list"
+                            | "judge-laya::cancel"
                     ) {
                         assert_eq!(value["metadata"]["internal"], true);
                     }

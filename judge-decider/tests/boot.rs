@@ -178,6 +178,9 @@ async fn check_boot(shutdown_signal: Option<&str>) {
                         "judge-decider::on-config-change"
                             | "judge-decider::ui-content"
                             | "judge-decider::configuration-id"
+                            | "judge-decider::evaluate"
+                            | "judge-decider::models::list"
+                            | "judge-decider::cancel"
                     ) {
                         assert_eq!(value["metadata"]["internal"], true);
                     }
