@@ -1,0 +1,867 @@
+{
+  "description": "Read one error group with its latest occurrence, and whether that occurrence's trace is still readable in the engine or only as the frozen snapshot.",
+  "function_id": "sentinel::groups::get",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "group_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "group_id"
+    ],
+    "title": "GroupGetRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ConfidenceV1": {
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "type": "string"
+      },
+      "DiagnosisCategoryV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "bug",
+              "configuration",
+              "dependency",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Real, but it went away on its own: a timeout, a restart, a race.",
+            "enum": [
+              "transient"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The failure is the designed behaviour of the code.",
+            "enum": [
+              "expected"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "DiagnosisEvidenceV1": {
+        "additionalProperties": false,
+        "description": "One thing the agent is pointing at, and why it matters.",
+        "properties": {
+          "excerpt": {
+            "description": "At most 400 characters of the thing itself.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/EvidenceKindV1"
+          },
+          "line": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "description": "Relative to the repository root, for `code`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "span_id": {
+            "description": "The span this points at, for `trace`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "excerpt",
+          "kind",
+          "why"
+        ],
+        "type": "object"
+      },
+      "DiagnosisRecordV1": {
+        "additionalProperties": false,
+        "description": "A recorded diagnosis with its provenance.",
+        "properties": {
+          "created_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "diagnosis": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DiagnosisV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "investigation_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "raw_result": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/definitions/DiagnosisSourceV1"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid": {
+            "description": "False when the stored payload no longer parses as a `DiagnosisV1` — the raw text is kept so nothing is lost silently.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "created_ms",
+          "group_id",
+          "id",
+          "investigation_id",
+          "model",
+          "session_id",
+          "source",
+          "valid"
+        ],
+        "type": "object"
+      },
+      "DiagnosisSourceV1": {
+        "oneOf": [
+          {
+            "description": "Recorded while the automatic first pass was running.",
+            "enum": [
+              "first_pass"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Recorded later, in the conversation.",
+            "enum": [
+              "conversation"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "DiagnosisV1": {
+        "additionalProperties": false,
+        "description": "What an investigation concluded. Written by the agent, never by this worker, and kept verbatim: a later version supersedes it without erasing it, so the same failure diagnosed twice can be compared.",
+        "properties": {
+          "category": {
+            "$ref": "#/definitions/DiagnosisCategoryV1"
+          },
+          "confidence": {
+            "$ref": "#/definitions/ConfidenceV1"
+          },
+          "missing_evidence": {
+            "description": "What would have raised the confidence. An honest `low` with this filled in is a better answer than a guess.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "proposed_fix": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ProposedFixV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "related_groups": {
+            "description": "Groups the agent believes share this cause. A suggestion the console shows; nothing is merged on the strength of it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reproduction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root_cause": {
+            "$ref": "#/definitions/RootCauseV1"
+          },
+          "summary": {
+            "description": "One to three sentences, written for a person.",
+            "type": "string"
+          },
+          "version_note": {
+            "description": "Drift between the checkout that was read and the version that failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "category",
+          "confidence",
+          "root_cause",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "ErrorSourceV1": {
+        "description": "Where an error event came from. Part of the fingerprint: the same text seen as a span and as a log is two groups, because one has a trace to investigate and the other does not.",
+        "oneOf": [
+          {
+            "enum": [
+              "report"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A span with status `error`.",
+            "enum": [
+              "trace"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "An OTel log record at ERROR.",
+            "enum": [
+              "log"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Reserved for the adapters the spec designs but v1 does not implement.",
+            "enum": [
+              "harness-turn"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "EvidenceKindV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "trace",
+              "log"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A place in the repository, as a path relative to its root.",
+            "enum": [
+              "code"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupStatusV1": {
+        "description": "The lifecycle of a group. `resolved` and `ignored` are human decisions; `regressed` is the one the ingest makes on its own, and the reason the worker exists.",
+        "oneOf": [
+          {
+            "enum": [
+              "new",
+              "diagnosed",
+              "resolved",
+              "ignored"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass of an investigation is running.",
+            "enum": [
+              "investigating"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A new occurrence after a resolve.",
+            "enum": [
+              "regressed"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "GroupSummaryV1": {
+        "additionalProperties": false,
+        "description": "A group as the list shows it.",
+        "properties": {
+          "exception_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": "string"
+          },
+          "first_seen_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "first_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "function_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_diagnosis": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "ignore_rule": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/IgnoreRuleV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_seen_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "occurrence_count": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "regressed_at_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "resolve_until_version_change": {
+            "type": "boolean"
+          },
+          "resolved_at_ms": {
+            "description": "When the group was last resolved and on which version — what a regression is measured against, so the page can say what came back.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "resolved_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "service_name": {
+            "description": "The worker that owns the failing function.",
+            "type": "string"
+          },
+          "sessions_affected": {
+            "description": "Distinct sessions this failure touched. Counted from its own table, so it stays true after occurrence rows are pruned.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/definitions/ErrorSourceV1"
+          },
+          "sparkline": {
+            "description": "Occurrences per hour for the last day, oldest first.",
+            "items": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/definitions/GroupStatusV1"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "first_seen_ms",
+          "has_diagnosis",
+          "id",
+          "last_seen_ms",
+          "namespace",
+          "occurrence_count",
+          "service_name",
+          "sessions_affected",
+          "source",
+          "sparkline",
+          "status",
+          "title"
+        ],
+        "type": "object"
+      },
+      "IgnoreRuleV1": {
+        "description": "How long an ignore lasts. Every rule keeps counting occurrences; what changes is when the group comes back to the open list.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "forever"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reopens after this many further occurrences.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "kind": {
+                "enum": [
+                  "occurrences"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "count",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reopens when the worker version changes.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "version_change"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "InvestigationModeV1": {
+        "description": "How an investigation was opened.",
+        "oneOf": [
+          {
+            "description": "A first pass runs automatically, then the conversation continues.",
+            "enum": [
+              "assisted"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The session is created with the evidence and nothing runs until a person speaks.",
+            "enum": [
+              "chat"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationStatusV1": {
+        "oneOf": [
+          {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass is in flight.",
+            "enum": [
+              "running"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "The first pass ended.",
+            "enum": [
+              "completed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "A chat-mode session: no first pass ever ran, the conversation is the investigation.",
+            "enum": [
+              "open"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "InvestigationSummaryV1": {
+        "additionalProperties": false,
+        "properties": {
+          "checkout_ref": {
+            "description": "The commit the mapped checkout was on when the pass started.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cost_usd": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "created_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "duration_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "first_pass_turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "investigated_version": {
+            "description": "The worker version the investigated occurrence ran on.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "$ref": "#/definitions/InvestigationModeV1"
+          },
+          "model": {
+            "type": "string"
+          },
+          "occurrence_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "description": "The harness session. The console opens this beside the page.",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/InvestigationStatusV1"
+          },
+          "turns": {
+            "description": "Observed after the fact, and informative only: this worker imposes no ceiling on an investigation.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_ms",
+          "group_id",
+          "id",
+          "mode",
+          "model",
+          "occurrence_id",
+          "session_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "OccurrenceSummaryV1": {
+        "additionalProperties": false,
+        "description": "One recorded instance of a group.",
+        "properties": {
+          "at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "has_evidence": {
+            "description": "Whether the frozen bundle is still kept for this one.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "namespace_ambiguous": {
+            "description": "The owner could not be pinned to one namespace.",
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settled": {
+            "description": "Whether the trace was re-read after the ancestors closed.",
+            "type": "boolean"
+          },
+          "source": {
+            "$ref": "#/definitions/ErrorSourceV1"
+          },
+          "span_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worker_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "at_ms",
+          "has_evidence",
+          "id",
+          "message",
+          "namespace_ambiguous",
+          "settled",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ProposedFixV1": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "risk": {
+            "$ref": "#/definitions/RiskV1"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "files",
+          "risk",
+          "steps"
+        ],
+        "type": "object"
+      },
+      "RiskV1": {
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "type": "string"
+      },
+      "RootCauseV1": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/definitions/DiagnosisEvidenceV1"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "description",
+          "evidence"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "active_investigation": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/InvestigationSummaryV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The first pass running right now, if one is."
+      },
+      "diagnosis": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/DiagnosisRecordV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The diagnosis in force, when an investigation recorded one."
+      },
+      "group": {
+        "$ref": "#/definitions/GroupSummaryV1"
+      },
+      "latest_investigation": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/InvestigationSummaryV1"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The most recent investigation of any state — what \"Continue in chat\" reopens."
+      },
+      "latest_occurrence": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/OccurrenceSummaryV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "message_sample": {
+        "description": "The message exactly as it was captured, after redaction.",
+        "type": "string"
+      },
+      "trace_available": {
+        "description": "Whether the trace behind the latest occurrence is still in the engine's ring. False means the frozen snapshot is all there is.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "group",
+      "message_sample",
+      "trace_available"
+    ],
+    "title": "GroupGetResponseV1",
+    "type": "object"
+  }
+}

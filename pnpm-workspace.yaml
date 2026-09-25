@@ -34,6 +34,7 @@ packages:
   - pi/ui
   - worktree/ui
   - security-scan/ui
+  - sentinel/ui
   - github/ui
   - llm-router/ui
   - provider-openai-codex/ui

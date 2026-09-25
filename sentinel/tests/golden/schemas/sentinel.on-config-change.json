@@ -1,0 +1,34 @@
+{
+  "description": "Internal configuration doorbell: re-reads the authoritative sentinel entry and swaps the live settings.",
+  "function_id": "sentinel::on-config-change",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Trigger payload for `<worker>::on-config-change`. Advisory only: handlers re-fetch the authoritative value and ignore it, so a direct call can never inject config.",
+    "properties": {
+      "id": {
+        "default": null,
+        "description": "Configuration id that changed.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "OnConfigChangeEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Ack returned by the internal `<worker>::on-config-change` handler.",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "OnConfigChangeResponse",
+    "type": "object"
+  }
+}

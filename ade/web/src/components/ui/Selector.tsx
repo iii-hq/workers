@@ -315,7 +315,11 @@ export function Selector<T extends string>({
           disabled={disabled}
         />
       ) : null}
-      <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+      {/* Modal, like Radix's own Select and DropdownMenu. A modal Dialog
+          locks scrolling to its content, and this list is portalled outside
+          it: without a lock of its own on top, every wheel and touch scroll
+          over the list is cancelled and a long catalog cannot be reached. */}
+      <PopoverPrimitive.Root open={open} onOpenChange={setOpen} modal>
         <PopoverPrimitive.Trigger asChild>
           <button
             id={id}

@@ -1,0 +1,313 @@
+{
+  "description": "Health and counters: whether ingest is enabled, the state of the engine's telemetry stores, per-source ingest counters (including values redacted on capture and traces lost before capture), group and investigation counts, and which mapped repositories are present on this machine.",
+  "function_id": "sentinel::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "title": "StatusRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "EngineStatusV1": {
+        "additionalProperties": false,
+        "properties": {
+          "logs": {
+            "type": "boolean"
+          },
+          "trace_store": {
+            "$ref": "#/definitions/TraceStoreStateV1"
+          }
+        },
+        "required": [
+          "logs",
+          "trace_store"
+        ],
+        "type": "object"
+      },
+      "GroupCountsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "ignored": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "last_seen_ms": {
+            "description": "The newest occurrence across every group: when ingest last recorded something.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "open": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "regressed": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "resolved": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ignored",
+          "open",
+          "regressed",
+          "resolved"
+        ],
+        "type": "object"
+      },
+      "IngestStatusV1": {
+        "additionalProperties": false,
+        "properties": {
+          "deduped": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "dropped_failed": {
+            "description": "Jobs that exhausted their retries.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "dropped_ignored_service": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "dropped_investigation": {
+            "description": "Traces tagged with an investigation session.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "dropped_not_ready": {
+            "description": "Deliveries refused because the durable dependencies were not claimed yet. They are redelivered, not lost.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "dropped_own_trace": {
+            "description": "Traces whose root is this worker — the cut that stops the monitor from monitoring itself.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "logs_pending_join": {
+            "description": "ERROR logs currently waiting for the error span of their trace.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "logs_unattributed": {
+            "description": "Logs promoted without resolving their trace: a bounded, visible gap.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "lost_before_capture": {
+            "description": "Traces that had already left the engine's ring when the job ran.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "paused_until": {
+            "description": "Set while the ingest breaker is open.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "phantom_ticks_dropped": {
+            "description": "Ticks for the ingest's own traces, filtered before the queue.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "processed_total": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "queued": {
+            "description": "Jobs handed to the durable queue and not yet completed.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "redactions": {
+            "description": "Values rewritten as `[redacted:<kind>]` on capture, all sources.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deduped",
+          "dropped_failed",
+          "dropped_ignored_service",
+          "dropped_investigation",
+          "dropped_not_ready",
+          "dropped_own_trace",
+          "logs_pending_join",
+          "logs_unattributed",
+          "lost_before_capture",
+          "phantom_ticks_dropped",
+          "processed_total",
+          "queued",
+          "redactions"
+        ],
+        "type": "object"
+      },
+      "InvestigationCountsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "open_sessions": {
+            "description": "Investigation sessions that are still open for conversation.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "running": {
+            "description": "First passes running right now.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "open_sessions",
+          "running"
+        ],
+        "type": "object"
+      },
+      "RepositoryStatusV1": {
+        "additionalProperties": false,
+        "properties": {
+          "exists": {
+            "description": "Whether the checkout is on this machine right now. False disables code access for its workers; grouping and evidence are unaffected.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "workers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "exists",
+          "id",
+          "path",
+          "workers"
+        ],
+        "type": "object"
+      },
+      "SourcesStatusV1": {
+        "additionalProperties": false,
+        "properties": {
+          "log": {
+            "type": "boolean"
+          },
+          "trace": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "log",
+          "trace"
+        ],
+        "type": "object"
+      },
+      "TraceStoreStateV1": {
+        "description": "State of the engine's in-memory telemetry stores, as the worker last observed them.",
+        "oneOf": [
+          {
+            "description": "Spans are being served.",
+            "enum": [
+              "memory"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "`engine::traces::*` reports its memory exporter is off: the worker runs on logs alone and the console shows the same empty state the traces page does.",
+            "enum": [
+              "disabled"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Not observed yet.",
+            "enum": [
+              "unknown"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "config_error": {
+        "description": "Why the stored configuration was refused, when it was. The worker runs on shipped defaults and stays disabled until a valid value arrives, so a typo reads as a named field here instead of a silent idle worker.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "enabled": {
+        "description": "True once the configuration says so *and* the durable dependencies are claimed. False means nothing is being ingested.",
+        "type": "boolean"
+      },
+      "engine": {
+        "$ref": "#/definitions/EngineStatusV1"
+      },
+      "groups": {
+        "$ref": "#/definitions/GroupCountsV1"
+      },
+      "ingest": {
+        "$ref": "#/definitions/IngestStatusV1"
+      },
+      "investigations": {
+        "$ref": "#/definitions/InvestigationCountsV1"
+      },
+      "repositories": {
+        "items": {
+          "$ref": "#/definitions/RepositoryStatusV1"
+        },
+        "type": "array"
+      },
+      "sources": {
+        "$ref": "#/definitions/SourcesStatusV1"
+      }
+    },
+    "required": [
+      "enabled",
+      "engine",
+      "groups",
+      "ingest",
+      "investigations",
+      "repositories",
+      "sources"
+    ],
+    "title": "StatusResponseV1",
+    "type": "object"
+  }
+}

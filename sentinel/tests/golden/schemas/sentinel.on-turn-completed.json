@@ -1,0 +1,59 @@
+{
+  "description": "Internal doorbell for a finished investigation turn; the status is re-read rather than trusted.",
+  "function_id": "sentinel::on-turn-completed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "The harness doorbell. Only a wake-up: the truth is re-read from `harness::status`, never taken from this payload.",
+    "properties": {
+      "reason": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "session_id": {
+        "default": "",
+        "type": "string"
+      },
+      "status": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "terminal": {
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "turn_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "TurnCompletedEventV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "handled": {
+        "description": "Whether this doorbell named an investigation of this worker's.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "handled"
+    ],
+    "title": "DoorbellResponseV1",
+    "type": "object"
+  }
+}
