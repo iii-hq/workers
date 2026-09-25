@@ -95,6 +95,15 @@
       if (value !== null) el[key] = value;
     }
     if (['checkbox', 'radio'].includes(e.type)) el.checked = String(e.checked);
+    // What the field is, beyond its label: lets a caller's `inputs` key such
+    // as `password` or `email` find the field whatever language labels it.
+    if (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA') {
+      if (e.tagName === 'INPUT' && e.type && e.type !== 'text') el.input_type = e.type;
+      const fieldName = e.getAttribute('name') || e.id;
+      if (fieldName) el.name = cap(fieldName, 60);
+      const auto = e.getAttribute('autocomplete');
+      if (auto && auto !== 'on' && auto !== 'off') el.autocomplete = cap(auto, 60);
+    }
     if (e.tagName === 'SELECT') {
       el.operations.push('select');
       el.value = cap([...e.selectedOptions].map((o) => o.label).join(', '), 120);
@@ -136,6 +145,8 @@
   return {
     url: location.href,
     title: document.title,
+    // Still loading: the document itself, or a region the page marks busy.
+    busy: document.readyState !== 'complete' || !!document.querySelector('[aria-busy="true"]'),
     text: words.join('\n').slice(0, 6000),
     can_scroll_up: scrollY > 0,
     can_scroll_down: scrollY + innerHeight < height - 2,

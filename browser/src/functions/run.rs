@@ -52,14 +52,16 @@ a field that already contains the requested value. Choose only an offered elemen
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RunInput {
     pub session_id: String,
-    /// The outcome to reach on the current page, in plain language
-    /// ("file a bug titled X with type Bug and save it"). Name every value
-    /// the outcome needs.
+    /// The end state to reach, as the page would show it ("logged in: the
+    /// dashboard shows", "the bug is saved and listed"), not the clicks to
+    /// make. Name every value the outcome needs.
     pub goal: String,
-    /// Text for fields the goal needs filled, keyed by field label (or `n`
-    /// ref): `{"Title": "Crash on save"}`. A label matches exactly
-    /// (case-insensitive) or, failing that, as the only key contained in it
-    /// or containing it. Only the keys are shown to the judge.
+    /// Text for fields the goal needs filled: `{"email": "…", "password":
+    /// "…"}`. A key reaches a field by its `n` ref, by its label (case,
+    /// accents and punctuation ignored: `email` for "E-mail"), by what the
+    /// field is (input type, `name`, `autocomplete`: `password` for a
+    /// password field labelled "Senha"), or as the only key the label
+    /// contains. Only the keys are shown to the judge.
     #[serde(default)]
     pub inputs: BTreeMap<String, String>,
     /// Most actions to execute (default 10, at most 60).
@@ -116,6 +118,8 @@ pub struct NeedsText {
     #[serde(rename = "ref")]
     pub r#ref: String,
     pub label: String,
+    /// The `inputs` keys the run was given, none of which matched this field.
+    pub input_keys: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -316,7 +320,9 @@ pub fn evaluation(
     Evaluation {
         id: EVALUATION_ID.into(),
         state: json!({
-            "page": { "url": page.url, "title": page.title, "text": page.text },
+            // `loading`: the page, or a request the last action started, has
+            // not finished — the rules' "results are still loading" evidence.
+            "page": { "url": page.url, "title": page.title, "text": page.text, "loading": page.busy },
             "elements": page.elements,
             "recent_actions": recent,
             // Values stay out: they can be secrets and the page shows what
@@ -380,31 +386,71 @@ pub fn decide(
     })
 }
 
-/// The caller's text for a field: by ref, by exact label, else by the only
-/// key the label contains or that contains the label (case-insensitive).
+/// Lowercase ASCII letters and digits only, Latin accents folded: `E-mail`
+/// and `email` compare equal, as do `Endereço` and `endereco`.
+fn fold(s: &str) -> String {
+    s.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'ñ' => 'n',
+            other => other,
+        })
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
+}
+
+/// The caller's text for a field, from the first rule that picks exactly
+/// one `inputs` key (two keys matching one rule is ambiguous: ask):
+/// 1. the key is the field's ref;
+/// 2. the key is its label (`email` for "E-mail");
+/// 3. the key names what the field is: its input type, `name`, or
+///    `autocomplete` hint (`password` for a password field labelled "Senha");
+/// 4. the key and the label contain one another.
 pub fn text_for<'a>(element: &Element, inputs: &'a BTreeMap<String, String>) -> Option<&'a str> {
     if let Some(v) = inputs.get(&element.r#ref) {
         return Some(v);
     }
-    let label = element.label.trim().to_lowercase();
-    if let Some((_, v)) = inputs
+    let keys: Vec<(String, &'a String)> = inputs
         .iter()
-        .find(|(k, _)| k.trim().to_lowercase() == label)
-    {
-        return Some(v);
-    }
-    let partial: Vec<&String> = inputs
-        .iter()
-        .filter(|(k, _)| {
-            let k = k.trim().to_lowercase();
-            !k.is_empty() && !label.is_empty() && (label.contains(&k) || k.contains(&label))
-        })
-        .map(|(_, v)| v)
+        .map(|(k, v)| (fold(k), v))
+        .filter(|(k, _)| !k.is_empty())
         .collect();
-    match partial.as_slice() {
-        [only] => Some(only.as_str()),
-        _ => None,
+    let label = fold(&element.label);
+    let mut semantics: Vec<String> = [&element.input_type, &element.name]
+        .into_iter()
+        .flatten()
+        .map(|s| fold(s))
+        .collect();
+    if let Some(hint) = &element.autocomplete {
+        // `current-password` → also `password`; `section-x email` → `email`.
+        semantics.extend(hint.split([' ', '-']).map(fold));
+        semantics.push(fold(hint));
     }
+    semantics.retain(|s| !s.is_empty());
+    let rules: [&dyn Fn(&str) -> bool; 3] = [
+        &|k| k == label,
+        &|k| semantics.iter().any(|s| s == k),
+        &|k| !label.is_empty() && (label.contains(k) || k.contains(label.as_str())),
+    ];
+    for rule in rules {
+        let hits: Vec<&String> = keys
+            .iter()
+            .filter(|(k, _)| rule(k))
+            .map(|(_, v)| *v)
+            .collect();
+        match hits.as_slice() {
+            [] => continue,
+            [only] => return Some(only.as_str()),
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// The last `STALL_STEPS` executed steps changed nothing (WAIT excluded).
@@ -429,6 +475,9 @@ mod tests {
             selected: None,
             expanded: None,
             operations: ops.iter().map(|s| s.to_string()).collect(),
+            input_type: None,
+            name: None,
+            autocomplete: None,
             options: Vec::new(),
             more_options: None,
         }
@@ -440,6 +489,7 @@ mod tests {
         ElementsOutput {
             url: "http://x.test/".into(),
             title: "form".into(),
+            busy: false,
             text: "Title Type Save".into(),
             can_scroll_up: false,
             can_scroll_down: true,
@@ -606,6 +656,54 @@ mod tests {
             None
         );
         assert_eq!(text_for(&title, &inputs(&[("email", "d")])), None);
+    }
+
+    #[test]
+    fn inputs_match_a_field_by_its_folded_label_or_by_what_it_is() {
+        let inputs = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let given = inputs(&[("email", "a@b.c"), ("password", "pw")]);
+        // "E-mail" folds to "email"
+        let mut email = el("n1", "textbox", "E-mail", &["type"]);
+        email.input_type = Some("email".into());
+        assert_eq!(text_for(&email, &given), Some("a@b.c"));
+        // a password field labelled in Portuguese still takes `password`
+        let mut senha = el("n3", "textbox", "Senha", &["type"]);
+        senha.input_type = Some("password".into());
+        assert_eq!(text_for(&senha, &given), Some("pw"));
+        // the autocomplete hint and the name count too
+        let mut pw = el("n4", "textbox", "Chave", &["type"]);
+        pw.autocomplete = Some("current-password".into());
+        assert_eq!(text_for(&pw, &given), Some("pw"));
+        let mut named = el("n5", "textbox", "Seu endereço", &["type"]);
+        named.name = Some("endereco".into());
+        assert_eq!(
+            text_for(&named, &inputs(&[("Endereço", "Rua 1")])),
+            Some("Rua 1")
+        );
+        // accents fold on both sides of a label match
+        assert_eq!(
+            text_for(
+                &el("n6", "textbox", "Endereço", &["type"]),
+                &inputs(&[("endereco", "Rua 2")])
+            ),
+            Some("Rua 2")
+        );
+        // two keys for one rule: ask instead of guessing
+        let both = inputs(&[("e-mail", "x"), ("EMAIL", "y")]);
+        assert_eq!(text_for(&email, &both), None);
+    }
+
+    #[test]
+    fn the_judge_sees_a_loading_page() {
+        let mut p = page();
+        p.busy = true;
+        let e = evaluation("log in", &p, &[], &BTreeMap::new());
+        assert_eq!(e.state["page"]["loading"], true);
     }
 
     #[test]

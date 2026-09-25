@@ -133,6 +133,15 @@ pub struct Element {
     pub expanded: Option<String>,
     /// `click`, `type` and/or `select`.
     pub operations: Vec<String>,
+    /// `<input>` type when not `text` (`email`, `password`, `tel`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+    /// The field's `name` (or `id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The field's `autocomplete` hint (`username`, `current-password`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocomplete: Option<String>,
     /// Enabled `<select>` option labels (first 50), for `act` `select`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
@@ -145,6 +154,11 @@ pub struct Element {
 pub struct ElementsOutput {
     pub url: String,
     pub title: String,
+    /// The page is still loading: the document, a region marked
+    /// `aria-busy`, or (in `browser::run`) requests an action started that
+    /// had not finished when the run stopped waiting.
+    #[serde(default)]
+    pub busy: bool,
     /// Visible text in the viewport, up to 6000 characters.
     pub text: String,
     pub can_scroll_up: bool,
@@ -162,6 +176,7 @@ impl ElementsOutput {
     /// The same page for progress purposes: document, text and controls.
     pub fn same_page(&self, other: &Self) -> bool {
         self.url == other.url
+            && self.busy == other.busy
             && self.text == other.text
             && self.elements == other.elements
             && self.can_scroll_up == other.can_scroll_up

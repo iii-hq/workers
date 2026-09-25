@@ -63,10 +63,17 @@ export const runResultSchema = z.object({
   status: z.string(),
   reason: z.string().optional(),
   steps: z.array(runStepSchema),
-  needs_text: z.object({ ref: z.string(), label: z.string() }).optional(),
+  needs_text: z
+    .object({
+      ref: z.string(),
+      label: z.string(),
+      input_keys: z.array(z.string()).optional(),
+    })
+    .optional(),
   page: z.object({
     url: z.string(),
     title: z.string(),
+    busy: z.boolean().optional(),
     elements: z.array(z.unknown()),
   }),
   judge_requests: z.number(),

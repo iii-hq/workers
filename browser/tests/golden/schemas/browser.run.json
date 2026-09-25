@@ -1,6 +1,6 @@
 {
   "function_id": "browser::run",
-  "description": "Drive the page toward a goal in one call: each step reads the visible controls, asks the judge worker which operation (click, type, select, scroll, wait, done, blocked) and which element, and acts, until the judge says done or blocked, a field needs text you did not give in `inputs`, nothing changes three times, or the step/time budget runs out. Returns the steps taken and the final page table; verify the outcome there, done is the judge's reading, not proof. Without a judge worker it returns status judge_unavailable with the page table: drive with browser::elements and browser::act instead.",
+  "description": "Drive the page toward a goal in one call (fill and submit a form, log in, pick filters, step through a wizard): each step reads the visible controls, asks the judge worker which operation (click, type, select, scroll, wait, done, blocked) and which element, acts, and waits for the requests the action started, until the judge says done or blocked, a field needs text you did not give in `inputs`, nothing changes three times, or the step/time budget runs out. State the goal as the end state to reach (\"logged in: the dashboard shows\"), not the clicks. Returns the steps taken and the final page table; read it before reporting success, done is the judge's reading, not proof (a login can end on an error). Without a judge worker it returns status judge_unavailable with the page table: drive with browser::elements and browser::act instead.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "RunInput",
@@ -11,11 +11,11 @@
     ],
     "properties": {
       "goal": {
-        "description": "The outcome to reach on the current page, in plain language (\"file a bug titled X with type Bug and save it\"). Name every value the outcome needs.",
+        "description": "The end state to reach, as the page would show it (\"logged in: the dashboard shows\", \"the bug is saved and listed\"), not the clicks to make. Name every value the outcome needs.",
         "type": "string"
       },
       "inputs": {
-        "description": "Text for fields the goal needs filled, keyed by field label (or `n` ref): `{\"Title\": \"Crash on save\"}`. A label matches exactly (case-insensitive) or, failing that, as the only key contained in it or containing it. Only the keys are shown to the judge.",
+        "description": "Text for fields the goal needs filled: `{\"email\": \"…\", \"password\": \"…\"}`. A key reaches a field by its `n` ref, by its label (case, accents and punctuation ignored: `email` for \"E-mail\"), by what the field is (input type, `name`, `autocomplete`: `password` for a password field labelled \"Senha\"), or as the only key the label contains. Only the keys are shown to the judge.",
         "default": {},
         "type": "object",
         "additionalProperties": {
@@ -115,6 +115,13 @@
           "role"
         ],
         "properties": {
+          "autocomplete": {
+            "description": "The field's `autocomplete` hint (`username`, `current-password`, …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "checked": {
             "type": [
               "string",
@@ -122,6 +129,13 @@
             ]
           },
           "expanded": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_type": {
+            "description": "`<input>` type when not `text` (`email`, `password`, `tel`, …).",
             "type": [
               "string",
               "null"
@@ -139,6 +153,13 @@
             ],
             "format": "uint32",
             "minimum": 0.0
+          },
+          "name": {
+            "description": "The field's `name` (or `id`).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "operations": {
             "description": "`click`, `type` and/or `select`.",
@@ -188,6 +209,11 @@
           "url"
         ],
         "properties": {
+          "busy": {
+            "description": "The page is still loading: the document, a region marked `aria-busy`, or (in `browser::run`) requests an action started that had not finished when the run stopped waiting.",
+            "default": false,
+            "type": "boolean"
+          },
           "can_scroll_down": {
             "type": "boolean"
           },
@@ -229,10 +255,18 @@
       "NeedsText": {
         "type": "object",
         "required": [
+          "input_keys",
           "label",
           "ref"
         ],
         "properties": {
+          "input_keys": {
+            "description": "The `inputs` keys the run was given, none of which matched this field.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "label": {
             "type": "string"
           },

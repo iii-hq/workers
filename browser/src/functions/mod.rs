@@ -118,13 +118,16 @@ pub const ACT_DESC: &str =
      ref replaces its value. Returns once the page had a moment to react.";
 pub const RUN_ID: &str = "browser::run";
 pub const RUN_DESC: &str =
-    "Drive the page toward a goal in one call: each step reads the visible controls, asks the \
-     judge worker which operation (click, type, select, scroll, wait, done, blocked) and which \
-     element, and acts, until the judge says done or blocked, a field needs text you did not \
-     give in `inputs`, nothing changes three times, or the step/time budget runs out. Returns \
-     the steps taken and the final page table; verify the outcome there, done is the judge's \
-     reading, not proof. Without a judge worker it returns status judge_unavailable with the \
-     page table: drive with browser::elements and browser::act instead.";
+    "Drive the page toward a goal in one call (fill and submit a form, log in, pick filters, \
+     step through a wizard): each step reads the visible controls, asks the judge worker which \
+     operation (click, type, select, scroll, wait, done, blocked) and which element, acts, and \
+     waits for the requests the action started, until the judge says done or blocked, a field \
+     needs text you did not give in `inputs`, nothing changes three times, or the step/time \
+     budget runs out. State the goal as the end state to reach (\"logged in: the dashboard \
+     shows\"), not the clicks. Returns the steps taken and the final page table; read it before \
+     reporting success, done is the judge's reading, not proof (a login can end on an error). \
+     Without a judge worker it returns status judge_unavailable with the page table: drive with \
+     browser::elements and browser::act instead.";
 pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
@@ -1540,6 +1543,44 @@ fn register_run(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
+/// A request counts as the action's when it starts within this long.
+const NETWORK_START_GRACE_MS: u64 = 150;
+/// Quiet after the action's last request finishes, for a follow-up request.
+const NETWORK_QUIET_MS: u64 = 250;
+/// Longest wait for an action's requests; past it the page reads `busy`.
+const NETWORK_SETTLE_MAX_MS: u64 = 5_000;
+
+/// Wait until the requests started since `since_ms` have finished and the
+/// network stayed quiet for `NETWORK_QUIET_MS` (or, when none started,
+/// `NETWORK_START_GRACE_MS` passed). False when some were still in flight
+/// at the cap. Long-lived requests (SSE, long polls) cost the cap once.
+async fn settle_network(session: &Session, since_ms: i64, deadline: std::time::Instant) -> bool {
+    let begun = std::time::Instant::now();
+    let cap = (begun + Duration::from_millis(NETWORK_SETTLE_MAX_MS)).min(deadline);
+    let mut quiet_since: Option<std::time::Instant> = None;
+    let mut saw_request = false;
+    loop {
+        let pending = session.pending_requests_since(since_ms);
+        let now = std::time::Instant::now();
+        if pending > 0 {
+            saw_request = true;
+            quiet_since = None;
+        } else if !saw_request {
+            if now.duration_since(begun) >= Duration::from_millis(NETWORK_START_GRACE_MS) {
+                return true;
+            }
+        } else if now.duration_since(*quiet_since.get_or_insert(now))
+            >= Duration::from_millis(NETWORK_QUIET_MS)
+        {
+            return true;
+        }
+        if now >= cap {
+            return pending == 0;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// `observe`, retried briefly while a navigation swaps the document.
 async fn observe_settled(session: &Session) -> Result<elements::ElementsOutput, Error> {
     let mut last = None;
@@ -1571,6 +1612,9 @@ async fn drive(
         .clamp(1, run::MAX_STEPS) as usize;
     let mut steps: Vec<run::RunStep> = Vec::new();
     let mut judge_requests = 0u32;
+    // A DONE is taken once the page reads as the judge saw it; the first
+    // DONE on a page that has since changed is asked again instead.
+    let mut done_rechecked = false;
     let mut page = observe_settled(session).await?;
     let (status, reason, needs_text) = loop {
         // Re-asking after a stale choice costs a request, never an action.
@@ -1598,7 +1642,17 @@ async fn drive(
             Err(e) => break (RunStatus::JudgeUnavailable, Some(e.to_string()), None),
         };
         let text = match &decision.action {
-            Action::Done => break (RunStatus::Done, None, None),
+            Action::Done => {
+                if !done_rechecked {
+                    done_rechecked = true;
+                    let fresh = observe_settled(session).await?;
+                    if !fresh.same_page(&page) {
+                        page = fresh;
+                        continue;
+                    }
+                }
+                break (RunStatus::Done, None, None);
+            }
             Action::Blocked => break (RunStatus::Blocked, None, None),
             Action::Type(e) => match run::text_for(e, &req.inputs) {
                 Some(text) => Some(text.to_string()),
@@ -1606,6 +1660,7 @@ async fn drive(
                     let ask = run::NeedsText {
                         r#ref: e.r#ref.clone(),
                         label: e.label.clone(),
+                        input_keys: req.inputs.keys().cloned().collect(),
                     };
                     break (RunStatus::NeedsText, None, Some(ask));
                 }
@@ -1647,13 +1702,28 @@ async fn drive(
             }
             Action::Wait | Action::Done | Action::Blocked => {}
         }
+        let acted_ms = now_ms();
         let outcome = if act.action.is_empty() {
             tokio::time::sleep(Duration::from_millis(150)).await;
             Ok(String::new())
         } else {
             perform(session, &act).await
         };
-        let next = observe_settled(session).await?;
+        // Read the page only once what the action started has finished: a
+        // submit shows "Signing in…" until its request answers, and a DONE
+        // read off that frame reports an outcome that has not happened.
+        let settled = match &decision.action {
+            Action::Click(_) | Action::Select(..) => {
+                settle_network(session, acted_ms, deadline).await
+            }
+            // WAIT means "results are still loading": wait for what is.
+            Action::Wait => {
+                settle_network(session, acted_ms - NETWORK_SETTLE_MAX_MS as i64, deadline).await
+            }
+            _ => true,
+        };
+        let mut next = observe_settled(session).await?;
+        next.busy |= !settled;
         steps.push(run::RunStep {
             operation: decision.operation.clone(),
             r#ref: decision.element().map(|e| e.r#ref.clone()),

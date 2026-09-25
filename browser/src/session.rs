@@ -771,6 +771,9 @@ pub struct Session {
     /// `browser::snapshot` diff mode. None before the first snapshot and
     /// after a navigation.
     pub snapshot_keys: Mutex<Option<Vec<String>>>,
+    /// Requests the page has started and not finished (id → start epoch ms),
+    /// so `browser::run` can wait for what an action triggered.
+    pub inflight: Mutex<HashMap<String, i64>>,
     /// Cross-call state for `browser::execute`; lives until the page closes.
     pub exec_state: Mutex<serde_json::Value>,
     /// Serializes explicit navigation, execute, and file-input attachment.
@@ -920,6 +923,16 @@ impl Session {
 
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
+    }
+
+    /// Requests started at or after `since_ms` that have not finished.
+    pub fn pending_requests_since(&self, since_ms: i64) -> usize {
+        self.inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter(|started| **started >= since_ms)
+            .count()
     }
 
     /// True while the Chromium screencast is running (at least one consumer:
@@ -1470,6 +1483,7 @@ impl Sessions {
             ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
+            inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             navigation_error: Mutex::new(None),
@@ -1807,6 +1821,7 @@ impl Sessions {
             ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
+            inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             navigation_error: Mutex::new(None),
@@ -2815,16 +2830,40 @@ async fn spawn_event_pumps(
         .await
     {
         let pending = pending.clone();
+        let s = session.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
+                let id = event.request_id.inner().to_string();
+                {
+                    let mut inflight = s.inflight.lock().unwrap_or_else(|p| p.into_inner());
+                    if inflight.len() >= 2_048 {
+                        inflight.clear();
+                    }
+                    inflight.insert(id.clone(), now_ms());
+                }
                 let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
                 if pending.len() >= 2_048 {
                     pending.clear();
                 }
                 pending.insert(
-                    event.request_id.inner().to_string(),
+                    id,
                     (event.request.method.clone(), event.request.url.clone()),
                 );
+            }
+        }));
+    }
+
+    if let Ok(mut events) = page
+        .event_listener::<cdp_network::EventLoadingFinished>()
+        .await
+    {
+        let s = session.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                s.inflight
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(event.request_id.inner());
             }
         }));
     }
@@ -2868,6 +2907,10 @@ async fn spawn_event_pumps(
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
                 let key = event.request_id.inner().to_string();
+                s.inflight
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&key);
                 let (method, url) = {
                     let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
                     pending

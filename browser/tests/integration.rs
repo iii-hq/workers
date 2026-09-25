@@ -1269,3 +1269,171 @@ async fn run_without_a_judge_returns_the_page_and_touches_nothing() {
     call("browser::sessions::stop", json!({ "session_id": sid })).await;
     client.shutdown_async().await;
 }
+
+/// Like `serve_html`, but a request for `/slow` answers after 1.2 s: a login
+/// endpoint a submit waits on.
+fn serve_html_with_slow_api(html: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let (kind, body) =
+                    if request.starts_with("GET /slow") || request.starts_with("POST /slow") {
+                        std::thread::sleep(Duration::from_millis(1200));
+                        ("application/json", r#"{"ok":false}"#)
+                    } else {
+                        ("text/html; charset=utf-8", html)
+                    };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    format!("http://{addr}/")
+}
+
+/// A login whose submit hides the form behind "Entrando…" until the API
+/// answers, then shows the error — fields labelled in Portuguese.
+const LOGIN_HTML: &str = r#"<!doctype html><title>BeQuali</title>
+<form id="f" onsubmit="event.preventDefault()">
+<label>E-mail <input type="email" name="user_email"></label>
+<label>Senha <input type="password" name="pw"></label>
+<button type="button" id="go">Entrar</button>
+</form>
+<p id="msg"></p>
+<script>
+document.getElementById('go').onclick = async () => {
+  const f = document.getElementById('f'), msg = document.getElementById('msg');
+  f.hidden = true; msg.textContent = 'Entrando…';
+  await fetch('/slow', { method: 'POST' });
+  f.hidden = false; msg.textContent = 'E-mail ou senha inválidos';
+};
+</script>"#;
+
+/// A judge that, like the live one, calls the goal done as soon as the
+/// login was submitted: fills both fields, clicks Entrar, then DONE.
+fn eager_login_judge(request: &serde_json::Value) -> serde_json::Value {
+    let evaluation = &request["evaluations"][0];
+    let state = &evaluation["state"];
+    let questions = &evaluation["questions"];
+    let pick = |question: &str, choice: &str| {
+        let probabilities: serde_json::Map<String, serde_json::Value> = questions[question]
+            ["criteria"]
+            .as_object()
+            .expect("choice criteria")
+            .keys()
+            .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+            .collect();
+        json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.9 })
+    };
+    let text = state["page"]["text"].as_str().unwrap_or_default();
+    let field = |label: &str| {
+        state["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["label"] == label)
+            .cloned()
+    };
+    let mut answers = serde_json::Map::new();
+    let submitted = text.contains("Entrando") || text.contains("inválidos");
+    let target = if submitted {
+        None
+    } else if field("E-mail").is_some_and(|e| e.get("value").is_none()) {
+        Some(("TYPE_TEXT", "type_text_target", field("E-mail").unwrap()))
+    } else if field("Senha").is_some_and(|e| e.get("value").is_none()) {
+        Some(("TYPE_TEXT", "type_text_target", field("Senha").unwrap()))
+    } else {
+        Some(("CLICK", "click_target", field("Entrar").unwrap()))
+    };
+    match target {
+        None => {
+            answers.insert("operation".into(), pick("operation", "DONE"));
+        }
+        Some((operation, head, element)) => {
+            answers.insert("operation".into(), pick("operation", operation));
+            if questions.get(head).is_some() {
+                answers.insert(head.into(), pick(head, element["ref"].as_str().unwrap()));
+            }
+        }
+    }
+    json!({
+        "status": "ok",
+        "model": "scripted",
+        "results": { evaluation["id"].as_str().unwrap(): { "answers": answers } },
+        "stats": { "attempts": 1, "requests": 1, "questions": answers.len(),
+                   "input_tokens": 0, "output_tokens": 0, "elapsed_ms": 1, "usage_complete": false },
+    })
+}
+
+#[tokio::test]
+async fn run_waits_for_the_submit_it_triggered_and_matches_inputs_by_field() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    client.register_function(
+        "judge::evaluate",
+        RegisterFunction::new_async(|request: serde_json::Value| async move {
+            Ok::<_, iii_sdk::errors::Error>(eager_login_judge(&request))
+        }),
+    );
+    sleep(Duration::from_millis(800)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(60),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(50_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+    let started = call(
+        "browser::sessions::start",
+        json!({ "url": serve_html_with_slow_api(LOGIN_HTML) }),
+    )
+    .await;
+    let sid = started["session_id"].as_str().unwrap().to_string();
+
+    // `email` / `password` reach "E-mail" / "Senha" through the label and
+    // the field type; the run ends on the login's answer, not on "Entrando…"
+    let run = call(
+        "browser::run",
+        json!({ "session_id": sid, "goal": "Log in.",
+                "inputs": { "email": "a@b.test", "password": "pw" } }),
+    )
+    .await;
+    assert_eq!(run["status"], "done", "{run}");
+    let ops: Vec<&str> = run["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["operation"].as_str().unwrap())
+        .collect();
+    assert_eq!(ops, ["TYPE_TEXT", "TYPE_TEXT", "CLICK"], "{run}");
+    let text = run["page"]["text"].as_str().unwrap();
+    assert!(text.contains("E-mail ou senha inválidos"), "{run}");
+    assert!(!text.contains("Entrando"), "{run}");
+    assert_eq!(run["page"]["busy"], false, "{run}");
+
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}

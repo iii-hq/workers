@@ -296,8 +296,11 @@ export function RunView({ input, output }: { input: unknown; output: unknown }) 
       ) : null}
       {res.needs_text ? (
         <ActionLine icon={<TriangleAlert size={16} aria-hidden />} tone="warn">
-          needs text for “{res.needs_text.label}” ({res.needs_text.ref}): type it with
-          browser::act or pass it in inputs
+          needs text for “{res.needs_text.label}” ({res.needs_text.ref})
+          {res.needs_text.input_keys?.length
+            ? `, no inputs key matched (${res.needs_text.input_keys.join(', ')})`
+            : ''}
+          : type it with browser::act or pass it in inputs
         </ActionLine>
       ) : null}
       {res.steps.length > 0 ? (
@@ -315,6 +318,7 @@ export function RunView({ input, output }: { input: unknown; output: unknown }) 
         <span className="br-ui-break">{res.page.url}</span>
         {res.page.title ? <span className="br-ui-faint"> · {truncate(res.page.title, 60)}</span> : null}
         <span className="br-ui-dim"> · {res.page.elements.length} controls</span>
+        {res.page.busy ? <span className="br-ui-warn"> · still loading</span> : null}
       </ActionLine>
     </div>
   )

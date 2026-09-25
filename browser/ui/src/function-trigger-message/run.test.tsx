@@ -95,7 +95,7 @@ describe('browser::run card', () => {
       steps: [
         { operation: 'CLICK', label: 'Save', probability: 0.9, page_changed: false, judge_ms: 200, error: 'click on n7 refused: the element is covered by div#consent' },
       ],
-      needs_text: { ref: 'n1', label: 'Title' },
+      needs_text: { ref: 'n1', label: 'Title', input_keys: ['summary'] },
       page,
       judge_requests: 2,
       elapsed_ms: 900,
@@ -103,6 +103,7 @@ describe('browser::run card', () => {
     expect(html).toContain('data-variant="warn"')
     expect(html).toContain('needs text')
     expect(html).toContain('covered by div#consent')
+    expect(html).toContain('no inputs key matched (summary)')
     const down = render({
       status: 'judge_unavailable',
       reason: 'judge unavailable: provider_unavailable',
@@ -112,6 +113,8 @@ describe('browser::run card', () => {
       elapsed_ms: 12,
     })
     expect(down).toContain('judge unavailable: provider_unavailable')
+    const loading = render({ ...{ status: 'max_steps', steps: [], judge_requests: 1, elapsed_ms: 9 }, page: { ...page, busy: true } })
+    expect(loading).toContain('still loading')
   })
 
   it('leaves a payload that is not a run to the generic card', () => {

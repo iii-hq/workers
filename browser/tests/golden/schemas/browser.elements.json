@@ -28,6 +28,11 @@
       "url"
     ],
     "properties": {
+      "busy": {
+        "description": "The page is still loading: the document, a region marked `aria-busy`, or (in `browser::run`) requests an action started that had not finished when the run stopped waiting.",
+        "default": false,
+        "type": "boolean"
+      },
       "can_scroll_down": {
         "type": "boolean"
       },
@@ -76,6 +81,13 @@
           "role"
         ],
         "properties": {
+          "autocomplete": {
+            "description": "The field's `autocomplete` hint (`username`, `current-password`, …).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "checked": {
             "type": [
               "string",
@@ -83,6 +95,13 @@
             ]
           },
           "expanded": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_type": {
+            "description": "`<input>` type when not `text` (`email`, `password`, `tel`, …).",
             "type": [
               "string",
               "null"
@@ -100,6 +119,13 @@
             ],
             "format": "uint32",
             "minimum": 0.0
+          },
+          "name": {
+            "description": "The field's `name` (or `id`).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "operations": {
             "description": "`click`, `type` and/or `select`.",

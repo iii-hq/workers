@@ -255,11 +255,14 @@ default stream is `browser::crawl`.
 A multi-step form or flow is one call instead of an act/read round trip per
 click:
 
-1. `browser::run { session_id, goal, inputs }`: state the whole outcome in
-   `goal` and give every value to type in `inputs`, keyed by field label.
-   Values go to the page only; the judge sees the keys.
-2. `done`: check `page` (the final table) against the goal; the judge's
-   done is not proof. `needs_text`: type the named field with
+1. `browser::run { session_id, goal, inputs }`: state the end state in
+   `goal` ("logged in: the dashboard shows"), not the clicks, and give every
+   value to type in `inputs` (`email`, `password` or the field labels work).
+   Values go to the page only; the judge sees the keys. The run waits for
+   the requests each click starts, so the page it returns is the outcome.
+2. `done`: check `page` (the final table) against the goal before you
+   report success; the judge's done is not proof (a login can end on
+   "invalid password"). `page.busy` means it was still loading. `needs_text`: type the named field with
    `browser::act` or rerun with that input. `blocked`/`stalled`/`max_steps`:
    read `steps` (each has `error` when an action was refused) and continue
    by hand.
