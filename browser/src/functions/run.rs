@@ -352,15 +352,16 @@ pub fn evaluation(
     }
 }
 
-/// Whether the `complete` check lets a DONE stand. A provider that did not
-/// answer it (or answered out of range) keeps the DONE.
+/// Whether the `complete` check lets a DONE stand. A missing or
+/// out-of-range answer does not: an unchecked DONE is the premature stop
+/// the check exists to catch.
 fn complete(answers: &BTreeMap<String, Value>) -> bool {
     answers
         .get("complete")
         .and_then(|a| a.get("noul"))
         .and_then(Value::as_f64)
         .filter(|p| (0.0..=1.0).contains(p))
-        .is_none_or(|p| p >= COMPLETE_MIN)
+        .is_some_and(|p| p >= COMPLETE_MIN)
 }
 
 /// Read the judge's answers into an action. Only the chosen operation's
@@ -683,8 +684,9 @@ mod tests {
             decide(&answers(Some(0.9)), &p).unwrap().action,
             Action::Done
         );
-        // a provider that skipped the check keeps its DONE
-        assert_eq!(decide(&answers(None), &p).unwrap().action, Action::Done);
+        // a missing or out-of-range answer is not a pass
+        assert_eq!(decide(&answers(None), &p).unwrap().operation, "CLICK");
+        assert_eq!(decide(&answers(Some(1.5)), &p).unwrap().operation, "CLICK");
     }
 
     #[test]
@@ -717,7 +719,13 @@ mod tests {
         );
         assert!((d.probability - 0.9).abs() < 1e-9);
 
-        let answers = BTreeMap::from([("operation".to_string(), choice("DONE", &ops))]);
+        let answers = BTreeMap::from([
+            ("operation".to_string(), choice("DONE", &ops)),
+            (
+                "complete".to_string(),
+                json!({ "type": "noul", "noul": 0.9 }),
+            ),
+        ]);
         assert_eq!(decide(&answers, &p).unwrap().action, Action::Done);
 
         // the only typeable field needs no target answer

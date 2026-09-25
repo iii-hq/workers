@@ -974,6 +974,11 @@ impl Session {
         let mut refs = self.refs.lock().unwrap_or_else(|p| p.into_inner());
         if refs.len().saturating_add(map.len()) > MAX_REFS {
             refs.clear();
+            // A cached `d` name must never outlive its entry in `refs`.
+            self.dom_names
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
         }
         refs.extend(map);
     }

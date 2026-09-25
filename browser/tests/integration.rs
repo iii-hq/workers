@@ -1203,6 +1203,21 @@ async fn history_moves_return_promptly_even_from_the_back_forward_cache() {
         let payload = json!({ "session_id": sid, "expression": expression });
         async move { call("browser::evaluate", payload).await["value"].clone() }
     };
+    // a move within the document (pushState, a fragment) returns too
+    eval("history.pushState({}, '', '#two')").await;
+    let t = std::time::Instant::now();
+    let within = call(
+        "browser::history",
+        json!({ "session_id": sid, "action": "back" }),
+    )
+    .await;
+    assert_eq!(within["url"], a, "{within}");
+    assert!(
+        t.elapsed().as_millis() < 10_000,
+        "same-document back took {:?}",
+        t.elapsed()
+    );
+
     // survives only a back/forward-cache restore
     eval("window.kept = true").await;
     call("browser::navigate", json!({ "session_id": sid, "url": b })).await;
@@ -1666,6 +1681,8 @@ fn eager_login_judge(request: &serde_json::Value) -> serde_json::Value {
     match target {
         None => {
             answers.insert("operation".into(), pick("operation", "DONE"));
+            // eager all the way: its completion check agrees
+            answers.insert("complete".into(), json!({ "type": "noul", "noul": 0.9 }));
         }
         Some((operation, head, element)) => {
             answers.insert("operation".into(), pick("operation", operation));

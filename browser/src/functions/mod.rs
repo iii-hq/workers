@@ -2961,15 +2961,28 @@ fn register_upload(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
-/// The top frame committed a history move and its document is complete.
+/// A history move landed: the top frame committed a document, or the main
+/// frame moved within its document; then the document is complete.
 async fn history_committed(
     session: &Session,
-    events: &mut chromiumoxide::listeners::EventStream<cdp_page::EventFrameNavigated>,
+    frames: &mut chromiumoxide::listeners::EventStream<cdp_page::EventFrameNavigated>,
+    within: &mut chromiumoxide::listeners::EventStream<cdp_page::EventNavigatedWithinDocument>,
+    main: Option<&cdp_page::FrameId>,
 ) {
     use futures::StreamExt;
-    while let Some(event) = events.next().await {
-        if event.frame.parent_id.is_none() {
-            break;
+    loop {
+        tokio::select! {
+            Some(event) = frames.next() => {
+                if event.frame.parent_id.is_none() {
+                    break;
+                }
+            }
+            Some(event) = within.next() => {
+                if main.is_none_or(|main| *main == event.frame_id) {
+                    break;
+                }
+            }
+            else => break,
         }
     }
     loop {
@@ -3043,12 +3056,23 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                                         .set_pending(index);
                                 }
                                 // Listen before moving: the commit may
-                                // arrive before the command returns.
-                                committed = session
+                                // arrive before the command returns. A move
+                                // within the current document (a fragment,
+                                // pushState) reports its own event.
+                                let main = session.page.mainframe().await.ok().flatten();
+                                let frames = session
                                     .page
                                     .event_listener::<cdp_page::EventFrameNavigated>()
                                     .await
                                     .ok();
+                                let within = session
+                                    .page
+                                    .event_listener::<cdp_page::EventNavigatedWithinDocument>()
+                                    .await
+                                    .ok();
+                                if let (Some(frames), Some(within)) = (frames, within) {
+                                    committed = Some((frames, within, main));
+                                }
                                 session
                                     .page
                                     .execute(cdp_page::NavigateToHistoryEntryParams::new(entry.id))
@@ -3086,8 +3110,12 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     // load event, so `wait_for_navigation` would sit out its
                     // whole timeout: wait for the top frame's commit and a
                     // complete document instead, which both kinds reach.
-                    (true, Some(events)) => {
-                        let _ = timeout(wait, history_committed(&session, events)).await;
+                    (true, Some((frames, within, main))) => {
+                        let _ = timeout(
+                            wait,
+                            history_committed(&session, frames, within, main.as_ref()),
+                        )
+                        .await;
                     }
                     (true, None) => {
                         let _ = timeout(wait, session.page.wait_for_navigation()).await;
