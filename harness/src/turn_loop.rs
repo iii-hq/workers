@@ -2843,45 +2843,22 @@ async fn assemble_context(
     prev_watermark: Option<&str>,
     inputs: ContextAssemblyInputs<'_>,
 ) -> Result<Assembled, HarnessError> {
-    // Latest compaction custom entry on the path (if any).
-    let mut previous_summary: Option<String> = None;
-    let mut tail_start: Option<String> = None;
-    for entry in entries {
-        if let Some(custom) = &entry.custom {
-            if custom.custom_type == "compaction" {
-                previous_summary = custom
-                    .data
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                tail_start = custom
-                    .data
-                    .get("tail_start_entry_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-            }
-        }
-    }
+    let anchor = compaction_anchor(&record.session_id, entries);
+    let anchored = anchor.summary.is_some();
 
-    // Candidate window: message entries from tail_start onward (compaction
-    // entries themselves are never sent to the model). `file` attachment
+    // Candidate window: message entries from the anchor's window start onward
+    // (compaction entries themselves are never sent to the model). `file` attachment
     // references are stripped from this MODEL-BOUND copy here, at the head of
     // the model-facing pipeline: neither `context::assemble` nor `router::chat`
     // ever sees one (the console also sends the `<attached-file …>` text
     // expansion, so the model loses nothing). The persisted entries keep them.
-    let mut started = tail_start.is_none();
     let mut candidate: Vec<(String, AgentMessage)> = Vec::new();
     // Index (into `candidate`) of the first entry appended after the previous
     // step's watermark — i.e. while that step was generating.
     let mut first_new: Option<usize> = None;
     let mut past_prev_watermark = false;
-    for entry in entries {
-        if let Some(ts) = &tail_start {
-            if &entry.entry_id == ts {
-                started = true;
-            }
-        }
-        if started {
+    for (index, entry) in entries.iter().enumerate() {
+        if index >= anchor.window_start {
             if let Some(msg) = &entry.message {
                 if !matches!(msg, AgentMessage::Custom(_)) {
                     if past_prev_watermark && first_new.is_none() {
@@ -2923,7 +2900,7 @@ async fn assemble_context(
         .map(|prompt| {
             std::collections::BTreeMap::from([("skills".to_string(), prompt.to_string())])
         }),
-        previous_summary,
+        previous_summary: anchor.summary,
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
         tools: inputs.tools.to_vec(),
@@ -2982,6 +2959,15 @@ async fn assemble_context(
         }
     }
 
+    // The snapshot's "compacted" means the context carries a summary: this
+    // step's compaction, or the anchor an earlier one (the console's
+    // `/compact`, a previous turn) left on the path.
+    let (summarized, summarized_head_tokens) = if out.applied.compacted {
+        (true, out.applied.summarized_head_tokens)
+    } else {
+        (anchored, anchor.summarized_head_tokens)
+    };
+
     let mut messages: Vec<Value> = out
         .messages
         .iter()
@@ -2996,9 +2982,66 @@ async fn assemble_context(
         usable: out.usable,
         token_count: out.token_count,
         effective_max_output_tokens: out.effective_max_output_tokens,
-        applied: out.applied,
+        summarized,
+        summarized_head_tokens,
         breakdown: out.breakdown,
     })
+}
+
+/// The latest `compaction` custom entry on the path, resolved to where the
+/// model-facing window opens.
+#[derive(Debug, Default, PartialEq)]
+struct CompactionAnchor {
+    /// The persisted summary, passed back as `previous_summary`.
+    summary: Option<String>,
+    /// Index into the path of the first entry the window keeps.
+    window_start: usize,
+    /// Size of the history the summary replaced (display only).
+    summarized_head_tokens: Option<u64>,
+}
+
+/// Resolve the window from the latest compaction entry:
+/// - never compacted: the whole path;
+/// - `tail_start_entry_id` on the path: that entry onward;
+/// - `tail_start_entry_id` null: everything before the entry was summarised
+///   (`context::compact` with `tail_turns: 0`), so the window opens after it;
+/// - `tail_start_entry_id` not on the path (a hand-written entry, a session
+///   forked before `session::fork` rewrote the anchor): the whole path, since
+///   re-sending summarised history beats an empty context.
+fn compaction_anchor(session_id: &str, entries: &[LoadedEntry]) -> CompactionAnchor {
+    let latest = entries.iter().enumerate().rev().find_map(|(index, entry)| {
+        let custom = entry.custom.as_ref()?;
+        (custom.custom_type == "compaction").then_some((index, &custom.data))
+    });
+    let Some((index, data)) = latest else {
+        return CompactionAnchor::default();
+    };
+    let window_start = match data.get("tail_start_entry_id").and_then(Value::as_str) {
+        None => index + 1,
+        Some(tail) => entries
+            .iter()
+            .position(|entry| entry.entry_id == tail)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    session_id,
+                    tail_start_entry_id = tail,
+                    "compaction boundary is not on the active path; sending the whole path"
+                );
+                0
+            }),
+    };
+    CompactionAnchor {
+        summary: data
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        window_start,
+        // The console's entry carries only `tokens_before` (the head size).
+        summarized_head_tokens: data
+            .get("summarized_head_tokens")
+            .or_else(|| data.get("tokens_before"))
+            .and_then(Value::as_u64),
+    }
 }
 
 fn is_context_overflow_error(error: &str) -> bool {
@@ -3041,8 +3084,8 @@ fn build_context_snapshot(
             overhead: request_overhead_tokens,
             hook_guidance: final_request_tokens.saturating_sub(assembled.token_count),
         },
-        compacted: assembled.applied.compacted,
-        summarized_head_tokens: assembled.applied.summarized_head_tokens,
+        compacted: assembled.summarized,
+        summarized_head_tokens: assembled.summarized_head_tokens,
         usage: None,
         prompt_surface_digest: None,
         prompt_sections_fallback: None,
@@ -3182,9 +3225,11 @@ struct Assembled {
     token_count: u64,
     /// Model/output ceiling resolved by context-manager for this request.
     effective_max_output_tokens: u64,
-    /// What context-manager did to fit the window (compaction and its
-    /// bookkeeping), carried whole for the snapshot.
-    applied: crate::clients::context::Applied,
+    /// The context carries a conversation summary (compacted this step or
+    /// anchored on an earlier compaction) and the size of the head it
+    /// replaced, for the snapshot.
+    summarized: bool,
+    summarized_head_tokens: Option<u64>,
     breakdown: Option<crate::clients::context::AssembleBreakdown>,
 }
 
@@ -3597,6 +3642,59 @@ mod tests {
         call_description, cancel_requested, concrete_allowed_tools, count_model_visible,
         retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
     };
+
+    #[test]
+    fn compaction_anchor_resolves_where_the_window_opens() {
+        use super::{compaction_anchor, CompactionAnchor, LoadedEntry};
+        use serde_json::{json, Value};
+        let msg = |id: &str| -> LoadedEntry {
+            serde_json::from_value(json!({ "entry_id": id, "message": {
+                "role": "user", "content": [{ "type": "text", "text": id }], "timestamp": 1
+            }}))
+            .unwrap()
+        };
+        let compaction = |id: &str, summary: &str, tail: Value| -> LoadedEntry {
+            serde_json::from_value(json!({ "entry_id": id, "custom": {
+                "custom_type": "compaction",
+                "data": { "summary": summary, "tail_start_entry_id": tail, "tokens_before": 7 }
+            }}))
+            .unwrap()
+        };
+        let start = |path: &[LoadedEntry]| compaction_anchor("s", path).window_start;
+
+        // Never compacted: the whole path, no summary.
+        assert_eq!(
+            compaction_anchor("s", &[msg("u1"), msg("u2")]),
+            CompactionAnchor::default()
+        );
+        // Boundary on the path; the LATEST compaction wins.
+        let path = [
+            msg("u1"),
+            compaction("c1", "old", json!("u1")),
+            msg("u2"),
+            compaction("c2", "new", json!("u2")),
+            msg("u3"),
+        ];
+        assert_eq!(
+            compaction_anchor("s", &path),
+            CompactionAnchor {
+                summary: Some("new".into()),
+                window_start: 2,
+                summarized_head_tokens: Some(7),
+            }
+        );
+        // Null boundary: everything before the entry was summarised.
+        assert_eq!(
+            start(&[msg("u1"), compaction("c1", "s", Value::Null), msg("u2")]),
+            2
+        );
+        // Boundary off the path (a hand-written entry): the whole path, never
+        // an empty window that would drop the current user message.
+        assert_eq!(
+            start(&[msg("u1"), compaction("c1", "s", json!("gone")), msg("u2")]),
+            0
+        );
+    }
 
     #[test]
     fn call_description_reads_only_the_agent_trigger_wrapper() {

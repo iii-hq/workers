@@ -129,7 +129,11 @@ pub struct ContextSnapshotV1 {
     pub total: u64,
     pub free: u64,
     pub categories: SnapshotCategoriesV1,
+    /// The context carries a conversation summary: compacted on this step,
+    /// or anchored on an earlier compaction entry (a previous step, the
+    /// console's `/compact`). The summary's tokens count in `system_prompt`.
     pub compacted: bool,
+    /// Size of the history that summary replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summarized_head_tokens: Option<u64>,
     /// Actual provider usage for this generation, stamped after the

@@ -52,6 +52,7 @@ describe('latestCompactionAnchor', () => {
       user('u3', 'third'),
     ]
     expect(latestCompactionAnchor(items)).toEqual({
+      entryId: 'c2',
       summary: 'new',
       tailStartEntryId: 'u2',
     })
@@ -66,12 +67,12 @@ describe('latestCompactionAnchor', () => {
         },
         compaction('c1', { summary: 42, tail_start_entry_id: null }),
       ]),
-    ).toEqual({ summary: null, tailStartEntryId: null })
+    ).toEqual({ entryId: 'c1', summary: null, tailStartEntryId: null })
     expect(
       latestCompactionAnchor([
         { entry_id: 'c', custom: { custom_type: 'compaction', data: 'junk' } },
       ]),
-    ).toEqual({ summary: null, tailStartEntryId: null })
+    ).toEqual({ entryId: 'c', summary: null, tailStartEntryId: null })
   })
 })
 
@@ -93,14 +94,22 @@ describe('compactionWindow', () => {
     assistant('a2', 'r2'),
   ]
 
-  it('opens at the boundary and skips custom entries and custom-role messages', () => {
-    expect(compactionWindow(items, 'u2').map((e) => e.entry_id)).toEqual([
-      'u2',
-      'a2',
-    ])
+  const anchor = (tail: string | null) => ({
+    entryId: 'c1',
+    summary: 's',
+    tailStartEntryId: tail,
   })
 
-  it('null boundary means the whole path minus non-model-bound rows', () => {
+  it('opens at the boundary and skips custom entries and custom-role messages', () => {
+    expect(
+      compactionWindow(items, anchor('u1')).map((e) => e.entry_id),
+    ).toEqual(['u1', 'a1', 'u2', 'a2'])
+    expect(
+      compactionWindow(items, anchor('u2')).map((e) => e.entry_id),
+    ).toEqual(['u2', 'a2'])
+  })
+
+  it('a never-compacted path is the whole path minus non-model-bound rows', () => {
     expect(compactionWindow(items, null).map((e) => e.entry_id)).toEqual([
       'u1',
       'a1',
@@ -109,13 +118,17 @@ describe('compactionWindow', () => {
     ])
   })
 
+  it('a null boundary opens right after the compaction entry', () => {
+    // context::compact with tail_turns 0 summarised everything before it.
+    expect(
+      compactionWindow(items, anchor(null)).map((e) => e.entry_id),
+    ).toEqual(['u2', 'a2'])
+  })
+
   it('a boundary missing from the path falls back to the whole path', () => {
-    expect(compactionWindow(items, 'gone').map((e) => e.entry_id)).toEqual([
-      'u1',
-      'a1',
-      'u2',
-      'a2',
-    ])
+    expect(
+      compactionWindow(items, anchor('gone')).map((e) => e.entry_id),
+    ).toEqual(['u1', 'a1', 'u2', 'a2'])
   })
 
   it('keeps entry ids aligned with message positions for tail_start_index mapping', () => {

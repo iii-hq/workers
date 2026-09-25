@@ -13,9 +13,11 @@ import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
 import type { AgentMessage, TranscriptItem } from '@/lib/sessions/types'
 
 export interface CompactionAnchor {
+  /** The compaction entry itself; a null boundary opens the window after it. */
+  entryId: string
   /** The persisted summary, or null when the entry carried none. */
   summary: string | null
-  /** First entry of the verbatim tail; null when everything was summarised. */
+  /** First entry of the verbatim tail; null when everything before the entry was summarised. */
   tailStartEntryId: string | null
 }
 
@@ -40,6 +42,7 @@ export function latestCompactionAnchor(
         ? (item.custom.data as Record<string, unknown>)
         : {}
     anchor = {
+      entryId: item.entry_id,
       summary: typeof data.summary === 'string' ? data.summary : null,
       tailStartEntryId:
         typeof data.tail_start_entry_id === 'string'
@@ -51,24 +54,30 @@ export function latestCompactionAnchor(
 }
 
 /**
- * Model-bound message entries from `tailStartEntryId` onward — the same
- * candidate window the harness assembles for the next turn. `null` (never
- * compacted, or everything was summarised) means the whole path. A boundary
- * id that is no longer on the path (fork, deletion) falls back to the whole
- * path rather than compacting nothing.
+ * Model-bound message entries of the candidate window — the same one the
+ * harness assembles for the next turn. It opens at the anchor's
+ * `tailStartEntryId`, or right after the anchor entry when that is null
+ * (everything before it was summarised). A never-compacted session, or a
+ * boundary no longer on the path (a hand-written entry, a session forked
+ * before fork rewrote the anchor), means the whole path rather than
+ * compacting nothing.
  */
 export function compactionWindow(
   items: readonly TranscriptItem[],
-  tailStartEntryId: string | null,
+  anchor: CompactionAnchor | null,
 ): WindowEntry[] {
-  const boundaryOnPath =
-    tailStartEntryId !== null &&
-    items.some((item) => item.entry_id === tailStartEntryId)
-  let started = !boundaryOnPath
+  let start = 0
+  if (anchor?.tailStartEntryId === null) {
+    start = items.findIndex((item) => item.entry_id === anchor.entryId) + 1
+  } else if (anchor) {
+    const tail = anchor.tailStartEntryId
+    start = Math.max(
+      0,
+      items.findIndex((item) => item.entry_id === tail),
+    )
+  }
   const out: WindowEntry[] = []
-  for (const item of items) {
-    if (!started && item.entry_id === tailStartEntryId) started = true
-    if (!started) continue
+  for (const item of items.slice(start)) {
     const message = item.message
     if (!message || message.role === 'custom') continue
     out.push({ entry_id: item.entry_id, message })

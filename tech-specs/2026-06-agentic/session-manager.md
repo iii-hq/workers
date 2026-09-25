@@ -480,7 +480,8 @@ type GetMessageResponse = { entry: SessionEntry } | null;
 
 **Copy-on-fork**: copy every entry on the path from the root to `entry_id` into a new session with
 fresh entry ids (the parent chain is preserved structurally); the new session's active leaf is the
-copy of `entry_id`. After the fork the two sessions are fully independent — mutating or deleting one
+copy of `entry_id`. The compaction record's `tail_start_entry_id` is rewritten to the copied entry's
+id. After the fork the two sessions are fully independent — mutating or deleting one
 never affects the other. Shared-structure storage is a permitted backend optimisation, not part of
 the contract. Fires `session::created` for the new session (`forked_from` set to the source).
 

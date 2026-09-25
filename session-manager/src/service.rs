@@ -1337,7 +1337,7 @@ impl SessionService {
                     revision: 0,
                     origin: origin.clone(),
                     custom_type: custom_type.clone(),
-                    data: data.clone(),
+                    data: remap_custom_data(custom_type, data, &id_map),
                 },
             };
             copies.push(copy);
@@ -1519,6 +1519,30 @@ fn draft_response(meta: &SessionMeta) -> SetDraftResponse {
         draft: meta.draft.clone(),
         attachments: meta.draft_attachments.clone().unwrap_or_default(),
     }
+}
+
+/// Copy-on-fork rewrite of the entry ids a custom record stores: the
+/// compaction record's `tail_start_entry_id` names the first entry of the
+/// verbatim tail, so it must follow that entry's fresh id. An id not on the
+/// copied path is left as it is — readers treat an unknown id as "whole
+/// path", while `null` means "everything before this entry was summarised".
+fn remap_custom_data(
+    custom_type: &str,
+    data: &serde_json::Value,
+    id_map: &HashMap<String, String>,
+) -> serde_json::Value {
+    let mut data = data.clone();
+    if custom_type == "compaction" {
+        let tail = data
+            .get("tail_start_entry_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|tail| id_map.get(tail))
+            .cloned();
+        if let Some(new_id) = tail {
+            data["tail_start_entry_id"] = serde_json::Value::String(new_id);
+        }
+    }
+    data
 }
 
 /// Every attachment id the messages on `path` reference, in first-seen

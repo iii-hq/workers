@@ -368,6 +368,7 @@
             "$ref": "#/definitions/SnapshotCategoriesV1"
           },
           "compacted": {
+            "description": "The context carries a conversation summary: compacted on this step, or anchored on an earlier compaction entry (a previous step, the console's `/compact`). The summary's tokens count in `system_prompt`.",
             "type": "boolean"
           },
           "effective_max_output_tokens": {
@@ -428,6 +429,7 @@
             "type": "integer"
           },
           "summarized_head_tokens": {
+            "description": "Size of the history that summary replaced.",
             "format": "uint64",
             "minimum": 0.0,
             "type": [

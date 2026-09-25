@@ -8,6 +8,7 @@ mod agent_shared_prompt_prefix;
 mod call_argument_diagnosis;
 mod call_argument_reconciliation;
 mod child_discovery_granted;
+mod compaction_anchor;
 mod condition_failure_notice;
 mod console_streamed_text;
 mod database_row_wake;
@@ -57,6 +58,7 @@ pub fn all() -> Vec<ScenarioFixture> {
         agent_preloaded_skills::scenario(),
         agent_shared_prompt_prefix::scenario(),
         child_discovery_granted::scenario(),
+        compaction_anchor::scenario(),
         condition_failure_notice::scenario(),
         console_streamed_text::scenario(),
         database_row_wake::scenario(),
@@ -96,7 +98,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 36);
+        assert_eq!(fixtures.len(), 37);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {
