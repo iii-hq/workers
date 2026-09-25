@@ -706,7 +706,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         },
         FunctionSpec {
             function_id: "browser::session-close",
-            description: "Close a session and free its browser/connection.",
+            description: "Close a scraping session opened with browser::session-open and free its browser/connection. Interactive tabs from browser::sessions::start are not scraping sessions: close those with browser::sessions::stop (passing a tab id here fails). Returns closed=false for an id it does not hold.",
             request: session_close_request(),
             response: session_close_response(),
         },

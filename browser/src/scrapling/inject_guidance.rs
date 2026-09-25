@@ -14,12 +14,18 @@ pub const GUIDANCE_HOOK_DESC: &str =
 pub const GUIDANCE: &str = "\
 ## Showing a page vs scraping one (browser::*)
 To OPEN or SHOW a page — anything the user should watch, a local app to \
-demo, a page to click or screenshot live — use the interactive sessions: \
-`browser::sessions::start` with the url, then `browser::navigate`, \
-`browser::snapshot`, `browser::act`, and `browser::screenshot`. Those \
-sessions render in a real Chromium and appear live in the console's \
-browser page. The scraping surface below fetches content and renders \
-nothing the user can see — never use it to \"open\" something for them.
+demo, a form or flow to drive — start an interactive session with \
+`browser::sessions::start` and the url. It renders in a real Chromium and \
+appears live in the console's browser page. To reach a goal on it (fill \
+and submit a form, log in, walk a flow), call `browser::run` with the end \
+state as `goal` and the values to type as `inputs`; it drives the page in \
+one call and returns the page it left, which you read before reporting \
+success. For single steps, `browser::elements` lists the page's controls \
+with refs for `browser::act`; `browser::snapshot`, `browser::navigate` and \
+`browser::screenshot` read, move and capture. When the task is done, close \
+the tab with `browser::sessions::stop`. The scraping surface below fetches \
+content and renders nothing the user can see, so it cannot \"open\" \
+something for them.
 ## Scraping and HTML parsing (browser::*)
 Start with `browser::fetch` for static web pages, RSS/Atom feeds, and APIs; \
 its `urls` input fetches concurrently. Do not refetch successful entries, and \
@@ -30,7 +36,7 @@ anti-bot/Cloudflare pages after cheaper tiers fail. Use \
 existing interactive session. Use `browser::session-fetch` only for an \
 already-open session whose cookies/state must be reused; \
 `browser::session-open`, `browser::session-close`, and `browser::session-list` \
-manage those sessions. `browser::crawl` \
+manage those scraping sessions, never interactive tabs. `browser::crawl` \
 walks same-domain links and streams results. For HTML already in hand, use \
 `browser::extract`, `browser::css`, `browser::xpath`, `browser::regex`, \
 `browser::find`, `browser::find-by-text`, `browser::find-by-regex`, \
@@ -89,6 +95,33 @@ mod tests {
     fn empty_base_preserves_harness_prompt() {
         let v = serde_json::to_value(mutations_for("")).unwrap();
         assert_eq!(v, serde_json::json!({"mutations": {}}));
+    }
+
+    /// Agents search for what the guidance names: it must route goals to
+    /// `browser::run`, single steps to `browser::elements` + `browser::act`,
+    /// and closing a tab to `browser::sessions::stop` (not the scraping
+    /// `session-close`), all of them registered functions.
+    #[test]
+    fn guidance_names_the_interactive_workflow_and_how_to_close_a_tab() {
+        use crate::functions::{ACT_ID, ELEMENTS_ID, RUN_ID, SESSIONS_START_ID, SESSIONS_STOP_ID};
+        let registered: Vec<&str> = crate::functions::catalog()
+            .iter()
+            .map(|spec| spec.function_id)
+            .collect();
+        for id in [
+            SESSIONS_START_ID,
+            RUN_ID,
+            ELEMENTS_ID,
+            ACT_ID,
+            SESSIONS_STOP_ID,
+        ] {
+            assert!(
+                GUIDANCE.contains(&format!("`{id}`")),
+                "guidance never names {id}"
+            );
+            assert!(registered.contains(&id), "{id} is not registered");
+        }
+        assert!(GUIDANCE.contains("scraping sessions, never interactive tabs"));
     }
 
     #[test]

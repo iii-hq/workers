@@ -1,6 +1,6 @@
 {
   "function_id": "browser::sessions::stop",
-  "description": "Close a browser tab for good. Idempotent: closing an unknown or already-closed tab succeeds with was_running=false.",
+  "description": "Close an interactive browser tab (a session from browser::sessions::start or attach) for good; do this when the task is done, since every tab holds a Chromium page. Idempotent: closing an unknown or already-closed tab succeeds with was_running=false. Scraping sessions from browser::session-open close with browser::session-close.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "StopInput",

@@ -71,8 +71,10 @@ pub const SESSIONS_LIST_DESC: &str =
     "List every browser tab, live or asleep, with its current URL, title, and activity.";
 pub const SESSIONS_STOP_ID: &str = "browser::sessions::stop";
 pub const SESSIONS_STOP_DESC: &str =
-    "Close a browser tab for good. Idempotent: closing an unknown or already-closed tab \
-     succeeds with was_running=false.";
+    "Close an interactive browser tab (a session from browser::sessions::start or attach) \
+     for good; do this when the task is done, since every tab holds a Chromium page. \
+     Idempotent: closing an unknown or already-closed tab succeeds with was_running=false. \
+     Scraping sessions from browser::session-open close with browser::session-close.";
 pub const SESSIONS_ATTACH_ID: &str = "browser::sessions::attach";
 pub const SESSIONS_ATTACH_DESC: &str =
     "Attach a session to an already-running browser over CDP. Opens a fresh tab the session \
@@ -2959,6 +2961,44 @@ fn register_upload(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
+/// A history move landed: the top frame committed a document, or the main
+/// frame moved within its document; then the document is complete.
+async fn history_committed(
+    session: &Session,
+    frames: &mut chromiumoxide::listeners::EventStream<cdp_page::EventFrameNavigated>,
+    within: &mut chromiumoxide::listeners::EventStream<cdp_page::EventNavigatedWithinDocument>,
+    main: Option<&cdp_page::FrameId>,
+) {
+    use futures::StreamExt;
+    loop {
+        tokio::select! {
+            Some(event) = frames.next() => {
+                if event.frame.parent_id.is_none() {
+                    break;
+                }
+            }
+            Some(event) = within.next() => {
+                if main.is_none_or(|main| *main == event.frame_id) {
+                    break;
+                }
+            }
+            else => break,
+        }
+    }
+    loop {
+        let ready = session
+            .page
+            .evaluate("document.readyState")
+            .await
+            .ok()
+            .and_then(|r| r.into_value::<String>().ok());
+        if ready.as_deref() == Some("complete") {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -2969,6 +3009,9 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
 
+                // Set for a move within Chromium's own history: see the wait
+                // below.
+                let mut committed = None;
                 let moved = match req.action.as_str() {
                     "reload" => {
                         session
@@ -3012,6 +3055,24 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                                         .unwrap_or_else(|p| p.into_inner())
                                         .set_pending(index);
                                 }
+                                // Listen before moving: the commit may
+                                // arrive before the command returns. A move
+                                // within the current document (a fragment,
+                                // pushState) reports its own event.
+                                let main = session.page.mainframe().await.ok().flatten();
+                                let frames = session
+                                    .page
+                                    .event_listener::<cdp_page::EventFrameNavigated>()
+                                    .await
+                                    .ok();
+                                let within = session
+                                    .page
+                                    .event_listener::<cdp_page::EventNavigatedWithinDocument>()
+                                    .await
+                                    .ok();
+                                if let (Some(frames), Some(within)) = (frames, within) {
+                                    committed = Some((frames, within, main));
+                                }
                                 session
                                     .page
                                     .execute(cdp_page::NavigateToHistoryEntryParams::new(entry.id))
@@ -3044,8 +3105,22 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 };
 
                 let wait = Duration::from_millis(sx.config.load().default_timeout_ms);
-                if moved {
-                    let _ = timeout(wait, session.page.wait_for_navigation()).await;
+                match (moved, committed.as_mut()) {
+                    // A back/forward-cache restore commits the page without a
+                    // load event, so `wait_for_navigation` would sit out its
+                    // whole timeout: wait for the top frame's commit and a
+                    // complete document instead, which both kinds reach.
+                    (true, Some((frames, within, main))) => {
+                        let _ = timeout(
+                            wait,
+                            history_committed(&session, frames, within, main.as_ref()),
+                        )
+                        .await;
+                    }
+                    (true, None) => {
+                        let _ = timeout(wait, session.page.wait_for_navigation()).await;
+                    }
+                    (false, _) => {}
                 }
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
                 if moved {
@@ -3067,8 +3142,8 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
-/// Convert a CDP node subtree into the wire outline, registering a `d<id>`
-/// ref per element so the tree is actionable. Whitespace-only text nodes are
+/// Convert a CDP node subtree into the wire outline, registering a `d` ref
+/// per element so the tree is actionable. Whitespace-only text nodes are
 /// skipped. `budget` caps total emitted nodes.
 fn convert_dom_node(
     session: &Session,
@@ -3092,9 +3167,7 @@ fn convert_dom_node(
     let (id, classes) =
         crate::session::id_and_classes(node.attributes.as_deref().unwrap_or(&[]), 200);
 
-    let backend_id = *node.backend_node_id.inner();
-    let r#ref = format!("d{backend_id}");
-    session.add_ref(r#ref.clone(), backend_id);
+    let r#ref = session.dom_ref(*node.backend_node_id.inner());
 
     let children = node
         .children
