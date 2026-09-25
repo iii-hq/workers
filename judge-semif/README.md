@@ -32,14 +32,20 @@ chosen device is logged at start as `selected inference device`.
 iii trigger compose::add worker=judge-semif
 ```
 
-On the first start the worker downloads the pinned GGUF (`qwen3.5-4b`:
-`bartowski/Qwen_Qwen3.5-4B-GGUF` Q4_K_M, 3.0 GB) into the hf-hub cache
-(`$HF_HOME`, default `~/.cache/huggingface`). Its functions register only once
-the model answers; until then the hub reports `provider_unavailable`.
+The model loads only while SemIf is the judge hub's **default provider**
+(`provider: semif` under **Settings → Workers → judge**): the worker follows
+the hub's configuration and, when another provider becomes the default,
+unregisters its functions and releases the model (VRAM included); it loads
+again when SemIf is selected. The first load downloads the pinned GGUF
+(`qwen3.5-4b`: `bartowski/Qwen_Qwen3.5-4B-GGUF` Q4_K_M, 3.0 GB) into the
+hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`). The functions
+register only once the model answers; until then, and while another provider
+is the default, the hub reports `provider_unavailable`, also for calls that
+name `"provider": "semif"`. A hub build that does not expose
+`judge::configuration-id` leaves the model loaded from the start.
 Air-gapped installs set `III_SEMIF_GGUF` to a local GGUF file.
 
-Route the hub to it per call with `"provider": "semif"`, or make it the default
-under **Settings → Workers → judge**:
+Make it the hub's default, then call the hub:
 
 ```bash
 iii trigger judge::evaluate --timeout-ms 65000 --json '{

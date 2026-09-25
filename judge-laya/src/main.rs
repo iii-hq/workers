@@ -1,7 +1,9 @@
 //! Boot the laya provider: fetch the checkpoint, load it, register on the bus.
 use clap::Parser;
+use iii_sdk::IIIClient;
 use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_laya::{configuration, download, engine, register, LayaClient};
+use judge_laya::{configuration, download, engine, register, LayaClient, SharedConfig, PROVIDER};
+use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -65,52 +67,136 @@ async fn main() -> anyhow::Result<()> {
         std::env::set_var("RAYON_NUM_THREADS", initial.threads.to_string());
     }
     let config = configuration::new_cell(initial);
-    // Functions register only once the model answers: until then the hub
-    // reports provider_unavailable, which is the honest state.
-    let client = tokio::task::spawn_blocking(move || -> anyhow::Result<LayaClient> {
-        let mut checkpoints = Vec::new();
-        for (i, name) in std::iter::once(&model).chain(&preload).enumerate() {
-            let checkpoint = match &cli.checkpoint_dir {
-                Some(dir) if i == 0 => download::local(name, dir)?,
-                // A local directory holds one checkpoint; extra ones need the Hub.
-                Some(_) => {
-                    tracing::warn!(model = name, "preload is ignored with --checkpoint-dir");
-                    continue;
-                }
-                None => {
-                    tracing::info!(
-                        model = name,
-                        "fetching laya checkpoint from the Hugging Face Hub"
-                    );
-                    download::fetch(
-                        name,
-                        revision.as_deref(),
-                        cli.encoder_gguf.as_deref().filter(|_| i == 0),
-                    )?
-                }
-            };
-            tracing::info!(
-                model = checkpoint.model,
-                revision = checkpoint.revision,
-                "loading laya checkpoint"
-            );
-            checkpoints.push(checkpoint);
-        }
-        LayaClient::load(&checkpoints, options)
-    })
-    .await??;
-    register(&iii, config.clone(), client);
     #[cfg(feature = "console-ui")]
     register::register_console_ui(&iii);
-    configuration::register_config_trigger(&iii, config)?
+    configuration::register_config_trigger(&iii, config.clone())?
         .run()
         .await;
-    let result = wait_for_shutdown().await;
+    let checkpoints = Checkpoints {
+        model,
+        revision,
+        preload,
+        checkpoint_dir: cli.checkpoint_dir,
+        encoder_gguf: cli.encoder_gguf,
+    };
+    let mut serving = tokio::spawn(serve(iii.clone(), config, checkpoints, options));
+    let result = tokio::select! {
+        result = wait_for_shutdown() => result,
+        served = &mut serving => match served? {
+            // Loaded for good (the hub exposes no selection): serve until shutdown.
+            Ok(()) => wait_for_shutdown().await,
+            Err(error) => Err(error),
+        },
+    };
+    serving.abort();
     // shutdown_async only signals the SDK's dedicated connection thread. Join
     // it before main returns so pending telemetry can finish flushing.
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;
     result
 }
+/// Where the checkpoints come from; read once at start.
+#[derive(Clone)]
+struct Checkpoints {
+    model: String,
+    revision: Option<String>,
+    preload: Vec<String>,
+    checkpoint_dir: Option<PathBuf>,
+    encoder_gguf: Option<PathBuf>,
+}
+
+/// Load the checkpoints and register the judge functions only while the judge
+/// hub's default provider is laya; release both when it moves elsewhere.
+/// Functions register only once the model answers: until then the hub reports
+/// provider_unavailable, which is the honest state. A hub that does not expose
+/// its configuration id leaves the checkpoints loaded for good.
+async fn serve(
+    iii: Arc<IIIClient>,
+    config: SharedConfig,
+    source: Checkpoints,
+    options: engine::Options,
+) -> anyhow::Result<()> {
+    let selected = |hub: &Option<Value>| {
+        hub.as_ref()
+            .and_then(|hub| hub.get("provider"))
+            .and_then(Value::as_str)
+            == Some(PROVIDER)
+    };
+    let mut hub = match iii_config_client::follow(
+        &iii,
+        "judge",
+        "judge-laya::on-judge-config-change",
+        "Internal: load or release the laya checkpoints when the judge hub's default provider changes.",
+    )
+    .await
+    {
+        Ok(hub) => Some(hub),
+        Err(reason) => {
+            tracing::warn!(reason, "judge hub selection unknown; loading the laya checkpoints");
+            None
+        }
+    };
+    loop {
+        if let Some(hub) = &mut hub {
+            if !selected(&hub.borrow()) {
+                tracing::info!(
+                    "the judge hub's default provider is not laya; the checkpoints stay unloaded"
+                );
+            }
+            hub.wait_for(|value| selected(value)).await?;
+        }
+        let checkpoints = source.clone();
+        let client = tokio::task::spawn_blocking(move || -> anyhow::Result<LayaClient> {
+            let Checkpoints {
+                model,
+                revision,
+                preload,
+                checkpoint_dir,
+                encoder_gguf,
+            } = checkpoints;
+            let mut checkpoints = Vec::new();
+            for (i, name) in std::iter::once(&model).chain(&preload).enumerate() {
+                let checkpoint = match &checkpoint_dir {
+                    Some(dir) if i == 0 => download::local(name, dir)?,
+                    // A local directory holds one checkpoint; extra ones need the Hub.
+                    Some(_) => {
+                        tracing::warn!(model = name, "preload is ignored with --checkpoint-dir");
+                        continue;
+                    }
+                    None => {
+                        tracing::info!(
+                            model = name,
+                            "fetching laya checkpoint from the Hugging Face Hub"
+                        );
+                        download::fetch(
+                            name,
+                            revision.as_deref(),
+                            encoder_gguf.as_deref().filter(|_| i == 0),
+                        )?
+                    }
+                };
+                tracing::info!(
+                    model = checkpoint.model,
+                    revision = checkpoint.revision,
+                    "loading laya checkpoint"
+                );
+                checkpoints.push(checkpoint);
+            }
+            LayaClient::load(&checkpoints, options)
+        })
+        .await??;
+        let functions = register(&iii, config.clone(), client);
+        tracing::info!("laya checkpoints loaded; judge-laya functions registered");
+        let Some(hub) = &mut hub else {
+            return Ok(());
+        };
+        hub.wait_for(|value| !selected(value)).await?;
+        for function in functions {
+            function.unregister();
+        }
+        tracing::info!("the judge hub's default provider moved; laya checkpoints released");
+    }
+}
+
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
     use tokio::signal::unix::{signal, SignalKind};

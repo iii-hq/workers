@@ -15,12 +15,19 @@ picked automatically at start; laya's decision head runs in candle on the CPU.
 iii trigger compose::add worker=judge-laya
 ```
 
-On the first start the worker downloads the checkpoint (843 MB for `laya`,
-644 MB for `laya-multilingual`) and its encoder as an f16 GGUF (791 MB for
-`laya`, from `iii-dev/laya-encoder-gguf`) from the Hugging Face Hub into the
-hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`). Its functions
-register only once the model answers; until then the hub reports
-`provider_unavailable`. Air-gapped installs point `III_LAYA_CHECKPOINT_DIR` at
+The checkpoints load only while laya is the judge hub's **default provider**
+(`provider: laya` under **Settings → Workers → judge**): the worker follows
+the hub's configuration and, when another provider becomes the default,
+unregisters its functions and releases the checkpoints (VRAM included); they
+load again when laya is selected. The first load downloads the checkpoint
+(843 MB for `laya`, 644 MB for `laya-multilingual`) and its encoder as an f16
+GGUF (791 MB for `laya`, from `iii-dev/laya-encoder-gguf`) from the Hugging
+Face Hub into the hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`).
+The functions register only once the model answers; until then, and while
+another provider is the default, the hub reports `provider_unavailable`, also
+for calls that name `"provider": "laya"`. A hub build that does not expose
+`judge::configuration-id` leaves the checkpoints loaded from the start.
+Air-gapped installs point `III_LAYA_CHECKPOINT_DIR` at
 a directory holding `model.safetensors`, `encoder/config.json`,
 `rl_agent_config.json`, `tokenizer.json` and `encoder.gguf`;
 `III_LAYA_ENCODER_GGUF` swaps only the GGUF of the default model.
@@ -45,8 +52,7 @@ moved them by up to 0.04 and flipped one fixture answer at 512 tokens.
 chosen device is logged at start as `selected inference device` and shown in
 the settings form.
 
-Route the hub to it per call with `"provider": "laya"`, or make it the default
-under **Settings → Workers → judge**:
+Make it the default under **Settings → Workers → judge**, then call the hub:
 
 ```bash
 iii trigger judge::evaluate --timeout-ms 65000 --json '{

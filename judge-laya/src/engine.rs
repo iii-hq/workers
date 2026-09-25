@@ -105,7 +105,7 @@ impl Engine {
 }
 
 fn encode(
-    session: &mut Session,
+    session: &mut Session<'_>,
     hidden: usize,
     rows: &[Vec<u32>],
     deadline: Instant,

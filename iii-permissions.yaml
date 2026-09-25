@@ -129,7 +129,9 @@ rules:
   - '!database::on-config-change'
   - '!judge::on-config-change'
   - '!judge-semif::on-config-change'
+  - '!judge-semif::on-judge-config-change'
   - '!judge-laya::on-config-change'
+  - '!judge-laya::on-judge-config-change'
   - '!judge-typesafe::on-config-change'
   - '!session::on-config-change'
   # (coder::on-config-change retired: the code surface folded into the shell

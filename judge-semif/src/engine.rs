@@ -145,7 +145,7 @@ fn letter_tokens(model: &LlamaModel) -> Result<Vec<LlamaToken>> {
 }
 
 fn score(
-    session: &mut Session,
+    session: &mut Session<'_>,
     letters: &[LlamaToken],
     parallel: usize,
     evaluations: &[Evaluation],
@@ -267,7 +267,7 @@ fn score(
 /// position, in span order.
 #[allow(clippy::type_complexity)]
 fn decode(
-    ctx: &mut LlamaContext<'static>,
+    ctx: &mut LlamaContext<'_>,
     letters: &[LlamaToken],
     spans: &[(&[LlamaToken], usize, Option<usize>)],
     check: &dyn Fn() -> Result<(), Stop>,

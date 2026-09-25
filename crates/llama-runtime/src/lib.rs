@@ -24,13 +24,14 @@ pub struct Options {
     pub gpu_layers: Option<u32>,
 }
 
-/// The loaded model and its context, owned by the runtime thread.
-pub struct Session {
-    pub model: &'static LlamaModel,
-    pub ctx: LlamaContext<'static>,
+/// The loaded model and its context, owned by the runtime thread; both are
+/// freed when the last `Runtime` handle is dropped and the thread ends.
+pub struct Session<'a> {
+    pub model: &'a LlamaModel,
+    pub ctx: LlamaContext<'a>,
 }
 
-type Job = Box<dyn FnOnce(&mut Session) + Send>;
+type Job = Box<dyn for<'a> FnOnce(&mut Session<'a>) + Send>;
 
 /// Handle to the runtime thread; clones share it.
 #[derive(Clone)]
@@ -93,7 +94,7 @@ impl Runtime {
         std::thread::Builder::new()
             .name("llama-runtime".into())
             .spawn(move || {
-                let loaded = (|| -> Result<_> {
+                let load = || -> Result<(LlamaModel, String)> {
                     let backend = backend()?;
                     let gpu = llama_cpp_2::list_llama_ggml_backend_devices()
                         .into_iter()
@@ -106,36 +107,41 @@ impl Runtime {
                         (Some(d), n) if n > 0 => format!("{} ({})", d.description, d.backend),
                         _ => "CPU".into(),
                     };
-                    // The context borrows the model for the thread's lifetime.
-                    let model: &'static LlamaModel = Box::leak(Box::new(
-                        LlamaModel::load_from_file(
-                            backend,
-                            &gguf,
-                            &LlamaModelParams::default().with_n_gpu_layers(layers),
-                        )
-                        .map_err(|e| anyhow!("load {}: {e}", gguf.display()))?,
-                    ));
-                    let threads = i32::try_from(options.threads).unwrap_or(8);
-                    let params = configure(
-                        LlamaContextParams::default()
-                            .with_n_threads(threads)
-                            .with_n_threads_batch(threads),
-                    );
-                    let ctx = model
-                        .new_context(backend, params)
-                        .map_err(|e| anyhow!("context: {e}"))?;
-                    Ok((Session { model, ctx }, device))
-                })();
-                let mut session = match loaded {
-                    Ok((session, device)) => {
-                        let _ = ready_tx.send(Ok(device));
-                        session
-                    }
+                    let model = LlamaModel::load_from_file(
+                        backend,
+                        &gguf,
+                        &LlamaModelParams::default().with_n_gpu_layers(layers),
+                    )
+                    .map_err(|e| anyhow!("load {}: {e}", gguf.display()))?;
+                    Ok((model, device))
+                };
+                let (model, device) = match load() {
+                    Ok(loaded) => loaded,
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
                         return;
                     }
                 };
+                let threads = i32::try_from(options.threads).unwrap_or(8);
+                let params = configure(
+                    LlamaContextParams::default()
+                        .with_n_threads(threads)
+                        .with_n_threads_batch(threads),
+                );
+                // The context borrows the model; both live until the jobs end.
+                let ctx = match backend().and_then(|backend| {
+                    model
+                        .new_context(backend, params)
+                        .map_err(|e| anyhow!("context: {e}"))
+                }) {
+                    Ok(ctx) => ctx,
+                    Err(error) => {
+                        let _ = ready_tx.send(Err(error));
+                        return;
+                    }
+                };
+                let mut session = Session { model: &model, ctx };
+                let _ = ready_tx.send(Ok(device));
                 for job in inbox {
                     job(&mut session);
                 }
@@ -159,11 +165,11 @@ impl Runtime {
     /// not stop the work: jobs observe their own deadline or cancel flag.
     pub fn submit<R: Send + 'static>(
         &self,
-        job: impl FnOnce(&mut Session) -> R + Send + 'static,
+        job: impl for<'a> FnOnce(&mut Session<'a>) -> R + Send + 'static,
     ) -> oneshot::Receiver<R> {
         let (reply, receiver) = oneshot::channel();
         // A send error means the thread died: the dropped reply reports it.
-        let _ = self.jobs.send(Box::new(move |session: &mut Session| {
+        let _ = self.jobs.send(Box::new(move |session: &mut Session<'_>| {
             let _ = reply.send(job(session));
         }));
         receiver
@@ -172,11 +178,11 @@ impl Runtime {
     /// Run `job` and wait for it (load-time setup; blocks the calling thread).
     pub fn run<R: Send + 'static>(
         &self,
-        job: impl FnOnce(&mut Session) -> R + Send + 'static,
+        job: impl for<'a> FnOnce(&mut Session<'a>) -> R + Send + 'static,
     ) -> Result<R> {
         let (reply, receiver) = mpsc::sync_channel(1);
         self.jobs
-            .send(Box::new(move |session: &mut Session| {
+            .send(Box::new(move |session: &mut Session<'_>| {
                 let _ = reply.send(job(session));
             }))
             .map_err(|_| anyhow!("llama.cpp runtime thread exited"))?;

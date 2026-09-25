@@ -1,6 +1,6 @@
 //! Typed bus registration: `judge-semif::evaluate`, `::models::list`, `::cancel`.
 use crate::{client::SemifClient, configuration::SharedConfig};
-use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
+use iii_sdk::{errors::Error, runtime::FunctionRef, IIIClient, RegisterFunction};
 use judge_contract::{
     CancelRequest, CancelResponse, ErrorCode, EvaluateRequest, EvaluateResponse, ModelsRequest,
     ModelsResponse, Stats,
@@ -9,8 +9,10 @@ use serde_json::Value;
 #[cfg(feature = "console-ui")]
 use std::sync::Arc;
 
-/// Handlers snapshot config once per call and share the loaded model.
-pub fn register(iii: &IIIClient, config: SharedConfig, client: SemifClient) {
+/// Handlers snapshot config once per call and share the loaded model. The
+/// returned handles unregister them, which releases the model once in-flight
+/// calls end.
+pub fn register(iii: &IIIClient, config: SharedConfig, client: SemifClient) -> Vec<FunctionRef> {
     let models_config = config.clone();
     let models_client = client.clone();
     let cancel_client = client.clone();
@@ -43,7 +45,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: SemifClient) {
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(EvaluateRequest))
         .expect("SemIf request schema serializes");
-    iii.register_function(crate::EVALUATE_ID, registration.request_format(request_schema).description("Evaluate Noul, Choice and Score questions against arbitrary JSON state with the SemIf model (a frozen GGUF LLM read at the option letters) running inside this worker. Results are atomic; usage counts decoded prompt tokens. No credentials or endpoints are accepted in the request."));
+    let evaluate = iii.register_function(crate::EVALUATE_ID, registration.request_format(request_schema).description("Evaluate Noul, Choice and Score questions against arbitrary JSON state with the SemIf model (a frozen GGUF LLM read at the option letters) running inside this worker. Results are atomic; usage counts decoded prompt tokens. No credentials or endpoints are accepted in the request."));
 
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let config = models_config.clone();
@@ -74,7 +76,7 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: SemifClient) {
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(ModelsRequest))
         .expect("SemIf models request schema serializes");
-    iii.register_function(crate::MODELS_ID, registration.request_format(request_schema).description("Describe the loaded SemIf model (name, pinned revision, device, context window); performs no inference."));
+    let models = iii.register_function(crate::MODELS_ID, registration.request_format(request_schema).description("Describe the loaded SemIf model (name, pinned revision, device, context window); performs no inference."));
 
     let registration = RegisterFunction::new_async(move |mut payload: Value| {
         let client = cancel_client.clone();
@@ -93,7 +95,8 @@ pub fn register(iii: &IIIClient, config: SharedConfig, client: SemifClient) {
     });
     let request_schema = serde_json::to_value(schemars::schema_for!(CancelRequest))
         .expect("SemIf cancel request schema serializes");
-    iii.register_function(crate::CANCEL_ID, registration.request_format(request_schema).description("Signal cancellation of an active evaluation owned by the calling worker; the current batch finishes, later batches are skipped. Requires the same worker replica as the original call."));
+    let cancel = iii.register_function(crate::CANCEL_ID, registration.request_format(request_schema).description("Signal cancellation of an active evaluation owned by the calling worker; the current batch finishes, later batches are skipped. Requires the same worker replica as the original call."));
+    vec![evaluate, models, cancel]
 }
 
 // The engine stamps this trusted transport field into top-level objects.

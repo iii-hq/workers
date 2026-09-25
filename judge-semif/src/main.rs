@@ -1,7 +1,9 @@
 //! Boot the SemIf provider: fetch the GGUF, load it, register on the bus.
 use clap::Parser;
+use iii_sdk::IIIClient;
 use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions};
-use judge_semif::{configuration, download, engine, register, SemifClient};
+use judge_semif::{configuration, download, engine, register, SemifClient, SharedConfig, PROVIDER};
+use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -54,38 +56,102 @@ async fn main() -> anyhow::Result<()> {
         parallel: initial.parallel_questions,
     };
     let config = configuration::new_cell(initial);
-    // Functions register only once the model answers: until then the hub
-    // reports provider_unavailable, which is the honest state.
-    let client = tokio::task::spawn_blocking(move || -> anyhow::Result<SemifClient> {
-        let checkpoint = match &cli.gguf {
-            Some(path) => download::local(&model, path)?,
-            None => {
-                tracing::info!(model, "fetching the SemIf GGUF from the Hugging Face Hub");
-                download::fetch(&model)?
-            }
-        };
-        tracing::info!(
-            model = checkpoint.model,
-            revision = checkpoint.revision,
-            "loading the SemIf GGUF"
-        );
-        let client = SemifClient::load(&checkpoint, options)?;
-        tracing::info!(device = client.device(), "selected inference device");
-        Ok(client)
-    })
-    .await??;
-    register(&iii, config.clone(), client);
     #[cfg(feature = "console-ui")]
     register::register_console_ui(&iii);
-    configuration::register_config_trigger(&iii, config)?
+    configuration::register_config_trigger(&iii, config.clone())?
         .run()
         .await;
-    let result = wait_for_shutdown().await;
+    let mut serving = tokio::spawn(serve(iii.clone(), config, cli.gguf, model, options));
+    let result = tokio::select! {
+        result = wait_for_shutdown() => result,
+        served = &mut serving => match served? {
+            // Loaded for good (the hub exposes no selection): serve until shutdown.
+            Ok(()) => wait_for_shutdown().await,
+            Err(error) => Err(error),
+        },
+    };
+    serving.abort();
     // shutdown_async only signals the SDK's dedicated connection thread. Join
     // it before main returns so pending telemetry can finish flushing.
     tokio::task::spawn_blocking(move || iii.shutdown()).await?;
     result
 }
+/// Load the model and register the judge functions only while the judge hub's
+/// default provider is SemIf; release both when it moves elsewhere. Functions
+/// register only once the model answers: until then the hub reports
+/// provider_unavailable, which is the honest state. A hub that does not expose
+/// its configuration id leaves the model loaded for good.
+async fn serve(
+    iii: Arc<IIIClient>,
+    config: SharedConfig,
+    gguf: Option<PathBuf>,
+    model: String,
+    options: engine::Options,
+) -> anyhow::Result<()> {
+    let selected = |hub: &Option<Value>| {
+        hub.as_ref()
+            .and_then(|hub| hub.get("provider"))
+            .and_then(Value::as_str)
+            == Some(PROVIDER)
+    };
+    let mut hub = match iii_config_client::follow(
+        &iii,
+        "judge",
+        "judge-semif::on-judge-config-change",
+        "Internal: load or release the SemIf model when the judge hub's default provider changes.",
+    )
+    .await
+    {
+        Ok(hub) => Some(hub),
+        Err(reason) => {
+            tracing::warn!(
+                reason,
+                "judge hub selection unknown; loading the SemIf model"
+            );
+            None
+        }
+    };
+    loop {
+        if let Some(hub) = &mut hub {
+            if !selected(&hub.borrow()) {
+                tracing::info!(
+                    "the judge hub's default provider is not semif; the model stays unloaded"
+                );
+            }
+            hub.wait_for(|value| selected(value)).await?;
+        }
+        let (gguf, model) = (gguf.clone(), model.clone());
+        let client = tokio::task::spawn_blocking(move || -> anyhow::Result<SemifClient> {
+            let checkpoint = match &gguf {
+                Some(path) => download::local(&model, path)?,
+                None => {
+                    tracing::info!(model, "fetching the SemIf GGUF from the Hugging Face Hub");
+                    download::fetch(&model)?
+                }
+            };
+            tracing::info!(
+                model = checkpoint.model,
+                revision = checkpoint.revision,
+                "loading the SemIf GGUF"
+            );
+            let client = SemifClient::load(&checkpoint, options)?;
+            tracing::info!(device = client.device(), "selected inference device");
+            Ok(client)
+        })
+        .await??;
+        let functions = register(&iii, config.clone(), client);
+        tracing::info!("SemIf model loaded; judge-semif functions registered");
+        let Some(hub) = &mut hub else {
+            return Ok(());
+        };
+        hub.wait_for(|value| !selected(value)).await?;
+        for function in functions {
+            function.unregister();
+        }
+        tracing::info!("the judge hub's default provider moved; SemIf model released");
+    }
+}
+
 #[cfg(unix)]
 async fn wait_for_shutdown() -> anyhow::Result<()> {
     use tokio::signal::unix::{signal, SignalKind};
