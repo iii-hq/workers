@@ -910,8 +910,10 @@ name = "iii-llama-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "judge-contract",
  "llama-cpp-2",
  "llama-cpp-sys-2",
+ "serde_json",
  "tokio",
  "tracing",
 ]

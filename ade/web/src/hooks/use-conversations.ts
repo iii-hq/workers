@@ -536,6 +536,19 @@ function reconcileLegacySkillMigration(
   }
 }
 
+/** Merge `patch` into session metadata; an `undefined` value removes the key. */
+export function patchSessionMetadata(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+  patch: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(metadata ?? {}) }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key]
+    else next[key] = value
+  }
+  return next
+}
+
 /** The console's session metadata convention (replaces wholesale on writes). */
 export function metadataFor(
   c: Pick<
@@ -1112,6 +1125,13 @@ export interface ConversationsApi {
   setThinkingLevel: (id: string, level: ThinkingLevel) => void
   /** Point this chat at a named memory bank (null = worker default). */
   setMemoryBank: (id: string, memoryBank: string | null) => void
+  /**
+   * Merge keys another surface owns (a worker's composer control) into the
+   * session metadata; an `undefined` value removes the key. Console-owned
+   * keys are rebuilt from the conversation on every write, so a patch cannot
+   * touch them.
+   */
+  setSessionMetadata: (id: string, patch: Record<string, unknown>) => void
   /** This chat's system prompt, chosen on the new-session screen. */
   setSystemPrompt: (id: string, systemPrompt: SystemPromptState) => void
   /** Select or clear the Directory agent profile frozen onto this session. */
@@ -2685,6 +2705,22 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  // Same writer as model/thinking, so a worker control and the console never
+  // race on the wholesale metadata replace.
+  const setSessionMetadata = useCallback(
+    (id: string, patch: Record<string, unknown>) => {
+      const merge = (c: Conversation): Conversation => ({
+        ...c,
+        sessionMetadata: patchSessionMetadata(c.sessionMetadata, patch),
+        updatedAt: Date.now(),
+      })
+      patchConversation(id, merge)
+      const conv = conversations.find((c) => c.id === id)
+      if (conv) writeMeta(merge(conv))
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
   const setSystemPrompt = useCallback(
     (id: string, systemPrompt: SystemPromptState) => {
       patchConversation(id, (c) =>
@@ -3238,6 +3274,7 @@ export function useConversations(
     setModel,
     setThinkingLevel,
     setMemoryBank,
+    setSessionMetadata,
     setSystemPrompt,
     setAgentProfile,
     setSkills,

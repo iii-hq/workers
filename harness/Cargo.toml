@@ -25,6 +25,8 @@ iii-sdk = "0.23"
 # 0.21.5 adds the live span-start push (`LiveSpanStartProcessor`), so the
 # console renders `harness::turn step` while it runs instead of on close.
 iii-helpers = "0.23"
+# Judge routing keys (`iii.judge.provider` baggage, provider-name check).
+judge-contract = { path = "../crates/judge-contract" }
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct link, never published.
 iii-console-ui = { path = "../crates/console-ui" }

@@ -15,10 +15,11 @@ async fn tiny_gguf_answers_through_a_real_engine() {
     let engine = Engine::start("judge_semif").await;
     let provider = connect(&engine.url, "judge-semif").await;
     let consumer = connect(&engine.url, "ticket-consumer").await;
+    let client = support::tiny_client();
     judge_semif::register(
         &provider,
         judge_semif::configuration::new_cell(judge_semif::SemifConfig::default()),
-        support::tiny_client(),
+        iii_llama_runtime::ModelSlot::new(move || Ok(client.clone())),
     );
     for id in [EVALUATE_ID, MODELS_ID, CANCEL_ID] {
         wait_for(&consumer, id).await;

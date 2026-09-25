@@ -42,20 +42,19 @@ chosen device is logged at start as `selected inference device`.
 iii trigger compose::add worker=judge-decider
 ```
 
-The model loads only while decider is the judge hub's **default provider**
-(`provider: decider` under **Settings → Workers → judge**): the worker follows
-the hub's configuration and, when another provider becomes the default,
-unregisters its functions and releases the model (VRAM included, about 6 GB);
-it loads again when decider is selected. The first load downloads the pinned
-GGUF (`mindchain/decider-4b-v2-GGUF` Q4_K_M, 2.7 GB, quantized by llama.cpp
-from `Mapika/decider-4b` at tag `v2`) into the hf-hub cache (`$HF_HOME`,
-default `~/.cache/huggingface`). The functions register only once the model
-answers; until then, and while another provider is the default, the hub
-reports `provider_unavailable`, also for calls that name
-`"provider": "decider"`. To keep it loaded while another provider is the
+The functions register at start; the model loads on demand. While decider is
+the judge hub's **default provider** (`provider: decider` under **Settings →
+Workers → judge**) it loads at once and stays loaded. Otherwise the first call
+that names `"provider": "decider"` (or comes from a session that picked it)
+loads it, and it is released (VRAM included, about 6 GB) after 10 minutes
+without calls. A call that cannot wait for the load answers `deadline` while
+the load goes on for the next one. The first load downloads the pinned GGUF
+(`mindchain/decider-4b-v2-GGUF` Q4_K_M, 2.7 GB, quantized by llama.cpp from
+`Mapika/decider-4b` at tag `v2`) into the hf-hub cache (`$HF_HOME`, default
+`~/.cache/huggingface`). To keep it loaded while another provider is the
 default, turn on **Keep every local provider loaded** (`preload_all`) in the
 judge settings. A hub build that does not expose `judge::configuration-id`
-leaves the model loaded from the start. Air-gapped installs set
+keeps the model loaded from the start. Air-gapped installs set
 `III_DECIDER_GGUF` to a local GGUF file.
 
 The repository's `main` is v2.1, which trades some of v2's accuracy on hard

@@ -84,6 +84,7 @@ import { turnAnchorMessageId, turnFirstEntryId } from '@/lib/turn-anchor'
 import { SEND_FAILED_CODE } from '@/lib/turn-failure'
 import {
   useExtComposerActions,
+  useExtComposerControls,
   useExtSessionChips,
   useExtSessionTurnSummaries,
 } from '@/lib/ui-slots'
@@ -927,6 +928,36 @@ export function ChatView({
       )
     })
   }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
+
+  // Worker settings for this session, beside the model picker. Writes go
+  // through the console's own metadata writer (never the worker's), so they
+  // cannot race the model/thinking writes and apply from the next turn on.
+  const extComposerControls = useExtComposerControls()
+  const setSessionMetadata = conversationsCtx?.setSessionMetadata
+  const composerControls = useMemo(() => {
+    if (extComposerControls.length === 0 || !setSessionMetadata) return null
+    const metadata = conversation.sessionMetadata ?? {}
+    const setMetadata = (patch: Record<string, unknown>) =>
+      setSessionMetadata(conversation.id, patch)
+    return [...extComposerControls].sort(compareChips).map((control) => {
+      const Control = control.render
+      return (
+        <Control
+          key={control.id}
+          sessionId={conversation.id}
+          isStreaming={streamingIndicator}
+          metadata={metadata}
+          setMetadata={setMetadata}
+        />
+      )
+    })
+  }, [
+    extComposerControls,
+    setSessionMetadata,
+    conversation.id,
+    conversation.sessionMetadata,
+    streamingIndicator,
+  ])
 
   const extComposerActions = useExtComposerActions()
   const composerActions = useMemo(() => {
@@ -2790,6 +2821,7 @@ export function ChatView({
             onAttachmentsChange={handleComposerAttachmentsChange}
             syncedAttachments={conversation.draftAttachments}
             composerActions={composerActions}
+            composerControls={composerControls}
             onSubmit={handleSubmit}
             onStop={handleStop}
             stopping={stopping}

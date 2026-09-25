@@ -10,9 +10,10 @@ pub struct JudgeConfig {
     /// `judge-<provider>` worker used when a request omits `provider`.
     pub provider: String,
     /// Keep every local provider's model loaded (judge-decider, judge-semif,
-    /// judge-laya), not only the default provider's, so requests can name any
-    /// of them at run time. Off, a local provider loads its model only while
-    /// it is the default. Hosted providers are unaffected. Off is not stored.
+    /// judge-laya), not only the default provider's, so no request naming one
+    /// waits for its load. Off, any other local provider loads its model on
+    /// first use and releases it after 10 idle minutes. Hosted providers are
+    /// unaffected. Off is not stored.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub preload_all: bool,
 }

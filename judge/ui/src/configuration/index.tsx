@@ -21,16 +21,14 @@ export interface RegisteredProvider {
   provider: string
   worker: string
   namespace: string
-  /** False for a local provider on standby: its model loads once the hub selects it. */
-  loaded: boolean
 }
 interface FunctionsList {
   functions?: { function_id: string; namespace?: string; worker_name?: string }[]
 }
 type Engine = Pick<ExtensionIii, 'trigger'>
 
-/** Every `judge-<provider>` worker, one row per provider: answering `evaluate`
- * (loaded), or only its configuration id (a local provider on standby). */
+/** Every `judge-<provider>` worker, one row per provider (by its `evaluate` or
+ * its configuration id). A local provider loads its model on first use. */
 export async function listProviders(iii: Engine): Promise<RegisteredProvider[]> {
   // Providers register their functions as internal (callers use the hub), so
   // they only show up when internal registrations are included.
@@ -43,10 +41,8 @@ export async function listProviders(iii: Engine): Promise<RegisteredProvider[]> 
   for (const fn of reply?.functions ?? []) {
     const match = PROVIDER_FUNCTION.exec(fn.function_id)
     if (!match) continue
-    const [, provider, kind] = match
-    const entry = seen.get(provider) ?? { provider, worker: fn.worker_name ?? `judge-${provider}`, namespace: fn.namespace ?? '', loaded: false }
-    entry.loaded ||= kind === 'evaluate'
-    seen.set(provider, entry)
+    const [, provider] = match
+    if (!seen.has(provider)) seen.set(provider, { provider, worker: fn.worker_name ?? `judge-${provider}`, namespace: fn.namespace ?? '' })
   }
   return [...seen.values()].sort((a, b) => a.provider.localeCompare(b.provider))
 }
@@ -114,7 +110,7 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
   const options: SelectOption[] = (providers ?? []).map((entry) => ({
     value: entry.provider,
     label: entry.provider,
-    description: [entry.worker, entry.namespace, entry.loaded ? '' : 'loads its model when selected'].filter(Boolean).join(' · '),
+    description: [entry.worker, entry.namespace].filter(Boolean).join(' · '),
   }))
   if (stored && !options.some((option) => option.value === stored)) {
     options.push({ value: stored, label: stored, description: 'Not registered on the engine' })
@@ -144,13 +140,11 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
             meta={
               providers === null ? (
                 <Chip tone="neutral">Checking registrations…</Chip>
-              ) : registered?.loaded ? (
+              ) : registered ? (
                 <Chip tone="success">
                   {registered.worker}
                   {registered.namespace ? ` · ${registered.namespace}` : ''}
                 </Chip>
-              ) : registered ? (
-                <Chip tone="neutral">{registered.worker} · loading its model</Chip>
               ) : (
                 <Chip tone="warning">judge-{effective} not registered</Chip>
               )
@@ -174,7 +168,7 @@ export function JudgeRoutingForm({ iii, ...props }: ConfigFormProps & { iii: Eng
             id="judge-cfg-preload_all"
             field="preload_all"
             label="Keep every local provider loaded"
-            description="Local providers (judge-decider, judge-semif, judge-laya) load their model only while they are the default. On, every local provider keeps its model loaded, so a request can name any of them in `provider` without waiting; each one holds its memory (on a GPU, about 6 GB for decider or SemIf and 1.5 GB for laya). Hosted providers are unaffected."
+            description="Local providers (judge-decider, judge-semif, judge-laya) keep their model loaded while they are the default; any other one loads its model on the first request that names it and releases it after 10 idle minutes, so that first request may time out while it loads. On, every local provider keeps its model loaded, so no request waits; each one holds its memory (on a GPU, about 6 GB for decider or SemIf and 1.5 GB for laya). Hosted providers are unaffected."
             error={props.errors?.get('/preload_all')}
             renderControl={(controlProps) => (
               <Switch

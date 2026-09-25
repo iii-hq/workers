@@ -50,16 +50,17 @@ with a top-level `provider` string (lowercase letters, digits and hyphens, at
 most 64 bytes). A provider that is not registered on the engine returns
 `{"status":"error","code":"provider_unavailable"}`.
 
-Local providers (`judge-decider`, `judge-semif`, `judge-laya`) follow this entry: each loads its
-model and registers its functions only while it is the default `provider`, and
-releases both (memory and VRAM included) when another provider becomes the
-default, so a request naming a local provider that is not the default answers
-`provider_unavailable`. `preload_all: true` keeps every local provider loaded
-instead, so requests can route between them at run time; each holds its memory
-(on a GPU, about 6 GB for decider or SemIf and 1.5 GB for laya). Hosted providers such as
-`judge-typesafe` are always registered. Switching takes a few seconds (the model
-loads from the hf-hub cache); the Console lists a local provider on standby as
-selectable.
+Local providers (`judge-decider`, `judge-semif`, `judge-laya`) always register
+their functions and load their model on demand. The default `provider` keeps its
+model loaded; any other one loads it on the first request that names it (or
+whose session picked it) and releases it (memory and VRAM included) after 10
+minutes without calls. A load takes a few seconds from the hf-hub cache, longer
+on the first download: a request that cannot wait that long answers `deadline`
+while the load goes on for the next one, and a failed load answers
+`provider_unavailable` with its `provider_error` and `retry_after_ms` (30 s).
+`preload_all: true` keeps every local provider loaded instead, so no request
+waits; each holds its memory (on a GPU, about 6 GB for decider or SemIf and
+1.5 GB for laya). Hosted providers such as `judge-typesafe` are unaffected.
 
 Credentials, default model and execution limits belong to the provider worker.
 For TypeSafe, open **Settings → Workers → judge-typesafe** in the Console or read
@@ -213,7 +214,8 @@ Inspect `status` before reading results:
   Codes are `invalid_request`, `missing_key`, `payload_too_large`, `deadline`,
   `attempt_timeout`, `cancelled`, `http`, `transport`, `invalid_response` and
   `provider_unavailable` (the selected `judge-<provider>` worker is not
-  registered). `deadline` means the whole-call budget expired; `attempt_timeout`
+  registered, or a local provider's model failed to load). `deadline` means the
+  whole-call budget expired (a local provider may still be loading); `attempt_timeout`
   means a network attempt timed out. There are no partial `results`.
 - Any other bus invocation failure (a timed-out or disconnected hub or provider)
   is separate from this typed envelope. Handle it at the RPC boundary as a

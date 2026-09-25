@@ -44,7 +44,12 @@ async fn invoke_client(
     })
     .await;
     let iii = Arc::new(register_worker(&engine.url, InitOptions::default()));
-    judge_decider::register(&iii, config, client);
+    // Loaded before the call, as a pinned provider is.
+    let slot = iii_llama_runtime::ModelSlot::new(move || Ok(client.clone()));
+    slot.get(std::time::Instant::now() + Duration::from_secs(10))
+        .await
+        .unwrap();
+    judge_decider::register(&iii, config, slot);
     let registration = timeout(Duration::from_secs(2), rx.recv())
         .await
         .expect("requested function must be registered")

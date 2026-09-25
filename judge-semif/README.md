@@ -32,19 +32,18 @@ chosen device is logged at start as `selected inference device`.
 iii trigger compose::add worker=judge-semif
 ```
 
-The model loads only while SemIf is the judge hub's **default provider**
-(`provider: semif` under **Settings → Workers → judge**): the worker follows
-the hub's configuration and, when another provider becomes the default,
-unregisters its functions and releases the model (VRAM included); it loads
-again when SemIf is selected. The first load downloads the pinned GGUF
+The functions register at start; the model loads on demand. While SemIf is
+the judge hub's **default provider** (`provider: semif` under **Settings →
+Workers → judge**) it loads at once and stays loaded. Otherwise the first call
+that names `"provider": "semif"` (or comes from a session that picked it)
+loads it, and it is released (VRAM included) after 10 minutes without calls.
+A call that cannot wait for the load answers `deadline` while the load goes on
+for the next one. The first load downloads the pinned GGUF
 (`qwen3.5-4b`: `bartowski/Qwen_Qwen3.5-4B-GGUF` Q4_K_M, 3.0 GB) into the
-hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`). The functions
-register only once the model answers; until then, and while another provider
-is the default, the hub reports `provider_unavailable`, also for calls that
-name `"provider": "semif"`. To keep it loaded while another provider is the
-default, turn on **Keep every local provider loaded** (`preload_all`) in the
-judge settings. A hub build that does not expose
-`judge::configuration-id` leaves the model loaded from the start.
+hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`). To keep it loaded
+while another provider is the default, turn on **Keep every local provider
+loaded** (`preload_all`) in the judge settings. A hub build that does not
+expose `judge::configuration-id` keeps the model loaded from the start.
 Air-gapped installs set `III_SEMIF_GGUF` to a local GGUF file.
 
 Make it the hub's default, then call the hub:

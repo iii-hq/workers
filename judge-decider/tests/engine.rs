@@ -15,10 +15,11 @@ async fn tiny_gguf_answers_through_a_real_engine() {
     let engine = Engine::start("judge_decider").await;
     let provider = connect(&engine.url, "judge-decider").await;
     let consumer = connect(&engine.url, "ticket-consumer").await;
+    let client = support::tiny_client();
     judge_decider::register(
         &provider,
         judge_decider::configuration::new_cell(judge_decider::DeciderConfig::default()),
-        support::tiny_client(),
+        iii_llama_runtime::ModelSlot::new(move || Ok(client.clone())),
     );
     for id in [EVALUATE_ID, MODELS_ID, CANCEL_ID] {
         wait_for(&consumer, id).await;

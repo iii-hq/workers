@@ -856,6 +856,7 @@ dependencies = [
  "iii-sdk",
  "judge-contract",
  "judge-typesafe",
+ "opentelemetry",
  "schemars",
  "serde",
  "serde_json",

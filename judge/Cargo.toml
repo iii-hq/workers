@@ -25,6 +25,8 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 anyhow = "1"
+# Same major as iii-sdk's, so Context::current() sees the handler's baggage.
+opentelemetry = { version = "0.31", default-features = false }
 
 [dev-dependencies]
 futures-util = "0.3"
