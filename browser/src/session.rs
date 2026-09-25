@@ -432,6 +432,11 @@ pub struct Tab {
     /// ignores frames older than the last one it saw keeps working after
     /// the tab slept and woke into a fresh page.
     frame_seq: AtomicU64,
+    /// Above every `n` element id handed out in this tab: a new document's
+    /// registry numbers from here, so a ref read on an earlier page never
+    /// resolves on a later one. On the tab, like `frame_seq`, so it holds
+    /// across sleep and wake into a fresh page.
+    next_element_id: AtomicU64,
     url: Mutex<String>,
     title: Mutex<String>,
     /// Visited pages, newest last, for the history panel. Capped.
@@ -767,10 +772,6 @@ pub struct Session {
     /// Bumped on every top-document navigation. Snapshots report it so a
     /// caller can tell which document epoch its refs belong to.
     generation: AtomicU64,
-    /// Above every `n` element id handed out in this session: a new
-    /// document's registry numbers from here, so `n` refs, like snapshot
-    /// refs, are unique across documents and a stale one never resolves.
-    next_element_id: AtomicU64,
     /// Ref-stripped outline lines of the latest snapshot, the baseline for
     /// `browser::snapshot` diff mode. None before the first snapshot and
     /// after a navigation.
@@ -931,12 +932,12 @@ impl Session {
 
     /// The first `n` element id a new document's registry hands out.
     pub fn next_element_id(&self) -> u64 {
-        self.next_element_id.load(Ordering::Relaxed)
+        self.tab.next_element_id.load(Ordering::Relaxed)
     }
 
     /// Record a registry's next id after a read (ids only move up).
     pub fn saw_element_ids(&self, next: u64) {
-        self.next_element_id.fetch_max(next, Ordering::Relaxed);
+        self.tab.next_element_id.fetch_max(next, Ordering::Relaxed);
     }
 
     /// Requests started at or after `since_ms` that have not finished.
@@ -1204,6 +1205,7 @@ impl Sessions {
                 ttl_ms: record.ttl_ms,
                 last_used_ms: AtomicU64::new(now_ms() as u64),
                 frame_seq: AtomicU64::new(0),
+                next_element_id: AtomicU64::new(1),
                 url: Mutex::new(record.url),
                 title: Mutex::new(record.title),
                 history: Mutex::new(record.history),
@@ -1320,6 +1322,7 @@ impl Sessions {
             ttl_ms: request.ttl_ms,
             last_used_ms: AtomicU64::new(now_ms() as u64),
             frame_seq: AtomicU64::new(0),
+            next_element_id: AtomicU64::new(1),
             url: Mutex::new("about:blank".to_string()),
             title: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
@@ -1496,7 +1499,6 @@ impl Sessions {
             refs: Mutex::new(HashMap::new()),
             ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
-            next_element_id: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
@@ -1806,6 +1808,7 @@ impl Sessions {
             ttl_ms: None,
             last_used_ms: AtomicU64::new(now as u64),
             frame_seq: AtomicU64::new(0),
+            next_element_id: AtomicU64::new(1),
             url: Mutex::new(url.clone().unwrap_or_else(|| "about:blank".to_string())),
             title: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
@@ -1835,7 +1838,6 @@ impl Sessions {
             refs: Mutex::new(HashMap::new()),
             ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
-            next_element_id: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),

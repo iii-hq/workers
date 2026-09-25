@@ -504,7 +504,7 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     for name in ["one", "two"] {
         std::fs::write(
             pages_dir.join(format!("{name}.html")),
-            format!("<!doctype html><title>{name}</title><h1>{name}</h1>"),
+            format!("<!doctype html><title>{name}</title><h1>{name}</h1><button>{name}</button>"),
         )
         .expect("page file");
         let nav = call(
@@ -529,6 +529,16 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
         back["url"].as_str().unwrap_or_default().contains("one"),
         "{back}"
     );
+    let before_sleep = call(
+        "browser::elements",
+        json!({ "session_id": regular_id }),
+        15_000,
+    )
+    .await;
+    let old_ref = before_sleep["elements"][0]["ref"]
+        .as_str()
+        .expect("the page's button")
+        .to_string();
 
     // Clearing everything closes the pages and the browser; the regular tab
     // stays listed asleep, the private one is gone for good.
@@ -556,6 +566,26 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     )
     .await;
     assert_eq!(woke["value"], "one", "{woke}");
+
+    // An `n` ref read before the tab slept never names a control after it
+    // woke into a fresh page, even once that page is read.
+    let after_wake = call(
+        "browser::elements",
+        json!({ "session_id": regular_id }),
+        15_000,
+    )
+    .await;
+    assert_ne!(after_wake["elements"][0]["ref"], old_ref, "{after_wake}");
+    let stale = client
+        .trigger(TriggerRequest {
+            function_id: "browser::act".into(),
+            payload: json!({ "session_id": regular_id, "action": "click", "ref": old_ref }),
+            action: None,
+            timeout_ms: Some(15_000),
+        })
+        .await
+        .expect_err("a ref from before the tab slept must not resolve");
+    assert!(stale.to_string().contains("unknown ref"), "{stale}");
 
     call(
         "browser::sessions::stop",
