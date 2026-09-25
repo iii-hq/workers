@@ -28,6 +28,23 @@ pub fn provider_function_id(provider: &str, public_id: &str) -> String {
         public_id.trim_start_matches("judge::")
     )
 }
+/// OTel baggage key carrying the calling session's judge provider, stamped by
+/// the harness on every turn. Callers inside that turn send it as the
+/// request's `provider`; the hub falls back to it when a request names none.
+/// Caller-supplied and unauthenticated: a routing preference, never an
+/// access decision.
+pub const PROVIDER_BAGGAGE_KEY: &str = "iii.judge.provider";
+
+/// `judge-<provider>` suffixes are worker names: lowercase letters, digits and
+/// hyphens, at most 64 bytes.
+pub fn is_valid_provider(provider: &str) -> bool {
+    !provider.is_empty()
+        && provider.len() <= 64
+        && provider
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 pub const MAX_EVALUATIONS: usize = 512;
 /// Provider-side `request_id` bound. Public ids are at most 128 bytes; the hub
 /// forwards them as `<caller length>:<caller>/<request_id>`, and rejects the

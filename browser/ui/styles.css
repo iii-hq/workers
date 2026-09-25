@@ -1520,6 +1520,13 @@
   padding: 6px 12px;
   background: var(--color-panel-raised);
 }
+/* browser::run step table: index and verb columns stay narrow */
+[data-iii-ui="browser"] .br-ui-run-index {
+  width: 24px;
+}
+[data-iii-ui="browser"] .br-ui-run-op {
+  width: 64px;
+}
 [data-iii-ui="browser"] .br-ui-log-level {
   width: 72px;
   flex-shrink: 0;

@@ -104,8 +104,23 @@ on navigation; re-snapshot before acting after any page change.
 - `browser::snapshot` — the page as an accessibility outline with `[ref=eN]`
   handles; the default way to read a page. `diff: true` returns only what
   changed since the previous snapshot.
-- `browser::act` — click, hover, type, press, or scroll, addressed by ref or
-  viewport coordinates.
+- `browser::elements` — the visible, enabled controls in the viewport as a
+  flat table (`n` ref, role, label, current value, checked/expanded state,
+  which `act` operations apply, `<select>` options) plus the visible text,
+  in one read. The cheap way to drive a form and to read what an action
+  changed.
+- `browser::act` — click, hover, type, select a native `<select>` option,
+  press, or scroll, addressed by ref or viewport coordinates. A ref is
+  scrolled into view, and a click/type/select on a disabled, hidden or
+  covered element is refused (the error names what covers it) instead of
+  landing on the overlay. Typing into an input or textarea by ref replaces
+  its value.
+- `browser::run` — reach a goal on the current page in one call: the judge
+  worker picks each step (click, type, select, scroll, wait) from the element
+  table and the worker executes it, until done, blocked, a field needs text
+  you did not pass in `inputs` (`needs_text`), no progress, or the budget
+  runs out. Returns the steps and the final page table. Without a judge
+  worker it returns `judge_unavailable` plus the table, and changes nothing.
 - `browser::screenshot` — viewable JPEG of the viewport, for when layout or
   rendering matters.
 - `browser::evaluate` — run a JavaScript expression in the page and get the
@@ -215,12 +230,15 @@ default stream is `browser::crawl`.
 
 ## Workflow: inspect before acting
 
-1. Snapshot first; act on refs from the latest snapshot, never from memory
-   of an earlier one. Refs are unique per snapshot and die on navigation, so
-   a stale ref fails with an error instead of clicking the wrong element.
-2. After an action that changes the page, re-read with
-   `browser::snapshot { diff: true }`: it returns only added and removed
-   lines, which keeps loops cheap.
+1. Read first; act on refs from the latest read, never from memory of an
+   earlier one. For forms and controls, `browser::elements` is the cheap
+   read; `browser::snapshot` shows the whole structure. Refs die on
+   navigation, so a stale ref fails with an error instead of clicking the
+   wrong element.
+2. After an action that changes the page, re-read with `browser::elements`
+   (or `browser::snapshot { diff: true }`, which returns only added and
+   removed lines). Set a native `<select>` with `act` `select`, not a
+   script.
 3. Use `browser::execute` when a step needs waiting or several dependent
    reads and writes; use `browser::act` for single trusted input events
    (in-page script clicks are not trusted events).
@@ -231,6 +249,29 @@ default stream is `browser::crawl`.
    automate it. After it returns confirmed, re-read the page and verify the
    step actually landed — a human clicking Continue is not proof the step
    succeeded.
+
+## Workflow: drive a goal with browser::run
+
+A multi-step form or flow is one call instead of an act/read round trip per
+click:
+
+1. `browser::run { session_id, goal, inputs }`: state the end state in
+   `goal` ("logged in: the dashboard shows"), not the clicks, and give every
+   value to type in `inputs` (`email`, `password` or the field labels work).
+   Values go to the page only; the judge sees the keys. The run waits for
+   the requests each click starts, so the page it returns is the outcome.
+2. `done`: check `page` (the final table) against the goal before you
+   report success; the judge's done is not proof (a login can end on
+   "invalid password"). `page.busy` means it was still loading. `needs_text`: type the named field with
+   `browser::act` or rerun with that input. `blocked`/`stalled`/`max_steps`:
+   read `steps` (each has `error` when an action was refused) and continue
+   by hand.
+3. `judge_unavailable`: no judge worker is deployed (or it is failing and
+   paused for 30 s). Drive the same flow with `browser::elements` +
+   `browser::act`; `page` already holds the table.
+
+Do not use `run` for destructive actions; they need the two-phase approval
+below.
 
 ## Workflow: destructive UI actions
 

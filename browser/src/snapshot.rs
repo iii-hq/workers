@@ -47,9 +47,9 @@ fn ax_value_string(
 
 /// Serialize the flat `Accessibility.getFullAXTree` node list into an
 /// indented outline, assigning refs to nodes that are backed by a DOM node.
-/// `ref_counter` is the session's monotonic counter: names continue from
-/// where the previous snapshot stopped, so refs from different snapshots of
-/// one document never collide.
+/// `ref_counter` is the tab's monotonic counter: names continue from where
+/// the previous snapshot stopped, so refs from different snapshots, pages or
+/// wakes of one tab never collide.
 pub fn serialize(nodes: &[AxNode], max_nodes: usize, ref_counter: &AtomicU64) -> SnapshotResult {
     let by_id: HashMap<&str, &AxNode> = nodes
         .iter()

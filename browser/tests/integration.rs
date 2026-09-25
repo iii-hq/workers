@@ -504,7 +504,7 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     for name in ["one", "two"] {
         std::fs::write(
             pages_dir.join(format!("{name}.html")),
-            format!("<!doctype html><title>{name}</title><h1>{name}</h1>"),
+            format!("<!doctype html><title>{name}</title><h1>{name}</h1><button>{name}</button>"),
         )
         .expect("page file");
         let nav = call(
@@ -528,6 +528,35 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     assert!(
         back["url"].as_str().unwrap_or_default().contains("one"),
         "{back}"
+    );
+    let before_sleep = call(
+        "browser::elements",
+        json!({ "session_id": regular_id }),
+        15_000,
+    )
+    .await;
+    let old_ref = before_sleep["elements"][0]["ref"]
+        .as_str()
+        .expect("the page's button")
+        .to_string();
+    let button_ref = |snapshot: &serde_json::Value| {
+        snapshot["tree"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .find(|l| l.contains("button \"one\""))
+            .and_then(|l| l.split("[ref=").nth(1))
+            .and_then(|rest| rest.split(']').next())
+            .map(str::to_string)
+            .unwrap_or_else(|| panic!("button in snapshot: {snapshot}"))
+    };
+    let old_snapshot_ref = button_ref(
+        &call(
+            "browser::snapshot",
+            json!({ "session_id": regular_id }),
+            15_000,
+        )
+        .await,
     );
 
     // Clearing everything closes the pages and the browser; the regular tab
@@ -556,6 +585,46 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     )
     .await;
     assert_eq!(woke["value"], "one", "{woke}");
+
+    // An `n` ref read before the tab slept never names a control after it
+    // woke into a fresh page, even once that page is read.
+    let after_wake = call(
+        "browser::elements",
+        json!({ "session_id": regular_id }),
+        15_000,
+    )
+    .await;
+    assert_ne!(after_wake["elements"][0]["ref"], old_ref, "{after_wake}");
+    let stale = client
+        .trigger(TriggerRequest {
+            function_id: "browser::act".into(),
+            payload: json!({ "session_id": regular_id, "action": "click", "ref": old_ref }),
+            action: None,
+            timeout_ms: Some(15_000),
+        })
+        .await
+        .expect_err("a ref from before the tab slept must not resolve");
+    assert!(stale.to_string().contains("unknown ref"), "{stale}");
+    // Snapshot refs too: the woken page's snapshot numbers on from before.
+    let new_snapshot_ref = button_ref(
+        &call(
+            "browser::snapshot",
+            json!({ "session_id": regular_id }),
+            15_000,
+        )
+        .await,
+    );
+    assert_ne!(new_snapshot_ref, old_snapshot_ref);
+    let stale = client
+        .trigger(TriggerRequest {
+            function_id: "browser::act".into(),
+            payload: json!({ "session_id": regular_id, "action": "click", "ref": old_snapshot_ref }),
+            action: None,
+            timeout_ms: Some(15_000),
+        })
+        .await
+        .expect_err("a snapshot ref from before the tab slept must not resolve");
+    assert!(stale.to_string().contains("unknown ref"), "{stale}");
 
     call(
         "browser::sessions::stop",
@@ -868,5 +937,605 @@ async fn lightpanda_engine_drives_the_dom_surface() {
     let doctor = call("browser::doctor", json!({}), 10_000).await;
     assert_eq!(doctor["browser_running"], false, "{doctor}");
 
+    client.shutdown_async().await;
+}
+
+/// Form fixture for the element table and the act guards: a text field, a
+/// native select, a Save button that records both values in the title, a
+/// disabled button, a password field, and a hidden full-page shield that
+/// covers everything once shown.
+const FORM_HTML: &str = r#"<!doctype html><title>form</title>
+<style>#shield{position:fixed;inset:0;background:rgba(0,0,0,.3)}</style>
+<form onsubmit="event.preventDefault()">
+<label>Title <input id="summary" value="old"></label>
+<label>Type <select id="kind"><option>Feature</option><option value="bug">Bug</option></select></label>
+<button type="button" id="save" onclick="document.title='saved:'+document.getElementById('summary').value+':'+document.getElementById('kind').value">Save</button>
+<button type="button" disabled>Archive</button>
+<input type="password" aria-label="Secret" value="x">
+</form>
+<div id="host"></div>
+<script>host.attachShadow({mode: 'open'}).innerHTML = '<button type="button" onclick="document.title=`shadow`">Shadow</button>';</script>
+<div id="shield" hidden></div>"#;
+
+fn element<'a>(table: &'a serde_json::Value, label: &str) -> &'a serde_json::Value {
+    table["elements"]
+        .as_array()
+        .expect("elements array")
+        .iter()
+        .find(|e| e["label"] == label)
+        .unwrap_or_else(|| panic!("no element labelled {label:?}: {table}"))
+}
+
+#[tokio::test]
+async fn elements_table_guards_select_and_replace() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let try_call = |function_id: &str, payload: serde_json::Value| {
+        let client = &client;
+        let function_id = function_id.to_string();
+        async move {
+            timeout(
+                Duration::from_secs(30),
+                client.trigger(TriggerRequest {
+                    function_id,
+                    payload,
+                    action: None,
+                    timeout_ms: Some(20_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+        }
+    };
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let pending = try_call(function_id, payload);
+        async move { pending.await.expect("trigger failed") }
+    };
+
+    let url = serve_html(FORM_HTML);
+    let started = call("browser::sessions::start", json!({ "url": url })).await;
+    let sid = started["session_id"]
+        .as_str()
+        .expect("session_id")
+        .to_string();
+    let eval = |expression: &'static str| {
+        let payload = json!({ "session_id": sid, "expression": expression });
+        async move { call("browser::evaluate", payload).await["value"].clone() }
+    };
+
+    // one read: controls with refs and operations, disabled ones left out,
+    // password values never exposed
+    let table = call("browser::elements", json!({ "session_id": sid })).await;
+    let title = element(&table, "Title");
+    assert_eq!(title["value"], "old", "{table}");
+    assert_eq!(title["operations"], json!(["type", "click"]), "{table}");
+    let kind = element(&table, "Type");
+    assert_eq!(kind["operations"], json!(["select"]), "{table}");
+    assert_eq!(kind["options"], json!(["Feature", "Bug"]), "{table}");
+    assert_eq!(element(&table, "Secret")["value"], "(set)", "{table}");
+    assert!(
+        !table["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["label"] == "Archive"),
+        "a disabled button is not actionable: {table}"
+    );
+    let (title_ref, kind_ref, save_ref) = (
+        title["ref"].as_str().unwrap().to_string(),
+        kind["ref"].as_str().unwrap().to_string(),
+        element(&table, "Save")["ref"].as_str().unwrap().to_string(),
+    );
+
+    // type by ref replaces the value; empty text clears it
+    call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "type", "ref": title_ref, "text": "" }),
+    )
+    .await;
+    assert_eq!(eval("summary.value").await, "");
+    let typed = call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "type", "ref": title_ref, "text": "Hello" }),
+    )
+    .await;
+    assert!(
+        typed["detail"].as_str().unwrap().contains("replaced"),
+        "{typed}"
+    );
+    assert_eq!(eval("summary.value").await, "Hello");
+
+    // native select by label
+    let selected = call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "select", "ref": kind_ref, "option": "Bug" }),
+    )
+    .await;
+    assert_eq!(selected["detail"], "selected 'Bug'", "{selected}");
+    assert_eq!(eval("kind.value").await, "bug");
+
+    // a covered button refuses the click instead of clicking the cover
+    eval("shield.hidden = false").await;
+    let covered = try_call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": save_ref }),
+    )
+    .await
+    .expect_err("click on a covered element must be refused");
+    assert!(
+        covered.to_string().contains("covered by div#shield"),
+        "{covered}"
+    );
+    eval("shield.hidden = true").await;
+    call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": save_ref }),
+    )
+    .await;
+    assert_eq!(eval("document.title").await, "saved:Hello:bug");
+
+    // n refs work wherever refs do
+    let dom = call(
+        "browser::dom::read",
+        json!({ "session_id": sid, "ref": save_ref }),
+    )
+    .await;
+    assert_eq!(dom["root"]["tag"], "button", "{dom}");
+
+    // snapshot refs still act (and pass the same guard)
+    let snap = call("browser::snapshot", json!({ "session_id": sid })).await;
+    let e_ref = snap["tree"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .find(|l| l.contains("button \"Save\""))
+        .and_then(|l| l.split("[ref=").nth(1))
+        .and_then(|rest| rest.split(']').next())
+        .expect("Save in snapshot")
+        .to_string();
+    eval("document.title = 'x'").await;
+    call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": e_ref }),
+    )
+    .await;
+    assert_eq!(eval("document.title").await, "saved:Hello:bug");
+
+    // a control inside a shadow root is not "covered" by its host
+    let shadow_ref = snap["tree"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .find(|l| l.contains("button \"Shadow\""))
+        .and_then(|l| l.split("[ref=").nth(1))
+        .and_then(|rest| rest.split(']').next())
+        .expect("Shadow in snapshot")
+        .to_string();
+    call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": shadow_ref }),
+    )
+    .await;
+    assert_eq!(eval("document.title").await, "shadow");
+
+    // navigation kills n refs, even once the new page is read and its own
+    // controls are numbered
+    call(
+        "browser::navigate",
+        json!({ "session_id": sid, "url": url }),
+    )
+    .await;
+    let stale = try_call(
+        "browser::act",
+        json!({ "session_id": sid, "action": "click", "ref": save_ref }),
+    )
+    .await
+    .expect_err("an n ref from the previous document must not resolve");
+    assert!(stale.to_string().contains("unknown ref"), "{stale}");
+    let fresh = call("browser::elements", json!({ "session_id": sid })).await;
+    assert_ne!(element(&fresh, "Save")["ref"], save_ref, "{fresh}");
+    let (old_title, old_kind) = (title_ref.clone(), kind_ref.clone());
+    for stale_ref in [&save_ref, &old_title, &old_kind] {
+        let stale = try_call(
+            "browser::act",
+            json!({ "session_id": sid, "action": "click", "ref": stale_ref }),
+        )
+        .await
+        .expect_err("an n ref from an earlier page must not name a control on this one");
+        assert!(stale.to_string().contains("unknown ref"), "{stale}");
+    }
+    assert_eq!(eval("document.title").await, "form");
+
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}
+
+/// A scripted `judge::evaluate`: select Bug, type the title, click Save,
+/// then DONE once the page title says saved. Answers every head the way a
+/// real judge does, but only the chosen operation's head matters.
+fn scripted_judge(request: &serde_json::Value) -> serde_json::Value {
+    let evaluation = &request["evaluations"][0];
+    let state = &evaluation["state"];
+    let questions = &evaluation["questions"];
+    let pick = |question: &str, choice: &str| {
+        let probabilities: serde_json::Map<String, serde_json::Value> = questions[question]
+            ["criteria"]
+            .as_object()
+            .expect("choice criteria")
+            .keys()
+            .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+            .collect();
+        json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.9 })
+    };
+    let field = |label: &str| {
+        state["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["label"] == label)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {label} in {state}"))
+    };
+    let (kind, title, save) = (field("Type"), field("Title"), field("Save"));
+    let r = |e: &serde_json::Value| e["ref"].as_str().unwrap().to_string();
+    let (operation, head) = if state["page"]["title"]
+        .as_str()
+        .unwrap()
+        .starts_with("saved")
+    {
+        ("DONE", None)
+    } else if kind["value"] != "Bug" {
+        ("SELECT", Some(("select_target", format!("{}:2", r(&kind)))))
+    } else if title["value"] != "Crash on save" {
+        ("TYPE_TEXT", Some(("type_text_target", r(&title))))
+    } else {
+        ("CLICK", Some(("click_target", r(&save))))
+    };
+    let mut answers = serde_json::Map::new();
+    answers.insert("operation".into(), pick("operation", operation));
+    if let Some((question, target)) = head {
+        answers.insert(question.into(), pick(question, &target));
+    }
+    json!({
+        "status": "ok",
+        "model": "scripted",
+        "results": { evaluation["id"].as_str().unwrap(): { "answers": answers } },
+        "stats": { "attempts": 1, "requests": 1, "questions": answers.len(),
+                   "input_tokens": 0, "output_tokens": 0, "elapsed_ms": 1, "usage_complete": false },
+    })
+}
+
+#[tokio::test]
+async fn run_drives_a_form_with_the_judge_and_asks_for_missing_text() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    let requests = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    {
+        let requests = requests.clone();
+        client.register_function(
+            "judge::evaluate",
+            RegisterFunction::new_async(move |request: serde_json::Value| {
+                let requests = requests.clone();
+                async move {
+                    let reply = scripted_judge(&request);
+                    requests.lock().unwrap().push(request);
+                    Ok::<_, iii_sdk::errors::Error>(reply)
+                }
+            }),
+        );
+    }
+    sleep(Duration::from_millis(800)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(60),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(50_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+    let url = serve_html(FORM_HTML);
+    let started = call("browser::sessions::start", json!({ "url": url })).await;
+    let sid = started["session_id"].as_str().unwrap().to_string();
+    let goal = "File a Bug with the given title and save it.";
+
+    // no inputs: the select happens, then the run hands the text back
+    let first = call("browser::run", json!({ "session_id": sid, "goal": goal })).await;
+    assert_eq!(first["status"], "needs_text", "{first}");
+    assert_eq!(first["steps"].as_array().unwrap().len(), 1, "{first}");
+    assert_eq!(first["steps"][0]["operation"], "SELECT", "{first}");
+    assert_eq!(first["steps"][0]["option"], "Bug", "{first}");
+    assert_eq!(first["needs_text"]["label"], "Title", "{first}");
+
+    // with the text: type, click, done — one call
+    let n = requests.lock().unwrap().len();
+    // this call comes from a session whose judge is semif: every judge
+    // request of the run must name it
+    let semif = opentelemetry::baggage::BaggageExt::current_with_baggage(vec![
+        opentelemetry::KeyValue::new(judge_contract::PROVIDER_BAGGAGE_KEY, "semif"),
+    ]);
+    let second = opentelemetry::context::FutureExt::with_context(
+        call(
+            "browser::run",
+            json!({ "session_id": sid, "goal": goal, "inputs": { "title": "Crash on save" } }),
+        ),
+        semif,
+    )
+    .await;
+    assert_eq!(second["status"], "done", "{second}");
+    let ops: Vec<&str> = second["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["operation"].as_str().unwrap())
+        .collect();
+    assert_eq!(ops, ["TYPE_TEXT", "CLICK"], "{second}");
+    assert_eq!(
+        second["page"]["title"], "saved:Crash on save:bug",
+        "{second}"
+    );
+
+    let requests = requests.lock().unwrap().clone();
+    // the session's provider rides every request of that run, and only it
+    assert!(requests[..n].iter().all(|r| r.get("provider").is_none()));
+    assert!(requests[n..].iter().all(|r| r["provider"] == "semif"));
+    // input values never reach the judge (until the page itself shows them)
+    assert!(!requests[n]["evaluations"][0]["state"]
+        .to_string()
+        .contains("Crash on save"));
+    // each request asks the operation plus one head per offered operation
+    let heads: Vec<&String> = requests[n]["evaluations"][0]["questions"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            "click_target",
+            "operation",
+            "select_target",
+            "type_text_target"
+        ]
+    );
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn run_without_a_judge_returns_the_page_and_touches_nothing() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    sleep(Duration::from_millis(500)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(30),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(20_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+    let started = call(
+        "browser::sessions::start",
+        json!({ "url": serve_html(FORM_HTML) }),
+    )
+    .await;
+    let sid = started["session_id"].as_str().unwrap().to_string();
+    let run = json!({ "session_id": sid, "goal": "save the form" });
+
+    let first = call("browser::run", run.clone()).await;
+    assert_eq!(first["status"], "judge_unavailable", "{first}");
+    assert!(first["steps"].as_array().unwrap().is_empty(), "{first}");
+    assert_eq!(first["page"]["title"], "form", "{first}");
+    assert!(
+        first["page"]["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["label"] == "Save"),
+        "the page table comes back so the caller can act: {first}"
+    );
+    // the outage pauses the judge: the next run does not wait on the bus
+    let second = call("browser::run", run).await;
+    assert!(
+        second["reason"].as_str().unwrap().contains("paused"),
+        "{second}"
+    );
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
+    client.shutdown_async().await;
+}
+
+/// Like `serve_html`, but a request for `/slow` answers after 1.2 s: a login
+/// endpoint a submit waits on.
+fn serve_html_with_slow_api(html: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+                let (kind, body) =
+                    if request.starts_with("GET /slow") || request.starts_with("POST /slow") {
+                        std::thread::sleep(Duration::from_millis(1200));
+                        ("application/json", r#"{"ok":false}"#)
+                    } else {
+                        ("text/html; charset=utf-8", html)
+                    };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    format!("http://{addr}/")
+}
+
+/// A login whose submit hides the form behind "Entrando…" until the API
+/// answers, then shows the error — fields labelled in Portuguese.
+const LOGIN_HTML: &str = r#"<!doctype html><title>BeQuali</title>
+<form id="f" onsubmit="event.preventDefault()">
+<label>E-mail <input type="email" name="user_email"></label>
+<label>Senha <input type="password" name="pw"></label>
+<button type="button" id="go">Entrar</button>
+</form>
+<p id="msg"></p>
+<script>
+document.getElementById('go').onclick = async () => {
+  const f = document.getElementById('f'), msg = document.getElementById('msg');
+  f.hidden = true; msg.textContent = 'Entrando…';
+  await fetch('/slow', { method: 'POST' });
+  f.hidden = false; msg.textContent = 'E-mail ou senha inválidos';
+};
+</script>"#;
+
+/// A judge that, like the live one, calls the goal done as soon as the
+/// login was submitted: fills both fields, clicks Entrar, then DONE.
+fn eager_login_judge(request: &serde_json::Value) -> serde_json::Value {
+    let evaluation = &request["evaluations"][0];
+    let state = &evaluation["state"];
+    let questions = &evaluation["questions"];
+    let pick = |question: &str, choice: &str| {
+        let probabilities: serde_json::Map<String, serde_json::Value> = questions[question]
+            ["criteria"]
+            .as_object()
+            .expect("choice criteria")
+            .keys()
+            .map(|k| (k.clone(), json!(if k == choice { 1.0 } else { 0.0 })))
+            .collect();
+        json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 0.9 })
+    };
+    let text = state["page"]["text"].as_str().unwrap_or_default();
+    let field = |label: &str| {
+        state["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["label"] == label)
+            .cloned()
+    };
+    let mut answers = serde_json::Map::new();
+    let submitted = text.contains("Entrando") || text.contains("inválidos");
+    let target = if submitted {
+        None
+    } else if field("E-mail").is_some_and(|e| e.get("value").is_none()) {
+        Some(("TYPE_TEXT", "type_text_target", field("E-mail").unwrap()))
+    } else if field("Senha").is_some_and(|e| e.get("value").is_none()) {
+        Some(("TYPE_TEXT", "type_text_target", field("Senha").unwrap()))
+    } else {
+        Some(("CLICK", "click_target", field("Entrar").unwrap()))
+    };
+    match target {
+        None => {
+            answers.insert("operation".into(), pick("operation", "DONE"));
+        }
+        Some((operation, head, element)) => {
+            answers.insert("operation".into(), pick("operation", operation));
+            if questions.get(head).is_some() {
+                answers.insert(head.into(), pick(head, element["ref"].as_str().unwrap()));
+            }
+        }
+    }
+    json!({
+        "status": "ok",
+        "model": "scripted",
+        "results": { evaluation["id"].as_str().unwrap(): { "answers": answers } },
+        "stats": { "attempts": 1, "requests": 1, "questions": answers.len(),
+                   "input_tokens": 0, "output_tokens": 0, "elapsed_ms": 1, "usage_complete": false },
+    })
+}
+
+#[tokio::test]
+async fn run_waits_for_the_submit_it_triggered_and_matches_inputs_by_field() {
+    let Some(h) = boot().await else {
+        eprintln!("skipping: `iii` or Chromium not available");
+        return;
+    };
+    let client = register_worker(&h.engine_ws, InitOptions::default());
+    client.register_function(
+        "judge::evaluate",
+        RegisterFunction::new_async(|request: serde_json::Value| async move {
+            Ok::<_, iii_sdk::errors::Error>(eager_login_judge(&request))
+        }),
+    );
+    sleep(Duration::from_millis(800)).await;
+    let call = |function_id: &'static str, payload: serde_json::Value| {
+        let client = &client;
+        async move {
+            timeout(
+                Duration::from_secs(60),
+                client.trigger(TriggerRequest {
+                    function_id: function_id.into(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(50_000),
+                }),
+            )
+            .await
+            .expect("trigger timed out")
+            .expect("trigger failed")
+        }
+    };
+    let started = call(
+        "browser::sessions::start",
+        json!({ "url": serve_html_with_slow_api(LOGIN_HTML) }),
+    )
+    .await;
+    let sid = started["session_id"].as_str().unwrap().to_string();
+
+    // `email` / `password` reach "E-mail" / "Senha" through the label and
+    // the field type; the run ends on the login's answer, not on "Entrando…"
+    let run = call(
+        "browser::run",
+        json!({ "session_id": sid, "goal": "Log in.",
+                "inputs": { "email": "a@b.test", "password": "pw" } }),
+    )
+    .await;
+    assert_eq!(run["status"], "done", "{run}");
+    let ops: Vec<&str> = run["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["operation"].as_str().unwrap())
+        .collect();
+    assert_eq!(ops, ["TYPE_TEXT", "TYPE_TEXT", "CLICK"], "{run}");
+    let text = run["page"]["text"].as_str().unwrap();
+    assert!(text.contains("E-mail ou senha inválidos"), "{run}");
+    assert!(!text.contains("Entrando"), "{run}");
+    assert_eq!(run["page"]["busy"], false, "{run}");
+
+    call("browser::sessions::stop", json!({ "session_id": sid })).await;
     client.shutdown_async().await;
 }

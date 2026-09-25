@@ -10,6 +10,7 @@ pub mod cookies;
 pub mod doctor;
 pub mod dom;
 pub mod downloads;
+pub mod elements;
 pub mod evaluate;
 pub mod execute;
 pub mod find_in_page;
@@ -25,6 +26,7 @@ pub mod pdf;
 pub mod pick;
 pub mod recording;
 pub mod resize;
+pub mod run;
 pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
@@ -93,6 +95,13 @@ pub const SNAPSHOT_DESC: &str =
     "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that \
      browser::act accepts; refs stay valid until the next navigation. Prefer this over \
      browser::screenshot; it is cheaper and machine-readable.";
+pub const ELEMENTS_ID: &str = "browser::elements";
+pub const ELEMENTS_DESC: &str =
+    "The page's visible, enabled controls in the viewport as an indexed table (ref, role, \
+     label, current value, checked/expanded state, what browser::act can do with each, and \
+     <select> options), plus the visible text, from one read. Cheaper and flatter than \
+     browser::snapshot: use it to drive forms and read what an action changed. Refs (`n4`) \
+     stay valid while the element stays in the document.";
 pub const SCREENSHOT_ID: &str = "browser::screenshot";
 pub const SCREENSHOT_DESC: &str =
     "Screenshot the session's current page as a JPEG (or a lossless PNG with \
@@ -100,9 +109,25 @@ pub const SCREENSHOT_DESC: &str =
      screenshot when layout or rendering matters.";
 pub const ACT_ID: &str = "browser::act";
 pub const ACT_DESC: &str =
-    "Interact with the page: click (left/right/middle, single or double), hover, type, press, \
-     scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with \
-     a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.";
+    "Interact with the page: click (left/right/middle, single or double), hover, type, select \
+     a native <select> option, press, scroll, or drag (press at the start point, glide to \
+     x2/y2, release). Address elements with a ref from browser::elements (`n4`), \
+     browser::snapshot (`e3`) or a pick, or raw viewport coordinates. A ref is scrolled into \
+     view first, and a click, type or select on a disabled, hidden or covered element is \
+     refused instead of landing on whatever is on top. Typing into an input or textarea by \
+     ref replaces its value. Returns once the page had a moment to react.";
+pub const RUN_ID: &str = "browser::run";
+pub const RUN_DESC: &str =
+    "Drive the page toward a goal in one call (fill and submit a form, log in, pick filters, \
+     step through a wizard): each step reads the visible controls, asks the judge worker which \
+     operation (click, type, select, scroll, wait, done, blocked) and which element, acts, and \
+     waits for the requests the action started, until the judge says done or blocked, a field \
+     needs text you did not give in `inputs`, nothing changes three times, or the step/time \
+     budget runs out. State the goal as the end state to reach (\"logged in: the dashboard \
+     shows\"), not the clicks. Returns the steps taken and the final page table; read it before \
+     reporting success, done is the judge's reading, not proof (a login can end on an error). \
+     Without a judge worker it returns status judge_unavailable with the page table: drive with \
+     browser::elements and browser::act instead.";
 pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
@@ -286,11 +311,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<doctor::DoctorInput, doctor::DoctorOutput>(DOCTOR_ID, DOCTOR_DESC),
         spec::<navigate::NavigateInput, navigate::NavigateOutput>(NAVIGATE_ID, NAVIGATE_DESC),
         spec::<snapshot::SnapshotInput, snapshot::SnapshotOutput>(SNAPSHOT_ID, SNAPSHOT_DESC),
+        spec::<elements::ElementsInput, elements::ElementsOutput>(ELEMENTS_ID, ELEMENTS_DESC),
         spec::<screenshot::ScreenshotInput, screenshot::ScreenshotOutput>(
             SCREENSHOT_ID,
             SCREENSHOT_DESC,
         ),
         spec::<act::ActInput, act::ActOutput>(ACT_ID, ACT_DESC),
+        spec::<run::RunInput, run::RunOutput>(RUN_ID, RUN_DESC),
         spec::<evaluate::EvaluateInput, evaluate::EvaluateOutput>(EVALUATE_ID, EVALUATE_DESC),
         spec::<execute::ExecuteInput, execute::ExecuteOutput>(EXECUTE_ID, EXECUTE_DESC),
         spec::<handoff::HandoffInput, handoff::HandoffOutput>(HANDOFF_ID, HANDOFF_DESC),
@@ -387,8 +414,10 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_doctor(iii, sessions);
     register_navigate(iii, sessions);
     register_snapshot(iii, sessions);
+    register_elements(iii, sessions);
     register_screenshot(iii, sessions);
     register_act(iii, sessions);
+    register_run(iii, sessions);
     register_evaluate(iii, sessions);
     register_execute(iii, sessions);
     register_handoff(iii, sessions);
@@ -831,7 +860,7 @@ fn register_snapshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let result = crate::snapshot::serialize(
                     &tree.nodes,
                     cfg.max_snapshot_nodes as usize,
-                    &session.ref_counter,
+                    &session.tab.ref_counter,
                 );
                 session.append_refs(result.refs);
 
@@ -878,6 +907,22 @@ fn register_snapshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             }
         })
         .description(SNAPSHOT_DESC),
+    );
+}
+
+fn register_elements(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        ELEMENTS_ID,
+        RegisterFunction::new_async(move |req: elements::ElementsInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id).await?;
+                session.touch();
+                observe(&session).await
+            }
+        })
+        .description(ELEMENTS_DESC),
     );
 }
 
@@ -957,15 +1002,190 @@ async fn move_ghost_cursor(session: &Session, x: f64, y: f64, click: bool) {
     }
 }
 
-/// Resolve the target point for a ref- or coordinate-addressed action.
-async fn action_point(session: &Session, req: &act::ActInput) -> Result<(f64, f64), Error> {
+/// Unique Runtime object group per ref-addressed call, released when the call
+/// ends so page handles never pile up.
+fn object_group() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "iii-ref-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+async fn release_group(session: &Session, group: &str) {
+    let _ = session
+        .page
+        .execute(cdp_rt::ReleaseObjectGroupParams::new(group))
+        .await;
+}
+
+/// Page-side handle for a ref, in `group`. `n` refs resolve through the
+/// page's element registry (`browser::elements`); the rest through their
+/// backend node id.
+async fn ref_object(
+    session: &Session,
+    r: &str,
+    group: &str,
+) -> Result<cdp_rt::RemoteObjectId, Error> {
+    if let Some(id) = elements::registry_id(r) {
+        let params = cdp_rt::EvaluateParams::builder()
+            .expression(format!("window.__iiiElements?.nodes.get({id}) ?? null"))
+            .object_group(group)
+            .return_by_value(false)
+            .build()
+            .map_err(handler_err)?;
+        let found = session
+            .page
+            .execute(params)
+            .await
+            .map_err(|e| handler_err(format!("ref lookup failed: {e}")))?;
+        return found
+            .result
+            .result
+            .object_id
+            .clone()
+            .ok_or_else(|| session.unknown_ref(r));
+    }
+    let backend_id = session.resolve_ref_or_err(r)?;
+    let resolved = session
+        .page
+        .execute(
+            cdp_dom::ResolveNodeParams::builder()
+                .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
+                .object_group(group)
+                .build(),
+        )
+        .await
+        .map_err(|e| handler_err(format!("node resolve failed: {e}")))?;
+    resolved
+        .object
+        .object_id
+        .clone()
+        .ok_or_else(|| handler_err("element has no JS object"))
+}
+
+/// Backend node id for any ref; `n` refs go through the page registry.
+async fn ref_backend_id(session: &Session, r: &str) -> Result<i64, Error> {
+    if elements::registry_id(r).is_none() {
+        return session.resolve_ref_or_err(r);
+    }
+    let group = object_group();
+    let described = async {
+        let object = ref_object(session, r, &group).await?;
+        let node = session
+            .page
+            .execute(
+                cdp_dom::DescribeNodeParams::builder()
+                    .object_id(object)
+                    .build(),
+            )
+            .await
+            .map_err(|e| handler_err(format!("describe node failed: {e}")))?;
+        Ok::<_, Error>(*node.node.backend_node_id.inner())
+    }
+    .await;
+    release_group(session, &group).await;
+    described
+}
+
+/// Run `elements::GUARD_FN` on the element; `{error}` becomes a refusal.
+async fn guard(
+    session: &Session,
+    object: &cdp_rt::RemoteObjectId,
+    r: &str,
+    kind: &str,
+    option: Option<&str>,
+) -> Result<serde_json::Value, Error> {
+    let call = cdp_rt::CallFunctionOnParams::builder()
+        .function_declaration(elements::GUARD_FN)
+        .object_id(object.clone())
+        .argument(cdp_rt::CallArgument {
+            value: Some(json!(kind)),
+            unserializable_value: None,
+            object_id: None,
+        })
+        .argument(cdp_rt::CallArgument {
+            value: Some(json!(option)),
+            unserializable_value: None,
+            object_id: None,
+        })
+        .return_by_value(true)
+        .build()
+        .map_err(handler_err)?;
+    let out = session
+        .page
+        .execute(call)
+        .await
+        .map_err(|e| handler_err(format!("element check failed: {e}")))?;
+    if let Some(details) = &out.exception_details {
+        return Err(handler_err(format!(
+            "element check failed: {}",
+            details.text
+        )));
+    }
+    let value = out
+        .result
+        .result
+        .value
+        .clone()
+        .unwrap_or(serde_json::Value::Null);
+    if let Some(error) = value.get("error").and_then(|e| e.as_str()) {
+        return Err(handler_err(format!(
+            "{kind} on {r} refused: {error}. Re-read the page (browser::elements or \
+             browser::snapshot) and act on what is there now."
+        )));
+    }
+    Ok(value)
+}
+
+/// Let the page react to input before anyone reads it (`settle_script`).
+/// Best effort: a navigation or a throttled tab just ends the wait.
+async fn settle(session: &Session, typed: bool) {
+    let Ok(params) = cdp_rt::EvaluateParams::builder()
+        .expression(elements::settle_script(typed))
+        .await_promise(true)
+        .return_by_value(true)
+        .build()
+    else {
+        return;
+    };
+    let _ = timeout(Duration::from_millis(400), session.page.execute(params)).await;
+}
+
+/// The `browser::elements` table for the session's current page.
+async fn observe(session: &Session) -> Result<elements::ElementsOutput, Error> {
+    let script = elements::observe_script(session.next_element_id());
+    let value = evaluate_json(session, script, "elements").await?;
+    if let Some(next) = value.get("next").and_then(serde_json::Value::as_u64) {
+        session.saw_element_ids(next);
+    }
+    if value.is_null() {
+        return Err(handler_err(
+            "the page has no document body yet; retry once it has loaded",
+        ));
+    }
+    let mut out: elements::ElementsOutput = serde_json::from_value(value)
+        .map_err(|e| handler_err(format!("elements returned an unexpected shape: {e}")))?;
+    out.generation = session.generation();
+    Ok(out)
+}
+
+/// Resolve the target point for a ref- or coordinate-addressed action. A
+/// ref is first checked by `elements::GUARD_FN` (scrolled into view; for
+/// click/type/select refused when disabled, hidden or covered).
+async fn action_point(
+    session: &Session,
+    req: &act::ActInput,
+    group: &str,
+) -> Result<(f64, f64), Error> {
     if let Some(r) = &req.r#ref {
-        let backend_id = session.resolve_ref_or_err(r)?;
+        let object = ref_object(session, r, group).await?;
+        guard(session, &object, r, &req.action, None).await?;
         let model = session
             .page
             .execute(
                 cdp_dom::GetBoxModelParams::builder()
-                    .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
+                    .object_id(object)
                     .build(),
             )
             .await
@@ -1120,136 +1340,428 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::act")?;
                 session.touch();
-
-                let detail = match req.action.as_str() {
-                    "click" => {
-                        let (x, y) = action_point(&session, &req).await?;
-                        let button = req.button.as_deref().unwrap_or("left");
-                        let clicks = i64::from(req.click_count.unwrap_or(1));
-                        dispatch_click(&session, x, y, button, clicks).await?;
-                        move_ghost_cursor(&session, x, y, true).await;
-                        format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
-                    }
-                    "hover" => {
-                        let (x, y) = action_point(&session, &req).await?;
-                        dispatch_hover(&session, x, y).await?;
-                        move_ghost_cursor(&session, x, y, false).await;
-                        format!("hovering at ({x:.0}, {y:.0})")
-                    }
-                    "type" => {
-                        let text = req
-                            .text
-                            .clone()
-                            .ok_or_else(|| handler_err("type needs text"))?;
-                        if let Some(r) = &req.r#ref {
-                            let backend_id = session.resolve_ref_or_err(r)?;
-                            session
-                                .page
-                                .execute(
-                                    cdp_dom::FocusParams::builder()
-                                        .backend_node_id(cdp_dom::BackendNodeId::new(backend_id))
-                                        .build(),
-                                )
-                                .await
-                                .map_err(|e| handler_err(format!("focus failed: {e}")))?;
-                        }
-                        session
-                            .page
-                            .execute(
-                                input::InsertTextParams::builder()
-                                    .text(text.clone())
-                                    .build()
-                                    .map_err(handler_err)?,
-                            )
-                            .await
-                            .map_err(|e| handler_err(format!("insert text failed: {e}")))?;
-                        format!("typed {} chars", text.chars().count())
-                    }
-                    "press" => {
-                        let name = req
-                            .key
-                            .clone()
-                            .ok_or_else(|| handler_err("press needs key"))?;
-                        let spec = act::key_spec(&name)
-                            .ok_or_else(|| handler_err(format!("unsupported key '{name}'")))?;
-                        use input::{DispatchKeyEventParams, DispatchKeyEventType};
-                        let mut down = DispatchKeyEventParams::builder()
-                            .r#type(DispatchKeyEventType::KeyDown)
-                            .key(spec.key)
-                            .code(spec.code)
-                            .windows_virtual_key_code(spec.windows_virtual_key_code)
-                            .native_virtual_key_code(spec.windows_virtual_key_code);
-                        if let Some(text) = spec.text {
-                            down = down.text(text);
-                        }
-                        let up = DispatchKeyEventParams::builder()
-                            .r#type(DispatchKeyEventType::KeyUp)
-                            .key(spec.key)
-                            .code(spec.code)
-                            .windows_virtual_key_code(spec.windows_virtual_key_code)
-                            .native_virtual_key_code(spec.windows_virtual_key_code)
-                            .build()
-                            .map_err(handler_err)?;
-                        session
-                            .page
-                            .execute(down.build().map_err(handler_err)?)
-                            .await
-                            .map_err(|e| handler_err(format!("key down failed: {e}")))?;
-                        session
-                            .page
-                            .execute(up)
-                            .await
-                            .map_err(|e| handler_err(format!("key up failed: {e}")))?;
-                        format!("pressed {name}")
-                    }
-                    "scroll" => {
-                        let (x, y) = if req.r#ref.is_some() || (req.x.is_some() && req.y.is_some())
-                        {
-                            action_point(&session, &req).await?
-                        } else {
-                            (
-                                session.viewport().0 as f64 / 2.0,
-                                session.viewport().1 as f64 / 2.0,
-                            )
-                        };
-                        let delta_y = req.delta_y.unwrap_or(600.0);
-                        use input::{DispatchMouseEventParams, DispatchMouseEventType};
-                        let wheel = DispatchMouseEventParams::builder()
-                            .r#type(DispatchMouseEventType::MouseWheel)
-                            .x(x)
-                            .y(y)
-                            .delta_x(0.0)
-                            .delta_y(delta_y)
-                            .build()
-                            .map_err(handler_err)?;
-                        session
-                            .page
-                            .execute(wheel)
-                            .await
-                            .map_err(|e| handler_err(format!("scroll failed: {e}")))?;
-                        format!("scrolled {delta_y:.0}px")
-                    }
-                    "drag" => {
-                        let (x1, y1) = action_point(&session, &req).await?;
-                        let (x2, y2) = match (req.x2, req.y2) {
-                            (Some(x), Some(y)) => (x, y),
-                            _ => return Err(handler_err("drag needs x2 and y2")),
-                        };
-                        dispatch_drag(&session, x1, y1, x2, y2).await?;
-                        format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
-                    }
-                    other => {
-                        return Err(handler_err(format!(
-                            "unknown action '{other}' (click, hover, type, press, scroll, drag)"
-                        )))
-                    }
-                };
+                let detail = perform(&session, &req).await?;
                 session.touch();
                 Ok::<_, Error>(act::ActOutput { ok: true, detail })
             }
         })
         .description(ACT_DESC),
     );
+}
+
+/// One `browser::act` action; shared with `browser::run`. Page handles the
+/// action takes are released before it returns.
+async fn perform(session: &Session, req: &act::ActInput) -> Result<String, Error> {
+    let group = object_group();
+    let done = perform_in(session, req, &group).await;
+    if req.r#ref.is_some() {
+        release_group(session, &group).await;
+    }
+    done
+}
+
+/// Key down + up for a `press` key name (`act::key_spec`).
+async fn press_key(session: &Session, name: &str) -> Result<(), Error> {
+    let spec =
+        act::key_spec(name).ok_or_else(|| handler_err(format!("unsupported key '{name}'")))?;
+    use input::{DispatchKeyEventParams, DispatchKeyEventType};
+    let mut down = DispatchKeyEventParams::builder()
+        .r#type(DispatchKeyEventType::KeyDown)
+        .key(spec.key)
+        .code(spec.code)
+        .windows_virtual_key_code(spec.windows_virtual_key_code)
+        .native_virtual_key_code(spec.windows_virtual_key_code);
+    if let Some(text) = spec.text {
+        down = down.text(text);
+    }
+    let up = DispatchKeyEventParams::builder()
+        .r#type(DispatchKeyEventType::KeyUp)
+        .key(spec.key)
+        .code(spec.code)
+        .windows_virtual_key_code(spec.windows_virtual_key_code)
+        .native_virtual_key_code(spec.windows_virtual_key_code)
+        .build()
+        .map_err(handler_err)?;
+    session
+        .page
+        .execute(down.build().map_err(handler_err)?)
+        .await
+        .map_err(|e| handler_err(format!("key down failed: {e}")))?;
+    session
+        .page
+        .execute(up)
+        .await
+        .map_err(|e| handler_err(format!("key up failed: {e}")))?;
+    Ok(())
+}
+
+async fn perform_in(session: &Session, req: &act::ActInput, group: &str) -> Result<String, Error> {
+    let detail = match req.action.as_str() {
+        "click" => {
+            let (x, y) = action_point(session, req, group).await?;
+            let button = req.button.as_deref().unwrap_or("left");
+            let clicks = i64::from(req.click_count.unwrap_or(1));
+            dispatch_click(session, x, y, button, clicks).await?;
+            move_ghost_cursor(session, x, y, true).await;
+            settle(session, false).await;
+            format!("clicked {button} x{clicks} at ({x:.0}, {y:.0})")
+        }
+        "hover" => {
+            let (x, y) = action_point(session, req, group).await?;
+            dispatch_hover(session, x, y).await?;
+            move_ghost_cursor(session, x, y, false).await;
+            format!("hovering at ({x:.0}, {y:.0})")
+        }
+        "type" => {
+            let text = req
+                .text
+                .clone()
+                .ok_or_else(|| handler_err("type needs text"))?;
+            // The guard focuses the element and selects an input's value, so
+            // the inserted text replaces it.
+            let mut replaced = false;
+            if let Some(r) = &req.r#ref {
+                let object = ref_object(session, r, group).await?;
+                replaced = guard(session, &object, r, "type", None).await?["replaced"] == true;
+            }
+            session
+                .page
+                .execute(
+                    input::InsertTextParams::builder()
+                        .text(text.clone())
+                        .build()
+                        .map_err(handler_err)?,
+                )
+                .await
+                .map_err(|e| handler_err(format!("insert text failed: {e}")))?;
+            if replaced && text.is_empty() {
+                // Inserting nothing leaves the old value selected: delete it.
+                press_key(session, "Backspace").await?;
+            }
+            settle(session, true).await;
+            let verb = if replaced {
+                "replaced the value with"
+            } else {
+                "typed"
+            };
+            format!("{verb} {} chars", text.chars().count())
+        }
+        "select" => {
+            let r = req
+                .r#ref
+                .as_deref()
+                .ok_or_else(|| handler_err("select needs the <select> element's ref"))?;
+            let option = req
+                .option
+                .as_deref()
+                .ok_or_else(|| handler_err("select needs option (a value or label)"))?;
+            let object = ref_object(session, r, group).await?;
+            let chosen = guard(session, &object, r, "select", Some(option)).await?;
+            settle(session, false).await;
+            format!(
+                "selected '{}'",
+                chosen["selected"].as_str().unwrap_or(option)
+            )
+        }
+        "press" => {
+            let name = req
+                .key
+                .clone()
+                .ok_or_else(|| handler_err("press needs key"))?;
+            press_key(session, &name).await?;
+            settle(session, false).await;
+            format!("pressed {name}")
+        }
+        "scroll" => {
+            let (x, y) = if req.r#ref.is_some() || (req.x.is_some() && req.y.is_some()) {
+                action_point(session, req, group).await?
+            } else {
+                (
+                    session.viewport().0 as f64 / 2.0,
+                    session.viewport().1 as f64 / 2.0,
+                )
+            };
+            let delta_y = req.delta_y.unwrap_or(600.0);
+            use input::{DispatchMouseEventParams, DispatchMouseEventType};
+            let wheel = DispatchMouseEventParams::builder()
+                .r#type(DispatchMouseEventType::MouseWheel)
+                .x(x)
+                .y(y)
+                .delta_x(0.0)
+                .delta_y(delta_y)
+                .build()
+                .map_err(handler_err)?;
+            session
+                .page
+                .execute(wheel)
+                .await
+                .map_err(|e| handler_err(format!("scroll failed: {e}")))?;
+            format!("scrolled {delta_y:.0}px")
+        }
+        "drag" => {
+            let (x1, y1) = action_point(session, req, group).await?;
+            let (x2, y2) = match (req.x2, req.y2) {
+                (Some(x), Some(y)) => (x, y),
+                _ => return Err(handler_err("drag needs x2 and y2")),
+            };
+            dispatch_drag(session, x1, y1, x2, y2).await?;
+            format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
+        }
+        other => {
+            return Err(handler_err(format!(
+                "unknown action '{other}' (click, hover, type, select, press, scroll, drag)"
+            )))
+        }
+    };
+    Ok(detail)
+}
+
+fn register_run(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    let bus = iii.clone();
+    iii.register_function(
+        RUN_ID,
+        RegisterFunction::new_async(move |req: run::RunInput| {
+            let sx = sx.clone();
+            let bus = bus.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id).await?;
+                ensure_writable(&session, "browser::run")?;
+                if req.goal.trim().is_empty() {
+                    return Err(handler_err("run needs a goal"));
+                }
+                session.touch();
+                let budget = sx
+                    .config
+                    .load()
+                    .clamp_timeout(Some(req.timeout_ms.unwrap_or(run::DEFAULT_TIMEOUT_MS)));
+                // The caller session's judge provider, read here in the
+                // handler's context and sent on every judge call of the run.
+                let provider = crate::judge::session_provider();
+                let out = drive(&bus, &session, &req, budget, provider.as_deref()).await;
+                session.touch();
+                out
+            }
+        })
+        .description(RUN_DESC),
+    );
+}
+
+/// A request counts as the action's when it starts within this long.
+const NETWORK_START_GRACE_MS: u64 = 150;
+/// Quiet after the action's last request finishes, for a follow-up request.
+const NETWORK_QUIET_MS: u64 = 250;
+/// Longest wait for an action's requests; past it the page reads `busy`.
+const NETWORK_SETTLE_MAX_MS: u64 = 5_000;
+
+/// Wait until the requests started since `since_ms` have finished and the
+/// network stayed quiet for `NETWORK_QUIET_MS` (or, when none started,
+/// `NETWORK_START_GRACE_MS` passed). False when some were still in flight
+/// at the cap. Long-lived requests (SSE, long polls) cost the cap once.
+async fn settle_network(session: &Session, since_ms: i64, deadline: std::time::Instant) -> bool {
+    let begun = std::time::Instant::now();
+    let cap = (begun + Duration::from_millis(NETWORK_SETTLE_MAX_MS)).min(deadline);
+    let mut quiet_since: Option<std::time::Instant> = None;
+    let mut saw_request = false;
+    loop {
+        let pending = session.pending_requests_since(since_ms);
+        let now = std::time::Instant::now();
+        if pending > 0 {
+            saw_request = true;
+            quiet_since = None;
+        } else if !saw_request {
+            if now.duration_since(begun) >= Duration::from_millis(NETWORK_START_GRACE_MS) {
+                return true;
+            }
+        } else if now.duration_since(*quiet_since.get_or_insert(now))
+            >= Duration::from_millis(NETWORK_QUIET_MS)
+        {
+            return true;
+        }
+        if now >= cap {
+            return pending == 0;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// `observe`, retried briefly while a navigation swaps the document.
+async fn observe_settled(session: &Session) -> Result<elements::ElementsOutput, Error> {
+    let mut last = None;
+    for _ in 0..10 {
+        match observe(session).await {
+            Ok(page) => return Ok(page),
+            Err(e) => last = Some(e),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(last.unwrap_or_else(|| handler_err("the page did not settle")))
+}
+
+/// The `browser::run` loop: observe, ask the judge, check the chosen element
+/// is still what the judge saw, act once (never retried), observe again.
+async fn drive(
+    iii: &IIIClient,
+    session: &Session,
+    req: &run::RunInput,
+    budget_ms: u64,
+    provider: Option<&str>,
+) -> Result<run::RunOutput, Error> {
+    use run::{Action, RunStatus};
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_millis(budget_ms);
+    let max_steps = req
+        .max_steps
+        .unwrap_or(run::DEFAULT_MAX_STEPS)
+        .clamp(1, run::MAX_STEPS) as usize;
+    let mut steps: Vec<run::RunStep> = Vec::new();
+    let mut judge_requests = 0u32;
+    // A DONE is taken once the page reads as the judge saw it; the first
+    // DONE on a page that has since changed is asked again instead.
+    let mut done_rechecked = false;
+    let mut page = observe_settled(session).await?;
+    let (status, reason, needs_text) = loop {
+        // Re-asking after a stale choice costs a request, never an action.
+        if steps.len() >= max_steps || judge_requests as usize >= 2 * max_steps {
+            break (RunStatus::MaxSteps, None, None);
+        }
+        let remaining = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis() as u64;
+        if remaining < 100 {
+            break (RunStatus::Deadline, None, None);
+        }
+        judge_requests += 1;
+        let evaluation = run::evaluation(&req.goal, &page, &steps, &req.inputs);
+        let judged = crate::judge::evaluate(
+            iii,
+            evaluation,
+            remaining.min(run::JUDGE_TIMEOUT_MS),
+            provider,
+        )
+        .await
+        .and_then(|(answers, ms)| Ok((run::decide(&answers, &page)?, ms)));
+        let (decision, judge_ms) = match judged {
+            Ok(judged) => judged,
+            Err(e) => break (RunStatus::JudgeUnavailable, Some(e.to_string()), None),
+        };
+        let text = match &decision.action {
+            Action::Done => {
+                if !done_rechecked {
+                    done_rechecked = true;
+                    let fresh = observe_settled(session).await?;
+                    if !fresh.same_page(&page) {
+                        page = fresh;
+                        continue;
+                    }
+                }
+                break (RunStatus::Done, None, None);
+            }
+            Action::Blocked => break (RunStatus::Blocked, None, None),
+            Action::Type(e) => match run::text_for(e, &req.inputs) {
+                Some(text) => Some(text.to_string()),
+                None => {
+                    let ask = run::NeedsText {
+                        r#ref: e.r#ref.clone(),
+                        label: e.label.clone(),
+                        input_keys: req.inputs.keys().cloned().collect(),
+                    };
+                    break (RunStatus::NeedsText, None, Some(ask));
+                }
+            },
+            _ => None,
+        };
+        if run::repeats_a_no_op(&steps, &decision) {
+            break (
+                RunStatus::Stalled,
+                Some(format!(
+                    "the judge chose {} again after it changed nothing",
+                    decision.operation
+                )),
+                None,
+            );
+        }
+        // The page may have moved while the judge thought: act only if the
+        // chosen element still reads as it did.
+        if let Some(chosen) = decision.element() {
+            let fresh = observe_settled(session).await?;
+            let now = fresh.elements.iter().find(|e| e.r#ref == chosen.r#ref);
+            if now != Some(chosen) {
+                page = fresh;
+                continue;
+            }
+        }
+        let mut act = act::ActInput {
+            session_id: session.id.clone(),
+            ..Default::default()
+        };
+        match &decision.action {
+            Action::Click(e) => {
+                act.action = "click".into();
+                act.r#ref = Some(e.r#ref.clone());
+            }
+            Action::Type(e) => {
+                act.action = "type".into();
+                act.r#ref = Some(e.r#ref.clone());
+                act.text = text;
+            }
+            Action::Select(e, option) => {
+                act.action = "select".into();
+                act.r#ref = Some(e.r#ref.clone());
+                act.option = Some(option.clone());
+            }
+            Action::Scroll(delta) => {
+                act.action = "scroll".into();
+                act.delta_y = Some(*delta);
+            }
+            Action::Wait | Action::Done | Action::Blocked => {}
+        }
+        let acted_ms = now_ms();
+        let outcome = if act.action.is_empty() {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            Ok(String::new())
+        } else {
+            perform(session, &act).await
+        };
+        // Read the page only once what the action started has finished: a
+        // submit shows "Signing in…" until its request answers, and a DONE
+        // read off that frame reports an outcome that has not happened.
+        let settled = match &decision.action {
+            Action::Click(_) | Action::Select(..) => {
+                settle_network(session, acted_ms, deadline).await
+            }
+            // WAIT means "results are still loading": wait for what is.
+            Action::Wait => {
+                settle_network(session, acted_ms - NETWORK_SETTLE_MAX_MS as i64, deadline).await
+            }
+            _ => true,
+        };
+        let mut next = observe_settled(session).await?;
+        next.busy |= !settled;
+        steps.push(run::RunStep {
+            operation: decision.operation.clone(),
+            r#ref: decision.element().map(|e| e.r#ref.clone()),
+            label: decision.element().map(|e| e.label.clone()),
+            option: act.option.clone(),
+            probability: decision.probability,
+            page_changed: !next.same_page(&page),
+            error: outcome.err().map(|e| e.to_string()),
+            judge_ms,
+        });
+        page = next;
+        if run::stalled(&steps) {
+            break (RunStatus::Stalled, None, None);
+        }
+    };
+    Ok(run::RunOutput {
+        status,
+        reason,
+        steps,
+        needs_text,
+        page,
+        judge_requests,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 fn register_evaluate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
@@ -2616,7 +3128,7 @@ fn register_dom_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
 
                 let node = match &req.r#ref {
                     Some(r) => {
-                        let backend_id = session.resolve_ref_or_err(r)?;
+                        let backend_id = ref_backend_id(&session, r).await?;
                         session
                             .page
                             .execute(
@@ -2686,7 +3198,7 @@ fn register_styles_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
-                let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
+                let backend_id = ref_backend_id(&session, &req.r#ref).await?;
                 let node_id = frontend_node_id(&session, backend_id).await?;
 
                 let computed = session
@@ -2745,7 +3257,7 @@ fn register_styles_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::styles::write")?;
                 session.touch();
-                let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
+                let backend_id = ref_backend_id(&session, &req.r#ref).await?;
 
                 let resolved = session
                     .page

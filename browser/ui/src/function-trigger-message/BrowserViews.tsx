@@ -11,7 +11,7 @@ import {
   TableRow,
   TableViewport,
 } from '@iii-dev/console-ui'
-import { ArrowRight, DollarSign, Dot, TriangleAlert } from 'lucide-react'
+import { ArrowRight, DollarSign, Dot, Target, TriangleAlert } from 'lucide-react'
 import { z } from 'zod'
 import {
   type BrowserConsoleEntry,
@@ -31,6 +31,8 @@ import {
   historyResultSchema,
   navigateResultSchema,
   networkReadSchema,
+  type RunStep,
+  runResultSchema,
   safeDecode,
   safeParseInput,
   sessionListResultSchema,
@@ -210,6 +212,113 @@ export function ActView({
       </MetaRow>
       <ActionLine icon={<Dot size={16} aria-hidden />} tone="ink">
         {res.detail}
+      </ActionLine>
+    </div>
+  )
+}
+
+/* ---------------- run ---------------- */
+
+const runInputSchema = z.object({ goal: z.string().optional() })
+
+/** Where a run ended; `done` is the judge's reading, the rest need the agent. */
+const RUN_STATUS_VARIANT: Record<string, 'ok' | 'warn' | 'alert'> = {
+  done: 'ok',
+  needs_text: 'warn',
+  judge_unavailable: 'warn',
+}
+
+const RUN_OPERATION: Record<string, string> = {
+  CLICK: 'click',
+  TYPE_TEXT: 'type',
+  SELECT: 'select',
+  SCROLL_DOWN: 'scroll ↓',
+  SCROLL_UP: 'scroll ↑',
+  WAIT: 'wait',
+}
+
+function RunStepRow({ step, index }: { step: RunStep; index: number }) {
+  const target = step.label ?? step.ref ?? ''
+  return (
+    <TableRow>
+      <TableCell className="br-ui-dim br-ui-num br-ui-run-index">{index + 1}</TableCell>
+      <TableCell className="br-ui-faint br-ui-nowrap br-ui-run-op">
+        {RUN_OPERATION[step.operation] ?? step.operation.toLowerCase()}
+      </TableCell>
+      <TableCell className="br-ui-ink">
+        <span className="br-ui-break">{truncate(target, 60)}</span>
+        {step.option ? <span className="br-ui-faint"> → {truncate(step.option, 40)}</span> : null}
+        {step.error ? (
+          <div className="br-ui-warn br-ui-break">{truncate(step.error, 200)}</div>
+        ) : !step.page_changed ? (
+          <div className="br-ui-dim">no change on the page</div>
+        ) : null}
+      </TableCell>
+      <TableCell className="br-ui-dim br-ui-num br-ui-nowrap br-ui-right">
+        {Math.round(step.probability * 100)}% · {step.judge_ms} ms
+      </TableCell>
+    </TableRow>
+  )
+}
+
+/**
+ * A judge-driven run: where it ended, the goal, every executed step (the
+ * judge's choice, its probability and latency, and a refusal or a no-op),
+ * the field that still needs text, and the page it left.
+ */
+export function RunView({ input, output }: { input: unknown; output: unknown }) {
+  const res = safeDecode(runResultSchema, output)
+  if (!res) return null
+  const goal = safeParseInput(runInputSchema, input)?.goal
+  const seconds = (res.elapsed_ms / 1000).toFixed(1)
+  return (
+    <div>
+      <MetaRow
+        items={[
+          { label: 'steps', value: String(res.steps.length) },
+          { label: 'judge', value: `${res.judge_requests} req` },
+          { label: 'time', value: `${seconds} s` },
+        ]}
+      >
+        <Badge variant={RUN_STATUS_VARIANT[res.status] ?? 'alert'}>
+          {res.status.replace(/_/g, ' ')}
+        </Badge>
+      </MetaRow>
+      {goal ? (
+        <ActionLine icon={<Target size={16} aria-hidden />} tone="ink">
+          <span className="br-ui-break">{truncate(goal, 240)}</span>
+        </ActionLine>
+      ) : null}
+      {res.reason ? (
+        <ActionLine icon={<TriangleAlert size={16} aria-hidden />} tone="warn">
+          <span className="br-ui-break">{res.reason}</span>
+        </ActionLine>
+      ) : null}
+      {res.needs_text ? (
+        <ActionLine icon={<TriangleAlert size={16} aria-hidden />} tone="warn">
+          needs text for “{res.needs_text.label}” ({res.needs_text.ref})
+          {res.needs_text.input_keys?.length
+            ? `, no inputs key matched (${res.needs_text.input_keys.join(', ')})`
+            : ''}
+          : type it with browser::act or pass it in inputs
+        </ActionLine>
+      ) : null}
+      {res.steps.length > 0 ? (
+        <TableViewport className="br-ui-scroll br-ui-table">
+          <Table density="compact">
+            <TableBody>
+              {res.steps.map((step, index) => (
+                <RunStepRow key={`${index}-${step.ref ?? step.operation}`} step={step} index={index} />
+              ))}
+            </TableBody>
+          </Table>
+        </TableViewport>
+      ) : null}
+      <ActionLine icon={<ArrowRight size={16} aria-hidden />} tone="ink">
+        <span className="br-ui-break">{res.page.url}</span>
+        {res.page.title ? <span className="br-ui-faint"> · {truncate(res.page.title, 60)}</span> : null}
+        <span className="br-ui-dim"> · {res.page.elements.length} controls</span>
+        {res.page.busy ? <span className="br-ui-warn"> · still loading</span> : null}
       </ActionLine>
     </div>
   )

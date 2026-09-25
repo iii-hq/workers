@@ -46,6 +46,41 @@ export const navigateResultSchema = z.object({
 })
 export type NavigateResult = z.infer<typeof navigateResultSchema>
 
+/** `browser::run` (workers/browser/src/functions/run.rs `RunOutput`). */
+export const runStepSchema = z.object({
+  operation: z.string(),
+  ref: z.string().optional(),
+  label: z.string().optional(),
+  option: z.string().optional(),
+  probability: z.number(),
+  page_changed: z.boolean(),
+  error: z.string().optional(),
+  judge_ms: z.number(),
+})
+export type RunStep = z.infer<typeof runStepSchema>
+
+export const runResultSchema = z.object({
+  status: z.string(),
+  reason: z.string().optional(),
+  steps: z.array(runStepSchema),
+  needs_text: z
+    .object({
+      ref: z.string(),
+      label: z.string(),
+      input_keys: z.array(z.string()).optional(),
+    })
+    .optional(),
+  page: z.object({
+    url: z.string(),
+    title: z.string(),
+    busy: z.boolean().optional(),
+    elements: z.array(z.unknown()),
+  }),
+  judge_requests: z.number(),
+  elapsed_ms: z.number(),
+})
+export type RunResult = z.infer<typeof runResultSchema>
+
 export const actResultSchema = z.object({
   ok: z.boolean(),
   detail: z.string(),

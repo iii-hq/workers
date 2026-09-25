@@ -432,6 +432,15 @@ pub struct Tab {
     /// ignores frames older than the last one it saw keeps working after
     /// the tab slept and woke into a fresh page.
     frame_seq: AtomicU64,
+    /// Ref name counters: snapshot `e` refs, pick `p` refs, and the floor
+    /// above every `n` element id (a new document's registry numbers from
+    /// there). Never reset, so a ref name is never reused for another node:
+    /// one from an earlier snapshot, page or pick fails as unknown instead of
+    /// naming something else. On the tab, like `frame_seq`, so they hold
+    /// across sleep and wake into a fresh page under the same session id.
+    pub ref_counter: AtomicU64,
+    pick_counter: AtomicU64,
+    next_element_id: AtomicU64,
     url: Mutex<String>,
     title: Mutex<String>,
     /// Visited pages, newest last, for the history panel. Capped.
@@ -757,13 +766,10 @@ pub struct Session {
     seq: AtomicU64,
     /// Snapshot/pick refs (`e1`, `p3`, …) → CDP backend node ids. Cleared on
     /// navigation — backend ids do not survive a document swap. Snapshot
-    /// refs accumulate (names are session-monotonic), so a ref from an
+    /// refs accumulate (names are tab-monotonic), so a ref from an
     /// earlier snapshot of the same document still resolves to the node it
     /// named instead of colliding with a newer snapshot's numbering.
     pub refs: Mutex<HashMap<String, i64>>,
-    /// Session-monotonic counter behind snapshot ref names; never reset
-    /// within a session so ref names are unique across snapshots.
-    pub ref_counter: AtomicU64,
     /// Bumped on every top-document navigation. Snapshots report it so a
     /// caller can tell which document epoch its refs belong to.
     generation: AtomicU64,
@@ -771,6 +777,9 @@ pub struct Session {
     /// `browser::snapshot` diff mode. None before the first snapshot and
     /// after a navigation.
     pub snapshot_keys: Mutex<Option<Vec<String>>>,
+    /// Requests the page has started and not finished (id → start epoch ms),
+    /// so `browser::run` can wait for what an action triggered.
+    pub inflight: Mutex<HashMap<String, i64>>,
     /// Cross-call state for `browser::execute`; lives until the page closes.
     pub exec_state: Mutex<serde_json::Value>,
     /// Serializes explicit navigation, execute, and file-input attachment.
@@ -782,7 +791,6 @@ pub struct Session {
     /// their paths, then removed on stop.
     upload_dirs: Mutex<Vec<PathBuf>>,
     upload_counter: AtomicU64,
-    pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -889,7 +897,10 @@ impl Session {
     }
 
     pub fn next_pick_ref(&self) -> String {
-        format!("p{}", self.pick_counter.fetch_add(1, Ordering::Relaxed) + 1)
+        format!(
+            "p{}",
+            self.tab.pick_counter.fetch_add(1, Ordering::Relaxed) + 1
+        )
     }
 
     pub fn resolve_ref(&self, r: &str) -> Option<i64> {
@@ -904,18 +915,42 @@ impl Session {
     /// "unknown ref" error every ref-taking handler shares. The message is
     /// load-bearing for agent self-correction, so it lives in one place.
     pub fn resolve_ref_or_err(&self, r: &str) -> Result<i64, iii_sdk::errors::Error> {
-        self.resolve_ref(r).ok_or_else(|| {
-            iii_sdk::errors::Error::Handler(format!(
-                "unknown ref '{r}' (document generation {}); refs come from browser::snapshot / \
-                 browser::dom::read / a pick and die on navigation. Re-snapshot, then use a \
-                 fresh ref.",
-                self.generation()
-            ))
-        })
+        self.resolve_ref(r).ok_or_else(|| self.unknown_ref(r))
+    }
+
+    /// The canonical "unknown ref" error, also used for `n` refs the page's
+    /// element registry no longer holds.
+    pub fn unknown_ref(&self, r: &str) -> iii_sdk::errors::Error {
+        iii_sdk::errors::Error::Handler(format!(
+            "unknown ref '{r}' (document generation {}); refs come from browser::snapshot / \
+             browser::elements / browser::dom::read / a pick and die on navigation. Re-read \
+             the page, then use a fresh ref.",
+            self.generation()
+        ))
     }
 
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
+    }
+
+    /// The first `n` element id a new document's registry hands out.
+    pub fn next_element_id(&self) -> u64 {
+        self.tab.next_element_id.load(Ordering::Relaxed)
+    }
+
+    /// Record a registry's next id after a read (ids only move up).
+    pub fn saw_element_ids(&self, next: u64) {
+        self.tab.next_element_id.fetch_max(next, Ordering::Relaxed);
+    }
+
+    /// Requests started at or after `since_ms` that have not finished.
+    pub fn pending_requests_since(&self, since_ms: i64) -> usize {
+        self.inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter(|started| **started >= since_ms)
+            .count()
     }
 
     /// True while the Chromium screencast is running (at least one consumer:
@@ -1173,6 +1208,9 @@ impl Sessions {
                 ttl_ms: record.ttl_ms,
                 last_used_ms: AtomicU64::new(now_ms() as u64),
                 frame_seq: AtomicU64::new(0),
+                ref_counter: AtomicU64::new(0),
+                pick_counter: AtomicU64::new(0),
+                next_element_id: AtomicU64::new(1),
                 url: Mutex::new(record.url),
                 title: Mutex::new(record.title),
                 history: Mutex::new(record.history),
@@ -1289,6 +1327,9 @@ impl Sessions {
             ttl_ms: request.ttl_ms,
             last_used_ms: AtomicU64::new(now_ms() as u64),
             frame_seq: AtomicU64::new(0),
+            ref_counter: AtomicU64::new(0),
+            pick_counter: AtomicU64::new(0),
+            next_element_id: AtomicU64::new(1),
             url: Mutex::new("about:blank".to_string()),
             title: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
@@ -1463,15 +1504,14 @@ impl Sessions {
             network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
             seq: AtomicU64::new(1),
             refs: Mutex::new(HashMap::new()),
-            ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
+            inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
-            pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(Vec::new()),
         });
 
@@ -1773,6 +1813,9 @@ impl Sessions {
             ttl_ms: None,
             last_used_ms: AtomicU64::new(now as u64),
             frame_seq: AtomicU64::new(0),
+            ref_counter: AtomicU64::new(0),
+            pick_counter: AtomicU64::new(0),
+            next_element_id: AtomicU64::new(1),
             url: Mutex::new(url.clone().unwrap_or_else(|| "about:blank".to_string())),
             title: Mutex::new(String::new()),
             history: Mutex::new(Vec::new()),
@@ -1800,15 +1843,14 @@ impl Sessions {
             network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
             seq: AtomicU64::new(1),
             refs: Mutex::new(HashMap::new()),
-            ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
+            inflight: Mutex::new(HashMap::new()),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             navigation_error: Mutex::new(None),
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
-            pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
 
@@ -2802,6 +2844,43 @@ async fn spawn_event_pumps(
         }));
     }
 
+    // In-flight requests, for the post-action network settle. One task owns
+    // every update and drains starts before finishes (`biased`): the CDP
+    // handler delivers a request's start to its channel before its finish,
+    // so a fast request can never be finished first and then left pending.
+    if let (Ok(mut started), Ok(mut finished), Ok(mut failed)) = (
+        page.event_listener::<cdp_network::EventRequestWillBeSent>()
+            .await,
+        page.event_listener::<cdp_network::EventLoadingFinished>()
+            .await,
+        page.event_listener::<cdp_network::EventLoadingFailed>()
+            .await,
+    ) {
+        let s = session.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                let done = tokio::select! {
+                    biased;
+                    Some(event) = started.next() => {
+                        let mut inflight = s.inflight.lock().unwrap_or_else(|p| p.into_inner());
+                        if inflight.len() >= 2_048 {
+                            inflight.clear();
+                        }
+                        inflight.insert(event.request_id.inner().to_string(), now_ms());
+                        continue;
+                    }
+                    Some(event) = finished.next() => event.request_id.inner().to_string(),
+                    Some(event) = failed.next() => event.request_id.inner().to_string(),
+                    else => break,
+                };
+                s.inflight
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&done);
+            }
+        }));
+    }
+
     // network: request → response/failure, correlated by request id
     let pending: Arc<Mutex<HashMap<String, (String, String)>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -2813,12 +2892,13 @@ async fn spawn_event_pumps(
         let pending = pending.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(event) = events.next().await {
+                let id = event.request_id.inner().to_string();
                 let mut pending = pending.lock().unwrap_or_else(|p| p.into_inner());
                 if pending.len() >= 2_048 {
                     pending.clear();
                 }
                 pending.insert(
-                    event.request_id.inner().to_string(),
+                    id,
                     (event.request.method.clone(), event.request.url.clone()),
                 );
             }

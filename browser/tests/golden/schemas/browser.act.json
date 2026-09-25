@@ -1,6 +1,6 @@
 {
   "function_id": "browser::act",
-  "description": "Interact with the page: click (left/right/middle, single or double), hover, type, press, scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.",
+  "description": "Interact with the page: click (left/right/middle, single or double), hover, type, select a native <select> option, press, scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with a ref from browser::elements (`n4`), browser::snapshot (`e3`) or a pick, or raw viewport coordinates. A ref is scrolled into view first, and a click, type or select on a disabled, hidden or covered element is refused instead of landing on whatever is on top. Typing into an input or textarea by ref replaces its value. Returns once the page had a moment to react.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ActInput",
@@ -11,7 +11,7 @@
     ],
     "properties": {
       "action": {
-        "description": "`click`, `hover`, `type`, `press`, `scroll`, or `drag`.",
+        "description": "`click`, `hover`, `type`, `select`, `press`, `scroll`, or `drag`.",
         "type": "string"
       },
       "button": {
@@ -49,8 +49,16 @@
           "null"
         ]
       },
+      "option": {
+        "description": "Option to choose (`select`, native `<select>` only): its value or visible label.",
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "ref": {
-        "description": "Element ref from `browser::snapshot` (`e3`) or `browser::picked` (`p1`). Refs die on navigation; re-snapshot after.",
+        "description": "Element ref from `browser::elements` (`n4`), `browser::snapshot` (`e3`), `browser::dom::read` (`d7`) or `browser::picked` (`p1`). A click, type or select by ref is refused when the element is disabled, hidden or covered. Refs die on navigation; re-read the page after.",
         "default": null,
         "type": [
           "string",
@@ -61,7 +69,7 @@
         "type": "string"
       },
       "text": {
-        "description": "Text to insert (`type`).",
+        "description": "Text to insert (`type`). With a ref to an `<input>` or `<textarea>` it replaces the current value; otherwise it is inserted at the caret.",
         "default": null,
         "type": [
           "string",
