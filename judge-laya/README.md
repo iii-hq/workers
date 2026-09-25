@@ -81,8 +81,10 @@ iii trigger judge::evaluate --timeout-ms 65000 --json '{
 Answers follow the shared contract exactly: `noul` is P(true); `choice` carries
 the option probabilities and `confidence`; `score` carries the level
 distribution, the probability-weighted `score`, `confidence` and the `legend`.
-`confidence` is laya's own calibrated readout (1 − normalized entropy after the
-checkpoint's per-bucket temperature). `usage.input_tokens` counts encoder
+`confidence` is TypeSafe's (`judge_contract::confidence`), read from the
+probabilities after the checkpoint's per-bucket temperature:
+`(n·p_max − 1) / (n − 1)` for a choice, 1 − the expected distance from the
+likeliest level over the levels' mean distance from the middle for a score. `usage.input_tokens` counts encoder
 tokens, `output_tokens` is always 0 and `usage_complete` is true.
 
 Measured on an i9-14900K and an RX 6900 XT (8 threads, 100–180-token rows):

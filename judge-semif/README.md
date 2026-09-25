@@ -79,8 +79,11 @@ probabilities match SemIf's own llama.cpp backend to four decimals.
 | `choice` | one per criterion, `key: description` | argmax, probabilities, confidence |
 | `score` | `level i: <level>` | Σ i·p_i, probabilities, confidence, legend |
 
-`confidence` is 1 − normalized entropy of the option distribution; SemIf's
-probabilities are conditional on the offered options and uncalibrated. At most
+`confidence` is TypeSafe's (`judge_contract::confidence`, shared by the local
+providers): `(n·p_max − 1) / (n − 1)` for a choice, 1 − the expected distance
+from the likeliest level over the levels' mean distance from the middle for a
+score. SemIf's probabilities are conditional on the offered options and
+uncalibrated. At most
 16 options per question. A prompt longer than `context_tokens` answers
 `payload_too_large`: SemIf never truncates evidence.
 

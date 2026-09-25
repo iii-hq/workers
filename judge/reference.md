@@ -260,7 +260,13 @@ differ from 1 by up to 0.02 to accommodate provider rounding. Duplicate answer,
 probability or legend keys, missing answers and mismatched types/IDs fail the
 whole batch. The worker returns provider scores and confidence without
 recalculating them. Choose a caller-specific decision threshold; JEV imposes
-no eligibility threshold.
+no eligibility threshold. The local providers (`judge-decider`, `judge-semif`,
+`judge-laya`) compute `confidence` from their probabilities as TypeSafe
+defines it (`judge_contract::confidence`): `(n·p_max − 1) / (n − 1)` for a
+Choice, 0 for a uniform distribution and 1 for all mass on one option; for a
+Score, 1 − the expected distance from the likeliest level over the mean
+distance of the levels from the middle of the scale. A threshold therefore
+means the same whichever provider answers.
 
 A complete, low-scoring evaluation can mean **no match**. A missing answer,
 deadline or service error cannot. Discard all partial answers when any evaluation

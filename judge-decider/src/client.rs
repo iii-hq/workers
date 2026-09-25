@@ -10,8 +10,8 @@ use crate::{
 use anyhow::Result;
 use iii_llama_runtime::scorer::softmax;
 use judge_contract::{
-    encode_evaluation_with_limits, validate_answer, validate_request_with_limits, Answer,
-    CancelRequest, CancelResponse, Content, ErrorCode, EvaluateRequest, EvaluateResponse,
+    confidence, encode_evaluation_with_limits, validate_answer, validate_request_with_limits,
+    Answer, CancelRequest, CancelResponse, Content, ErrorCode, EvaluateRequest, EvaluateResponse,
     EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage,
     DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
@@ -456,14 +456,11 @@ fn probabilities(
     Some(fit.iter().map(|x| x / total).collect())
 }
 
-/// Readout with decider-ai 1.5.0's confidences (TypeSafe's): Choice
-/// `(n·p_max − 1) / (n − 1)`, 0 for a uniform distribution and 1 for all mass
-/// on one option; Score 1 − the expected distance from the likeliest level
-/// over D, the mean distance of the levels from the middle of the scale.
+/// Readout with decider-ai 1.5.0's confidences, TypeSafe's definitions
+/// (`judge_contract::confidence`).
 fn answer(plan: &Plan, p: &[f64]) -> Answer {
-    let n = p.len();
     // The first of equal maxima, as Python's max() picks it.
-    let best = (0..n).fold(0, |best, i| if p[i] > p[best] { i } else { best });
+    let best = (0..p.len()).fold(0, |best, i| if p[i] > p[best] { i } else { best });
     let probabilities: BTreeMap<String, f64> =
         plan.keys.iter().cloned().zip(p.iter().cloned()).collect();
     match &plan.kind {
@@ -471,30 +468,13 @@ fn answer(plan: &Plan, p: &[f64]) -> Answer {
         Kind::Choice => Answer::Choice {
             choice: plan.keys[best].clone(),
             probabilities,
-            confidence: if n <= 1 {
-                1.0
-            } else {
-                ((n as f64 * p[best] - 1.0) / (n as f64 - 1.0)).clamp(0.0, 1.0)
-            },
+            confidence: confidence::choice(p),
         },
-        Kind::Score(legend) => {
-            let spread: f64 = p
-                .iter()
-                .enumerate()
-                .map(|(i, x)| x * i.abs_diff(best) as f64)
-                .sum();
-            let middle = (n as f64 - 1.0) / 2.0;
-            let uniform = (0..n).map(|i| (i as f64 - middle).abs()).sum::<f64>() / n as f64;
-            Answer::Score {
-                score: p.iter().enumerate().map(|(i, x)| i as f64 * x).sum(),
-                probabilities,
-                confidence: if n <= 1 {
-                    1.0
-                } else {
-                    (1.0 - spread / uniform).clamp(0.0, 1.0)
-                },
-                legend: legend.clone(),
-            }
-        }
+        Kind::Score(legend) => Answer::Score {
+            score: p.iter().enumerate().map(|(i, x)| i as f64 * x).sum(),
+            probabilities,
+            confidence: confidence::score(p),
+            legend: legend.clone(),
+        },
     }
 }

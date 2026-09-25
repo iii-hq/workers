@@ -13,10 +13,10 @@ use crate::{
 use anyhow::{anyhow, Result};
 use candle_core::Device;
 use judge_contract::{
-    validate_answer, validate_request_with_limits, Answer, CancelRequest, CancelResponse, Content,
-    ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation, EvaluationResult, ModelCard,
-    ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage, DEFAULT_MAX_REQUEST_BYTES,
-    DEFAULT_MAX_TIMEOUT_MS,
+    confidence, validate_answer, validate_request_with_limits, Answer, CancelRequest,
+    CancelResponse, Content, ErrorCode, EvaluateRequest, EvaluateResponse, Evaluation,
+    EvaluationResult, ModelCard, ModelsRequest, ModelsResponse, Question, ScoreLevel, Stats, Usage,
+    DEFAULT_MAX_REQUEST_BYTES, DEFAULT_MAX_TIMEOUT_MS,
 };
 use serde_json::Value;
 use std::{
@@ -658,7 +658,7 @@ impl LayaClient {
         Ok(rows)
     }
 
-    /// laya's readout: temperature-scaled softmax, entropy confidence.
+    /// laya's readout: temperature-scaled softmax, TypeSafe's confidence.
     fn answer(model: &LayaModel, row: &Row, z: &[f32]) -> Result<Answer, ErrorCode> {
         let k = row.keys.len();
         if z.len() != k || z.iter().any(|v| !v.is_finite()) {
@@ -672,12 +672,6 @@ impl LayaClient {
         let exp: Vec<f64> = z.iter().map(|&v| ((v as f64 - max) / t).exp()).collect();
         let sum: f64 = exp.iter().sum();
         let p: Vec<f64> = exp.iter().map(|v| v / sum).collect();
-        let entropy: f64 = -p.iter().map(|&x| x * x.max(1e-12).ln()).sum::<f64>();
-        let confidence = if k < 2 {
-            1.0
-        } else {
-            (1.0 - entropy / (k as f64).ln()).clamp(0.0, 1.0)
-        };
         let mut probabilities: BTreeMap<String, f64> =
             row.keys.iter().cloned().zip(p.iter().cloned()).collect();
         probabilities.extend(row.dropped.iter().map(|label| (label.clone(), 0.0)));
@@ -687,12 +681,12 @@ impl LayaClient {
             QType::Choice => Answer::Choice {
                 choice: row.keys[best].clone(),
                 probabilities,
-                confidence,
+                confidence: confidence::choice(&p),
             },
             QType::Score => Answer::Score {
                 score: p.iter().enumerate().map(|(i, x)| i as f64 * x).sum(),
                 probabilities,
-                confidence,
+                confidence: confidence::score(&p),
                 legend: row.legend.clone(),
             },
         })

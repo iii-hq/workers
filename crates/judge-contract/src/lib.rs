@@ -1,6 +1,7 @@
 //! Typed judge messages shared by the `judge` hub and every `judge-<provider>`
 //! worker; no SDK, credentials, transport or retrieval policy.
 mod answers;
+pub mod confidence;
 mod encoding;
 mod options;
 mod questions;
