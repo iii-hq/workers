@@ -8,7 +8,7 @@ use std::sync::Arc;
 use context_manager::config::WorkerConfig;
 use context_manager::functions::assemble::{self, AssembleOptions, AssembleRequest};
 use context_manager::ports::{lease_cell, Deps};
-use context_manager::types::{AgentMessage, ContentBlock, ModelInput, ModelLimits};
+use context_manager::types::{AgentMessage, ContentBlock, Model, ModelInput, ModelLimits, Role};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -54,6 +54,17 @@ impl ReplayHistory {
                     && !entry.message.has_function_result_block())
                 .then_some(index)
             })
+            .collect()
+    }
+
+    /// Where each model request ends: `history[..i]` for every assistant
+    /// index `i` (the request that generated it), plus the full history.
+    pub fn request_ends(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| (entry.message.role() == Role::Assistant).then_some(index))
+            .chain([self.entries.len()])
             .collect()
     }
 
@@ -181,18 +192,27 @@ pub async fn compare_decay_four(history: &ReplayHistory) -> Result<ReplayCompari
     Ok(ReplayComparison { estimates })
 }
 
-pub async fn compare_directory(directory: &Path) -> Result<ReplayReport, String> {
+/// Every `*.jsonl` session in `directory`, sorted by file name.
+pub fn read_directory(directory: &Path) -> Result<Vec<(String, ReplayHistory)>, String> {
     let mut paths = session_paths(directory)?;
     paths.sort();
-    let mut sessions = Vec::with_capacity(paths.len());
-    for path in paths {
-        let history = read_history(&path)?;
+    paths
+        .into_iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("{}: file name is not valid UTF-8", path.display()))?
+                .to_owned();
+            Ok((name, read_history(&path)?))
+        })
+        .collect()
+}
+
+pub async fn compare_directory(directory: &Path) -> Result<ReplayReport, String> {
+    let mut sessions = Vec::new();
+    for (name, history) in read_directory(directory)? {
         let comparison = compare_decay_four(&history).await?;
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| format!("{}: file name is not valid UTF-8", path.display()))?
-            .to_owned();
         sessions.push(ReplaySession {
             name,
             messages: history.message_count(),
@@ -200,6 +220,95 @@ pub async fn compare_directory(directory: &Path) -> Result<ReplayReport, String>
         });
     }
     Ok(ReplayReport { sessions })
+}
+
+/// `(request, where, site)` wherever a request's bound prefix is not an
+/// extension of the previous request's: Opus 5.5 / Fable 5.1 bind signed
+/// thinking to the exact system prompt and every earlier message (MOT-4845).
+/// Requests follow [`ReplayHistory::request_ends`] with system prompt
+/// `"base"`, and `model` resolves through the router path so its
+/// `supports_vision` drives media aging. `where` is `"system"` or the first
+/// edited `messages[i]`, compared without the wire-invisible `details` and
+/// `timestamp`; `site` names the step whose marker the edited message shows.
+pub async fn prefix_edits(
+    history: &ReplayHistory,
+    model: Model,
+    options: impl Fn() -> AssembleOptions,
+) -> Result<Vec<(usize, String, &'static str)>, String> {
+    let input = ModelInput {
+        id: model.id.clone(),
+        provider: None,
+        limits: None,
+    };
+    let resolver = FakeModelResolver::new();
+    resolver.insert(model);
+    let deps = Deps {
+        resolver: Arc::new(resolver),
+        ..replay_deps(WorkerConfig::default())
+    };
+    let mut previous: Option<(String, Vec<Value>)> = None;
+    let mut edits = Vec::new();
+    for (request, end) in history.request_ends().into_iter().enumerate() {
+        let response = assemble::handle(
+            &deps,
+            AssembleRequest {
+                messages: Some(
+                    history.entries[..end]
+                        .iter()
+                        .map(|entry| entry.message.clone())
+                        .collect(),
+                ),
+                model: input.clone(),
+                system_prompt: Some("base".to_string()),
+                tools: None,
+                parts: None,
+                options: Some(options()),
+            },
+        )
+        .await
+        .map_err(|error| format!("request {request}: assemble failed: {error}"))?;
+        let sent: Vec<Value> = response.messages.iter().map(bound).collect();
+        if let Some((system_prompt, before)) = &previous {
+            if *system_prompt != response.system_prompt {
+                edits.push((request, "system".to_string(), "compaction"));
+            } else if let Some(i) = (0..before.len()).find(|&i| sent.get(i) != Some(&before[i])) {
+                edits.push((
+                    request,
+                    format!("messages[{i}]"),
+                    edit_site(&before[i], sent.get(i)),
+                ));
+            }
+        }
+        previous = Some((response.system_prompt, sent));
+    }
+    Ok(edits)
+}
+
+fn bound(message: &AgentMessage) -> Value {
+    let mut value = serde_json::to_value(message).expect("an AgentMessage serializes");
+    if let Some(object) = value.as_object_mut() {
+        object.remove("details");
+        object.remove("timestamp");
+    }
+    value
+}
+
+fn edit_site(before: &Value, after: Option<&Value>) -> &'static str {
+    let Some(after) = after else {
+        return "dropped";
+    };
+    let (before, after) = (before.to_string(), after.to_string());
+    if after.contains("omitted after use") && before.contains(r#""type":"image""#) {
+        "media aging"
+    } else if after.contains("[function result reduced for context budget]") {
+        "emergency"
+    } else if after.contains(" pruned: was ~") {
+        "prune"
+    } else if after.contains("result capped: was ~") {
+        "cap"
+    } else {
+        "other"
+    }
 }
 
 impl ReplayReport {
