@@ -117,6 +117,9 @@ fn code_error(code: &str) -> JudgeError {
         "provider_unavailable" => JudgeError::Unavailable("no provider"),
         "missing_key" => JudgeError::Unavailable("provider has no API key"),
         "deadline" | "attempt_timeout" => JudgeError::Deadline,
+        // This request was too big for the judge (options, window): fall
+        // back for this search without pausing the judge for the next one.
+        "payload_too_large" => JudgeError::PayloadTooLarge,
         other => JudgeError::Provider(other.chars().take(64).collect()),
     }
 }
@@ -148,12 +151,17 @@ enum Transport {
 pub struct JudgeSearch {
     transport: Transport,
     paused_until: Arc<Mutex<Option<Instant>>>,
-    window: Arc<Mutex<Option<WindowRead>>>,
+    window: Arc<Mutex<Option<(Instant, Limits)>>>,
 }
 
-/// When the judge's smallest advertised context window was read, and the
-/// window (`None`: no model advertises one).
-type WindowRead = (Instant, Option<u64>);
+/// What the judge's models advertise, read at the paired instant: the
+/// smallest context window and the fewest options one Choice may offer
+/// (`None`: no model advertises one).
+#[derive(Clone, Copy, Debug, Default)]
+struct Limits {
+    window: Option<u64>,
+    options: Option<u64>,
+}
 
 #[cfg(test)]
 impl Default for JudgeSearch {
@@ -238,32 +246,47 @@ impl JudgeSearch {
     /// Pretend the judge advertised `tokens` as its context window.
     #[cfg(test)]
     pub(crate) fn with_window(self, tokens: Option<u64>) -> Self {
-        *self.window.lock().expect("judge window") = Some((Instant::now(), tokens));
+        self.with_limits(Limits {
+            window: tokens,
+            options: None,
+        })
+    }
+
+    #[cfg(test)]
+    fn with_limits(self, limits: Limits) -> Self {
+        *self.window.lock().expect("judge window") = Some((Instant::now(), limits));
         self
     }
 
-    /// True when the judge's models advertise a context window too small for
-    /// description objects. Read through `judge::models::list` (the hub's
-    /// default provider, the one `judge::evaluate` uses) and cached for
-    /// `WINDOW_TTL`; a failed read means full objects and is retried next time.
-    pub(crate) async fn small_window(&self, deadline: Instant) -> bool {
+    /// The judge's advertised limits, read through `judge::models::list` (the
+    /// hub's default provider, the one `judge::evaluate` uses) and cached for
+    /// `WINDOW_TTL`; a failed read means none and is retried next time.
+    async fn limits(&self, deadline: Instant) -> Limits {
         let cached = *self.window.lock().expect("judge window");
-        let window = match cached {
-            Some((read, window)) if read.elapsed() < WINDOW_TTL => window,
+        match cached {
+            Some((read, limits)) if read.elapsed() < WINDOW_TTL => limits,
             _ => {
-                let Some(window) = self.read_window(deadline).await else {
-                    return false;
+                let Some(limits) = self.read_limits(deadline).await else {
+                    return Limits::default();
                 };
-                *self.window.lock().expect("judge window") = Some((Instant::now(), window));
-                window
+                *self.window.lock().expect("judge window") = Some((Instant::now(), limits));
+                limits
             }
-        };
-        window.is_some_and(|tokens| tokens < COMPACT_BELOW_TOKENS)
+        }
     }
 
-    /// `Some(smallest advertised window)` from a successful model listing,
-    /// `None` when the listing failed.
-    async fn read_window(&self, deadline: Instant) -> Option<Option<u64>> {
+    /// True when the judge's models advertise a context window too small for
+    /// description objects.
+    pub(crate) async fn small_window(&self, deadline: Instant) -> bool {
+        self.limits(deadline)
+            .await
+            .window
+            .is_some_and(|tokens| tokens < COMPACT_BELOW_TOKENS)
+    }
+
+    /// The advertised limits from a successful model listing, `None` when the
+    /// listing failed.
+    async fn read_limits(&self, deadline: Instant) -> Option<Limits> {
         let budget = deadline
             .saturating_duration_since(Instant::now())
             .min(Duration::from_secs(2))
@@ -284,7 +307,10 @@ impl JudgeSearch {
             #[cfg(test)]
             _ => return None,
         };
-        (reply.get("status").and_then(Value::as_str) == Some("ok")).then(|| smallest_window(&reply))
+        (reply.get("status").and_then(Value::as_str) == Some("ok")).then(|| Limits {
+            window: smallest(&reply, "context_window"),
+            options: smallest(&reply, "max_options"),
+        })
     }
 
     /// False while a recent failure pauses the judge.
@@ -376,11 +402,22 @@ impl JudgeSearch {
             min_relevance: 0.0,
             ..choice
         };
-        let group = if self.small_window(deadline).await {
+        // Small-window judges read groups of a shortlist's size; none exceeds
+        // what the judge advertises one Choice can offer (SemIf: 16).
+        let limits = self.limits(deadline).await;
+        let mut group = if limits
+            .window
+            .is_some_and(|tokens| tokens < COMPACT_BELOW_TOKENS)
+        {
             JUDGE_SHORTLIST
         } else {
             ROUND_GROUP
         };
+        if let Some(options) = limits.options {
+            group = group.min(options as usize);
+        }
+        // A round must shrink its lanes.
+        let group = group.max(ROUND_KEEP + 1);
         let mut lanes: Vec<(String, Vec<ToolSchema>)> = lanes
             .iter()
             .map(|(capability, documents)| {
@@ -817,14 +854,14 @@ fn evaluation(
     }
 }
 
-/// The smallest `context_window` among a model listing's cards, if any card
+/// The smallest `field` among a model listing's cards, if any card
 /// advertises one.
-fn smallest_window(reply: &Value) -> Option<u64> {
+fn smallest(reply: &Value, field: &str) -> Option<u64> {
     reply
         .get("models")?
         .as_array()?
         .iter()
-        .filter_map(|card| card.get("context_window")?.as_u64())
+        .filter_map(|card| card.get(field)?.as_u64())
         .min()
 }
 
@@ -1075,6 +1112,8 @@ mod tests {
             JudgeError::Unavailable(_)
         ));
         assert_eq!(code_error("attempt_timeout"), JudgeError::Deadline);
+        // Too big for this judge: falls back without pausing it.
+        assert_eq!(code_error("payload_too_large"), JudgeError::PayloadTooLarge);
         assert_eq!(code_error("http"), JudgeError::Provider("http".into()));
         assert_eq!(
             code_error("added_in_a_later_release"),
@@ -1315,6 +1354,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tournament_respects_the_judges_option_limit() {
+        let tools: Vec<ToolSchema> = (0..40).map(|i| tool(&format!("t::n{i:02}"))).collect();
+        let tournament = JudgeOptions {
+            question: JudgeQuestion::Tournament,
+            ..choice()
+        };
+        let (client, requests) = favour_n27();
+        // SemIf: a 16384-token window, at most 16 options per Choice.
+        let outcome = client
+            .with_limits(Limits {
+                window: Some(16384),
+                options: Some(16),
+            })
+            .rank(&lanes(&["pick"], &tools), &tournament, deadline())
+            .await
+            .unwrap();
+        assert_eq!(outcome.rankings[0][0].0, "t::n27");
+        let requests = requests.lock().unwrap();
+        assert_eq!(sizes(&requests[0]), vec![14, 14, 12]);
+        assert_eq!(sizes(&requests[1]), vec![9]);
+    }
+
+    #[tokio::test]
     async fn a_small_window_tournament_plays_groups_of_sixteen() {
         let tools: Vec<ToolSchema> = (0..40).map(|i| tool(&format!("t::n{i:02}"))).collect();
         let tournament = JudgeOptions {
@@ -1342,8 +1404,11 @@ mod tests {
             {"name": "laya-multilingual", "context_window": 8192},
             {"name": "hosted"}
         ]});
-        assert_eq!(smallest_window(&reply), Some(512));
-        assert_eq!(smallest_window(&json!({"models": [{"name": "jev"}]})), None);
+        assert_eq!(smallest(&reply, "context_window"), Some(512));
+        assert_eq!(
+            smallest(&json!({"models": [{"name": "jev"}]}), "context_window"),
+            None
+        );
     }
 
     /// Answer each Choice evaluation with `distribution(lane)` over its options.

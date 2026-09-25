@@ -349,6 +349,8 @@ impl LayaClient {
                     ),
                     release_date: loaded.revision.to_string(),
                     context_window: Some(loaded.model.agent.max_len as u32),
+                    // Options are bounded by the window, not by a count.
+                    max_options: None,
                 })
                 .collect(),
             stats: stats(true),

@@ -294,6 +294,7 @@ impl DeciderClient {
                 ),
                 release_date: self.revision.to_string(),
                 context_window: Some(self.engine.context_tokens),
+                max_options: Some(self.engine.max_options as u32),
             }],
             stats: stats(true),
         }

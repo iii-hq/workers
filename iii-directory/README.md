@@ -635,7 +635,8 @@ SemIf (16384) and judges that advertise no window keep the objects.
 pattern (skim everything cheaply, then read the few in detail). The whole
 function catalog, sorted by id, is skimmed in rounds of compact Choices (the
 function id and the first eight words of its description) over groups of up
-to 128, or 16 for a judge that advertises a context window under 4096 tokens;
+to 128, or 16 for a judge that advertises a context window under 4096 tokens,
+and never more than the judge's advertised `max_options` (SemIf: 16);
 each group's three best go on until 16 or fewer remain, and those get one
 final Choice with their full descriptions, admitted like `choice`. A
 260-function catalog takes one round of three groups, then the final Choice
