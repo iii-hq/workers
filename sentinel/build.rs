@@ -29,7 +29,8 @@ fn main() {
         return;
     }
 
-    if std::env::var_os("SKIP_UI_BUILD").is_some() {
+    // Compose passes `${SENTINEL_SKIP_UI_BUILD:-}`, so empty means unset.
+    if std::env::var_os("SKIP_UI_BUILD").is_some_and(|value| !value.is_empty()) {
         for asset in &assets {
             if !asset.exists() {
                 panic!(
