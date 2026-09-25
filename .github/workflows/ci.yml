@@ -374,6 +374,13 @@ jobs:
         working-directory: provider-openai-codex/ui
         run: pnpm install --frozen-lockfile && pnpm build
 
+      # llama-runtime compiles llama.cpp (cmake) and its bindings (bindgen
+      # needs libclang); Linux x86_64 always builds the Vulkan module (loader
+      # headers, SPIR-V headers, glslc), as for the llama-runtime workers.
+      - name: Provision llama.cpp build tools (llama-runtime)
+        if: matrix.crate == 'llama-runtime'
+        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc spirv-headers
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
