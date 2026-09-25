@@ -58,7 +58,8 @@ A successful response looks like this; scores, usage and timing are illustrative
 
 Check `status` before reading answers. Errors return `status: "error"` and a
 `code` with no partial results; `provider_unavailable` means the selected
-`judge-<provider>` worker is not registered on the engine. A bus invocation
+`judge-<provider>` worker is not registered on the engine (or, for a local
+provider, its model failed to load). A bus invocation
 failure is handled separately. The hub adds 5 s of bus slack on top of your
 `timeout_ms`; the provider enforces the deadline itself.
 
@@ -80,9 +81,11 @@ stamps it on every turn as the `iii.judge.provider` OTel baggage, and callers
 in that turn (function search, call reconciliation, `browser::run`) send it as
 `provider`; a request without one falls back to that baggage, then to the
 default. Each session routes on its own; no session changes another's judge
-or the default. Local providers load their model only while they are the default,
-unless **Keep every local provider loaded** (`preload_all`) is on, which lets
-requests (and sessions) route between them at run time. A new provider is a
+or the default. A local provider keeps its model loaded while it is the
+default (all of them with **Keep every local provider loaded**, `preload_all`);
+a request naming any other one loads its model on first use, which that request
+may not outlast, and the model is released after 10 idle minutes. Picking a
+provider in the composer starts that load. A new provider is a
 worker that registers `judge-<provider>::evaluate`, `::models::list` and
 `::cancel` with the [`judge-contract`](../crates/judge-contract/) types,
 marked `metadata.internal: true` so default discovery shows only the hub, and

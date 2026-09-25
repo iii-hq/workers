@@ -13,7 +13,9 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-tokio = { version = "1", features = ["sync"] }
+judge-contract = { path = "../judge-contract" }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "rt", "time"] }
 tracing = "0.1"
 llama-cpp-2 = { version = "0.1.156", default-features = false }
 
@@ -29,3 +31,6 @@ llama-cpp-sys-2 = { version = "=0.1.156", default-features = false }
 # macOS: Metal is linked in; Apple Silicon GPUs run the model.
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { version = "0.1.156", default-features = false, features = ["metal"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

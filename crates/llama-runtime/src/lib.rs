@@ -3,9 +3,13 @@
 //! selection, model loading, and one thread that owns the `LlamaContext` (not
 //! `Send`) and serves jobs in arrival order, so a single forward runs on the
 //! hardware at a time. What a job does with the model is the provider's
-//! business; `scorer` is the job of the providers that read option labels.
+//! business; `scorer` is the job of the providers that read option labels, and
+//! `lifecycle` loads a provider's model on first use and releases it when idle.
 pub use llama_cpp_2;
+pub mod lifecycle;
 pub mod scorer;
+
+pub use lifecycle::{ModelSlot, Unloaded, IDLE_RELEASE};
 
 use anyhow::{anyhow, Result};
 use llama_cpp_2::{

@@ -15,22 +15,22 @@ picked automatically at start; laya's decision head runs in candle on the CPU.
 iii trigger compose::add worker=judge-laya
 ```
 
-The checkpoints load only while laya is the judge hub's **default provider**
-(`provider: laya` under **Settings → Workers → judge**): the worker follows
-the hub's configuration and, when another provider becomes the default,
-unregisters its functions and releases the checkpoints (VRAM included); they
-load again when laya is selected. The first load downloads the checkpoint
+The functions register at start; the checkpoints load on demand. While laya
+is the judge hub's **default provider** (`provider: laya` under **Settings →
+Workers → judge**) they load at once and stay loaded. Otherwise the first call
+that names `"provider": "laya"` (or comes from a session that picked it) loads
+them, and they are released (VRAM included) after 10 minutes without calls; a
+call that cannot wait for the load answers `deadline` while the load goes on
+for the next one. The first load downloads the checkpoint
 (843 MB for `laya`, 644 MB for `laya-multilingual`) from the Hugging Face Hub
 into the hf-hub cache (`$HF_HOME`, default `~/.cache/huggingface`) and
 converts its encoder once to the GGUF llama.cpp loads, under
 `$HF_HOME/judge-laya/` (keyed by model and revision; under a second for
 `laya`, 791 MB).
-The functions register only once the model answers; until then, and while
-another provider is the default, the hub reports `provider_unavailable`, also
-for calls that name `"provider": "laya"`. To keep the checkpoints loaded while another
-provider is the default, turn on **Keep every local provider loaded**
-(`preload_all`) in the judge settings. A hub build that does not expose
-`judge::configuration-id` leaves the checkpoints loaded from the start.
+To keep the checkpoints loaded while another provider is the default, turn
+on **Keep every local provider loaded** (`preload_all`) in the judge settings.
+A hub build that does not expose `judge::configuration-id` keeps the
+checkpoints loaded from the start.
 Air-gapped installs point `III_LAYA_CHECKPOINT_DIR` at
 a directory holding `model.safetensors`, `encoder/config.json`,
 `rl_agent_config.json` and `tokenizer.json` (plus an optional pre-converted
