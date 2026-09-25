@@ -8,7 +8,7 @@ export type ShellPanelContext =
       canViewFile: boolean
     }
   /** Open a file; `line`..`endLine` (1-based) selects the referenced lines. */
-  | { type: 'file'; path: string; line?: number; endLine?: number }
+  | { type: 'file'; path: string; line?: number; endLine?: number; column?: number }
   /** Open a terminal on the directory an agent worked in, ready for its CLI. */
   | { type: 'agent-terminal'; cwd: string; command: string }
 
@@ -16,10 +16,12 @@ function asRecord(value: JsonValue): Record<string, JsonValue> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
 }
 
+/** Accept only positive, exactly representable one-based coordinates. */
 function asLine(value: JsonValue | undefined): number | undefined {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : undefined
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : undefined
 }
 
+/** Parse an untrusted panel-open payload, dropping unsupported or invalid coordinates. */
 export function parseShellPanelContext(value: JsonValue): ShellPanelContext | null {
   const record = asRecord(value)
   if (!record) return null
@@ -37,6 +39,7 @@ export function parseShellPanelContext(value: JsonValue): ShellPanelContext | nu
   }
   if (record.type === 'file') {
     const line = asLine(record.line)
+    const column = line === undefined ? undefined : asLine(record.column)
     const end = line === undefined ? undefined : asLine(record.endLine)
     const endLine = line !== undefined && end !== undefined && end >= line ? end : undefined
     return {
@@ -44,6 +47,7 @@ export function parseShellPanelContext(value: JsonValue): ShellPanelContext | nu
       path: record.path,
       ...(line !== undefined ? { line } : {}),
       ...(endLine !== undefined ? { endLine } : {}),
+      ...(column !== undefined ? { column } : {}),
     }
   }
   if (record.type === 'change-diff' && typeof record.changeId === 'string' && record.changeId !== '') {

@@ -32,6 +32,7 @@ import {
   joinPath,
 } from './coder'
 import { readFileBytes } from './file-bytes'
+import { referenceWarning } from './reference-warning'
 import { ImagePreview } from './image-preview'
 import {
   EDITOR_FULL_READ_BUDGET,
@@ -67,6 +68,8 @@ export interface EditorCacheEntry {
   size: number | null
   /** Object (or data) URL when the file rendered as an image preview. */
   image?: string | null
+  /** User/source override survives tab remounts until the global preference changes. */
+  preview?: { choice: boolean; preference: boolean }
   /** Set when only the first lines of a large file were read. */
   window?: { lineTo: number; totalLines: number | null }
 }
@@ -100,6 +103,8 @@ interface EditorPaneProps {
   reveal?: { line: number; column?: number; endLine?: number; seq: number } | null
   /** Bumps when the page asks for the go-to-line box. */
   goToLineSeq?: number
+  /** Acknowledge a successfully handled request so remounts cannot replay it. */
+  onRevealHandled?: (relPath: string, seq: number) => void
   onRevealDir: (dir: string) => void
   onCompare: (relPath: string) => void
   /** The page's word on the file being gone from disk (the live feed, a
@@ -119,6 +124,7 @@ interface EditorPaneProps {
   onQuickOpen?: () => void
 }
 
+/** Load and edit a cached file, consuming each explicit line reveal once. */
 export function EditorPane({
   host,
   root,
@@ -130,6 +136,7 @@ export function EditorPane({
   wordWrap = true,
   reveal = null,
   goToLineSeq = 0,
+  onRevealHandled,
   onSaved,
   onDirtyChange,
   onRevealDir,
@@ -143,12 +150,26 @@ export function EditorPane({
   const absPath = joinPath(root, relPath)
   const editorRef = useRef<CodeEditorHandle>(null)
   const previewable = isRichPreviewPath(relPath)
-  const [previewChoice, setPreviewChoice] = useState<boolean | null>(null)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a changed global preference resets the per-file override
+  const [previewChoice, setPreviewChoiceState] = useState<boolean | null>(() => {
+    const saved = cache.get(relPath)?.preview
+    return saved?.preference === richPreview ? saved.choice : null
+  })
+  const previousPreference = useRef(richPreview)
   useEffect(() => {
-    setPreviewChoice(null)
-  }, [richPreview])
+    if (previousPreference.current === richPreview) return
+    previousPreference.current = richPreview
+    setPreviewChoiceState(null)
+    const cached = cache.get(relPath)
+    if (cached) delete cached.preview
+  }, [richPreview, cache, relPath])
+  const setPreviewChoice = useCallback((choice: boolean) => {
+    setPreviewChoiceState(choice)
+    const cached = cache.get(relPath)
+    if (cached) cached.preview = { choice, preference: richPreview }
+  }, [cache, relPath, richPreview])
   const showPreview = previewable && (previewChoice ?? richPreview)
+  const [citationWarning, setCitationWarning] = useState<string | null>(null)
+  const handledRevealSeq = useRef<number | null>(null)
   const [pane, setPane] = useState<PaneState>({ phase: 'loading' })
   const [draft, setDraftState] = useState('')
   const [savedContent, setSavedContent] = useState('')
@@ -179,13 +200,14 @@ export function EditorPane({
   // biome-ignore lint/correctness/useExhaustiveDependencies: loadAttempt re-runs the load on demand
   useEffect(() => {
     const seq = ++seqRef.current
+    const cancel = () => { seqRef.current += 1 }
     setSaveError(null)
     const cached = cache.get(relPath)
     if (cached) {
       setDraftState(cached.draft)
       setSavedContent(cached.savedContent)
       setPane({ phase: 'ready' })
-      return
+      return cancel
     }
     setPane({ phase: 'loading' })
     const mime = imageMimeFromPath(relPath)
@@ -213,7 +235,7 @@ export function EditorPane({
           onMissingRef.current?.(relPath, false)
         })
         .catch((err: unknown) => failLoad(seq, err))
-      return
+      return cancel
     }
     const finish = (fresh: EditorCacheEntry) => {
       if (seqRef.current !== seq) return
@@ -258,6 +280,7 @@ export function EditorPane({
           failLoad(seq, windowError)
         }
       })
+    return cancel
   }, [host, absPath, relPath, cache, createObjectUrl, failLoad, loadAttempt])
 
   const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), [])
@@ -271,17 +294,26 @@ export function EditorPane({
   const readOnly = entry?.readOnly ?? null
   const ready = pane.phase === 'ready'
   useEffect(() => {
-    if (!reveal || !ready) return
-    const editor = editorRef.current
-    if (!editor) return
-    // A referenced range is selected so the lines read as the citation
-    // they are; a console that predates `revealLines` lands on the line.
-    if (reveal.endLine !== undefined && reveal.endLine > reveal.line && editor.revealLines) {
-      editor.revealLines(reveal.line, reveal.endLine)
-    } else {
-      editor.revealLine(reveal.line, reveal.column)
+    if (!reveal || !ready || handledRevealSeq.current === reveal.seq) return
+    if (showPreview) {
+      setPreviewChoice(false)
+      return
     }
-  }, [reveal, ready])
+    if (readOnly !== 'binary') {
+      const editor = editorRef.current
+      if (!editor) return
+      // A referenced range is selected; older consoles land on its first line.
+      if (reveal.endLine !== undefined && reveal.endLine > reveal.line && editor.revealLines) {
+        editor.revealLines(reveal.line, reveal.endLine)
+      } else {
+        editor.revealLine(reveal.line, reveal.column)
+      }
+    }
+    handledRevealSeq.current = reveal.seq
+    // Snapshot the warning now, not from the user's subsequent edits.
+    setCitationWarning(referenceWarning(reveal, draft, readOnly))
+    onRevealHandled?.(relPath, reveal.seq)
+  }, [reveal, ready, readOnly, showPreview, draft, setPreviewChoice, onRevealHandled, relPath])
   const selectionActions = useMemo(
     () =>
       onReferenceInChat
@@ -305,6 +337,7 @@ export function EditorPane({
 
   const setDraft = useCallback(
     (next: string) => {
+      setCitationWarning(null)
       setDraftState(next)
       const current = cache.get(relPath)
       if (current) {
@@ -448,7 +481,10 @@ export function EditorPane({
           <IconButton
             label={showPreview ? 'Show source' : 'Show preview'}
             aria-pressed={showPreview}
-            onClick={() => setPreviewChoice(!showPreview)}
+            onClick={() => {
+              setCitationWarning(null)
+              setPreviewChoice(!showPreview)
+            }}
           >
             {showPreview ? <Code aria-hidden /> : <Eye aria-hidden />}
           </IconButton>
@@ -460,6 +496,7 @@ export function EditorPane({
         ) : null}
       </div>
 
+      {citationWarning ? <div className="shui-side-note" role="status">{citationWarning}</div> : null}
       <div
         className="shui-editor-body"
         data-keybindings-standdown=""
