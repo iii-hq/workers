@@ -21,6 +21,18 @@ pub const ADAPTIVE: ThinkingConfig = ThinkingConfig {
     display: "summarized",
 };
 
+const PREFIX_MISMATCH_ENV: &str = "PROVIDER_ANTHROPIC_PREFIX_MISMATCH";
+
+/// `thinking.block_binding.prefix_mismatch_behavior`: unset/other = drop_block,
+/// `error` = the loud 400 arm (CI), `off` = neither field nor beta (gateways).
+pub fn prefix_mismatch() -> Option<&'static str> {
+    match std::env::var(PREFIX_MISMATCH_ENV).as_deref() {
+        Ok("error") => Some("error"),
+        Ok("off") => None,
+        _ => Some("drop_block"),
+    }
+}
+
 /// thinking_level → `output_config.effort`. Minimal has no effort
 /// equivalent; low is the closest depth.
 fn effort_for(level: ThinkingLevel) -> &'static str {

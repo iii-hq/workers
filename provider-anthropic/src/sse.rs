@@ -58,6 +58,9 @@ pub struct PartialState {
     native_stop_reason: Option<String>,
     error_message: Option<String>,
     warnings: Vec<String>,
+    /// `input_transformations` entries (thinking blocks the API dropped or
+    /// let through on a prefix-binding check), verbatim; the latest array wins.
+    pub input_transformations: Vec<Value>,
     pub saw_message_stop: bool,
 }
 
@@ -76,8 +79,20 @@ impl PartialState {
             native_stop_reason: None,
             error_message: None,
             warnings,
+            input_transformations: Vec::new(),
             saw_message_stop: false,
         }
+    }
+}
+
+/// Greppable prefix of the one warning line built from `input_transformations`.
+const DROPPED_THINKING_WARNING: &str = "anthropic dropped replayed thinking blocks: ";
+
+/// A present array replaces the current one: after a mid-stream fallback the
+/// final `message_delta` re-sends the full list for the serving model.
+fn take_transformations(v: Option<&Value>, state: &mut PartialState) {
+    if let Some(a) = v.and_then(Value::as_array) {
+        state.input_transformations = a.clone();
     }
 }
 
@@ -174,6 +189,15 @@ impl StreamEndView for PartialState {
 }
 
 pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
+    // Composed here, not pushed at parse time, so a re-sent array never
+    // yields two lines and error/truncation frames carry it too.
+    let mut warnings = state.warnings.clone();
+    if !state.input_transformations.is_empty() {
+        warnings.push(format!(
+            "{DROPPED_THINKING_WARNING}{}",
+            Value::Array(state.input_transformations.clone())
+        ));
+    }
     AssistantMessage {
         role: AssistantRoleTag::Assistant,
         content: build_content(state),
@@ -181,11 +205,7 @@ pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
         native_stop_reason: state.native_stop_reason.clone(),
         error_message: state.error_message.clone(),
         error_kind: None,
-        warnings: if state.warnings.is_empty() {
-            None
-        } else {
-            Some(state.warnings.clone())
-        },
+        warnings: (!warnings.is_empty()).then_some(warnings),
         usage: Some(state.usage.clone()),
         model: model.to_string(),
         provider: PROVIDER_ID.to_string(),
@@ -293,6 +313,7 @@ pub fn handle_sse_event(
     let mut events = Vec::new();
     match event_type {
         "message_start" => {
+            take_transformations(parsed.pointer("/message/input_transformations"), state);
             if let Some(u) = parsed.pointer("/message/usage") {
                 fold_usage(u, state, model);
                 // spec: usage SHOULD be emitted as soon as it is known
@@ -457,6 +478,7 @@ pub fn handle_sse_event(
             }
         }
         "message_delta" => {
+            take_transformations(parsed.get("input_transformations"), state);
             if let Some(sr) = parsed.pointer("/delta/stop_reason").and_then(Value::as_str) {
                 state.stop_reason = map_stop_reason(sr);
                 state.native_stop_reason = Some(sr.to_string());
@@ -540,6 +562,63 @@ mod tests {
             ),
             "the End snapshot must carry the cumulative block text"
         );
+    }
+
+    const DROP_A: &str = r#"{"type":"thinking_dropped","path":"messages.1.content.0","reason":"prefix_binding_mismatch"}"#;
+    const DROP_B: &str = r#"{"type":"thinking_dropped","path":"messages.3.content.0","reason":"model_binding_mismatch"}"#;
+
+    fn start_with(transformations: &str) -> String {
+        format!(
+            r#"data: {{"type":"message_start","message":{{"usage":{{"input_tokens":3}},"input_transformations":{transformations}}}}}"#
+        )
+    }
+
+    /// The warning lines that carry `input_transformations`, parsed back.
+    fn dropped(state: &PartialState) -> Vec<Value> {
+        build_partial(state, "claude-test")
+            .warnings
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|w| w.strip_prefix(DROPPED_THINKING_WARNING))
+            .map(|json| serde_json::from_str(json).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn input_transformations_on_message_start_become_one_warning() {
+        let (state, _) = run(&[
+            &start_with(&format!("[{DROP_A}]")),
+            "data: {\"type\":\"message_stop\"}",
+        ]);
+        let want: Value = serde_json::from_str(&format!("[{DROP_A}]")).unwrap();
+        assert_eq!(dropped(&state), [want]);
+        let warnings = build_partial(&state, "claude-test").warnings.unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn empty_input_transformations_add_no_warning() {
+        let (state, _) = run(&[&start_with("[]"), "data: {\"type\":\"message_stop\"}"]);
+        assert_eq!(build_partial(&state, "claude-test").warnings, None);
+    }
+
+    #[test]
+    fn message_delta_input_transformations_replace_message_start() {
+        let (state, _) = run(&[
+            &start_with(&format!("[{DROP_A}]")),
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}",
+        ]);
+        let a: Value = serde_json::from_str(&format!("[{DROP_A}]")).unwrap();
+        assert_eq!(dropped(&state), [a], "a delta without the key keeps A");
+
+        let (state, _) = run(&[
+            &start_with(&format!("[{DROP_A}]")),
+            &format!(
+                r#"data: {{"type":"message_delta","delta":{{"stop_reason":"end_turn"}},"input_transformations":[{DROP_B}]}}"#
+            ),
+        ]);
+        let b: Value = serde_json::from_str(&format!("[{DROP_B}]")).unwrap();
+        assert_eq!(dropped(&state), [b], "one line, carrying B and not A");
     }
 
     #[test]

@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 
 pub struct UpstreamArgs {
     pub api_url: String,
+    /// Router conversation identity; only correlates the log lines below.
+    pub session_id: Option<String>,
     pub model: String,
     pub body: Value,
     pub headers: Vec<(&'static str, String)>,
@@ -152,6 +154,18 @@ async fn run_upstream(
         TailFlush::Clean
     };
 
+    // The per-session counter for binding breaks: warnings never reach the
+    // session JSONL, so the worker log is the record (grep the reason, e.g.
+    // `prefix_binding_mismatch`).
+    if !state.input_transformations.is_empty() {
+        let entries = Value::Array(state.input_transformations.clone());
+        tracing::warn!(
+            session_id = %args.session_id.as_deref().unwrap_or("-"),
+            model = %args.model,
+            %entries,
+            "anthropic dropped replayed thinking blocks"
+        );
+    }
     // Messages always ends with message_stop, so close framing is never accepted.
     let event = match classify_stream_end(&state, tail, CloseFraming::Rejected) {
         StreamEnd::Complete => AssistantMessageEvent::Done {
@@ -188,6 +202,7 @@ mod tests {
     fn args(api_url: String) -> UpstreamArgs {
         UpstreamArgs {
             api_url,
+            session_id: None,
             model: "claude-test".into(),
             body: serde_json::json!({ "stream": true }),
             headers: vec![("x-api-key", "sk-test".into())],

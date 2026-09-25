@@ -5,7 +5,7 @@ use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
-use crate::thinking::build_thinking_config;
+use crate::thinking::{build_thinking_config, prefix_mismatch};
 use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::wire::cache::{cache_enabled, cache_ttl};
 use crate::{router_client, state};
@@ -19,6 +19,9 @@ use llm_router::provider_scaffold::cache::ScaffoldCache;
 use llm_router::provider_scaffold::pump::{pump, pump_abortable, send_event, PING_INTERVAL};
 use llm_router::types::events::ErrorKind;
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
+use serde_json::{json, Value};
+
+const CAPTURE_DIR_ENV: &str = "PROVIDER_ANTHROPIC_CAPTURE_DIR";
 
 pub fn make_stream(
     iii: IIIClient,
@@ -147,21 +150,29 @@ async fn run_stream_call(
             tools: input.tools.unwrap_or_default(),
             thinking: thinking_build.config,
             effort: thinking_build.effort,
+            prefix_mismatch: prefix_mismatch(),
             cache_enabled: cache_enabled(),
             cache_ttl: cache_ttl(),
         },
         &mut warnings,
     );
-    let headers = build_headers(&cfg);
+    let headers = build_headers(&cfg, &body);
 
     // Aborted while we were setting up — never start the upstream request.
     if abort_reg.is_some_and(|g| g.is_fired()) {
         return;
     }
+    capture(
+        std::env::var(CAPTURE_DIR_ENV).ok(),
+        input.session_id.as_deref(),
+        &headers,
+        &body,
+    );
     let rx = spawn_upstream(
         http,
         UpstreamArgs {
             api_url: cfg.api_url.clone(),
+            session_id: input.session_id,
             model,
             body,
             headers,
@@ -176,5 +187,97 @@ async fn run_stream_call(
     // out from under us: drop the cache so the next attempt re-resolves.
     if kind == Some(ErrorKind::AuthExpired) {
         cache.invalidate();
+    }
+}
+
+/// `PROVIDER_ANTHROPIC_CAPTURE_DIR`: append each sent request, as
+/// `{conversation_id, headers: {anthropic-beta}, request}`, to
+/// `<dir>/<session id>.jsonl` for offline prefix diffing. Auth headers are
+/// never written; requests without a session (the summarizer) are skipped.
+// ponytail: blocking std::fs append on the request path; debug-only knob.
+fn capture(
+    dir: Option<String>,
+    session_id: Option<&str>,
+    headers: &[(&'static str, String)],
+    body: &Value,
+) {
+    let (Some(dir), Some(sid)) = (dir, session_id) else {
+        return;
+    };
+    // Caller-supplied: no separator survives, so the file stays inside `dir`.
+    let file: String = sid
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "-_.".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let beta: serde_json::Map<String, Value> = headers
+        .iter()
+        .filter(|(k, _)| *k == "anthropic-beta")
+        .map(|(k, v)| (k.to_string(), json!(v)))
+        .collect();
+    let line = format!(
+        "{}\n",
+        json!({ "conversation_id": sid, "headers": beta, "request": body })
+    );
+    let path = std::path::Path::new(&dir).join(format!("{file}.jsonl"));
+    let res = std::fs::create_dir_all(&dir)
+        .and_then(|_| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+        })
+        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    if let Err(e) = res {
+        tracing::warn!(path = %path.display(), "request capture failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::request::THINKING_BINDING_BETA;
+
+    #[test]
+    fn capture_appends_wrapper_lines_without_credentials() {
+        let dir = std::env::temp_dir().join(format!("pa-capture-{}", uuid::Uuid::new_v4()));
+        let dir_s = dir.to_string_lossy().into_owned();
+        let headers = [
+            ("x-api-key", "sk-secret".to_string()),
+            ("anthropic-beta", THINKING_BINDING_BETA.to_string()),
+        ];
+        let body = json!({ "model": "m", "messages": [{ "role": "user", "content": "hi" }] });
+        for _ in 0..2 {
+            capture(Some(dir_s.clone()), Some("s/../x"), &headers, &body);
+        }
+        // no session: nothing written (the summarizer path)
+        capture(Some(dir_s.clone()), None, &headers, &body);
+
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["s_.._x.jsonl"]);
+        let text = std::fs::read_to_string(dir.join("s_.._x.jsonl")).unwrap();
+        assert!(!text.contains("sk-secret"), "{text}");
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            assert_eq!(line["conversation_id"], "s/../x");
+            assert_eq!(
+                line["headers"],
+                json!({ "anthropic-beta": THINKING_BINDING_BETA })
+            );
+            assert_eq!(line["request"], body);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

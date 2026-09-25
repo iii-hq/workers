@@ -70,6 +70,8 @@ Worker-side environment variables:
 |---|---|---|
 | `PROVIDER_ANTHROPIC_CACHE` | enabled | `0`/`false` disables automatic prompt-cache markers |
 | `PROVIDER_ANTHROPIC_CACHE_TTL` | `1h` | TTL of the shared-prefix markers on the sectioned path; `5m` restores the default cache |
+| `PROVIDER_ANTHROPIC_PREFIX_MISMATCH` | `drop_block` | `thinking.block_binding.prefix_mismatch_behavior` sent (with the `thinking-binding-controls-2026-08-01` beta) on every thinking request: `drop_block` drops a replayed thinking block whose prefix was edited, `error` returns the 400 instead, `off` sends neither the field nor the beta (for gateways that reject it). Dropped blocks become one `anthropic dropped replayed thinking blocks: […]` warning on the message and one worker-log `warn` with the session id |
+| `PROVIDER_ANTHROPIC_CAPTURE_DIR` | unset | Debug only: append every request that has a session id to `<dir>/<session id>.jsonl` (the body plus `anthropic-beta`; auth headers are never written). **The files hold user content, tool output, and images**: keep them out of the repo and delete them after use |
 | `III_WS_URL` | `ws://127.0.0.1:49134` | engine WebSocket to attach to when `--url` is not set |
 
 The binary also takes the standard worker CLI flags: `--url` (engine
