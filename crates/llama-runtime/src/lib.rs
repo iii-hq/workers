@@ -1,9 +1,11 @@
 //! llama.cpp runtime shared by the in-process judge providers (judge-semif,
-//! judge-laya): backend init and module loading, device selection, model
-//! loading, and one thread that owns the `LlamaContext` (not `Send`) and
-//! serves jobs in arrival order, so a single forward runs on the hardware at
-//! a time. What a job does with the model is the provider's business.
+//! judge-decider, judge-laya): backend init and module loading, device
+//! selection, model loading, and one thread that owns the `LlamaContext` (not
+//! `Send`) and serves jobs in arrival order, so a single forward runs on the
+//! hardware at a time. What a job does with the model is the provider's
+//! business; `scorer` is the job of the providers that read option labels.
 pub use llama_cpp_2;
+pub mod scorer;
 
 use anyhow::{anyhow, Result};
 use llama_cpp_2::{
