@@ -339,60 +339,76 @@ def write_version(manifest_path: Path, new_version: str) -> None:
     raise ValueError(f"unhandled manifest kind: {kind}")
 
 
-def read_cargo_package_name(manifest_path: Path) -> str:
-    """Reads `name = "X"` from a Cargo.toml `[package]` section."""
+def read_package_name(manifest_path: Path) -> str:
+    """Reads `name = "X"` from Cargo.toml `[package]` or pyproject.toml `[project]`."""
+    section = "[project]" if detect_kind(manifest_path) == "python" else "[package]"
     in_section = False
     for line in manifest_path.read_text().splitlines():
         s = line.strip()
         if s.startswith("["):
-            in_section = (s == "[package]")
+            in_section = (s == section)
             continue
         if in_section:
             m = re.match(r'^name\s*=\s*"([^"]+)"', s)
             if m:
                 return m.group(1)
-    raise ValueError(f"no name field in [package] section of {manifest_path}")
+    raise ValueError(f"no name field in {section} section of {manifest_path}")
 
 
-def sync_cargo_lock_self_version(lock_path: Path, name: str, new_version: str) -> bool:
-    """Update a worker's own `[[package]]` version in its Cargo.lock to match
-    its bumped Cargo.toml.
+def pep440_version(version: str) -> str:
+    """The normal form uv.lock records for a release version: 1.2.3-rc.4 -> 1.2.3rc4.
 
-    Bumping only rewrites Cargo.toml, so the crate's own entry in Cargo.lock
-    keeps the old version until the next local `cargo build` rewrites it —
-    leaving every developer with a dirty lockfile. Rewriting the matching block
-    here, at tag time, keeps the committed lock in sync. Only the crate's own
-    version line changes; the dependency graph is untouched (a bump never alters
-    resolution).
+    `-experimental` has no PEP 440 spelling, so a Python package cannot carry it.
+    """
+    parsed = parse_release_version(version)
+    suffix = {"stable": "", "rc": f"rc{parsed.rc}", "alpha": "a0", "beta": "b0"}.get(parsed.maturity)
+    if suffix is None:
+        raise ValueError(f"{version} has no PEP 440 form")
+    return parsed.core_text + suffix
 
-    Returns True if the version was changed, False if it already matched.
-    Raises ValueError if no `[[package]]` block named `name` exists.
+
+def sync_lock_versions(lock_path: Path, versions: dict[str, str]) -> set[str]:
+    """Set the version of each local `[[package]]` named in `versions`.
+
+    Works on Cargo.lock and uv.lock, which share the layout. Local means built
+    from this repository: no `source` (Cargo path crates) or an editable,
+    virtual, directory or path source (uv). A registry or git entry that shares
+    the name is never touched. Workers depend on each other by path, so a
+    dependent's lock records its dependency's version too; only those version
+    lines change, the dependency graph is untouched (a bump never alters
+    resolution). Returns the names found; rewrites the file only on a change.
     """
     text = lock_path.read_text()
-    out: list[str] = []
-    in_target = False
-    found = replaced = False
-    for line in text.splitlines():
-        s = line.strip()
-        if s == "[[package]]":
-            in_target = False
-        else:
-            m = re.match(r'^name = "([^"]+)"$', s)
-            if m:
-                in_target = (m.group(1) == name)
-                found = found or in_target
-            elif in_target and re.match(r'^version = "[^"]+"$', s):
-                new_line = f'version = "{new_version}"'
-                replaced = replaced or (new_line != s)
-                line = new_line
-                in_target = False
-        out.append(line)
-    if not found:
+    blocks = re.split(r"(?m)^(?=\[\[package\]\]$)", text)
+    found: set[str] = set()
+    for i, block in enumerate(blocks):
+        name = re.search(r'(?m)^name = "([^"]+)"$', block)
+        if not name or name.group(1) not in versions:
+            continue
+        source = re.search(r"(?m)^source = (.*)$", block)
+        if source and not re.match(r"\{ (?:editable|virtual|directory|path) = ", source.group(1)):
+            continue
+        found.add(name.group(1))
+        blocks[i] = re.sub(
+            r'(?m)^version = "[^"]+"$', f'version = "{versions[name.group(1)]}"', block, count=1
+        )
+    updated = "".join(blocks)
+    if updated != text:
+        lock_path.write_text(updated)
+    return found
+
+
+def sync_lock_self_version(lock_path: Path, name: str, new_version: str) -> bool:
+    """Update a worker's own `[[package]]` version in its lock to match its
+    bumped manifest, so developers don't inherit a dirty lockfile.
+
+    Returns True if the version was changed, False if it already matched.
+    Raises ValueError if no local `[[package]]` block named `name` exists.
+    """
+    before = lock_path.read_text()
+    if name not in sync_lock_versions(lock_path, {name: new_version}):
         raise ValueError(f"package {name!r} not found in {lock_path}")
-    if replaced:
-        trailing = "\n" if text.endswith("\n") else ""
-        lock_path.write_text("\n".join(out) + trailing)
-    return replaced
+    return lock_path.read_text() != before
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,8 @@ Subcommands:
                            validate the target against existing git tags
     verify <path> --expected V
                            assert the file's version equals V
+    sync-tags [--remote R] write every worker's highest published tag into
+                           its manifest and the repository's lockfiles
     deploy-mode <worker>   print the interface-collection mode
 
 Exit codes: 0 on success, 1 on parse / IO / mismatch failure.
@@ -19,7 +21,10 @@ Exit codes: 0 on success, 1 on parse / IO / mismatch failure.
 from __future__ import annotations
 
 import argparse
+import re
+import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 # Make _lib importable when run as a script.
@@ -108,14 +113,92 @@ def cmd_sync_lock(args: argparse.Namespace) -> int:
     if not lock.exists():
         return 0
     try:
-        name = _lib.read_cargo_package_name(manifest)
+        name = _lib.read_package_name(manifest)
         version = _lib.read_version(manifest)
-        changed = _lib.sync_cargo_lock_self_version(lock, name, version)
+        changed = _lib.sync_lock_self_version(lock, name, version)
     except (FileNotFoundError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     print(f"{name} {version}" + ("" if changed else " (already in sync)"))
     return 0
+
+
+def sync_manifests(
+    catalog: dict[str, _lib.WorkerSpec], tags: Iterable[str], locks: Iterable[Path]
+) -> tuple[list[str], list[str]]:
+    """Write each catalog worker's highest `<worker>/v<version>` tag into its manifest.
+
+    Release Control mints one tag per published Registry version, so the
+    highest in-grammar tag is the newest version any channel ever received.
+    Manifests only move forward: one already at or past its tag (a hand bump
+    seeding a first publication) stays. Every lock in `locks` gets the bumped
+    packages' local entries, since workers lock each other through path deps.
+    Returns (changes, errors); one worker's error never blocks the others.
+    """
+    published: dict[str, list[str]] = {}
+    for tag in tags:
+        worker, _, version = tag.partition("/v")
+        if worker not in catalog:
+            continue
+        try:
+            _lib.parse_release_version(version)
+        except ValueError:
+            continue
+        published.setdefault(worker, []).append(version)
+
+    # ponytail: lock entries are matched by package name, which assumes no two
+    # crates in the repository share one; a duplicate would need path matching.
+    lock_versions: dict[str, dict[str, str]] = {"Cargo.lock": {}, "uv.lock": {}}
+    changes: list[str] = []
+    errors: list[str] = []
+    for worker, versions in sorted(published.items()):
+        manifest = catalog[worker].path / str(catalog[worker].manifest)
+        if manifest.name == "pyproject.toml":
+            # `-experimental` has no Python spelling: take the highest that has one.
+            versions = [v for v in versions if _lib.release_maturity(v) != "experimental"]
+            if not versions:
+                continue
+        target = max(versions, key=_lib.parse_semver)
+        try:
+            current = _lib.read_version(manifest)
+            version = max(current, target, key=_lib.parse_semver)
+            # Locks follow the manifest even when it is already current, so a
+            # hand bump that skipped its lock converges on the next run.
+            if manifest.name == "Cargo.toml":
+                lock_versions["Cargo.lock"][_lib.read_package_name(manifest)] = version
+            elif manifest.name == "pyproject.toml":
+                name = re.sub(r"[-_.]+", "-", _lib.read_package_name(manifest)).lower()
+                lock_versions["uv.lock"][name] = _lib.pep440_version(version)
+        except (FileNotFoundError, ValueError) as e:
+            errors.append(f"{worker}: {e}")
+            continue
+        if version != current:
+            _lib.write_version(manifest, version)
+            changes.append(f"{worker} {current} -> {version}")
+    for lock in locks:
+        _lib.sync_lock_versions(lock, lock_versions.get(lock.name, {}))
+    return changes, errors
+
+
+def cmd_sync_tags(args: argparse.Namespace) -> int:
+    root = _lib.worker_catalog_path().parents[1]
+    try:
+        refs = subprocess.check_output(["git", "-C", str(root), "ls-remote", "--tags", "--refs", args.remote], text=True)
+        tracked = subprocess.check_output(
+            ["git", "-C", str(root), "ls-files", "-z", "--", "*Cargo.lock", "*uv.lock"], text=True
+        )
+        catalog = _lib.read_worker_catalog()
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    tags = [line.split("\trefs/tags/", 1)[1] for line in refs.splitlines() if "\trefs/tags/" in line]
+    locks = [root / path for path in tracked.split("\0") if path]
+    changes, errors = sync_manifests(catalog, tags, locks)
+    for change in changes:
+        print(change)
+    for error in errors:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if errors else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
     p_sl = sub.add_parser("sync-lock", help="sync Cargo.lock self-version to Cargo.toml")
     p_sl.add_argument("manifest", help="path to the bumped Cargo.toml")
     p_sl.set_defaults(func=cmd_sync_lock)
+
+    p_st = sub.add_parser("sync-tags", help="write published tag versions into worker manifests")
+    p_st.add_argument("--remote", default="origin", help="git remote whose tags are authoritative")
+    p_st.set_defaults(func=cmd_sync_tags)
 
     args = p.parse_args(argv)
     return args.func(args)
