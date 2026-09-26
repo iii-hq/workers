@@ -112,6 +112,8 @@ fn is_transient_step_error(error: &HarnessError) -> bool {
 
 async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, HarnessError> {
     let (session_id, turn_id) = (payload.session_id.clone(), payload.turn_id.clone());
+    // Orphan recovery must not re-enqueue a step that is executing here.
+    let _inflight = deps.inflight.enter(&session_id);
     let mut transient_attempts = 0u32;
     let result = loop {
         match turn_loop::run_step(deps, payload.clone()).await {

@@ -1356,7 +1356,7 @@ pub(crate) async fn seed_new(
         updated_at: now,
     };
     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-    turn_loop::enqueue_step(
+    if let Err(error) = turn_loop::enqueue_step(
         &deps.iii,
         session_id,
         &turn_id,
@@ -1364,7 +1364,16 @@ pub(crate) async fn seed_new(
         record.message_preview.as_deref(),
         lineage.depth,
     )
-    .await?;
+    .await
+    {
+        // The record is already `Running`; left as is, no step would ever run
+        // it and the session would stay "working" with its messages parked.
+        // Finalize it as failed so the error is visible and the session
+        // accepts new sends.
+        let mut record = record;
+        Box::pin(turn_loop::fail_unenqueued_turn(deps, &mut record, &error)).await;
+        return Err(error);
+    }
     Ok(StartOutcome {
         session_id: session_id.to_string(),
         turn_id,

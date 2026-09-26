@@ -2612,6 +2612,37 @@ async fn finalize_cancelled(
     })
 }
 
+const ENQUEUE_FAILURE: FailureInfo<'static> = FailureInfo {
+    code: "harness.enqueue_failed",
+    phase: "scheduling",
+    retryable: true,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
+};
+
+/// Finalise a freshly seeded turn whose first step could not be enqueued.
+/// The caller holds the session's delivery lock (or runs inside a finalize
+/// that does), so this does not take it. Best effort: a finalize error is
+/// logged and the orphan sweep remains the backstop.
+pub(crate) async fn fail_unenqueued_turn(
+    deps: &Deps,
+    record: &mut TurnRecord,
+    error: &HarnessError,
+) {
+    let session = deps.session().await;
+    let message = format!("could not schedule the turn: {error}");
+    if let Err(e) = finalize_failed(deps, &session, record, &message, ENQUEUE_FAILURE).await {
+        tracing::warn!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            error = %e,
+            "failed to finalize a turn whose first step could not be enqueued"
+        );
+    }
+}
+
 /// Finalise a turn as failed after an unexpected step error (harness.md §
 /// `harness::turn` failure handling). Idempotent: a terminal turn is left
 /// untouched.
