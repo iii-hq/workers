@@ -48,19 +48,25 @@ jobs:
           set -euo pipefail
           status=0
           python3 .github/scripts/manifest_version.py sync-tags || status=$?
-          if git diff --quiet; then
-            exit "$status"
+          if ! git diff --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            # Release Control's drift skips commits with exactly this subject.
+            git commit --quiet --all --message 'chore(release): sync package manifests to published versions'
+            for attempt in 1 2 3; do
+              git push origin HEAD:main && break
+              if [ "$attempt" = 3 ]; then exit 1; fi
+              git pull --rebase origin main
+            done
           fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # Release Control's drift skips commits with exactly this subject.
-          git commit --quiet --all --message 'chore(release): sync package manifests to published versions'
-          for attempt in 1 2 3; do
-            git push origin HEAD:main && break
-            if [ "$attempt" = 3 ]; then exit 1; fi
-            git pull --rebase origin main
-          done
           # A job-token push starts no workflow, and Release Control resolves
-          # main's head through its descriptor index.
-          gh workflow run deploy-descriptor-index.yml --ref main
+          # main's head through its descriptor index. Checked on clean runs too,
+          # so re-running after a failed dispatch repairs it; a head that has a
+          # run is skipped, because Release Control searches only the newest
+          # 100 index runs and older commits must stay within them.
+          head_runs=$(gh run list --workflow deploy-descriptor-index.yml --commit "$(git rev-parse HEAD)" \
+            --limit 1 --json databaseId --jq length)
+          if [ "$head_runs" = 0 ]; then
+            gh workflow run deploy-descriptor-index.yml --ref main
+          fi
           exit "$status"

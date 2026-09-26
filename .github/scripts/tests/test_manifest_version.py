@@ -245,7 +245,7 @@ class TestSyncManifests:
             "harness/v1.8.36-rc.2", "harness/v1.8.36", "harness/v1.9.0-dry-run.1",
             "eval/v0.2.14", "hermes/v0.1.9", "pi/v0.1.33", "cron/v0.21.25",
             "seed/v0.2.0",  # a hand-bumped manifest ahead of its tag stays
-            "snake/v0.2.0-experimental",  # no PEP 440 spelling
+            "snake/v0.1.5", "snake/v0.2.0-experimental",  # the latter has no PEP 440 spelling
             "unlisted/v9.9.9",
         ]
         locks = [tmp_path / p for p in ("harness/Cargo.lock", "eval/Cargo.lock", "hermes/uv.lock", "cron/Cargo.lock")]
@@ -257,8 +257,9 @@ class TestSyncManifests:
             "harness 1.8.8-rc.3 -> 1.8.36",
             "hermes 0.1.7-rc.4 -> 0.1.9",
             "pi 0.1.13 -> 0.1.33",
+            "snake 0.1.0 -> 0.1.5",
         ]
-        assert len(errors) == 1 and errors[0].startswith("snake:")
+        assert errors == []
         assert _lib.read_version(tmp_path / "harness/Cargo.toml") == "1.8.36"
         assert 'name = "harness"\nversion = "1.8.36"' in (tmp_path / "harness/Cargo.lock").read_text()
         assert 'name = "eval"\nversion = "0.2.14"' in eval_lock.read_text()
@@ -267,6 +268,6 @@ class TestSyncManifests:
         assert _lib.read_version(tmp_path / "pi/package.json") == "0.1.33"
         assert _lib.read_version(tmp_path / "seed/Cargo.toml") == "0.3.0"
         assert 'name = "cron"\nversion = "0.21.25"' in cron_lock.read_text()
-        assert _lib.read_version(tmp_path / "snake/pyproject.toml") == "0.1.0"
+        assert _lib.read_version(tmp_path / "snake/pyproject.toml") == "0.1.5"
 
         assert manifest_version.sync_manifests(catalog, tags, locks)[0] == []

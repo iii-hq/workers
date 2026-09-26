@@ -153,6 +153,11 @@ def sync_manifests(
     errors: list[str] = []
     for worker, versions in sorted(published.items()):
         manifest = catalog[worker].path / str(catalog[worker].manifest)
+        if manifest.name == "pyproject.toml":
+            # `-experimental` has no Python spelling: take the highest that has one.
+            versions = [v for v in versions if _lib.release_maturity(v) != "experimental"]
+            if not versions:
+                continue
         target = max(versions, key=_lib.parse_semver)
         try:
             current = _lib.read_version(manifest)
@@ -162,7 +167,6 @@ def sync_manifests(
             if manifest.name == "Cargo.toml":
                 lock_versions["Cargo.lock"][_lib.read_package_name(manifest)] = version
             elif manifest.name == "pyproject.toml":
-                # Also the guard: `-experimental` has no Python spelling.
                 name = re.sub(r"[-_.]+", "-", _lib.read_package_name(manifest)).lower()
                 lock_versions["uv.lock"][name] = _lib.pep440_version(version)
         except (FileNotFoundError, ValueError) as e:
