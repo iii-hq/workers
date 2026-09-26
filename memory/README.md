@@ -1,6 +1,6 @@
 # memory
 
-Durable cross-session agent memory. Named **banks** hold two kinds of content: **rules** (markdown documents injected whole into every turn's system prompt) and **memories** (auto-extracted records recalled on demand). Everything is a plain file you can open, a function you can call, and an event you can watch: memory that acts visibly, not magically.
+Durable cross-session agent memory. Named **banks** hold two kinds of content: **rules** (markdown documents injected whole into the system prompt) and **memories** (auto-extracted records recalled on demand). Everything is a plain file you can open, a function you can call, and an event you can watch: memory that acts visibly, not magically.
 
 ## Install
 
@@ -46,10 +46,12 @@ All fields hot-reload through the `configuration` worker and are editable in the
 
 | Seam | What happens |
 |---|---|
-| `harness::hook::pre-generate` (fail-open, priority 100) | Injects the session bank's rules into the system prompt once per session (sent verbatim after that; a later rule change arrives as one appended update message, so the prefix stays append-only) and, on each turn's first step, up to `recall_limit` recalled memories as one appended message |
+| `harness::hook::pre-generate` (fail-open, priority 100) | Injects the session bank's rules into the system prompt once per session (sent verbatim after that; a later rule change arrives as one appended update message, so the prefix stays append-only) and, on each turn's first step, up to `recall_limit` recalled memories as one appended message. Whether an update is due is read from the window the step sends (its newest `<memory update="rules">` message, else the frozen section), so a lost or compacted-away update is sent again and a delivered one never is |
 | `harness::turn-completed` | Spawns one background `router::complete` extraction pass over the last `extraction_window` user/assistant messages |
 
-Bank selection order: turn metadata `memory_bank` → session metadata `memory_bank` (`session::set-meta`) → configured `default_bank`. A session-lookup failure injects nothing rather than falling back across banks.
+Bank selection order: turn metadata `memory_bank` → session metadata `memory_bank` (`session::set-meta`) → configured `default_bank`. A session-lookup failure injects nothing new (the section the session already has stays) rather than falling back across banks. An unknown bank gets the ambient header while extraction is on (extraction creates the bank after a turn) and nothing while it is off.
+
+Switching a running session's bank does not rewrite what it already saw: the new bank's section arrives as an appended update that overrides the frozen one, while the earlier bank's section and recalled memories stay visible in the transcript. Start a new session when the two contexts must not mix. Turning `inject_rules` and `inject_memories` both off works the same way: a running session keeps its section and is told once that no memory section applies.
 
 All seam bindings are one-shot at startup and rely on the engine's recoverable
 triggers (iii #1962, engine ≥ 0.21.8): bound before the owning sibling (harness,

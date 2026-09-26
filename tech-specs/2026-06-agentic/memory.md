@@ -10,17 +10,21 @@ you can call, and an event you can watch.
 
 Two record kinds per bank, chosen by durability semantics:
 
-- **Rules** (`rules/<name>.md`) — markdown documents injected whole into the system prompt on every
-  turn for sessions using the bank. Guaranteed presence; use for what must always hold (writing
-  style, coding conventions, answer format, project constants). Bounded by `max_rule_chars` with a
-  visible truncation marker.
+- **Rules** (`rules/<name>.md`) — markdown documents injected whole into the system prompt for
+  sessions using the bank: rendered on a session's first step and sent verbatim after that (the
+  prefix a model reasoned under never changes); a later change reaches a running session as one
+  appended `<memory update="rules">` message that overrides the frozen section. Guaranteed
+  presence; use for what must always hold (writing style, coding conventions, answer format,
+  project constants). Bounded by `max_rule_chars` with a visible truncation marker.
 - **Memories** (`memories.jsonl`) — one-line records recalled on demand, ranked against the current
   question. Append-only full-record log: fsync before RAM, last-wins replay by id, updates append
   revisions, deletes append tombstones. Content-fingerprinted ids (`fp` + FNV-1a of normalized
   text) make re-observation reinforce (`corroboration += 1`) instead of duplicating.
 
 Bank selection: turn metadata `memory_bank` → session metadata `memory_bank` → configured
-`default_bank`. A session-lookup failure injects nothing — never a cross-bank fallback.
+`default_bank`. A session-lookup failure injects nothing new (the frozen section stays) — never a
+cross-bank fallback. A mid-session bank switch arrives as an appended update; the earlier bank's
+section and recalled memories stay visible in the transcript.
 
 Recall fuses BM25 (unicode tokenizer, CJK bigrams) + entity match + corroboration + pinned bonus +
 recency half-life, plus a semantic cosine signal against per-bank vector sidecars when
@@ -106,11 +110,15 @@ at-least-once, unordered.
 ### Triggers bound
 
 - `harness::hook::pre-generate` (priority 100, `on_error: fail_open`) — injects the bank's rules
-  into the system prompt (stable per session: keeps the provider prompt cache warm) and up to
-  `recall_limit` recalled memories as ONE appended message (varying content never invalidates the
-  cached system-prompt prefix). Hook annotations (`memory_bank`, `memory_recalled`, `memory_ids`,
-  `memory_rules`, `memory_rules_truncated`, `memory_retrieval`) land on the entry origin — which
-  bank and which memories fed a turn is product surface, not plumbing.
+  into the system prompt once per session (frozen on its first step, then verbatim) and, on each
+  turn's first step only, up to `recall_limit` recalled memories as ONE appended message (the
+  harness persists appended messages and replays them on later steps). A rules change, a bank
+  switch or memory turned off appends one update message instead of editing the prompt; whether
+  one is due is read from the window the step sends (its newest rules update, else the frozen
+  section), so a lost or compacted-away update is re-sent and a delivered one never is. Hook
+  annotations (`memory_bank`, `memory_recalled`, `memory_ids`, `memory_rules`,
+  `memory_rules_truncated`, `memory_rules_updated`, `memory_retrieval`) land on the entry
+  origin — which bank and which memories fed a turn is product surface, not plumbing.
 - `harness::turn-completed` — spawns the extraction pass.
 - `session::deleted` — drops the session's extraction cursor.
 - `durable:subscriber` on queue `memory-extraction` — durable extraction jobs with retries + DLQ.
