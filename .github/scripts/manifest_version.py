@@ -156,19 +156,21 @@ def sync_manifests(
         target = max(versions, key=_lib.parse_semver)
         try:
             current = _lib.read_version(manifest)
-            if _lib.parse_semver(target) <= _lib.parse_semver(current):
-                continue
+            version = max(current, target, key=_lib.parse_semver)
+            # Locks follow the manifest even when it is already current, so a
+            # hand bump that skipped its lock converges on the next run.
             if manifest.name == "Cargo.toml":
-                lock_versions["Cargo.lock"][_lib.read_package_name(manifest)] = target
+                lock_versions["Cargo.lock"][_lib.read_package_name(manifest)] = version
             elif manifest.name == "pyproject.toml":
                 # Also the guard: `-experimental` has no Python spelling.
                 name = re.sub(r"[-_.]+", "-", _lib.read_package_name(manifest)).lower()
-                lock_versions["uv.lock"][name] = _lib.pep440_version(target)
+                lock_versions["uv.lock"][name] = _lib.pep440_version(version)
         except (FileNotFoundError, ValueError) as e:
             errors.append(f"{worker}: {e}")
             continue
-        _lib.write_version(manifest, target)
-        changes.append(f"{worker} {current} -> {target}")
+        if version != current:
+            _lib.write_version(manifest, version)
+            changes.append(f"{worker} {current} -> {version}")
     for lock in locks:
         _lib.sync_lock_versions(lock, lock_versions.get(lock.name, {}))
     return changes, errors

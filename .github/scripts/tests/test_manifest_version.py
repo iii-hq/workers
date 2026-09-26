@@ -230,22 +230,25 @@ class TestSyncManifests:
         write("hermes/uv.lock", 'version = 1\n\n[[package]]\nname = "hermes"\nversion = "0.1.7rc4"\nsource = { editable = "." }\n')
         write("pi/package.json", '{\n  "name": "pi",\n  "version": "0.1.13"\n}\n')
         write("seed/Cargo.toml", '[package]\nname = "seed"\nversion = "0.3.0"\n')
+        # Manifest already current, lock left behind by a hand bump.
+        write("cron/Cargo.toml", '[package]\nname = "cron"\nversion = "0.21.25"\n')
+        cron_lock = write("cron/Cargo.lock", 'version = 4\n\n[[package]]\nname = "cron"\nversion = "0.21.11-rc.1"\n')
         write("snake/pyproject.toml", '[project]\nname = "snake"\nversion = "0.1.0"\n')
         catalog = {
             name: SimpleNamespace(path=tmp_path / name, manifest=manifest)
             for name, manifest in {
                 "harness": "Cargo.toml", "eval": "Cargo.toml", "hermes": "pyproject.toml",
-                "pi": "package.json", "seed": "Cargo.toml", "snake": "pyproject.toml",
+                "pi": "package.json", "seed": "Cargo.toml", "snake": "pyproject.toml", "cron": "Cargo.toml",
             }.items()
         }
         tags = [
             "harness/v1.8.36-rc.2", "harness/v1.8.36", "harness/v1.9.0-dry-run.1",
-            "eval/v0.2.14", "hermes/v0.1.9", "pi/v0.1.33",
+            "eval/v0.2.14", "hermes/v0.1.9", "pi/v0.1.33", "cron/v0.21.25",
             "seed/v0.2.0",  # a hand-bumped manifest ahead of its tag stays
             "snake/v0.2.0-experimental",  # no PEP 440 spelling
             "unlisted/v9.9.9",
         ]
-        locks = [tmp_path / p for p in ("harness/Cargo.lock", "eval/Cargo.lock", "hermes/uv.lock")]
+        locks = [tmp_path / p for p in ("harness/Cargo.lock", "eval/Cargo.lock", "hermes/uv.lock", "cron/Cargo.lock")]
 
         changes, errors = manifest_version.sync_manifests(catalog, tags, locks)
 
@@ -263,6 +266,7 @@ class TestSyncManifests:
         assert 'name = "hermes"\nversion = "0.1.9"' in (tmp_path / "hermes/uv.lock").read_text()
         assert _lib.read_version(tmp_path / "pi/package.json") == "0.1.33"
         assert _lib.read_version(tmp_path / "seed/Cargo.toml") == "0.3.0"
+        assert 'name = "cron"\nversion = "0.21.25"' in cron_lock.read_text()
         assert _lib.read_version(tmp_path / "snake/pyproject.toml") == "0.1.0"
 
         assert manifest_version.sync_manifests(catalog, tags, locks)[0] == []
