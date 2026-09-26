@@ -2,7 +2,7 @@
 
 [package]
 name = "compose-ui"
-version = "0.1.0"
+version = "0.1.9"
 edition = "2021"
 description = "Compose project supervision in the Console: live container state, lifecycle actions, worker packages, and log tails."
 license = "Apache-2.0"
