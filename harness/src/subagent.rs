@@ -411,6 +411,15 @@ async fn seed_child(
     reuse_only: bool,
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
+    if let Some(id) = req.session_id.as_deref() {
+        crate::functions::delete_session_tree::ensure_live(deps, id).await?;
+    }
+    if let Some(id) = parent
+        .map(|p| p.session_id.as_str())
+        .or(req.parent_session_id.as_deref())
+    {
+        crate::functions::delete_session_tree::ensure_live(deps, id).await?;
+    }
 
     let names_own_prompt = req
         .options
@@ -627,6 +636,21 @@ async fn seed_child(
         ),
         agent.as_ref(),
     );
+    let topology = deps.topology.lock().await;
+    if let Some(parent_id) = parent
+        .map(|p| p.session_id.as_str())
+        .or(req.parent_session_id.as_deref())
+    {
+        crate::functions::delete_session_tree::ensure_live(deps, parent_id).await?;
+        if !session.exists(parent_id).await? {
+            return Err(HarnessError::InvalidRequest(
+                "spawn parent is absent".into(),
+            ));
+        }
+    }
+    if let Some(id) = req.session_id.as_deref() {
+        crate::functions::delete_session_tree::ensure_live(deps, id).await?;
+    }
     let title = display.as_ref().map(|value| value.name.as_str());
     let mut reused = false;
     let child_session_id = match &req.session_id {
@@ -685,6 +709,7 @@ async fn seed_child(
         }
     };
 
+    drop(topology);
     let previous_child = if reused {
         crate::state::get_turn(&deps.iii, &child_session_id, cfg.session_timeout_ms).await?
     } else {

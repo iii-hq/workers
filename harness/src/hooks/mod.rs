@@ -337,6 +337,20 @@ impl HookRegistry {
         }
     }
 
+    /// Remove the SDK handles still owned by a deleting session. Legacy
+    /// engine registrations whose ownership was lost need operator cleanup.
+    pub fn unregister_session(&self, session_id: &str) {
+        let mut owned = self.owned.lock().unwrap_or_else(|p| p.into_inner());
+        owned.retain(|_, (owner, handle)| {
+            if owner == session_id {
+                handle.unregister();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     pub fn set_for(&self, point: HookPoint) -> &HookSet {
         match point {
             HookPoint::PreTurn => &self.pre_turn,

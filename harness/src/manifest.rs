@@ -19,7 +19,7 @@ pub fn build_manifest() -> ModuleManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
         description:
             "Thin durable turn loop that wires session-manager, context-manager, and llm-router \
-             into an agent loop; spawns sub-agents as child sessions."
+             into an agent loop; spawns sub-agents and durably deletes selected session subtrees."
                 .to_string(),
         default_config: WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],

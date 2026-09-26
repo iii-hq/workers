@@ -51,6 +51,8 @@ jsonschema = { version = "0.18", default-features = false }
 sha2 = "0.10"
 
 [dev-dependencies]
+futures-util = "0.3"
+tokio-tungstenite = "0.28"
 opentelemetry_sdk = { version = "0.31", features = ["testing"] }
 serde_json = "1"
 tempfile = "3"

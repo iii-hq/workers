@@ -221,6 +221,9 @@ async fn start_with_delivery_lock(
     req: SendRequest,
     caller_holds_target_session_lock: bool,
 ) -> Result<StartOutcome, HarnessError> {
+    if let Some(id) = req.session_id.as_deref() {
+        super::delete_session_tree::ensure_live(deps, id).await?;
+    }
     let cfg = deps.cfg().await;
     let session = deps.session().await;
     let idempotent = match &req.idempotency_key {
@@ -337,6 +340,17 @@ async fn start_with_delivery_lock(
         .map(|s| (s.title.clone(), s.metadata.clone(), s.kind.clone()))
         .unwrap_or((None, None, None));
     let metadata = session_metadata_with_agent(metadata, agent.as_ref());
+    let topology = deps.topology.lock().await;
+    if let Some(parent) = metadata
+        .as_ref()
+        .and_then(|m| m.get("parent_session_id"))
+        .and_then(Value::as_str)
+    {
+        super::delete_session_tree::ensure_live(deps, parent).await?;
+    }
+    if let Some(id) = req.session_id.as_deref() {
+        super::delete_session_tree::ensure_live(deps, id).await?;
+    }
     let session_id = match &req.session_id {
         Some(id) => {
             let ensured = session
@@ -366,6 +380,7 @@ async fn start_with_delivery_lock(
         crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await,
     )?;
 
+    drop(topology);
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
         .idempotency_key
@@ -597,7 +612,10 @@ async fn try_enqueue(
     }
     validate_active_skill_request(true, d.skills_explicit)?;
 
-    let id = ids::new_queued_id();
+    let id = d
+        .entry_id
+        .map(str::to_string)
+        .unwrap_or_else(ids::new_queued_id);
     let entry_id = d
         .entry_id
         .map(str::to_string)
@@ -610,7 +628,10 @@ async fn try_enqueue(
         origin: d.origin.cloned(),
         queued_at: AgentMessage::now_ms(),
     };
+    let topology = deps.topology.lock().await;
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     crate::state::enqueue_message(&deps.iii, &row, cfg.session_timeout_ms).await?;
+    drop(topology);
     // Fire-and-forget: lets clients (e.g. the console's queued strip) refresh
     // `harness::status` → `queued` without polling.
     deps.events
@@ -772,6 +793,7 @@ pub(crate) async fn deliver(
     options: TurnOptions,
     d: Delivery<'_>,
 ) -> Result<(StartOutcome, String), HarnessError> {
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     if d.skills_explicit {
         let active = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
             .await?
@@ -788,6 +810,8 @@ pub(crate) async fn deliver(
             session_id,
             d.caller_holds_session_lock,
             || async move {
+                let _topology = deps.topology.lock().await;
+                super::delete_session_tree::ensure_live(deps, session_id).await?;
                 let mut options = options;
                 let previous =
                     crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
@@ -804,11 +828,14 @@ pub(crate) async fn deliver(
         )
         .await;
     }
+    let topology = deps.topology.lock().await;
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     let appended = deps
         .session()
         .await
         .append(session_id, d.message, d.entry_id, None, d.origin)
         .await?;
+    drop(topology);
     // Every whole-record seed/merge writer uses the turn loop's session lock.
     // An in-turn spawn targeting its own session already holds that
     // non-reentrant lock; every other target acquires it here.
@@ -1181,6 +1208,7 @@ async fn seed_or_merge(
     lineage: &TurnLineage,
     skills_explicit: bool,
 ) -> Result<StartOutcome, HarnessError> {
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     let existing = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     apply_default_filesystem_root(
         &mut options,
@@ -1312,6 +1340,7 @@ pub(crate) async fn seed_new(
     message_preview: Option<String>,
     lineage: &TurnLineage,
 ) -> Result<StartOutcome, HarnessError> {
+    super::delete_session_tree::ensure_live(deps, session_id).await?;
     if let Some(prior) = prior {
         inherit_prior_filesystem_root(&mut options, &prior.options);
     }

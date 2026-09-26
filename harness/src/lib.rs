@@ -17,6 +17,7 @@ pub mod configuration;
 pub mod context_snapshot;
 pub mod contract;
 pub mod deferred;
+pub mod deletion_events;
 pub mod deps;
 pub mod discovery;
 pub mod error;

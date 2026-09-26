@@ -28,6 +28,21 @@ fn spec_to_pretty_json(spec: &FunctionSpec) -> String {
 }
 
 #[test]
+fn deletion_trigger_schema_matches_golden() {
+    let actual = serde_json::json!({
+        "trigger_type": harness::deletion_events::TYPE,
+        "trigger_request_format": harness::surface::schema_value::<harness::deletion_events::DeletionConfig>(),
+        "call_request_format": harness::surface::schema_value::<harness::functions::delete_session_tree::Snapshot>(),
+
+    });
+    support::check_golden(
+        "schemas/harness.session-tree-deletion.json",
+        &(serde_json::to_string_pretty(&actual).unwrap() + "\n"),
+    )
+    .unwrap();
+}
+
+#[test]
 fn catalog_lists_all_functions_in_registration_order() {
     let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
     assert_eq!(
@@ -39,6 +54,8 @@ fn catalog_lists_all_functions_in_registration_order() {
             "harness::function::trigger",
             "harness::function::resolve",
             "harness::stop",
+            "harness::delete-session-tree",
+            "harness::delete-session-tree-status",
             "harness::status",
             "harness::system-prompt::get",
             "harness::session-tree",
@@ -188,4 +205,22 @@ fn metrics_response_schema_requires_counters_but_accepts_null_and_measured_value
             }
         }
     }
+}
+
+#[test]
+fn deletion_snapshot_schema_rejects_zero_attempt() {
+    use harness::functions::delete_session_tree::Snapshot;
+    use serde_json::json;
+
+    let spec = catalog()
+        .into_iter()
+        .find(|spec| spec.function_id == "harness::delete-session-tree")
+        .unwrap();
+    let schema = serde_json::to_value(spec.response_schema).unwrap();
+    let validator = jsonschema::JSONSchema::compile(&schema).unwrap();
+    let valid = json!({"operation_id":"op", "attempt":1, "session_id":"s", "status":"deleting", "deleted_session_ids":[]});
+    let invalid = json!({"operation_id":"op", "attempt":0, "session_id":"s", "status":"deleting", "deleted_session_ids":[]});
+    assert!(validator.is_valid(&valid));
+    assert!(!validator.is_valid(&invalid));
+    assert!(serde_json::from_value::<Snapshot>(invalid).is_err());
 }

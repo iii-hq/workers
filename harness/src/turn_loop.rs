@@ -432,7 +432,11 @@ async fn generate_step(
     }
 
     // Cooperative cancellation observed between steps.
-    if record.abort {
+    if record.abort
+        || crate::functions::delete_session_tree::guard_owner(deps, &record.session_id)
+            .await?
+            .is_some()
+    {
         return finalize_cancelled(deps, &session, &mut record, "cancelled")
             .await
             .map(PreparedStep::Finished);
@@ -2121,6 +2125,12 @@ async fn advance(deps: &Deps, record: &mut TurnRecord) -> Result<TurnStepResult,
 /// final compose turn (wake consumed, nothing re-armed) is terminal.
 /// Consumers finalize a logical exchange only on `terminal: true`.
 async fn turn_is_terminal(deps: &Deps, session_id: &str) -> bool {
+    if matches!(
+        crate::functions::delete_session_tree::guard_owner(deps, session_id).await,
+        Ok(Some(_))
+    ) {
+        return true;
+    }
     !crate::bindings::session_expects_wake(deps, session_id).await
 }
 
@@ -2130,6 +2140,19 @@ async fn finalize_completed(
     record: &mut TurnRecord,
     result: Option<Value>,
 ) -> Result<TurnStepResult, HarnessError> {
+    if deps.cancels.is_fired(&record.turn_id)
+        || crate::functions::delete_session_tree::guard_owner(deps, &record.session_id)
+            .await?
+            .is_some()
+    {
+        return Box::pin(finalize_cancelled(
+            deps,
+            session,
+            record,
+            "cancelled by user",
+        ))
+        .await;
+    }
     let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
     record.status = TurnStatus::Completed;
@@ -2162,7 +2185,22 @@ async fn finalize_completed(
     crate::usage_report::report(deps, record, outcome, None).await;
     // Sub-agent turns resolve the parent's pending call with their result.
     if let Some(parent) = record.parent.clone() {
-        crate::deferred::resolve_parent(deps, &parent, "completed", result.as_ref(), None).await;
+        if crate::functions::delete_session_tree::guard_owner(deps, &record.session_id)
+            .await?
+            .is_some()
+        {
+            crate::deferred::resolve_parent(
+                deps,
+                &parent,
+                "cancelled",
+                None,
+                Some("cancelled by user"),
+            )
+            .await;
+        } else {
+            crate::deferred::resolve_parent(deps, &parent, "completed", result.as_ref(), None)
+                .await;
+        }
     }
     // Second sweep, AFTER the terminal write, pairing with `try_enqueue`'s
     // post-enqueue recheck: a send whose recheck still saw `Running` must have
@@ -2554,7 +2592,7 @@ fn transient_resume_allowed(
         && turn_count < max_turns
 }
 
-async fn finalize_cancelled(
+pub(crate) async fn finalize_cancelled(
     deps: &Deps,
     session: &SessionClient,
     record: &mut TurnRecord,
