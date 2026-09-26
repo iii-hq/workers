@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.8.35"
+version = "1.8.36"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -811,7 +811,7 @@ dependencies = [
 name = "iii-console-ui"
 version = "0.1.0"
 dependencies = [
- "iii-sdk 0.22.1-alpha.25",
+ "iii-sdk 0.23.0",
  "schemars",
  "serde",
  "serde_json",
