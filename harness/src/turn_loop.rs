@@ -550,6 +550,20 @@ async fn generate_step(
     // every retry.
     let prev_watermark = record.watermark_entry_id.clone();
     let watermark = entries.last().map(|e| e.entry_id.clone());
+    // The model-facing window, from the compaction anchor onward: the
+    // messages in the order earlier steps sent them (persisted notices
+    // replayed, recorded reorders applied). This step's own reply entry is
+    // left out: on a redelivered step it holds the dead attempt's reply,
+    // which this generation overwrites. Step notices are deduplicated against
+    // this window, so one a compaction summarized away is told again.
+    // ponytail: judged before this step's own compaction; a notice it summarizes away is re-told next step
+    let anchor = compaction_anchor(&record.session_id, &entries);
+    let window = crate::window::build(
+        &entries,
+        anchor.window_start,
+        prev_watermark.as_deref(),
+        Some(&ids::assistant_entry_id(&record.turn_id, payload.step)),
+    );
 
     // Build every deterministic model-facing input before context assembly.
     // Everything the model is shown is append-only: the system prompt is the
@@ -573,7 +587,7 @@ async fn generate_step(
             let notice = runtime_change_notice(
                 &frozen,
                 &current_aid,
-                crate::window::latest_notice_text(&entries, RUNTIME_CONTEXT_NOTICE_KIND),
+                crate::window::latest_notice_text(&entries, &window, RUNTIME_CONTEXT_NOTICE_KIND),
             );
             (frozen, notice)
         }
@@ -602,15 +616,15 @@ async fn generate_step(
         &functions,
     );
     // Preloaded contracts that drifted from the live registry: named per id
-    // (the frozen block is never rewritten). The same drift is told once —
-    // the notice stays in the transcript.
+    // (the frozen block is never rewritten). The same drift is told once
+    // while that notice is still in the window.
     let preloaded_stale = preloaded_stale_notice(
         record.options.preloaded_contracts.as_ref(),
         &functions,
         &policy,
     )
     .filter(|text| {
-        crate::window::latest_notice_text(&entries, PRELOADED_STALE_NOTICE_KIND)
+        crate::window::latest_notice_text(&entries, &window, PRELOADED_STALE_NOTICE_KIND)
             != Some(text.as_str())
     });
     // A redelivered step already persisted its notices; the window replays
@@ -705,9 +719,9 @@ async fn generate_step(
             deps,
             &session,
             &record,
-            &entries,
+            &anchor,
+            &window,
             payload.step,
-            prev_watermark.as_deref(),
             ContextAssemblyInputs {
                 system_prompt: assembly_system_prompt.clone(),
                 tools: &tools,
@@ -2917,28 +2931,24 @@ async fn has_user_after_watermark(
     Ok(false)
 }
 
-/// Build the model-ready context: read the latest compaction entry, reduce the
-/// candidate window to its tail, and call required `context::assemble`,
-/// persisting a new summary when it compacts.
+/// Build the model-ready context from the window the compaction anchor
+/// opens, and call required `context::assemble`, persisting a new summary
+/// when it compacts.
 async fn assemble_context(
     deps: &Deps,
     session: &SessionClient,
     record: &TurnRecord,
-    entries: &[LoadedEntry],
+    anchor: &CompactionAnchor,
+    window: &crate::window::Window,
     step: u64,
-    prev_watermark: Option<&str>,
     inputs: ContextAssemblyInputs<'_>,
 ) -> Result<Assembled, HarnessError> {
-    let anchor = compaction_anchor(&record.session_id, entries);
     let anchored = anchor.summary.is_some();
 
-    // Candidate window: the model-facing messages in the order earlier steps
-    // sent them (persisted notices replayed, recorded reorders applied), from
-    // the compaction anchor's window start onward. `file` attachment references are stripped from this
+    // `file` attachment references are stripped from the window's
     // MODEL-BOUND copy: neither `context::assemble` nor `router::chat` ever
     // sees one (the console also sends the `<attached-file …>` text
     // expansion, so the model loses nothing). The persisted entries keep them.
-    let window = crate::window::build(entries, anchor.window_start, prev_watermark);
     if let Some(order) = &window.new_order {
         // Persisted before the request goes out, so every later step keeps
         // the moved messages where this one shows them (append-only prefix).
@@ -2952,7 +2962,7 @@ async fn assemble_context(
             )
             .await?;
     }
-    let candidate = window.candidate;
+    let candidate = &window.candidate;
 
     let candidate_values: Vec<Value> = candidate
         .iter()
@@ -2972,7 +2982,7 @@ async fn assemble_context(
         .map(|prompt| {
             std::collections::BTreeMap::from([("skills".to_string(), prompt.to_string())])
         }),
-        previous_summary: anchor.summary,
+        previous_summary: anchor.summary.clone(),
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
         tools: inputs.tools.to_vec(),
@@ -3266,8 +3276,8 @@ pub(crate) fn runtime_context_aid(
 const RUNTIME_CONTEXT_CHANGED_NOTICE: &str = "NOTE: the session context changed since the system prompt was written. It now reads as follows and replaces the session context there:";
 
 /// The notice for a runtime context that moved off what the model last saw:
-/// the latest runtime-context notice, else the frozen aid. `None` when
-/// nothing changed.
+/// the latest runtime-context notice still in the window, else the frozen
+/// aid. `None` when nothing changed.
 // ponytail: a working-dir-only change re-sends the seeded block in the notice
 fn runtime_change_notice(frozen: &str, current: &str, latest: Option<&str>) -> Option<String> {
     let text = format!("{RUNTIME_CONTEXT_CHANGED_NOTICE}\n{current}");
@@ -3538,10 +3548,10 @@ pub(crate) fn registry_notice(
 
 /// Name the profile's preloaded contracts that no longer match the live
 /// registry. The frozen `<preloaded_functions>` block in the prompt is never
-/// rewritten (it is the shared cache prefix), so the correction rides as a
-/// tail message on every step while the drift lasts — recomputed per request,
-/// it survives compaction by construction. Ids whose live descriptor carries
-/// no schema (`parameters: None`) are not judged.
+/// rewritten (it is the shared cache prefix), so the correction rides as an
+/// appended notice, told again whenever it changes or a compaction
+/// summarized the last one away. Ids whose live descriptor carries no schema
+/// (`parameters: None`) are not judged.
 pub(crate) fn preloaded_stale_notice(
     frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
     snapshot: &crate::discovery::FunctionsSnapshot,

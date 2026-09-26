@@ -123,15 +123,23 @@ pub fn replayed(message: &Value) -> Option<Value> {
     serde_json::to_value(notice_message(&notice_data("", message))?).ok()
 }
 
-/// The latest [`MODEL_NOTICE`] text of `kind` in the log, if any.
-pub fn latest_notice_text<'a>(entries: &'a [LoadedEntry], kind: &str) -> Option<&'a str> {
+/// The latest [`MODEL_NOTICE`] text of `kind` still in `window`, if any: a
+/// notice a compaction summarized away no longer tells the model anything.
+pub fn latest_notice_text<'a>(
+    entries: &'a [LoadedEntry],
+    window: &Window,
+    kind: &str,
+) -> Option<&'a str> {
     entries
         .iter()
         .rev()
-        .filter_map(|e| e.custom.as_ref())
-        .filter(|c| c.custom_type == MODEL_NOTICE)
-        .find(|c| c.data.get("kind").and_then(Value::as_str) == Some(kind))
-        .and_then(|c| c.data.get("text").and_then(Value::as_str))
+        .filter_map(|e| Some((e.entry_id.as_str(), e.custom.as_ref()?)))
+        .filter(|(_, c)| {
+            c.custom_type == MODEL_NOTICE
+                && c.data.get("kind").and_then(Value::as_str) == Some(kind)
+        })
+        .find(|(id, _)| window.candidate.iter().any(|(shown, _)| shown == id))
+        .and_then(|(_, c)| c.data.get("text").and_then(Value::as_str))
 }
 
 pub struct Window {
@@ -176,8 +184,17 @@ fn move_anchor(list: &[(String, AgentMessage)]) -> Option<usize> {
 /// `prev_watermark` (while the last reply generated) but before that reply or
 /// its results move after them in a new order: the model answered without
 /// seeing them, its thinking is bound to the prefix it saw, and the request
-/// must end with the user.
-pub fn build(entries: &[LoadedEntry], window_start: usize, prev_watermark: Option<&str>) -> Window {
+/// must end with the user. `own_reply`, the entry this step's generation
+/// writes, is not shown while none of its calls has a logged result: on a
+/// redelivered step it holds the dead attempt's stale reply, which this
+/// generation overwrites. A reply whose calls already ran stays, so the model
+/// sees what executed instead of re-issuing it.
+pub fn build(
+    entries: &[LoadedEntry],
+    window_start: usize,
+    prev_watermark: Option<&str>,
+    own_reply: Option<&str>,
+) -> Window {
     let mut orders: Vec<MessageOrder> = Vec::new();
     let mut list: Vec<(String, AgentMessage)> = Vec::new();
     // Log position of every model-facing entry, for the window cut.
@@ -185,9 +202,11 @@ pub fn build(entries: &[LoadedEntry], window_start: usize, prev_watermark: Optio
     // Real user messages logged after the previous step's watermark.
     let mut arrived: HashSet<&str> = HashSet::new();
     let mut past_watermark = false;
+    let own_reply = own_reply.filter(|own| !dispatched(entries, own));
 
     for (index, entry) in entries.iter().enumerate() {
         let model_message = match (&entry.message, &entry.custom) {
+            _ if own_reply == Some(entry.entry_id.as_str()) => None,
             (Some(AgentMessage::Custom(_)), _) => None,
             (Some(message), _) => {
                 let mut message = message.clone();
@@ -253,24 +272,45 @@ pub fn build(entries: &[LoadedEntry], window_start: usize, prev_watermark: Optio
     }
 }
 
-/// Move `order.moved` right after `order.after` (both must be in `list`).
+/// Whether any call in entry `id`'s assistant message has a logged result.
+fn dispatched(entries: &[LoadedEntry], id: &str) -> bool {
+    let calls: HashSet<&str> = entries
+        .iter()
+        .filter(|e| e.entry_id == id)
+        .filter_map(|e| match &e.message {
+            Some(AgentMessage::Assistant(a)) => Some(a),
+            _ => None,
+        })
+        .flat_map(|a| &a.content)
+        .filter_map(|b| match b {
+            ContentBlock::FunctionCall { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    !calls.is_empty()
+        && entries.iter().any(|e| {
+            matches!(&e.message, Some(AgentMessage::FunctionResult(r)) if calls.contains(r.function_call_id.as_str()))
+        })
+}
+
+/// Move `order.moved` right after `order.after`. A no-op when the anchor is
+/// not in `list`; moved ids not in `list`, and the anchor itself (the log is
+/// caller-writable), are skipped.
 fn apply_order(list: &mut Vec<(String, AgentMessage)>, order: &MessageOrder) {
     if !list.iter().any(|(id, _)| *id == order.after) {
         return;
     }
     let mut moved: Vec<(String, AgentMessage)> = Vec::new();
-    for id in &order.moved {
+    for id in order.moved.iter().filter(|id| **id != order.after) {
         if let Some(pos) = list.iter().position(|(lid, _)| lid == id) {
             moved.push(list.remove(pos));
         }
     }
-    let anchor = list
+    let at = list
         .iter()
         .position(|(id, _)| *id == order.after)
-        .expect("anchor checked above");
-    for (offset, item) in moved.into_iter().enumerate() {
-        list.insert(anchor + 1 + offset, item);
-    }
+        .map_or(list.len(), |anchor| anchor + 1);
+    list.splice(at..at, moved);
 }
 
 #[cfg(test)]
@@ -320,7 +360,7 @@ mod tests {
             custom("n1", MODEL_NOTICE, notice_data("registry-changed", &notice)),
             msg("a1", reply("done")),
         ];
-        let w = build(&entries, 0, None);
+        let w = build(&entries, 0, None, None);
         assert_eq!(ids(&w), ["u1", "n1", "a1"]);
         match &w.candidate[1].1 {
             AgentMessage::User(u) => assert_eq!(
@@ -331,8 +371,14 @@ mod tests {
         }
         assert!(w.new_order.is_none());
         assert_eq!(
-            latest_notice_text(&entries, "registry-changed"),
+            latest_notice_text(&entries, &w, "registry-changed"),
             Some("[harness] registry changed")
+        );
+        // Summarized away (the window opens after it): no longer told.
+        let compacted = build(&entries, 2, None, None);
+        assert_eq!(
+            latest_notice_text(&entries, &compacted, "registry-changed"),
+            None
         );
     }
 
@@ -345,7 +391,7 @@ mod tests {
             msg("u2", user("steer")),
             msg("a1", reply("ok")),
         ];
-        let first = build(&entries, 0, Some("u1"));
+        let first = build(&entries, 0, Some("u1"), None);
         assert_eq!(ids(&first), ["u1", "a1", "u2"]);
         let order = first.new_order.clone().expect("a move is decided");
         assert_eq!(
@@ -360,7 +406,7 @@ mod tests {
         let mut later = entries.clone();
         later.push(custom("o1", MESSAGE_ORDER, order.to_data()));
         later.push(msg("a2", reply("answer")));
-        let next = build(&later, 0, Some("a1"));
+        let next = build(&later, 0, Some("a1"), None);
         assert_eq!(ids(&next), ["u1", "a1", "u2", "a2"]);
         assert!(next.new_order.is_none());
     }
@@ -375,11 +421,16 @@ mod tests {
             msg("a1", reply("ok")),
         ];
         // The notice was logged after the watermark but was sent before a1.
-        let w = build(&entries, 0, Some("u1"));
+        let w = build(&entries, 0, Some("u1"), None);
         assert_eq!(ids(&w), ["u1", "n1", "a1"]);
         assert!(w.new_order.is_none());
         // Only the opening message after the watermark: nothing to move.
-        let only = build(&[msg("u1", user("go")), msg("a1", reply("ok"))], 0, None);
+        let only = build(
+            &[msg("u1", user("go")), msg("a1", reply("ok"))],
+            0,
+            None,
+            None,
+        );
         assert!(only.new_order.is_none());
     }
 
@@ -399,10 +450,13 @@ mod tests {
         // Model order is u1 a1 u2 a2. A tail from a1 keeps u2 (logged
         // before a1); a tail from u2 drops a1 (summarized before it); a
         // window opening after o1 (a null boundary) starts at a2.
-        assert_eq!(ids(&build(&entries, 2, Some("a1"))), ["a1", "u2", "a2"]);
-        assert_eq!(ids(&build(&entries, 1, Some("a1"))), ["u2", "a2"]);
-        assert_eq!(ids(&build(&entries, 4, Some("a1"))), ["a2"]);
-        assert!(build(&entries, 5, Some("a1")).candidate.is_empty());
+        assert_eq!(
+            ids(&build(&entries, 2, Some("a1"), None)),
+            ["a1", "u2", "a2"]
+        );
+        assert_eq!(ids(&build(&entries, 1, Some("a1"), None)), ["u2", "a2"]);
+        assert_eq!(ids(&build(&entries, 4, Some("a1"), None)), ["a2"]);
+        assert!(build(&entries, 5, Some("a1"), None).candidate.is_empty());
     }
 
     fn call(tag: &str) -> AgentMessage {
@@ -435,7 +489,10 @@ mod tests {
             msg("n", user("notif")),
             msg("a2", reply("a2")),
         ];
-        assert_eq!(ids(&build(&entries, 0, Some("a1"))), ["u", "a1", "a2", "n"]);
+        assert_eq!(
+            ids(&build(&entries, 0, Some("a1"), None)),
+            ["u", "a1", "a2", "n"]
+        );
     }
 
     #[test]
@@ -446,7 +503,7 @@ mod tests {
             msg("n", user("notif")),
             msg("a1", call("a1")),
         ];
-        let w = build(&pending, 0, Some("u"));
+        let w = build(&pending, 0, Some("u"), None);
         assert_eq!(ids(&w), ["u", "n", "a1"]);
         assert!(w.new_order.is_none());
         // A call answered after the arrival: it moves after the result.
@@ -456,7 +513,10 @@ mod tests {
             msg("a1", call("a1")),
             msg("r1", result("r1")),
         ];
-        assert_eq!(ids(&build(&answered, 0, Some("u"))), ["u", "a1", "r1", "n"]);
+        assert_eq!(
+            ids(&build(&answered, 0, Some("u"), None)),
+            ["u", "a1", "r1", "n"]
+        );
         // Only the user message moves; the call/result pairing stays intact.
         let paired = vec![
             msg("u", user("task")),
@@ -466,7 +526,7 @@ mod tests {
             msg("a2", reply("a2")),
         ];
         assert_eq!(
-            ids(&build(&paired, 0, Some("a1"))),
+            ids(&build(&paired, 0, Some("a1"), None)),
             ["u", "a1", "r1", "a2", "n"]
         );
         // Already ending on the user: nothing to do.
@@ -475,22 +535,63 @@ mod tests {
             msg("a1", reply("a1")),
             msg("s", user("steer")),
         ];
-        assert!(build(&steer, 0, Some("u")).new_order.is_none());
+        assert!(build(&steer, 0, Some("u"), None).new_order.is_none());
     }
 
-    /// A redelivered step whose first attempt left an empty reply entry: the
-    /// notification still moves past it.
+    /// A redelivered step whose first attempt left its reply entry (a2)
+    /// empty: this generation overwrites a2, so the window never shows it and
+    /// the notification logged before it trails without a move. Once a2
+    /// holds a call and its result, the next window extends that one.
     #[test]
-    fn a_stale_empty_reply_from_a_dead_attempt_still_moves_the_notification() {
+    fn a_redelivered_step_never_shows_its_own_stale_reply() {
         let mut empty = empty_assistant("p", "m");
         empty.content.clear();
-        let entries = vec![
+        let mut entries = vec![
             msg("u", user("task")),
             msg("a1", reply("a1")),
             msg("n", user("notif")),
             msg("a2", AgentMessage::Assistant(empty)),
         ];
-        assert_eq!(ids(&build(&entries, 0, Some("a1"))), ["u", "a1", "a2", "n"]);
+        // Redelivered with the old watermark: n counts as arrived.
+        let redelivered = build(&entries, 0, Some("u"), Some("a2"));
+        assert_eq!(ids(&redelivered), ["u", "a1", "n"]);
+        assert!(redelivered.new_order.is_none());
+
+        entries[3] = msg("a2", call("a2"));
+        entries.push(msg("r2", result("r2")));
+        let next = build(&entries, 0, Some("a2"), Some("a3"));
+        assert_eq!(ids(&next), ["u", "a1", "n", "a2", "r2"]);
+        assert!(next.new_order.is_none());
+        assert_eq!(
+            next.candidate[..redelivered.candidate.len()],
+            redelivered.candidate[..]
+        );
+
+        // A dead attempt whose calls already ran keeps its reply (hiding it
+        // would orphan r2 and re-issue the side effect); n, logged while it
+        // generated, moves after it and its result.
+        assert_eq!(
+            ids(&build(&entries, 0, Some("u"), Some("a2"))),
+            ["u", "a1", "a2", "r2", "n"]
+        );
+    }
+
+    /// The log is caller-writable: an order that lists its own anchor keeps
+    /// the anchor in place and still moves the rest.
+    #[test]
+    fn an_order_listing_its_own_anchor_moves_only_the_rest() {
+        let entries = vec![
+            msg("u1", user("go")),
+            msg("u2", user("steer")),
+            msg("a1", reply("ok")),
+            custom(
+                "o1",
+                MESSAGE_ORDER,
+                json!({"after": "a1", "moved": ["a1", "u2"]}),
+            ),
+            custom("o2", MESSAGE_ORDER, json!({"after": "u1", "moved": ["u1"]})),
+        ];
+        assert_eq!(ids(&build(&entries, 0, None, None)), ["u1", "a1", "u2"]);
     }
 
     #[test]
@@ -514,7 +615,7 @@ mod tests {
             msg("u1", user("go")),
             custom("n1", MODEL_NOTICE, notice_data("hook", &sent)),
         ];
-        let replay = serde_json::to_value(&build(&entries, 0, None).candidate[1].1).unwrap();
+        let replay = serde_json::to_value(&build(&entries, 0, None, None).candidate[1].1).unwrap();
         assert_eq!(replay, sent);
         // No text to show: never sent, rather than sent as an empty block.
         assert!(replayed(&json!({"role": "assistant", "content": []})).is_none());

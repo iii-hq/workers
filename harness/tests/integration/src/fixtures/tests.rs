@@ -55,7 +55,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
             .iter()
             .filter(|fixture| fixture.driver == crate::scenarios::ScenarioDriver::Direct)
             .count(),
-        31
+        32
     );
 }
 

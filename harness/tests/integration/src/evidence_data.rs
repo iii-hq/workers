@@ -222,15 +222,19 @@ impl RunEvidence {
     /// `(request_id, what)` wherever a router request's bound prefix is not an
     /// extension of the same session's previous request: `system_prompt`,
     /// `system_sections`, `tools`, and every message that request carried
-    /// (minus the wire-invisible `timestamp` and `details`). Models that bind
-    /// thinking to its prefix (Opus 5.5, Fable 5.1) reject or drop on any such
-    /// edit.
+    /// (minus the wire-invisible `timestamp`, and `details` unless a denied
+    /// result's, which providers serialize into the result text). Models that
+    /// bind thinking to its prefix (Opus 5.5, Fable 5.1) reject or drop on any
+    /// such edit.
     pub fn append_only_violations(&self) -> Vec<(String, String)> {
         let bound = |message: &Value| {
             let mut message = message.clone();
             if let Some(fields) = message.as_object_mut() {
                 fields.remove("timestamp");
-                fields.remove("details");
+                let status = fields.get("details").and_then(|d| d.get("status"));
+                if status.and_then(Value::as_str) != Some("denied") {
+                    fields.remove("details");
+                }
             }
             message
         };
@@ -461,7 +465,14 @@ mod tests {
             ])),
             request("t_a:2", "s", "p2", json!([
                 { "role": "user" },
-                { "role": "function_result", "is_error": true }
+                { "role": "function_result", "is_error": true },
+                { "role": "function_result", "details": { "status": "denied", "reason": "a" } }
+            ])),
+            // A denied result's details reach the wire in its text.
+            request("t_a:3", "s", "p2", json!([
+                { "role": "user" },
+                { "role": "function_result", "is_error": true },
+                { "role": "function_result", "details": { "status": "denied", "reason": "b" } }
             ])),
         ] });
         assert_eq!(
@@ -469,6 +480,7 @@ mod tests {
             [
                 ("t_a:2".to_string(), "system_prompt changed".to_string()),
                 ("t_a:2".to_string(), "messages[1] changed".to_string()),
+                ("t_a:3".to_string(), "messages[2] changed".to_string()),
             ]
         );
     }

@@ -16,6 +16,7 @@ use super::dsl::{
     ControlledFunction, Generation, Message, Model, Request, Response, Scenario, Send,
 };
 use super::ScenarioDriver;
+use crate::evidence_data::message_text;
 use crate::fixtures::ScenarioFixture;
 
 const ID: &str = "INT-036";
@@ -135,6 +136,31 @@ pub(super) fn scenario() -> ScenarioFixture {
         run.expect_assistant_texts(["recorded both", "recorded the third"])?;
         run.expect_function_calls("record", 3)?;
         run.expect_no_duplicate_messages()?;
+        // The moved working directory reaches the model: turn 2's opening
+        // request ends with the runtime-context notice.
+        let opener = run.router_evidence["calls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|call| call.get("request"))
+            .filter(|request| request["session_id"] == run.session_id.as_str())
+            .filter(|request| {
+                request["request_id"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with(":0"))
+            })
+            .nth(1)
+            .ok_or_else(|| anyhow::anyhow!("no turn-2 step-0 router request"))?;
+        let last = opener["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .map(message_text)
+            .unwrap_or_default();
+        anyhow::ensure!(
+            last.starts_with("NOTE: the session context changed")
+                && last.contains("Your working directory is /tmp/int-036"),
+            "turn 2 step 0 does not end with the runtime-context notice: {last:?}"
+        );
         run.expect_append_only_requests()
     })
     .build()
