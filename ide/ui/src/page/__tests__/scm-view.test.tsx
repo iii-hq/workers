@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChangeEntries } from '../ChangeEntries'
 import type { GitComparisonEntry } from '../git'
-import { buildChangeTree, readScmViewMode, writeScmViewMode } from '../scm-view'
+import { buildChangeTree, opensFileDirectly, readScmViewMode, writeScmViewMode } from '../scm-view'
 
 function entry(path: string, status: GitComparisonEntry['status'] = 'modified'): GitComparisonEntry {
   return { path, status, staged: false, x: ' ', y: 'M', before: { kind: 'index', path }, after: { kind: 'worktree', path } }
@@ -60,6 +60,27 @@ describe('SCM view', () => {
     expect(html).toContain('title="src/nested"')
     expect(html).toContain('data-depth="2">src/nested/a.ts')
     expect(html).toContain('data-depth="0">README.md')
+  })
+
+  it('gives each folder row actions over every file beneath it, subfolders included', () => {
+    const html = renderToStaticMarkup(<ChangeEntries
+      entries={[entry('a/x.txt'), entry('a/b/y.txt'), entry('z.txt')]}
+      mode="tree"
+      renderEntry={(file) => <span key={file.path}>{file.path}</span>}
+      renderDirectoryActions={(files, directory) => <button type="button" data-folder={directory.path} data-files={files.map((file) => file.path).join(',')}>stage</button>}
+    />)
+    expect(html).toContain('data-folder="a" data-files="a/b/y.txt,a/x.txt"')
+    expect(html).toContain('data-folder="a/b" data-files="a/b/y.txt"')
+    expect(html.match(/class="shui-scm-row shui-scm-folder-row"/g)).toHaveLength(2)
+    expect(html.match(/aria-expanded="true"/g)).toHaveLength(2)
+  })
+
+  it('opens existing raster images directly and keeps diffs for text, SVG and deleted images', () => {
+    expect(opensFileDirectly(entry('img/pic.png'))).toBe(true)
+    expect(opensFileDirectly(entry('photo.JPEG', 'untracked'))).toBe(true)
+    expect(opensFileDirectly(entry('img/pic.png', 'deleted'))).toBe(false)
+    expect(opensFileDirectly(entry('logo.svg'))).toBe(false)
+    expect(opensFileDirectly(entry('z.txt'))).toBe(false)
   })
 
   it('defaults to list and persists both view choices', () => {
