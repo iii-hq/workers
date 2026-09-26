@@ -243,7 +243,7 @@ async fn bound_prefix_edits_by_site() {
             vec![
                 user("look".into()),
                 call("c1"),
-                result("c1", image),
+                result("c1", image.clone()),
                 reply(),
                 user("next".into()),
             ],
@@ -251,8 +251,42 @@ async fn bound_prefix_edits_by_site() {
             AssembleOptions::default,
             vec![(2, "messages[2]", "media aging")],
         ),
-        // not an edit: the Step 0 cap is deterministic, so the result is
-        // capped identically from the first request that carries it.
+        // residual: media aging (follow-up) — a user image becomes a marker
+        // once the user speaks again after a reply.
+        (
+            "user image aging",
+            vec![
+                json!({ "role": "user", "content": image, "timestamp": 0 }),
+                reply(),
+                user("next".into()),
+            ],
+            opus(1_000_000, 128_000),
+            AssembleOptions::default,
+            vec![(1, "messages[0]", "media aging")],
+        ),
+        // residual: cap × media aging (the media-aging follow-up) — the cap
+        // counts the image (~4k tokens) and drops it; once the image ages to
+        // a marker the result fits and is sent uncapped, even with
+        // allow_prune: false.
+        (
+            "cap × media aging",
+            vec![
+                user("read".into()),
+                call("c1"),
+                result(
+                    "c1",
+                    json!([{ "type": "text", "text": "x".repeat(68_000) }, image[1]]),
+                ),
+                reply(),
+                user("next".into()),
+            ],
+            opus(1_000_000, 128_000),
+            no_prune,
+            vec![(2, "messages[2]", "uncap")],
+        ),
+        // not an edit for text-only results: the Step 0 cap is
+        // deterministic, so such a result is capped identically from the
+        // first request that carries it.
         (
             "step 0 cap",
             vec![
@@ -307,11 +341,13 @@ async fn bound_prefix_edits_by_site() {
             vec![(3, "messages[2]", "emergency")],
         ),
         // residual: keep-tail compaction (follow-up) — the summary is
-        // rendered into the system prompt.
+        // rendered into the system prompt. The next request round-trips it
+        // (previous_summary + verbatim tail) and extends the new prefix.
         (
             "keep-tail compaction",
             (0..6)
                 .flat_map(|_| [user("x".repeat(6_000)), reply()])
+                .chain([user("next".into())])
                 .collect(),
             opus(10_000, 1_000),
             AssembleOptions::default,
@@ -348,7 +384,8 @@ async fn prefix_edits_in_explicit_corpus() {
     let model = || opus(1_000_000, 128_000);
     println!("file\trequests\tdefault edits by site\tallow_prune=false edits by site");
     println!("(site compaction = system prompt edit; every other site = first edited messages[i])");
-    for (name, history) in read_directory(Path::new(&directory)).expect("corpus records parse") {
+    for session in read_directory(Path::new(&directory)).expect("corpus directory lists") {
+        let (name, history) = session.expect("corpus records parse");
         let default = prefix_edits(&history, model(), AssembleOptions::default)
             .await
             .expect("assemble");
