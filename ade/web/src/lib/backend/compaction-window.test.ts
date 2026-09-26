@@ -152,6 +152,50 @@ describe('compactionWindow', () => {
     ).toEqual(['u1', 'a1', 'u2', 'a2'])
   })
 
+  it('replays model_notice entries as the user message the model was shown', () => {
+    // Persisted by the harness (window.rs `notice_data`) and replayed to the
+    // model on every later step, so the summariser must see them too.
+    const stored = {
+      role: 'user',
+      content: [{ type: 'text', text: '<memory update="rules">R</memory>' }],
+      timestamp: 5,
+    }
+    const notices: TranscriptItem[] = [
+      user('u1', 'first'),
+      {
+        entry_id: 'n1',
+        custom: {
+          custom_type: 'model_notice',
+          data: { kind: 'hook', text: 'ignored', message: stored },
+        },
+      },
+      {
+        entry_id: 'n2',
+        custom: {
+          custom_type: 'model_notice',
+          data: { kind: 'runtime-context', text: 'fs_scope changed' },
+        },
+      },
+      {
+        entry_id: 'n3',
+        custom: { custom_type: 'model_notice', data: { text: '' } },
+      },
+      {
+        entry_id: 'o1',
+        custom: { custom_type: 'message_order', data: {} },
+      },
+      assistant('a1', 'r1'),
+    ]
+    const window = compactionWindow(notices, null)
+    expect(window.map((e) => e.entry_id)).toEqual(['u1', 'n1', 'n2', 'a1'])
+    expect(window[1].message).toEqual(stored)
+    expect(window[2].message).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'fs_scope changed' }],
+      timestamp: 0,
+    })
+  })
+
   it('keeps entry ids aligned with message positions for tail_start_index mapping', () => {
     const window = compactionWindow(items, null)
     // context::compact indexes the `messages` array it receives; the window

@@ -5,11 +5,16 @@
  * LATEST `compaction` custom entry anchors the summariser (`summary` becomes
  * `previous_summary`, so it is updated in place instead of re-summarised from
  * scratch) and opens the candidate window at its `tail_start_entry_id`.
- * Compaction entries and `role: 'custom'` messages are never model-bound, so
- * they are skipped. Pure functions, no I/O.
+ * A `model_notice` custom entry is text the model was shown, so it rides as
+ * the user message the harness replays (harness/src/window.rs); other custom
+ * entries and `role: 'custom'` messages are never model-bound and are
+ * skipped. Pure functions, no I/O.
  */
 
-import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
+import {
+  COMPACTION_CUSTOM_TYPE,
+  MODEL_NOTICE_CUSTOM_TYPE,
+} from '@/lib/sessions/entry-mapper'
 import type { AgentMessage, TranscriptItem } from '@/lib/sessions/types'
 
 export interface CompactionAnchor {
@@ -84,9 +89,33 @@ export function compactionWindow(
   }
   const out: WindowEntry[] = []
   for (const item of items.slice(start)) {
-    const message = item.message
+    const message = item.message ?? noticeMessage(item.custom)
     if (!message || message.role === 'custom') continue
     out.push({ entry_id: item.entry_id, message })
   }
   return out
+}
+
+/**
+ * The user message a `model_notice` entry replays, as the harness's
+ * `notice_message` builds it: the stored message, else one text block of its
+ * text.
+ */
+function noticeMessage(custom: TranscriptItem['custom']): AgentMessage | null {
+  if (custom?.custom_type !== MODEL_NOTICE_CUSTOM_TYPE) return null
+  const data = (custom.data ?? {}) as { message?: unknown; text?: unknown }
+  const stored = data.message as Partial<AgentMessage> | undefined
+  if (stored?.role === 'user' && Array.isArray(stored.content)) {
+    return {
+      role: 'user',
+      content: stored.content,
+      timestamp: stored.timestamp ?? 0,
+    }
+  }
+  if (typeof data.text !== 'string' || !data.text) return null
+  return {
+    role: 'user',
+    content: [{ type: 'text', text: data.text }],
+    timestamp: 0,
+  }
 }
