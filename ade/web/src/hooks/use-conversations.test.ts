@@ -898,6 +898,45 @@ describe('mergeHydratedTranscript', () => {
     expect(merged.map((m) => m.id)).toEqual(['e1:0', 'local-1:0'])
   })
 
+  // Regression: rows the page lacks (a provisional failure card whose durable
+  // record never landed, a local `/compact` row) were appended on every
+  // re-hydration, so they jumped below all newer messages again and again.
+  it('keeps live-only rows at their window position, not at the end', () => {
+    const live = toMessages([
+      assistantItem('e1', 'a'),
+      assistantItem('e_t_x_error', 'failed'),
+      assistantItem('local-compact', '/compact'),
+      assistantItem('e2', 'b'),
+    ])
+    const merged = mergeHydratedTranscript(
+      toMessages([
+        assistantItem('e1', 'a'),
+        assistantItem('e2', 'b'),
+        assistantItem('e3', 'c'),
+      ]),
+      live,
+      [],
+      opts,
+    )
+    expect(merged.map((m) => m.id)).toEqual([
+      'e1:0',
+      'e_t_x_error:0',
+      'local-compact:0',
+      'e2:0',
+      'e3:0',
+    ])
+  })
+
+  it('places a live-only row before its successor when no earlier row is on the page', () => {
+    const merged = mergeHydratedTranscript(
+      toMessages([assistantItem('e2', 'b'), assistantItem('e3', 'c')]),
+      toMessages([assistantItem('local-1', 'note'), assistantItem('e2', 'b')]),
+      [],
+      opts,
+    )
+    expect(merged.map((m) => m.id)).toEqual(['local-1:0', 'e2:0', 'e3:0'])
+  })
+
   // Regression: a tail page elides the inside of a run and drops thinking
   // blocks, so a call the window holds as `e_a:2` comes back as the
   // placeholder `e_a:1`. Matching by segment id re-appended the live card

@@ -132,5 +132,18 @@ pub async fn handle(deps: &Deps, req: StopRequest) -> Result<StopResponse, Harne
         .set_status(&req.session_id, "working", Some("stopping"))
         .await;
 
+    // The abort bit is only observed by the next step. When no step for this
+    // turn executes here, its step may never have been enqueued (an orphaned
+    // turn): re-enqueue it so the stop finalizes the turn. A duplicate of a
+    // step that is merely queued is acked as stale.
+    if let Err(e) = crate::inflight::redrive_if_idle(deps, &record).await {
+        tracing::warn!(
+            session_id = %req.session_id,
+            turn_id = %record.turn_id,
+            error = %e,
+            "could not enqueue a step to observe the stop; the orphan sweep will retry"
+        );
+    }
+
     Ok(StopResponse { stopping: true })
 }
