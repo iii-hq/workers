@@ -256,77 +256,75 @@ async fn on_config_change(
         }
     };
 
-    // Capture the address BEFORE any swap so we can tell a same-address change
-    // (rebuild layers live) from a host/port change (rebind the listener).
-    let old_addr = {
-        let current = cell.read().await;
-        format!("{}:{}", current.host, current.port)
-    };
-    let new_addr = format!("{}:{}", cfg.host, cfg.port);
-
-    if old_addr == new_addr {
-        // Same address: swap the snapshot, then rebuild the
-        // CORS/timeout/concurrency layers into the live router. Listener stays.
-        if apply_config(cell, cfg).await {
-            let snapshot = cell.read().await.clone();
-            server::rebuild_layers(&hot_router.inner, &snapshot).await;
-            tracing::info!("http configuration reloaded (same address)");
-        }
-        return;
-    }
-
-    // Address change: rebind the listener (bind-new-before-stop-old).
-    match rebind(cell, hot_router, control, cfg).await {
-        Ok(()) => tracing::info!(
-            old = %old_addr,
-            new = %new_addr,
-            "http server rebound after configuration change; old address shutting down"
-        ),
-        Err(e) => tracing::error!(
-            error = %e,
-            old = %old_addr,
-            new = %new_addr,
-            "http rebind failed; keeping previous config and server"
-        ),
+    if let Err(e) = reload_listeners(cell, hot_router, control, cfg).await {
+        tracing::error!(error = %e, "http reload failed; keeping previous config and listeners");
     }
 }
 
-/// Rebind the listener to `cfg`'s new host/port. Resolves every fallible
-/// prerequisite BEFORE mutating live state: the config is validated and the NEW
-/// address is bound first, so a rejected config or a failed bind leaves the old
-/// config AND old server untouched. Once the new bind succeeds: swap the config
-/// cell, rebuild the router layers on the SHARED cell (the new server serves via
-/// it), spawn the new server, then gracefully shut the old one down (with a hard
-/// abort as a safety net). Mirrors the engine's `apply_config` address branch.
-async fn rebind(
+/// Transactionally prepare both binds before changing live configuration.
+/// Caller holds ApplyLock (also acquired by shutdown). A stopped normal
+/// listener is terminal: late configuration events must never resurrect it.
+async fn reload_listeners(
     cell: &ConfigCell,
     hot_router: &HotRouter,
     control: &ServerControlCell,
     cfg: RestApiConfig,
 ) -> anyhow::Result<()> {
-    if let Err(reason) = cfg.validate() {
-        anyhow::bail!("rejected new config: {reason}");
+    cfg.validate().map_err(anyhow::Error::msg)?;
+    if control.lock().await.is_none() {
+        return Ok(());
     }
+    let previous = cell.read().await.clone();
+    let normal_changed = previous.host != cfg.host || previous.port != cfg.port;
+    let webhook_changed = previous.webhook_listener != cfg.webhook_listener;
+    let normal_listener = if normal_changed {
+        Some(TcpListener::bind((cfg.host.as_str(), cfg.port)).await?)
+    } else {
+        None
+    };
+    let webhook_listener = if webhook_changed {
+        match &cfg.webhook_listener {
+            Some(binding) => Some(TcpListener::bind((binding.host.as_str(), binding.port)).await?),
+            None => None,
+        }
+    } else {
+        None
+    };
 
-    let new_addr = format!("{}:{}", cfg.host, cfg.port);
-    let listener = TcpListener::bind(&new_addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to bind {new_addr}: {e}"))?;
-
-    // New bind succeeded — now safe to mutate live state. Swap the config and
-    // rebuild the router layers on the shared cell BEFORE spawning, so the new
-    // server serves the current routes/layers from the first request.
+    // All fallible work succeeded. Both listeners use this same router cell,
+    // registry and configuration, but immutable listener-specific admission.
+    server::rebuild_layers(&hot_router.inner, &cfg).await;
     *cell.write().await = Arc::new(cfg);
-    let snapshot = cell.read().await.clone();
-    server::rebuild_layers(&hot_router.inner, &snapshot).await;
-
-    let new_control = server::spawn_server(listener, hot_router.clone());
-
-    // Install the new server as current; gracefully drain the old one.
-    let old = control.lock().await.replace(new_control);
-    if let Some(old) = old {
-        server::stop_old_server(old);
-    }
+    let old_normal = if let Some(listener) = normal_listener {
+        control
+            .lock()
+            .await
+            .replace(server::spawn_server(listener, hot_router.clone()))
+    } else {
+        None
+    };
+    let old_webhook = if webhook_changed {
+        if let Some(webhook) = &hot_router.webhook {
+            let next = webhook_listener
+                .map(|listener| server::spawn_server(listener, webhook.hot_router.clone()));
+            std::mem::replace(&mut *webhook.control.lock().await, next)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let stop = |old| async move {
+        if let Some(old) = old {
+            server::stop_server(old).await;
+        }
+    };
+    tokio::join!(stop(old_normal), stop(old_webhook));
+    tracing::info!(
+        normal_changed,
+        webhook_changed,
+        "http configuration and listeners reloaded"
+    );
     Ok(())
 }
 

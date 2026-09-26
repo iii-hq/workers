@@ -1953,6 +1953,10 @@ function ObjectMapField({
 
 export function FieldRenderer(props: FieldProps) {
   const { field } = props
+  if (field.visibleWhen) {
+    const controlling = atPath(props.root, [...(props.basePath ?? []), ...field.visibleWhen.path.split('.')])
+    if (typeof controlling !== 'string' || !field.visibleWhen.in.includes(controlling)) return null
+  }
   if (
     field.kind === 'text' ||
     field.kind === 'password' ||

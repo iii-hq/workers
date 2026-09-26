@@ -1,5 +1,9 @@
-import { number, password, select, text, toggle } from '../spec-helpers'
+import { number, object, password, select, stringList, text, toggle } from '../spec-helpers'
 import { choice, type WorkerConfigurationSpec } from '../types'
+
+const actionable = { path: 'profile', in: ['agent_actionable'] } as const
+const reviewAssistant = { path: 'profile', in: ['review_assistant'] } as const
+const filtered = { path: 'profile', in: ['agent_actionable', 'review_assistant'] } as const
 
 const guidanceDescription = 'Add this worker’s usage guidance to agent system prompts. Changes apply live.'
 
@@ -288,7 +292,7 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
   {
     id: 'github',
     title: 'GitHub',
-    description: 'GitHub CLI authentication and execution limits.',
+    description: 'GitHub CLI authentication, execution limits, PR webhooks and agent notifications.',
     sections: [
       {
         title: 'CLI',
@@ -305,8 +309,125 @@ export const scalarWorkerSpecs: readonly WorkerConfigurationSpec[] = [
           number('max_output_bytes', 'Maximum output bytes', undefined, { min: 1 }),
         ],
       },
+      {
+        title: 'PR webhooks',
+        fields: [
+          object('webhooks', 'Webhook monitor', [
+            toggle('enabled', 'Enabled', 'Durable PR webhook monitoring. Activation requires a worker restart.'),
+            text('storage_path', 'Storage path', 'Private, persistent SQLite file; not a network filesystem.'),
+            text('tunnel_id', 'Tunnel id', 'Public ingress tunnel used for GitHub deliveries.'),
+            text('queue', 'Queue', 'Durable queue that processes deliveries and notifications.'),
+            number('max_body_bytes', 'Maximum body bytes', undefined, { min: 1 }),
+            number('max_pending', 'Maximum pending jobs', undefined, { min: 1 }),
+            number(
+              'max_watch_days',
+              'Maximum watch duration (days)',
+              'At most 30: each watch holds a quick-tunnel lease, and leases last at most 30 days. Applies to new watches.',
+              { min: 1, max: 30 },
+            ),
+            number(
+              'orphan_grace_minutes',
+              'Orphan grace (minutes)',
+              'Stop a watch only after it has had no listener for this long. One-shot agent wakes re-arm at the end of a turn, so keep it longer than a turn. 0 stops immediately.',
+              { min: 0, max: 1440 },
+            ),
+          ]),
+        ],
+      },
+      {
+        title: 'Agent notifications',
+        fields: [
+          object(
+            'webhooks.notifications',
+            'Delivery policy',
+            [
+              select(
+                'profile',
+                'Profile',
+                [
+                  choice('agent_actionable', 'Agent actionable (failures, new comments and reviews)'),
+                  choice('review_assistant', 'Review assistant (compact reviews and batched CI)'),
+                  choice('all', 'All events (full stream, no filtering)'),
+                ],
+                'Each profile shows only the settings it uses. All events delivers every event unfiltered and has no settings.',
+              ),
+              toggle('ignore_self', 'Ignore own activity', 'Drop comments/reviews by the authenticated gh login (discovered automatically).', {
+                visibleWhen: actionable,
+              }),
+              number('quiet_ms', 'Quiet window (ms)', 'Send after this much silence; each new event restarts it.', {
+                min: 0,
+                visibleWhen: actionable,
+              }),
+              number('max_wait_ms', 'Maximum wait (ms)', 'Never hold a digest longer than this after its first event.', {
+                min: 0,
+                max: 900000,
+                visibleWhen: actionable,
+              }),
+              number('max_items', 'Maximum items per digest', 'Extra items are counted, not sent.', {
+                min: 1,
+                max: 100,
+                visibleWhen: actionable,
+              }),
+              number('batch_window_ms', 'Batch window (ms)', 'Coalesce CI failures before notifying.', {
+                min: 0,
+                max: 60000,
+                visibleWhen: reviewAssistant,
+              }),
+              toggle('notify_ci_failures', 'Notify CI failures', undefined, { visibleWhen: reviewAssistant }),
+              toggle('notify_ci_success', 'Notify CI success', 'Only for the success checks below.', {
+                visibleWhen: reviewAssistant,
+              }),
+              stringList('success_checks', 'Success checks', 'check_run:<name>, workflow_run:<name> or status:<context>.', {
+                itemLabel: 'Selector',
+                visibleWhen: reviewAssistant,
+              }),
+              number('max_comment_chars', 'Maximum comment characters', 'The full text stays in event-detail.', {
+                min: 1,
+                max: 8000,
+                visibleWhen: filtered,
+              }),
+              stringList('ignored_actors', 'Ignored actors', 'Logins whose comments and reviews never notify.', {
+                itemLabel: 'Login',
+                visibleWhen: filtered,
+              }),
+              toggle('suppress_bot_noise', 'Suppress bot noise', 'Drop known informational bot templates.', {
+                visibleWhen: filtered,
+              }),
+              toggle('notify_resolved_threads', 'Notify resolved threads', undefined, { visibleWhen: filtered }),
+            ],
+            'Default for every agent; a github::pr::event binding can override it. Changes apply live.',
+          ),
+        ],
+      },
     ],
-    expectedFields: ['gh_executable', 'token', 'default_timeout_ms', 'max_timeout_ms', 'max_output_bytes'],
+    expectedFields: [
+      'gh_executable',
+      'token',
+      'default_timeout_ms',
+      'max_timeout_ms',
+      'max_output_bytes',
+      'webhooks.enabled',
+      'webhooks.storage_path',
+      'webhooks.tunnel_id',
+      'webhooks.queue',
+      'webhooks.max_body_bytes',
+      'webhooks.max_pending',
+      'webhooks.max_watch_days',
+      'webhooks.orphan_grace_minutes',
+      'webhooks.notifications.profile',
+      'webhooks.notifications.ignore_self',
+      'webhooks.notifications.quiet_ms',
+      'webhooks.notifications.max_wait_ms',
+      'webhooks.notifications.max_items',
+      'webhooks.notifications.max_comment_chars',
+      'webhooks.notifications.ignored_actors[]',
+      'webhooks.notifications.suppress_bot_noise',
+      'webhooks.notifications.batch_window_ms',
+      'webhooks.notifications.success_checks[]',
+      'webhooks.notifications.notify_ci_failures',
+      'webhooks.notifications.notify_ci_success',
+      'webhooks.notifications.notify_resolved_threads',
+    ],
   },
   {
     id: 'memory',

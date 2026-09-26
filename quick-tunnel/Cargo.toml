@@ -1,0 +1,42 @@
+[workspace]
+
+[package]
+name = "quick-tunnel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Lease-managed cloudflared Quick Tunnels on the iii worker mesh"
+repository = "https://github.com/iii-hq/workers"
+
+[[bin]]
+name = "quick-tunnel"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.22.1-alpha.25"
+iii-config-client = { path = "../crates/config-client" }
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+fs2 = "0.4"
+futures-util = "0.3"
+schemars = { version = "0.8", features = ["chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio-tungstenite = "0.28"
+
+[lints.rust]
+unsafe_code = "forbid"

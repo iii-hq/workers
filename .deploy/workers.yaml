@@ -1943,6 +1943,25 @@ workers:
       binary: queue
       targets: *id001
     publish: true
+  quick-tunnel:
+    source:
+      path: quick-tunnel
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: quick-tunnel
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: child environment and process lifecycle currently support Unix only
+    publish: true
   rbac-proxy:
     source:
       path: rbac-proxy

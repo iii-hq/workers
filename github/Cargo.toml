@@ -20,7 +20,7 @@ path = "src/lib.rs"
 iii-sdk = "=0.22.1-alpha.25"
 iii-console-ui = { path = "../crates/console-ui" }
 # Must stay on the same schemars major as iii-sdk so the derived schemas line up.
-schemars = "0.8"
+schemars = { version = "0.8", features = ["chrono"] }
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
@@ -35,6 +35,13 @@ serde_json = "1"
 serde_yaml = "0.9"
 anyhow = "1"
 async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -44,3 +51,8 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+iii-http = { path = "../http" }
+futures = "0.3"
+tokio-tungstenite = "0.28"
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }

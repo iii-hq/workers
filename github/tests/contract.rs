@@ -78,9 +78,9 @@ fn gh_bin_prefers_the_configured_path() {
     assert_eq!(c.gh_bin(), "/opt/homebrew/bin/gh");
 }
 
-/// 30 curated functions + exec + api. The exact ids and order are pinned in
+/// 30 curated functions + exec + api + 4 webhook monitoring operations. The exact ids and order are pinned in
 /// tests/schemas.rs; this is the cheap headcount.
 #[test]
 fn catalog_covers_the_full_surface() {
-    assert_eq!(catalog().len(), 32);
+    assert_eq!(catalog().len(), 37);
 }

@@ -34,6 +34,11 @@ pub struct RestApiConfig {
     #[serde(default = "default_host")]
     pub host: String,
 
+    /// Optional restricted listener. Disabled when omitted/null; only routes
+    /// explicitly registered with `public_webhook: true` are reachable here.
+    #[serde(default)]
+    pub webhook_listener: Option<WebhookListenerConfig>,
+
     /// Per-request timeout in milliseconds; on expiry the server returns
     /// 504 Gateway Timeout. Defaults to 30000 (30s).
     #[serde(default = "default_timeout")]
@@ -57,6 +62,35 @@ pub struct RestApiConfig {
     /// `priority` order. Per-route middleware is set on the trigger instead.
     #[serde(default)]
     pub middleware: Vec<MiddlewareConfig>,
+}
+
+/// Binding for the opt-in-only HTTP listener. Never inherits the normal host.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookListenerConfig {
+    /// Loopback by default; expose only this listener through a reverse proxy.
+    #[serde(default = "default_webhook_host")]
+    pub host: String,
+    /// Restricted port, separate from the normal listener (3111).
+    #[serde(default = "default_webhook_port")]
+    pub port: u16,
+}
+
+fn default_webhook_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_webhook_port() -> u16 {
+    3112
+}
+
+impl Default for WebhookListenerConfig {
+    fn default() -> Self {
+        Self {
+            host: default_webhook_host(),
+            port: default_webhook_port(),
+        }
+    }
 }
 
 impl RestApiConfig {
@@ -115,6 +149,7 @@ impl Default for RestApiConfig {
         Self {
             port: default_port(),
             host: default_host(),
+            webhook_listener: None,
             default_timeout: default_timeout(),
             cors: None,
             concurrency_request_limit: default_concurrency_request_limit(),
@@ -164,6 +199,39 @@ mod tests {
     // =========================================================================
     // RestApiConfig defaults
     // =========================================================================
+
+    #[test]
+    fn webhook_defaults_and_schema_are_backwards_compatible() {
+        let old = RestApiConfig::from_json(&serde_json::json!({})).unwrap();
+        assert!(old.webhook_listener.is_none());
+        let enabled =
+            RestApiConfig::from_json(&serde_json::json!({"webhook_listener": {}})).unwrap();
+        assert_eq!(
+            enabled.webhook_listener,
+            Some(WebhookListenerConfig::default())
+        );
+        assert!(RestApiConfig::from_json(
+            &serde_json::json!({"webhook_listener": {"port": 65536}})
+        )
+        .is_err());
+        assert!(RestApiConfig::from_json(
+            &serde_json::json!({"webhook_listener": {"hots": "bad"}})
+        )
+        .is_err());
+        let schema = RestApiConfig::json_schema();
+        assert_eq!(
+            schema["properties"]["webhook_listener"]["default"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            schema["definitions"]["WebhookListenerConfig"]["properties"]["host"]["default"],
+            "127.0.0.1"
+        );
+        assert_eq!(
+            schema["definitions"]["WebhookListenerConfig"]["properties"]["port"]["default"],
+            3112
+        );
+    }
 
     #[test]
     fn rest_api_config_default_values() {
@@ -223,6 +291,7 @@ mod tests {
         let config = RestApiConfig {
             port: 9090,
             host: "localhost".to_string(),
+            webhook_listener: None,
             default_timeout: 10000,
             cors: Some(CorsConfig {
                 allowed_origins: vec!["*".to_string()],

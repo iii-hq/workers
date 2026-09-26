@@ -16,6 +16,8 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
+    /// Persistent PR webhook monitoring. Disabled by default; activation requires restart.
+    pub webhooks: crate::webhooks::WebhookConfig,
     /// Path to the `gh` binary. Empty = resolve `gh` on PATH.
     pub gh_executable: String,
     /// GitHub token set as GH_TOKEN on every child gh process. Seed as
@@ -35,6 +37,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            webhooks: Default::default(),
             gh_executable: String::new(),
             token: String::new(),
             default_timeout_ms: 30_000,
@@ -85,7 +88,17 @@ impl Config {
     /// Parse a value fetched from the configuration worker (already env-expanded
     /// by the worker; this does not re-expand).
     pub fn from_json(value: &Value) -> anyhow::Result<Config> {
-        Ok(serde_json::from_value(value.clone())?)
+        let config: Self = serde_json::from_value(value.clone())?;
+        config.webhooks.notifications.validate()?;
+        if !crate::webhooks::valid_watch_days(config.webhooks.max_watch_days) {
+            anyhow::bail!(
+                "webhooks.max_watch_days must be 1..=30 (quick-tunnel leases last at most 30 days)"
+            );
+        }
+        if config.webhooks.orphan_grace_minutes > crate::webhooks::MAX_ORPHAN_GRACE_MINUTES {
+            anyhow::bail!("webhooks.orphan_grace_minutes must be 0..=1440");
+        }
+        Ok(config)
     }
 }
 

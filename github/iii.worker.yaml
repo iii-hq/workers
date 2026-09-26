@@ -5,9 +5,22 @@ deploy: binary
 manifest: Cargo.toml
 license: Apache-2.0
 bin: github
-tags: [github, gh, git, pull-requests, issues, actions, releases]
-description: GitHub CLI (gh) as an iii worker — typed github::pr/issue/repo/run/workflow/release/search functions, github::exec argv passthrough, and github::api for any GitHub REST endpoint.
+tags: [github, gh, git, pull-requests, issues, actions, releases, webhooks, ci, notifications]
+description: GitHub CLI and event-driven PR monitoring — typed queries and mutations, authenticated temporary webhooks, CI/comment/review notifications, and merge-triggered cleanup.
+dependencies:
+  configuration: "latest"
+  http: "latest"
+  queue: "latest"
+  quick-tunnel: "latest"
+  cron: "latest"
 config:
+  webhooks:
+    enabled: false
+    storage_path: ./data/github-webhooks/store.sqlite3
+    tunnel_id: webhooks
+    queue: github-webhooks
+    max_body_bytes: 1048576
+    max_pending: 10000
   gh_executable: ""
   default_timeout_ms: 30000
   max_timeout_ms: 120000

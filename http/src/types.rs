@@ -149,6 +149,10 @@ fn default_http_method() -> String {
 /// trigger's `config` value.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpTriggerConfig {
+    /// Also expose this route on the restricted webhook listener. Explicit
+    /// opt-in only; the default keeps existing routes on the normal listener.
+    #[serde(default)]
+    pub public_webhook: bool,
     pub api_path: String,
     #[serde(default = "default_http_method")]
     pub http_method: String,
@@ -298,6 +302,9 @@ mod tests {
     #[test]
     fn http_trigger_config_defaults_method_to_get() {
         let cfg: HttpTriggerConfig = serde_json::from_value(json!({"api_path": "/foo"})).unwrap();
+        assert!(!cfg.public_webhook);
+        let schema = serde_json::to_value(schemars::schema_for!(HttpTriggerConfig)).unwrap();
+        assert_eq!(schema["properties"]["public_webhook"]["default"], false);
         assert_eq!(cfg.api_path, "/foo");
         assert_eq!(cfg.http_method, "GET");
         assert!(cfg.condition_function_id.is_none());
@@ -309,10 +316,12 @@ mod tests {
         let cfg: HttpTriggerConfig = serde_json::from_value(json!({
             "api_path": "/foo",
             "http_method": "POST",
+            "public_webhook": true,
             "condition_function_id": "fn-1",
             "middleware_function_ids": ["mw-1", "mw-2"],
         }))
         .unwrap();
+        assert!(cfg.public_webhook);
         assert_eq!(cfg.http_method, "POST");
         assert_eq!(cfg.condition_function_id, Some("fn-1".to_string()));
         assert_eq!(cfg.middleware_function_ids, vec!["mw-1", "mw-2"]);
