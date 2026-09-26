@@ -3,6 +3,10 @@ name: Deployment Descriptor Index
 on:
   push:
     branches: [main]
+  # No inputs: a dispatch compiles the dispatched ref's head, never a chosen
+  # SHA. sync-manifest-versions.yml needs it because its job-token push
+  # triggers no workflow; Release Control only trusts runs on main.
+  workflow_dispatch:
 
 permissions: {}
 

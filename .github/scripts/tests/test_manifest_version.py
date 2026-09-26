@@ -201,3 +201,68 @@ class TestSyncLockSubcommand:
     def test_noop_for_non_cargo_manifest(self, package_json_manifest):
         r = run_script("sync-lock", str(package_json_manifest))
         assert r.returncode == 0
+
+
+class TestSyncManifests:
+    """`sync-tags`: manifests and every lock follow the highest published tag."""
+
+    def test_writes_highest_tag_into_manifests_and_every_lock(self, tmp_path):
+        from types import SimpleNamespace
+
+        import manifest_version
+
+        def write(relative: str, body: str) -> Path:
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+            return path
+
+        write("harness/Cargo.toml", '[package]\nname = "harness"\nversion = "1.8.8-rc.3"\n')
+        write("harness/Cargo.lock", 'version = 4\n\n[[package]]\nname = "harness"\nversion = "1.8.8-rc.3"\n')
+        write("eval/Cargo.toml", '[package]\nname = "eval"\nversion = "0.2.2"\n')
+        # eval depends on harness by path, so its lock pins harness as well.
+        eval_lock = write(
+            "eval/Cargo.lock",
+            'version = 4\n\n[[package]]\nname = "eval"\nversion = "0.2.2"\n\n'
+            '[[package]]\nname = "harness"\nversion = "1.8.8-rc.3"\n',
+        )
+        write("hermes/pyproject.toml", '[project]\nname = "hermes"\nversion = "0.1.7-rc.4"\n')
+        write("hermes/uv.lock", 'version = 1\n\n[[package]]\nname = "hermes"\nversion = "0.1.7rc4"\nsource = { editable = "." }\n')
+        write("pi/package.json", '{\n  "name": "pi",\n  "version": "0.1.13"\n}\n')
+        write("seed/Cargo.toml", '[package]\nname = "seed"\nversion = "0.3.0"\n')
+        write("snake/pyproject.toml", '[project]\nname = "snake"\nversion = "0.1.0"\n')
+        catalog = {
+            name: SimpleNamespace(path=tmp_path / name, manifest=manifest)
+            for name, manifest in {
+                "harness": "Cargo.toml", "eval": "Cargo.toml", "hermes": "pyproject.toml",
+                "pi": "package.json", "seed": "Cargo.toml", "snake": "pyproject.toml",
+            }.items()
+        }
+        tags = [
+            "harness/v1.8.36-rc.2", "harness/v1.8.36", "harness/v1.9.0-dry-run.1",
+            "eval/v0.2.14", "hermes/v0.1.9", "pi/v0.1.33",
+            "seed/v0.2.0",  # a hand-bumped manifest ahead of its tag stays
+            "snake/v0.2.0-experimental",  # no PEP 440 spelling
+            "unlisted/v9.9.9",
+        ]
+        locks = [tmp_path / p for p in ("harness/Cargo.lock", "eval/Cargo.lock", "hermes/uv.lock")]
+
+        changes, errors = manifest_version.sync_manifests(catalog, tags, locks)
+
+        assert changes == [
+            "eval 0.2.2 -> 0.2.14",
+            "harness 1.8.8-rc.3 -> 1.8.36",
+            "hermes 0.1.7-rc.4 -> 0.1.9",
+            "pi 0.1.13 -> 0.1.33",
+        ]
+        assert len(errors) == 1 and errors[0].startswith("snake:")
+        assert _lib.read_version(tmp_path / "harness/Cargo.toml") == "1.8.36"
+        assert 'name = "harness"\nversion = "1.8.36"' in (tmp_path / "harness/Cargo.lock").read_text()
+        assert 'name = "eval"\nversion = "0.2.14"' in eval_lock.read_text()
+        assert 'name = "harness"\nversion = "1.8.36"' in eval_lock.read_text()
+        assert 'name = "hermes"\nversion = "0.1.9"' in (tmp_path / "hermes/uv.lock").read_text()
+        assert _lib.read_version(tmp_path / "pi/package.json") == "0.1.33"
+        assert _lib.read_version(tmp_path / "seed/Cargo.toml") == "0.3.0"
+        assert _lib.read_version(tmp_path / "snake/pyproject.toml") == "0.1.0"
+
+        assert manifest_version.sync_manifests(catalog, tags, locks)[0] == []

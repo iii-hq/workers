@@ -1,0 +1,66 @@
+name: Sync Manifest Versions
+
+# Release Control creates one GitHub Release per version it publishes to the
+# Registry. After each, write every worker's highest published tag into its
+# package manifest and lockfiles, so cargo, npm and uv report the version the
+# Registry serves. Each run converges every worker, so a burst of releases
+# whose pending runs the concurrency group drops still ends up in sync.
+#
+# A release event runs this file as it exists at the tagged commit, so a
+# release of a commit that predates this workflow does not trigger it; the
+# next release (or a manual dispatch) catches up.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-manifest-versions
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: main
+          # The sync commit is pushed with the job token.
+          persist-credentials: true
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Install catalog reader
+        run: python -m pip install --disable-pip-version-check --quiet pyyaml
+
+      - name: Write published versions and push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 .github/scripts/manifest_version.py sync-tags || status=$?
+          if git diff --quiet; then
+            exit "$status"
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # Release Control's drift skips commits with exactly this subject.
+          git commit --quiet --all --message 'chore(release): sync package manifests to published versions'
+          for attempt in 1 2 3; do
+            git push origin HEAD:main && break
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            git pull --rebase origin main
+          done
+          # A job-token push starts no workflow, and Release Control resolves
+          # main's head through its descriptor index.
+          gh workflow run deploy-descriptor-index.yml --ref main
+          exit "$status"
