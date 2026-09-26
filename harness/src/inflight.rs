@@ -8,7 +8,8 @@
 //! sets the abort bit the next step observes.
 //!
 //! [`InflightSteps`] tracks the sessions whose step is executing in this
-//! process right now. [`redrive_orphans`] (run by the pending sweep) re-enqueues
+//! process right now. [`redrive_orphans`] (run by [`run_loop`] and the pending
+//! sweep) re-enqueues
 //! the current step of every `Running` turn that has not moved for
 //! [`ORPHAN_REDRIVE_AFTER_MS`] and is not executing here. Re-enqueueing is
 //! safe because steps are at-least-once: the queue is FIFO per `session_id`
@@ -150,6 +151,23 @@ pub async fn redrive_orphans(deps: &Deps) -> Result<u64, HarnessError> {
         }
     }
     Ok(redriven)
+}
+
+/// Delay before the first orphan pass after boot, so the queue worker and the
+/// harness's own registrations are back before anything is re-enqueued.
+const BOOT_DELAY_MS: u64 = 30_000;
+
+/// Background loop: one orphan pass shortly after boot (turns stranded by the
+/// outage that preceded a restart), then one per redrive window. The daily
+/// pending sweep alone would leave a wedged session stuck for up to a day.
+pub async fn run_loop(deps: std::sync::Arc<Deps>) {
+    tokio::time::sleep(std::time::Duration::from_millis(BOOT_DELAY_MS)).await;
+    loop {
+        if let Err(e) = redrive_orphans(&deps).await {
+            tracing::warn!(error = %e, "orphaned-turn redrive pass failed");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(ORPHAN_REDRIVE_AFTER_MS)).await;
+    }
 }
 
 #[cfg(test)]
