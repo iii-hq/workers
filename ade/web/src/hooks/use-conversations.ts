@@ -1238,13 +1238,19 @@ export function cancelHydrationRunsForSessions(
     card after the final answer. An entry the page holds is the page's —
     unless the page's copy is an elided placeholder and the live copy is
     whole, which keeps content already on screen instead of a stub that
-    needs a range read to come back. Only entries the page lacks (local
-    notices, rows that landed after the page was cut) are appended. */
+    needs a range read to come back. Entries the page lacks (local notices,
+    a `/compact` command row, a provisional failure card whose durable record
+    never landed, rows that landed after the page was cut) keep their place:
+    each is inserted right after the row it followed in the window (`order`,
+    default `live`), or before the row it preceded. Appending them used to
+    pull every such row down to the bottom again on each re-hydration, so an
+    old failure card and compaction notice sat under all newer messages. */
 export function mergeHydratedTranscript(
   fetched: Message[],
   live: Message[],
   upserts: HydrationUpsert[],
   opts: { sessionId: string; working: boolean },
+  order: Message[] = live,
 ): Message[] {
   let messages = fetched
   for (const u of upserts) {
@@ -1263,10 +1269,18 @@ export function mergeHydratedTranscript(
   }
   const isPlaceholder = (m: Message) =>
     m.role === 'function-trigger' && m.unloaded === true
+  // Window order of entries, for anchoring rows the page does not hold.
+  const windowEntries: string[] = []
+  for (const m of order) {
+    const entryId = entryIdOfMessage(m.id)
+    if (windowEntries[windowEntries.length - 1] !== entryId) {
+      windowEntries.push(entryId)
+    }
+  }
   for (const [entryId, rows] of liveByEntry) {
     const first = messages.findIndex((m) => belongsToEntry(m.id, entryId))
     if (first === -1) {
-      messages = [...messages, ...rows]
+      messages = insertAtWindowPosition(messages, rows, entryId, windowEntries)
       continue
     }
     const pageElided = messages.some(
@@ -1280,6 +1294,45 @@ export function mergeHydratedTranscript(
     ]
   }
   return messages
+}
+
+/** Insert `rows` (all of entry `entryId`, absent from `messages`) where the
+    window had them: after the nearest earlier window entry `messages` holds,
+    else before the nearest later one, else at the end. */
+function insertAtWindowPosition(
+  messages: Message[],
+  rows: Message[],
+  entryId: string,
+  windowEntries: readonly string[],
+): Message[] {
+  const at = windowEntries.lastIndexOf(entryId)
+  if (at !== -1) {
+    for (let i = at - 1; i >= 0; i--) {
+      const anchor = windowEntries[i]
+      let last = -1
+      for (let j = messages.length - 1; j >= 0; j--) {
+        if (belongsToEntry(messages[j].id, anchor)) {
+          last = j
+          break
+        }
+      }
+      if (last !== -1) {
+        return [
+          ...messages.slice(0, last + 1),
+          ...rows,
+          ...messages.slice(last + 1),
+        ]
+      }
+    }
+    for (let i = at + 1; i < windowEntries.length; i++) {
+      const anchor = windowEntries[i]
+      const next = messages.findIndex((m) => belongsToEntry(m.id, anchor))
+      if (next !== -1) {
+        return [...messages.slice(0, next), ...rows, ...messages.slice(next)]
+      }
+    }
+  }
+  return [...messages, ...rows]
 }
 
 export function markDurableStarted(
@@ -1340,6 +1393,7 @@ export function rehydrateTranscript(
     live,
     upserts,
     opts,
+    existing,
   )
   const history: HydrationPage =
     kept.length > 0 && conversation.history
