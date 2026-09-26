@@ -2,7 +2,7 @@
 
 [package]
 name = "computer"
-version = "0.1.5"
+version = "0.1.19"
 edition = "2021"
 publish = false
 

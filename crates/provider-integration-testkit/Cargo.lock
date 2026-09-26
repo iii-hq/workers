@@ -1131,7 +1131,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.4.15-rc.4"
+version = "1.4.27"
 dependencies = [
  "async-trait",
  "clap",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "provider-anthropic"
-version = "1.2.12-rc.1"
+version = "1.2.22"
 dependencies = [
  "clap",
  "futures",
@@ -1478,7 +1478,7 @@ dependencies = [
 
 [[package]]
 name = "provider-claude-code"
-version = "0.1.8-rc.3"
+version = "0.1.14"
 dependencies = [
  "clap",
  "futures",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "provider-command-code"
-version = "0.1.3-experimental"
+version = "0.1.9"
 dependencies = [
  "clap",
  "futures",
@@ -1512,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "provider-deepseek"
-version = "0.1.9-rc.3"
+version = "0.1.16"
 dependencies = [
  "clap",
  "futures",
@@ -1554,7 +1554,7 @@ dependencies = [
 
 [[package]]
 name = "provider-kimi"
-version = "1.1.7-rc.3"
+version = "1.1.14"
 dependencies = [
  "clap",
  "futures",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai"
-version = "1.2.9-rc.3"
+version = "1.2.19"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai-codex"
-version = "0.4.6-rc.4"
+version = "0.4.17"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openrouter"
-version = "0.1.4"
+version = "0.1.10"
 dependencies = [
  "clap",
  "futures",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "provider-xai"
-version = "1.3.7-rc.3"
+version = "1.3.17"
 dependencies = [
  "clap",
  "futures",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "provider-zai"
-version = "0.5.7-rc.3"
+version = "0.5.13"
 dependencies = [
  "clap",
  "futures",
