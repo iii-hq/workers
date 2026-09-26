@@ -194,6 +194,8 @@ async fn run_stream_call(
 /// `{conversation_id, headers: {anthropic-beta}, request}`, to
 /// `<dir>/<session id>.jsonl` for offline prefix diffing. Auth headers are
 /// never written; requests without a session (the summarizer) are skipped.
+/// Only an absolute `dir` is used: a relative one resolves against the
+/// worker's cwd, the crate dir inside the repo. Empty counts as unset.
 // ponytail: blocking std::fs append on the request path; debug-only knob.
 fn capture(
     dir: Option<String>,
@@ -201,7 +203,17 @@ fn capture(
     headers: &[(&'static str, String)],
     body: &Value,
 ) {
-    let (Some(dir), Some(sid)) = (dir, session_id) else {
+    let Some(dir) = dir.filter(|d| !d.is_empty()) else {
+        return;
+    };
+    if !std::path::Path::new(&dir).is_absolute() {
+        static WARNED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WARNED.get_or_init(
+            || tracing::warn!(%dir, "{CAPTURE_DIR_ENV} is not an absolute path; capture is off"),
+        );
+        return;
+    }
+    let Some(sid) = session_id else {
         return;
     };
     // Caller-supplied: no separator survives, so the file stays inside `dir`.
@@ -279,5 +291,17 @@ mod tests {
             assert_eq!(line["request"], body);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn capture_writes_nothing_for_an_empty_or_relative_dir() {
+        // cargo runs tests from the crate dir, where the worker runs too.
+        let sid = format!("pa-capture-{}", uuid::Uuid::new_v4());
+        let relative = format!("{sid}-dir");
+        for dir in ["", relative.as_str()] {
+            capture(Some(dir.into()), Some(&sid), &[], &json!({}));
+        }
+        assert!(!std::path::Path::new(&format!("{sid}.jsonl")).exists());
+        assert!(!std::path::Path::new(&relative).exists());
     }
 }

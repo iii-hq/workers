@@ -61,6 +61,9 @@ pub struct PartialState {
     /// `input_transformations` entries (thinking blocks the API dropped or
     /// let through on a prefix-binding check), verbatim; the latest array wins.
     pub input_transformations: Vec<Value>,
+    /// A non-empty array arrived that differs from the one it replaced; the
+    /// upstream loop logs it and clears the flag, so a re-send logs nothing.
+    pub transformations_unlogged: bool,
     pub saw_message_stop: bool,
 }
 
@@ -80,6 +83,7 @@ impl PartialState {
             error_message: None,
             warnings,
             input_transformations: Vec::new(),
+            transformations_unlogged: false,
             saw_message_stop: false,
         }
     }
@@ -92,6 +96,9 @@ const DROPPED_THINKING_WARNING: &str = "anthropic dropped replayed thinking bloc
 /// final `message_delta` re-sends the full list for the serving model.
 fn take_transformations(v: Option<&Value>, state: &mut PartialState) {
     if let Some(a) = v.and_then(Value::as_array) {
+        if !a.is_empty() && *a != state.input_transformations {
+            state.transformations_unlogged = true;
+        }
         state.input_transformations = a.clone();
     }
 }
