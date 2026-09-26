@@ -268,7 +268,8 @@ events keep appending at the tail as before.
 // entries included) into a NEW session with fresh entry ids, structure
 // preserved, revisions reset to 0, source metadata and kind copied, forked_from set,
 // active leaf = the copy of entry_id. The compaction record's
-// tail_start_entry_id is rewritten to the copied entry's id. Fully independent
+// tail_start_entry_id and a message_order record's after/moved ids are
+// rewritten to the copied entries' ids. Fully independent
 // afterwards. Fires session::created (with forked_from). title defaults to the source's.
 { session_id, entry_id, title? } -> { session_id, meta }
 

@@ -234,6 +234,29 @@ Feature: session::fork — copy history up to an entry into a new session
       """
     Then the response field "messages.3.custom.data.tail_start_entry_id" is "e_999"
 
+  # Prevents: a fork carrying the SOURCE's ids in a harness message_order
+  # record — the order would no longer apply, and the fork's next request
+  # would show the moved message where the model never saw it.
+  Scenario: fork rewrites a message order's anchor and moved ids
+    Given I call "session::append" with:
+      """
+      { "session_id": "s_001", "custom": { "custom_type": "message_order",
+        "data": { "after": "e_002", "moved": ["e_003", "e_999"] } } }
+      """
+    When I call "session::fork" with:
+      """
+      { "session_id": "s_001", "entry_id": "e_004" }
+      """
+    Then the call succeeds
+    When I call "session::messages" with:
+      """
+      { "session_id": "s_002", "include_custom": true }
+      """
+    Then the response field "messages.3.custom.custom_type" is "message_order"
+    And the response field "messages.3.custom.data.after" is "e_006"
+    And the response field "messages.3.custom.data.moved.0" is "e_007"
+    And the response field "messages.3.custom.data.moved.1" is "e_999"
+
   # Prevents: a fork of a machine run reappearing as a human chat — kind
   # travels with the copy, the way tenancy metadata does.
   Scenario: a fork inherits the source session's kind

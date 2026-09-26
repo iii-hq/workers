@@ -1527,24 +1527,37 @@ fn draft_response(meta: &SessionMeta) -> SetDraftResponse {
 
 /// Copy-on-fork rewrite of the entry ids a custom record stores: the
 /// compaction record's `tail_start_entry_id` names the first entry of the
-/// verbatim tail, so it must follow that entry's fresh id. An id not on the
-/// copied path is left as it is — readers treat an unknown id as "whole
-/// path", while `null` means "everything before this entry was summarised".
+/// verbatim tail, and the harness's `message_order` record names the entries
+/// it moved (`moved`) and where (`after`), so each must follow its entry's
+/// fresh id. An id not on the copied path is left as it is — readers treat
+/// an unknown tail id as "whole path", while `null` means "everything before
+/// this entry was summarised".
 fn remap_custom_data(
     custom_type: &str,
     data: &serde_json::Value,
     id_map: &HashMap<String, String>,
 ) -> serde_json::Value {
     let mut data = data.clone();
-    if custom_type == "compaction" {
-        let tail = data
-            .get("tail_start_entry_id")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|tail| id_map.get(tail))
-            .cloned();
-        if let Some(new_id) = tail {
-            data["tail_start_entry_id"] = serde_json::Value::String(new_id);
+    let remap = |id: &mut serde_json::Value| {
+        if let Some(new_id) = id.as_str().and_then(|old| id_map.get(old)) {
+            *id = serde_json::Value::String(new_id.clone());
         }
+    };
+    match custom_type {
+        "compaction" => {
+            if let Some(tail) = data.get_mut("tail_start_entry_id") {
+                remap(tail);
+            }
+        }
+        "message_order" => {
+            if let Some(after) = data.get_mut("after") {
+                remap(after);
+            }
+            if let Some(moved) = data.get_mut("moved").and_then(|m| m.as_array_mut()) {
+                moved.iter_mut().for_each(remap);
+            }
+        }
+        _ => {}
     }
     data
 }
