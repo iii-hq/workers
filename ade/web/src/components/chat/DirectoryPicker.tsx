@@ -1,12 +1,9 @@
 import * as PopoverPrimitive from '@radix-ui/react-popover'
 import {
   AlertCircle,
-  ArrowLeft,
   Check,
-  ChevronUp,
   CornerDownLeft,
   Folder,
-  FolderOpen,
   GitBranch,
   Pencil,
   Plus,
@@ -24,15 +21,15 @@ import {
   useState,
 } from 'react'
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/Dialog'
 import { StatusDot } from '@/components/ui/StatusDot'
-import { useMediaQuery } from '@/hooks/use-media-query'
+import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import {
   deleteHarnessProject,
   type HarnessProject,
   listHarnessProjects,
   upsertHarnessProject,
 } from '@/lib/backend/projects'
-import { getIiiClient } from '@/lib/iii-client'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 import {
@@ -50,6 +47,7 @@ import {
   type WorktreeInfo,
   worktreeIndicators,
 } from '@/lib/worktrees'
+import { basename, FolderBrowser, isAbsPath, parentOf } from './FolderBrowser'
 
 // viewport: phone chrome — the sm and md utilities here are the console's
 // phone-vs-desktop presentation (touch sizes, 16px text, sheet vs popover),
@@ -59,10 +57,10 @@ import {
  * Per-session working-directory picker, project-switcher style.
  *
  * Opens to your harness projects (most-recent first) — pick one in a click,
- * or "browse to add" a new directory. Browsing uses shell's operator workspace
- * control plane one level at a time. The search box filters the current level
- * live; typing/pasting an absolute path jumps straight there (browse) or
- * selects it (projects). Every selection — pasted, remembered, or browsed — is
+ * or "Add project" to browse for a new directory (`FolderBrowser`: a dialog
+ * with parent columns on desktop, the same sheet on phones). The search box
+ * filters projects live; pasting an absolute path selects it. Every
+ * selection — pasted, remembered, or browsed — is
  * validated against the live shell worker before it's accepted, and the
  * worker-echoed canonical path is what gets stored. The chosen dir is what the
  * harness scopes the chat to (`fs_scope.root`); it is re-scopable mid-conversation
@@ -108,26 +106,6 @@ interface DirectoryPickerProps {
   presentation?: 'trigger' | 'embedded'
   /** Called after an embedded picker accepts a directory. */
   onSelect?: () => void
-}
-
-interface WorkspaceRootsResult {
-  roots?: string[]
-}
-
-interface DirEntry {
-  name: string
-  kind: string
-  path: string
-}
-
-interface WorkspaceListResult {
-  path: string
-  entries?: DirEntry[]
-}
-
-function basename(p: string): string {
-  const parts = p.split('/').filter(Boolean)
-  return parts.length ? parts[parts.length - 1] : p
 }
 
 function withProject(
@@ -285,14 +263,6 @@ function ProjectRow({
   )
 }
 
-function parentOf(p: string): string {
-  const trimmed = p.replace(/\/+$/, '')
-  const idx = trimmed.lastIndexOf('/')
-  return idx <= 0 ? '/' : trimmed.slice(0, idx)
-}
-
-const isAbsPath = (s: string) => s.trim().startsWith('/')
-
 // Re-exported for existing consumers/tests; canonical home is lib/working-dir.
 export {
   WORKSPACE_LIST_FUNCTION_ID,
@@ -325,12 +295,8 @@ export function DirectoryPicker({
   const [query, setQuery] = useState('')
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   const [projectName, setProjectName] = useState('')
-  // browse state
-  const [roots, setRoots] = useState<string[] | null>(null)
-  const [root, setRoot] = useState<string | null>(null)
-  const [path, setPath] = useState<string | null>(null)
-  const [dirs, setDirs] = useState<string[]>([])
-  const [loading, setLoading] = useState(false)
+  // desktop "Add project" dialog (phones browse inside the sheet instead)
+  const [browseOpen, setBrowseOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [validating, setValidating] = useState<string | null>(null)
   // worktrees state
@@ -339,6 +305,8 @@ export function DirectoryPicker({
   const [wtError, setWtError] = useState<string | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const mobileSheet = useMediaQuery('(max-width: 767px)')
+  const pointerFine = useMediaQuery(DESKTOP_POINTER_QUERY)
+  const browseInDialog = !embedded && !mobileSheet
 
   const refreshProjects = useCallback(async () => {
     setProjectsLoading(true)
@@ -380,130 +348,20 @@ export function DirectoryPicker({
     setError(externalError)
   }, [externalError, locked, disabled])
 
-  const ensureRoots = useCallback(async (): Promise<string[]> => {
-    if (roots !== null) return roots
-    setLoading(true)
+  const addProject = useCallback(() => {
     setError(null)
-    try {
-      const client = await getIiiClient()
-      const info = await client.trigger<WorkspaceRootsResult>(
-        WORKSPACE_ROOTS_FUNCTION_ID,
-        {},
-      )
-      const r = info?.roots ?? []
-      setRoots(r)
-      return r
-    } catch (err) {
-      setError(errMsg(err))
-      setRoots([])
-      return []
-    } finally {
-      setLoading(false)
-    }
-  }, [roots])
-
-  const loadFolder = useCallback(async (target: string) => {
-    setLoading(true)
-    setError(null)
-    try {
-      const client = await getIiiClient()
-      const res = await client.trigger<WorkspaceListResult>(
-        WORKSPACE_LIST_FUNCTION_ID,
-        {
-          path: target,
-          page_size: 200,
-        },
-      )
-      const names = (res?.entries ?? [])
-        .filter((e) => e.kind === 'dir')
-        .map((e) => e.path)
-        .sort((a, b) => a.localeCompare(b))
-      setDirs(names)
-    } catch (err) {
-      setError(errMsg(err))
-      setDirs([])
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  const enterBrowse = useCallback(async () => {
-    setView('browse')
     setQuery('')
-    setError(null)
-    const r = await ensureRoots()
-    if (r.length === 1) {
-      setRoot(r[0])
-      setPath(r[0])
-      void loadFolder(r[0])
-    } else {
-      setRoot(null)
-      setPath(null)
-      setDirs([])
-    }
-  }, [ensureRoots, loadFolder])
-
-  const enterRoot = useCallback(
-    (r: string) => {
-      setRoot(r)
-      setPath(r)
-      setQuery('')
-      void loadFolder(r)
-    },
-    [loadFolder],
-  )
-
-  const enterDir = useCallback(
-    (d: string) => {
-      setPath(d)
-      setQuery('')
-      void loadFolder(d)
-    },
-    [loadFolder],
-  )
-
-  const goUp = useCallback(() => {
-    setQuery('')
-    if (!path || !root || path === root) {
-      // back to the roots list (or projects if there is nowhere up to go)
-      if ((roots?.length ?? 0) > 1) {
-        setPath(null)
-        setRoot(null)
-        return
-      }
-      setView('projects')
-      void refreshProjects()
-      return
-    }
-    const next = parentOf(path)
-    const clamped = next.length < root.length ? root : next
-    setPath(clamped)
-    void loadFolder(clamped)
-  }, [path, root, roots, loadFolder, refreshProjects])
-
-  const jumpTo = useCallback(
-    async (raw: string) => {
-      const p = raw.trim().replace(/\/+$/, '') || '/'
-      setView('browse')
-      setQuery('')
-      const r = await ensureRoots()
-      const matchedRoot =
-        [...r]
-          .sort((a, b) => b.length - a.length)
-          .find((x) => p === x || p.startsWith(`${x}/`)) ??
-        r[0] ??
-        null
-      setRoot(matchedRoot)
-      setPath(p)
-      await loadFolder(p)
-    },
-    [ensureRoots, loadFolder],
-  )
+    if (browseInDialog) {
+      setOpen(false)
+      setBrowseOpen(true)
+    } else setView('browse')
+  }, [browseInDialog])
 
   const select = useCallback(
     (dir: string) => {
       onChange(dir)
       setOpen(false)
+      setBrowseOpen(false)
       onSelect?.()
     },
     [onChange, onSelect],
@@ -638,17 +496,6 @@ export function DirectoryPicker({
     (q === '' ||
       defaultDir.toLowerCase().includes(q) ||
       defaultProject?.name.toLowerCase().includes(q) === true)
-  const filteredDirs = useMemo(
-    () =>
-      q
-        ? dirs.filter(
-            (d) =>
-              basename(d).toLowerCase().includes(q) ||
-              d.toLowerCase().includes(q),
-          )
-        : dirs,
-    [dirs, q],
-  )
   const filteredWorktrees = useMemo(
     () =>
       q
@@ -663,10 +510,9 @@ export function DirectoryPicker({
   )
 
   const onSearchKey = (e: React.KeyboardEvent) => {
-    if (e.key !== 'Enter' || !isAbsPath(query)) return
+    if (e.key !== 'Enter' || !isAbsPath(query) || view !== 'projects') return
     e.preventDefault()
-    if (view === 'projects') void validateAndSelect(query)
-    else if (view === 'browse') void jumpTo(query)
+    void validateAndSelect(query)
   }
 
   const label = value
@@ -790,27 +636,28 @@ export function DirectoryPicker({
         ) : null}
 
         {/* search — a boxed field on the mobile sheet, a bare line with a
-            magnifier on desktop where the popover itself is the box */}
-        <div className="mx-4 mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-md bg-surface px-3 py-2 focus-within:ring-2 focus-within:ring-rule-focus md:mx-0 md:mb-1 md:min-h-8 md:rounded-none md:border-b md:border-rule-2 md:bg-transparent md:px-2 md:py-1 md:focus-within:ring-0">
-          <Search className="size-4 shrink-0 text-ink-ghost" aria-hidden />
-          <input
-            // biome-ignore lint/a11y/noAutofocus: desktop popovers keep keyboard-first filtering; mobile avoids opening the keyboard on entry
-            autoFocus={!mobileSheet}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={onSearchKey}
-            placeholder={
-              view === 'projects'
-                ? 'Search projects or paste a path…'
-                : view === 'worktrees'
-                  ? 'Filter worktrees…'
-                  : 'Filter this folder or paste a path…'
-            }
-            aria-label="search projects and directories"
-            name="directory-search"
-            className="min-w-0 flex-1 bg-transparent text-base text-ink placeholder:text-ink-ghost focus:outline-none md:text-[12px]"
-          />
-        </div>
+            magnifier on desktop where the popover itself is the box;
+            FolderBrowser brings its own */}
+        {view === 'browse' ? null : (
+          <div className="mx-4 mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-md bg-surface px-3 py-2 focus-within:ring-2 focus-within:ring-rule-focus md:mx-0 md:mb-1 md:min-h-8 md:rounded-none md:border-b md:border-rule-2 md:bg-transparent md:px-2 md:py-1 md:focus-within:ring-0">
+            <Search className="size-4 shrink-0 text-ink-ghost" aria-hidden />
+            <input
+              // biome-ignore lint/a11y/noAutofocus: desktop popovers keep keyboard-first filtering; mobile avoids opening the keyboard on entry
+              autoFocus={!mobileSheet}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onSearchKey}
+              placeholder={
+                view === 'projects'
+                  ? 'Search projects or paste a path…'
+                  : 'Filter worktrees…'
+              }
+              aria-label="search projects and directories"
+              name="directory-search"
+              className="min-w-0 flex-1 bg-transparent text-base text-ink placeholder:text-ink-ghost focus:outline-none md:text-[12px]"
+            />
+          </div>
+        )}
 
         {/* body */}
         {view === 'worktrees' ? (
@@ -1006,7 +853,7 @@ export function DirectoryPicker({
             <div className="mt-1 border-t border-rule-2 pt-1">
               <button
                 type="button"
-                onClick={() => void enterBrowse()}
+                onClick={addProject}
                 className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
               >
                 <Plus className="size-4 shrink-0 text-ink-faint" aria-hidden />
@@ -1015,125 +862,48 @@ export function DirectoryPicker({
             </div>
           </div>
         ) : (
-          <div
-            className={cn(
-              'min-w-0',
-              (embedded || mobileSheet) && 'flex min-h-0 flex-1 flex-col',
-            )}
-          >
-            {/* browse header */}
-            <div className="mx-4 mb-2 flex min-h-14 min-w-0 shrink-0 flex-col items-stretch gap-2 rounded-md bg-surface p-1 md:mx-0 md:mb-1 md:min-h-9 md:flex-row md:items-center md:justify-between">
-              <div className="flex min-w-0 flex-1 items-center gap-1 font-sans text-base text-ink-faint md:text-[11px]">
-                <button
-                  type="button"
-                  aria-label="back to projects"
-                  onClick={() => {
-                    setView('projects')
-                    void refreshProjects()
-                    setQuery('')
-                    setError(null)
-                  }}
-                  className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7"
-                >
-                  <ArrowLeft className="size-4 shrink-0" aria-hidden />
-                </button>
-                {path ? (
-                  <button
-                    type="button"
-                    aria-label="up one level"
-                    onClick={goUp}
-                    className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7"
-                  >
-                    <ChevronUp className="size-4 shrink-0" aria-hidden />
-                  </button>
-                ) : null}
-                <span className="truncate font-mono">{path ?? 'roots'}</span>
-              </div>
-              {path ? (
-                <button
-                  type="button"
-                  disabled={validating !== null}
-                  onClick={() => void validateAndSelect(path)}
-                  className="inline-flex min-h-12 shrink-0 items-center justify-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-7 md:py-1 md:text-[11px]"
-                >
-                  <Check className="size-4 shrink-0" aria-hidden />
-                  Use folder
-                </button>
-              ) : null}
-            </div>
-
-            <div
-              className={cn(
-                'min-w-0 space-y-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-2 md:px-0',
-                embedded || mobileSheet ? 'min-h-0 flex-1' : 'max-h-[220px]',
-              )}
-            >
-              {isAbsPath(query) ? (
-                <button
-                  type="button"
-                  onClick={() => void jumpTo(query)}
-                  className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface-selected px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
-                >
-                  <CornerDownLeft className="size-4 shrink-0" aria-hidden />
-                  <span className="truncate font-mono">
-                    Go to {query.trim()}
-                  </span>
-                </button>
-              ) : null}
-
-              {loading ? (
-                <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
-                  Loading folders…
-                </div>
-              ) : error ? (
-                <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
-                  <AlertCircle className="size-4 shrink-0" aria-hidden />
-                  <span className="min-w-0 [overflow-wrap:anywhere]">
-                    {error}
-                  </span>
-                </div>
-              ) : path === null ? (
-                // roots list (only when multiple roots)
-                (roots ?? []).map((r) => (
-                  <button
-                    key={r}
-                    type="button"
-                    onClick={() => enterRoot(r)}
-                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
-                  >
-                    <FolderOpen
-                      className="size-4 shrink-0 text-ink-faint"
-                      aria-hidden
-                    />
-                    <span className="truncate font-mono">{r}</span>
-                  </button>
-                ))
-              ) : filteredDirs.length > 0 ? (
-                filteredDirs.map((d) => (
-                  <button
-                    key={d}
-                    type="button"
-                    onClick={() => enterDir(d)}
-                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
-                  >
-                    <Folder
-                      className="size-4 shrink-0 text-ink-faint"
-                      aria-hidden
-                    />
-                    <span className="truncate font-mono">{basename(d)}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
-                  {q
-                    ? 'No matching subfolders.'
-                    : 'No subfolders. You can use this folder.'}
-                </div>
-              )}
-            </div>
-          </div>
+          <FolderBrowser
+            wide={false}
+            keyboard={false}
+            busy={validating !== null}
+            error={error}
+            onUse={(dir) => void validateAndSelect(dir)}
+            onBack={() => {
+              setView('projects')
+              void refreshProjects()
+              setQuery('')
+              setError(null)
+            }}
+          />
         )}
       </DirectoryPickerSurface>
+
+      {browseInDialog ? (
+        <Dialog open={browseOpen} onOpenChange={setBrowseOpen}>
+          <DialogContent
+            aria-describedby={undefined}
+            className="flex h-[min(40rem,85vh)] w-[min(60rem,calc(100vw-2rem))] max-w-none flex-col overflow-hidden p-0"
+            onOpenAutoFocus={(event) => {
+              // No keyboard to type with: don't raise the on-screen one.
+              if (!pointerFine) event.preventDefault()
+            }}
+            onCloseAutoFocus={(event) => {
+              // "Add project" lived in the popover, which is gone.
+              event.preventDefault()
+              triggerRef.current?.focus()
+            }}
+          >
+            <DialogTitle className="px-4 pt-4 pb-3">Add project</DialogTitle>
+            <FolderBrowser
+              wide
+              keyboard={pointerFine}
+              busy={validating !== null}
+              error={error}
+              onUse={(dir) => void validateAndSelect(dir)}
+            />
+          </DialogContent>
+        </Dialog>
+      ) : null}
     </div>
   )
 }

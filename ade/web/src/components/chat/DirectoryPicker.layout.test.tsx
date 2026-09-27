@@ -57,7 +57,7 @@ describe('DirectoryPicker narrow layout', () => {
     )
     expect(
       source.match(/embedded \|\| mobileSheet \? 'min-h-0 flex-1'/g),
-    ).toHaveLength(3)
+    ).toHaveLength(2)
     expect(source).toContain('[overflow-wrap:anywhere]')
     expect(source).toContain('h-[min(36rem,calc(100dvh-1.5rem))]')
   })
