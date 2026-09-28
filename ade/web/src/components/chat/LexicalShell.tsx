@@ -149,9 +149,9 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
  * prose. In order: "```" alone on a paragraph opens a code block; inside a
  * code block, the next line (a second blank line at the end leaves the
  * block — see `$insertCodeLine`); inside a list, the next item (ListPlugin;
- * on an empty item it leaves the list); in prose, Shift+Enter is a line
- * break (RichTextPlugin) and a bare Enter submits. Every newline shape
- * exports as one `\n`.
+ * on an empty item it leaves the list); in prose, a bare Enter submits and
+ * every other chord (Shift+Enter above all) is RichTextPlugin's line break.
+ * Every newline shape exports as one `\n`.
  *
  * We listen at LOW priority. While a typeahead menu is open we swallow Enter
  * here (return true) so it can't fall through to RichTextPlugin's
@@ -207,8 +207,10 @@ function ComposerEnterPlugin({
         }
         // A list item goes to ListPlugin: next item, or out of the list.
         if ($isListItemNode(container)) return false
-        // Prose. Shift+Enter is RichTextPlugin's line break; a bare Enter sends.
-        if (!event || event.shiftKey) return false
+        // Prose. Only a bare Enter sends; Shift+Enter is RichTextPlugin's line
+        // break, and any other chord (Alt+Enter, Ctrl+Enter on a Mac) stays
+        // Lexical's default rather than sending by accident.
+        if (!event || !bindingMatchesEvent(SEND_BINDING, event)) return false
         event.preventDefault()
         onSubmit()
         return true

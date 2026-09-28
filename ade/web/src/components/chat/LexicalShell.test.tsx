@@ -154,6 +154,21 @@ describe('composer keyboard submission', () => {
     expect(markdown(editor)).toBe('hello\n')
   })
 
+  it.each([
+    ['Alt+Enter', { altKey: true }],
+    ['Ctrl+Enter on a Mac', { ctrlKey: true }],
+    ['Cmd+Shift+Enter', { metaKey: true, shiftKey: true }],
+  ] as const)(
+    '%s inserts a newline and never submits',
+    async (_, modifiers) => {
+      const { editor, editable, onSubmit } = await renderComposer()
+      await pressEnter(editable, modifiers)
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(markdown(editor)).toBe('hello\n')
+    },
+  )
+
   it('Enter submits with prose selected, without replacing the selection', async () => {
     const { editor, editable, onSubmit } = await renderComposer({
       place: () => {
