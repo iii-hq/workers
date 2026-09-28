@@ -505,6 +505,14 @@ impl ControlledFunction {
         self
     }
 
+    /// Answer every invocation with this exact value instead of a
+    /// function-result envelope — e.g. a hook decision `{ "decision": "hold" }`
+    /// when the function is bound as a harness hook.
+    pub(super) fn returns_json(mut self, response: Value) -> Self {
+        self.target.response = response;
+        self
+    }
+
     pub(super) fn hold_response(mut self) -> Self {
         self.target.hold_response = true;
         self

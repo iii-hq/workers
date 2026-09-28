@@ -1590,6 +1590,68 @@ async fn finish_step(
                 .as_ref()
                 .map_or(&call.arguments, |r| &r.arguments);
 
+            // harness::ask is a harness control like submit_result, not a
+            // dispatched function, so it is answered HERE, before the
+            // pre_trigger chain (KAN-7 item 6): an approval hook could only
+            // hold it, and a held call's release re-dispatches it to the
+            // registered handler, which cannot show the card. The session's
+            // allow/deny policy, the repeated-failure breaker and argument
+            // reconciliation above still apply. Decide it (who can answer,
+            // one per step, shape, limits), record the awaiting-answer result
+            // or the refusal, and mark it Done. Never parks; refusals leave the
+            // turn running so the model can react.
+            if call.function_id == crate::functions::ASK_ID {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                // One ask per step, persisted on the record so a redelivered
+                // step still refuses a second ask and still ends on the first.
+                let already_asked = record.ask_step == Some(record.step);
+                let mut data = match crate::ask::decide(
+                    record.depth,
+                    strategy.is_json(),
+                    already_asked,
+                    call_args,
+                ) {
+                    Ok(req) => {
+                        record.ask_step = Some(record.step);
+                        crate::ask::awaiting_result(
+                            &record.session_id,
+                            &record.turn_id,
+                            &call.id,
+                            &req,
+                        )
+                    }
+                    Err(msg) => crate::ask::refused(&msg),
+                };
+                let mut ask_annotations = serde_json::Map::new();
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut ask_annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &call.function_id,
+                    call_args,
+                )
+                .await;
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin_with(&record.turn_id, &ask_annotations),
+                )
+                .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
+
             // pre_trigger chain: deny / hold / rewrite arguments. Hooks see
             // args ALREADY carrying the filesystem scope stamp so an approver
             // reviews the fs_scope the call will actually run under; the stamp is
@@ -1677,62 +1739,6 @@ async fn finish_step(
                     continue;
                 }
             };
-
-            // harness::ask shows a card and never reaches a target: decide it
-            // here (who can answer, one per step, shape, limits), record the
-            // awaiting-answer result or the refusal, and mark it Done. Never
-            // parks. Refusals leave the turn running so the model can react.
-            if call.function_id == crate::functions::ASK_ID {
-                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                // One ask per step, persisted on the record so a redelivered
-                // step still refuses a second ask and still ends on the first.
-                let already_asked = record.ask_step == Some(record.step);
-                let mut data = match crate::ask::decide(
-                    record.depth,
-                    strategy.is_json(),
-                    already_asked,
-                    &eff_args,
-                ) {
-                    Ok(req) => {
-                        record.ask_step = Some(record.step);
-                        crate::ask::awaiting_result(
-                            &record.session_id,
-                            &record.turn_id,
-                            &call.id,
-                            &req,
-                        )
-                    }
-                    Err(msg) => crate::ask::refused(&msg),
-                };
-                let mut ask_annotations = pre_ann;
-                crate::reconcile::settle_result(
-                    deps,
-                    &cfg,
-                    &mut data,
-                    &mut ask_annotations,
-                    reconciled.as_ref().map(|r| r.changes.as_slice()),
-                    &call.function_id,
-                    call_args,
-                )
-                .await;
-                append_function_result(
-                    &session,
-                    &record,
-                    call,
-                    &data,
-                    &entry_id,
-                    &origin_with(&record.turn_id, &ask_annotations),
-                )
-                .await?;
-                trigger::apply_contract_updates_after_append(
-                    &mut record.function_contract_ledger,
-                    &call.id,
-                    Vec::new(),
-                );
-                mark_done(&mut record, &call.id, &entry_id);
-                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
-                continue;
-            }
 
             // harness::spawn is fire-and-forget: seed a child and return its
             // ids immediately (never invoke a target, never park). The child's
