@@ -192,7 +192,7 @@ async fn run_stream_call(
 
 /// `PROVIDER_ANTHROPIC_CAPTURE_DIR`: append each sent request, as
 /// `{conversation_id, headers: {anthropic-beta}, request}`, to
-/// `<dir>/<session id>.jsonl` for offline prefix diffing. Auth headers are
+/// `<dir>/<escaped session id>.jsonl` for offline prefix diffing. Auth headers are
 /// never written; requests without a session (the summarizer) are skipped.
 /// Only an absolute `dir` is used: a relative one resolves against the
 /// worker's cwd, the crate dir inside the repo. Empty counts as unset.
@@ -216,14 +216,17 @@ fn capture(
     let Some(sid) = session_id else {
         return;
     };
-    // Caller-supplied: no separator survives, so the file stays inside `dir`.
+    // Caller-supplied: every byte outside [a-z0-9.-] (`_` and uppercase
+    // included) becomes `_xx`, so distinct ids never share a file, even on a
+    // case-insensitive filesystem, and no separator survives;
+    // the `.jsonl` suffix keeps even an empty or all-dot id inside `dir`.
     let file: String = sid
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "-_.".contains(c) {
-                c
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_lowercase() || b.is_ascii_digit() || b"-.".contains(&b) {
+                char::from(b).to_string()
             } else {
-                '_'
+                format!("_{b:02x}")
             }
         })
         .collect();
@@ -237,14 +240,29 @@ fn capture(
         json!({ "conversation_id": sid, "headers": beta, "request": body })
     );
     let path = std::path::Path::new(&dir).join(format!("{file}.jsonl"));
-    let res = std::fs::create_dir_all(&dir)
-        .and_then(|_| {
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-        })
-        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    // The captures hold user content: owner-only on Unix, whatever the umask.
+    let mut mkdir = std::fs::DirBuilder::new();
+    mkdir.recursive(true);
+    let mut open = std::fs::OpenOptions::new();
+    open.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        mkdir.mode(0o700);
+        open.mode(0o600);
+    }
+    let res = mkdir
+        .create(&dir)
+        .and_then(|_| open.open(&path))
+        .and_then(|mut f| {
+            // `mode` only applies on create: tighten a file left by an older run.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            std::io::Write::write_all(&mut f, line.as_bytes())
+        });
     if let Err(e) = res {
         tracing::warn!(path = %path.display(), "request capture failed: {e}");
     }
@@ -274,8 +292,8 @@ mod tests {
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, ["s_.._x.jsonl"]);
-        let text = std::fs::read_to_string(dir.join("s_.._x.jsonl")).unwrap();
+        assert_eq!(names, ["s_2f.._2fx.jsonl"]);
+        let text = std::fs::read_to_string(dir.join("s_2f.._2fx.jsonl")).unwrap();
         assert!(!text.contains("sk-secret"), "{text}");
         let lines: Vec<Value> = text
             .lines()
@@ -291,6 +309,55 @@ mod tests {
             assert_eq!(line["request"], body);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn capture_gives_distinct_session_ids_distinct_files() {
+        let dir = std::env::temp_dir().join(format!("pa-capture-{}", uuid::Uuid::new_v4()));
+        let dir_s = dir.to_string_lossy().into_owned();
+        for sid in ["s/a", "s_a", "..", "", "Ab", "ab"] {
+            capture(Some(dir_s.clone()), Some(sid), &[], &json!({}));
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        // "Ab" and "ab" stay apart on case-insensitive filesystems too.
+        assert_eq!(
+            names,
+            [
+                "...jsonl",
+                ".jsonl",
+                "_41b.jsonl",
+                "ab.jsonl",
+                "s_2fa.jsonl",
+                "s_5fa.jsonl"
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_keeps_dir_and_files_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let root = std::env::temp_dir().join(format!("pa-capture-{}", uuid::Uuid::new_v4()));
+        let dir = root.join("nested");
+        let dir_s = dir.to_string_lossy().into_owned();
+        capture(Some(dir_s.clone()), Some("new"), &[], &json!({}));
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("new.jsonl")), 0o600);
+
+        let old = dir.join("old.jsonl");
+        std::fs::write(&old, "").unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
+        capture(Some(dir_s), Some("old"), &[], &json!({}));
+        assert_eq!(mode(&old), 0o600);
+        assert_eq!(std::fs::read_to_string(&old).unwrap().lines().count(), 1);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
