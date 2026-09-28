@@ -5,6 +5,7 @@ mod lifecycle_tests;
 pub mod listeners;
 pub mod normalize;
 pub mod notifications;
+pub mod setup;
 pub mod store;
 #[cfg(test)]
 mod tests;

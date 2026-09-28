@@ -52,11 +52,13 @@ enum Request {
 pub struct Manager {
     tx: mpsc::Sender<Request>,
     events: broadcast::Sender<Snapshot>,
+    cloudflared: std::sync::Arc<str>,
 }
 
 impl Manager {
     pub fn open(config: Config) -> Result<Self> {
         config.validate().map_err(Error::Invalid)?;
+        let cloudflared: std::sync::Arc<str> = config.cloudflared.as_str().into();
         let parent = state_parent(&config.state_path);
         std::fs::create_dir_all(parent)?;
         let lock = OpenOptions::new()
@@ -110,7 +112,11 @@ impl Manager {
             persistence_failed: false,
         };
         tokio::spawn(actor.run(rx));
-        Ok(Self { tx, events })
+        Ok(Self {
+            tx,
+            events,
+            cloudflared,
+        })
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Snapshot> {
@@ -139,7 +145,12 @@ impl Manager {
             .send(Request::Status(request, tx))
             .await
             .map_err(|_| Error::Stopped)?;
-        rx.await.map_err(|_| Error::Stopped)?
+        let mut response = rx.await.map_err(|_| Error::Stopped)??;
+        // Probed outside the owning task: a slow `--version` never stalls leases.
+        response.prerequisites = Some(crate::prerequisites::Prerequisites {
+            cloudflared: crate::prerequisites::check(&self.cloudflared).await,
+        });
+        Ok(response)
     }
     /// Stop and reap children; keep unexpired leases for recovery on the next boot.
     pub async fn shutdown(&self) {
@@ -287,6 +298,7 @@ impl Actor {
                             let result = self.tunnels.get(&req.tunnel_id).map(|t| StatusResponse {
                                 snapshot: t.snapshot.clone(),
                                 leases: self.leases.iter().filter(|l| l.tunnel_id == req.tunnel_id).cloned().collect(),
+                                prerequisites: None,
                             }).ok_or_else(|| Error::Invalid("unknown tunnel_id".into()));
                             let _ = reply.send(result);
                         }
@@ -455,16 +467,15 @@ impl Actor {
                 ) {
                     Ok(process) => tunnel.process = Some(process),
                     Err(e) => {
-                        fail(
-                            tunnel,
-                            &self.config,
-                            &self.events,
+                        let error = if e.kind() == std::io::ErrorKind::NotFound {
+                            crate::prerequisites::not_found_error(&self.config.cloudflared)
+                        } else {
                             format!(
                                 "cloudflared spawn failed ({:?}); verify prerequisite executable",
                                 e.kind()
-                            ),
-                        )
-                        .await
+                            )
+                        };
+                        fail(tunnel, &self.config, &self.events, error).await
                     }
                 }
             }
@@ -582,7 +593,10 @@ fn spawn(
     let empty_config = home_path.join("config.yaml");
     std::fs::write(&empty_config, "{}\n")?;
     // No inherited TUNNEL_*, proxy variables, credentials, or home config.
-    let mut child = Command::new(&config.cloudflared)
+    // Resolve first: the child PATH is narrow and misses e.g. /opt/homebrew/bin.
+    let program = crate::prerequisites::resolve(&config.cloudflared)
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    let mut child = Command::new(program)
         .env_clear()
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("HOME", &home_path)

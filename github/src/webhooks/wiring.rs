@@ -134,12 +134,45 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
             }).description($desc));
         }};
     }
-    function!(
+    let s = service.clone();
+    iii.register_function(
         "github::pr::watch",
-        "Watch a PR via authenticated webhooks until merged/closed; expires_at must be in the future within webhooks.max_watch_days (default 30, the quick-tunnel lease cap).",
-        WatchRequest,
-        WatchResponse,
-        watch
+        RegisterFunction::new_async(move |EngineRequest(req): EngineRequest<WatchRequest>| {
+            let s = s.clone();
+            async move {
+                storage_task(async move {
+                    // Definite missing prerequisites refuse with the fix list.
+                    if s.store.is_some() {
+                        s.require_setup().await?;
+                    }
+                    s.watch(req).await
+                })
+                .await
+                .map_err(iii_sdk::Error::from)
+            }
+        })
+        .description("Watch a PR via authenticated webhooks until merged/closed; expires_at must be in the future within webhooks.max_watch_days (default 30, the quick-tunnel lease cap). Refuses with the fix list when a webhook prerequisite is missing (see github::setup::webhooks-status)."),
+    );
+    function!(
+        "github::setup::webhooks-status",
+        "Checklist of PR webhook prerequisites (quick-tunnel worker, cloudflared binary, http webhook listener), whether webhooks are enabled/active, and how to fix each missing item. Read-only; never installs anything.",
+        setup::SetupStatusRequest,
+        setup::SetupStatus,
+        setup_status
+    );
+    function!(
+        "github::setup::enable-http-listener",
+        "Turn on the http worker's restricted webhook listener (127.0.0.1, default port 3112) that quick-tunnel forwards GitHub deliveries to. Returns the updated checklist.",
+        setup::EnableListenerRequest,
+        setup::SetupStatus,
+        enable_http_listener
+    );
+    function!(
+        "github::setup::enable-webhooks",
+        "Set webhooks.enabled. Enabling is refused until every prerequisite is verified; the github worker must restart to apply (restart_required).",
+        setup::EnableWebhooksRequest,
+        setup::SetupStatus,
+        enable_webhooks
     );
     let s = service.clone();
     iii.register_function("github::pr::unwatch", RegisterFunction::new_async(move |EngineRequest(req): EngineRequest<WatchId>| {

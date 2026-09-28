@@ -77,6 +77,9 @@ pub struct StatusResponse {
     #[serde(flatten)]
     pub snapshot: Snapshot,
     pub leases: Vec<Lease>,
+    /// Whether the operator-provided cloudflared is usable, and where to get it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prerequisites: Option<crate::prerequisites::Prerequisites>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]

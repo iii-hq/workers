@@ -181,10 +181,23 @@ async fn missing_executable_is_observable_but_does_not_prevent_registration() {
     let (_dir, mut config) = fixture("ready");
     config.cloudflared = "/nonexistent/quick-tunnel-cloudflared".into();
     let manager = Manager::open(config).unwrap();
-    assert_eq!(snapshot(&manager).await.snapshot.status, Status::Stopped);
+    let before = snapshot(&manager).await;
+    assert_eq!(before.snapshot.status, Status::Stopped);
+    // Reported before any tunnel is requested, with the install pointer.
+    let cloudflared = before.prerequisites.unwrap().cloudflared;
+    assert!(!cloudflared.found);
+    assert_eq!(
+        cloudflared.install_url,
+        quick_tunnel::prerequisites::INSTALL_URL
+    );
     let reply = manager.acquire(request("github", 5000)).await.unwrap();
     assert_eq!(reply.snapshot.status, Status::Failed);
-    assert!(reply.snapshot.error.unwrap().contains("prerequisite"));
+    let error = reply.snapshot.error.unwrap();
+    assert!(error.contains("cloudflared not found"), "{error}");
+    assert!(
+        error.contains(quick_tunnel::prerequisites::INSTALL_URL),
+        "{error}"
+    );
     manager.shutdown().await;
 }
 

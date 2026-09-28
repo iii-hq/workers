@@ -7,11 +7,13 @@ license: Apache-2.0
 bin: github
 tags: [github, gh, git, pull-requests, issues, actions, releases, webhooks, ci, notifications]
 description: GitHub CLI and event-driven PR monitoring — typed queries and mutations, authenticated temporary webhooks, CI/comment/review notifications, and merge-triggered cleanup.
+# quick-tunnel is intentionally NOT a dependency: it is only needed for PR
+# webhooks, and the GitHub page installs it on demand (github::webhooks::setup-status
+# lists every webhook prerequisite and how to satisfy it).
 dependencies:
   configuration: "latest"
   http: "latest"
   queue: "latest"
-  quick-tunnel: "latest"
   cron: "latest"
 config:
   webhooks:
@@ -21,6 +23,15 @@ config:
     queue: github-webhooks
     max_body_bytes: 1048576
     max_pending: 10000
+    max_watch_days: 30
+    orphan_grace_minutes: 60
+    notifications:
+      profile: agent_actionable
+      ignore_self: true
+      quiet_ms: 15000
+      max_wait_ms: 120000
+      max_items: 30
+      max_comment_chars: 2000
   gh_executable: ""
   default_timeout_ms: 30000
   max_timeout_ms: 120000

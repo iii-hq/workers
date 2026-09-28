@@ -625,3 +625,76 @@ async fn rewatching_the_same_spec_resumes_a_stopped_watch() {
     );
     s.iii.shutdown_async().await;
 }
+
+fn not_found(function: &str) -> Failure {
+    Failure::Invalid(format!(
+        "remote error (function_not_found): Function {function} not found in namespace default."
+    ))
+}
+fn ready_tunnel() -> Value {
+    json!({"status": "stopped", "leases": [], "prerequisites": {"cloudflared": {"found": true, "path": "/usr/local/bin/cloudflared", "version": "cloudflared version 2026.9.1"}}})
+}
+
+#[tokio::test]
+async fn enabling_the_http_listener_writes_it_and_keeps_other_http_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"id": "default-http", "value": {"port": 3111, "webhook_listener": null}})),
+    );
+    bus.reply("configuration::set", Ok(json!({})));
+    bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"port": 3111, "webhook_listener": {"host": "127.0.0.1", "port": 3112}}})),
+    );
+    let status = s
+        .enable_http_listener(setup::EnableListenerRequest::default())
+        .await
+        .unwrap();
+    assert!(status.ready, "{status:?}");
+    let set = bus
+        .calls()
+        .into_iter()
+        .find(|c| c.function == "configuration::set")
+        .unwrap();
+    assert_eq!(set.payload["id"], "default-http");
+    assert_eq!(set.payload["value"]["port"], 3111);
+    assert_eq!(
+        set.payload["value"]["webhook_listener"],
+        json!({"host": "127.0.0.1", "port": 3112})
+    );
+    s.iii.shutdown_async().await;
+}
+
+#[tokio::test]
+async fn enabling_webhooks_without_prerequisites_is_refused_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply(
+        "quick-tunnel::status",
+        Err(not_found("quick-tunnel::status")),
+    );
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"webhook_listener": null}})),
+    );
+    let error = s
+        .enable_webhooks(setup::EnableWebhooksRequest { enabled: true })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("quick-tunnel worker"), "{error}");
+    assert!(error.contains("http webhook listener"), "{error}");
+    assert!(bus
+        .calls()
+        .iter()
+        .all(|c| c.function != "configuration::set"));
+    s.iii.shutdown_async().await;
+}

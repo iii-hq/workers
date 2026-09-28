@@ -467,6 +467,9 @@ rules:
   - github::pr::diff
   - github::pr::checks
   - github::pr::watch-status
+  # Read-only webhook prerequisite checklist; enable-http-listener and
+  # enable-webhooks change configuration and keep needs_approval.
+  - github::setup::webhooks-status
   - quick-tunnel::status
   - github::issue::list
   - github::issue::view
