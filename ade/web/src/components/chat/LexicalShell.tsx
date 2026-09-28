@@ -75,7 +75,7 @@ import { SlashCommandTransformPlugin } from './lexical/SlashCommandTransformPlug
 
 interface LexicalShellProps {
   onChange: (text: string) => void
-  /** Called on `SEND_BINDING`; the send button is the other way in. */
+  /** Called on Enter from prose or `SEND_ANYWHERE_BINDING`; the send button is the other way in. */
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
@@ -84,11 +84,17 @@ interface LexicalShellProps {
 }
 
 /**
- * The one keyboard chord that sends: the platform's primary modifier and
- * Enter (⌘↵ on a Mac, Ctrl+Enter on Windows and Linux). Exported so the send
- * button can say so.
+ * The key that sends from prose: a bare Enter. Exported so the send button
+ * can say so. Shift+Enter breaks the line instead.
  */
-export const SEND_BINDING = 'Mod+Enter'
+export const SEND_BINDING = 'Enter'
+
+/**
+ * The chord that sends from anywhere — inside a code block or a list item
+ * too, where a bare Enter keeps its structural meaning: the platform's
+ * primary modifier and Enter (⌘↵ on a Mac, Ctrl+Enter on Windows and Linux).
+ */
+export const SEND_ANYWHERE_BINDING = 'Mod+Enter'
 
 const baseConfig = {
   namespace: 'iii-chat',
@@ -135,21 +141,17 @@ function ChangePlugin({ onChange }: { onChange: (text: string) => void }) {
 }
 
 /**
- * Enter and Cmd+Enter submit; Shift+Enter inserts a newline (Lexical's default).
- * With `enabled` false (touch keyboards) EVERY Enter falls through to that
- * default, so the key only ever adds a line and the send button does the
- * sending.
+ * Enter sends; Shift+Enter inserts a newline; `SEND_ANYWHERE_BINDING`
+ * (Mod+Enter) sends from anywhere in the draft, structure or not.
  *
- * Only `SEND_BINDING` sends — ⌘↵ on a Mac, Ctrl+Enter elsewhere — from
- * anywhere in the draft, structure or not. A bare Enter is always a new
- * line: the message is markdown with lists and code blocks, where Enter has
- * to mean "next item" or "next line", and a key that sometimes sends and
- * sometimes doesn't is the worst of both. So, Enter: "```" alone on a line
- * opens a code block; inside a code block, the next line (a second blank
- * line at the end leaves the block — see `$insertCodeLine`); inside a list,
- * the next item (ListPlugin; on an empty item it leaves the list); in
- * prose, a new paragraph, or a line break with Shift (RichTextPlugin).
- * Every shape exports as one `\n`.
+ * The message is markdown with lists and code blocks, so a bare Enter keeps
+ * its structural meaning where there is structure and only sends from
+ * prose. In order: "```" alone on a paragraph opens a code block; inside a
+ * code block, the next line (a second blank line at the end leaves the
+ * block — see `$insertCodeLine`); inside a list, the next item (ListPlugin;
+ * on an empty item it leaves the list); in prose, Shift+Enter is a line
+ * break (RichTextPlugin) and a bare Enter submits. Every newline shape
+ * exports as one `\n`.
  *
  * We listen at LOW priority. While a typeahead menu is open we swallow Enter
  * here (return true) so it can't fall through to RichTextPlugin's
@@ -174,18 +176,19 @@ function ComposerEnterPlugin({
           event?.preventDefault()
           return true
         }
-        if (event && bindingMatchesEvent(SEND_BINDING, event)) {
+        if (event && bindingMatchesEvent(SEND_ANYWHERE_BINDING, event)) {
           event.preventDefault()
           onSubmit()
           return true
         }
         const selection = $getSelection()
-        if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
-          return false
-        }
+        if (!$isRangeSelection(selection)) return false
+        // Opening a fence and adding a code line are caret operations; with a
+        // range selected they fall through to Lexical's default.
+        const collapsed = selection.isCollapsed()
         const anchor = selection.anchor.getNode()
         const block = anchor.getTopLevelElement()
-        if ($isParagraphNode(block)) {
+        if (collapsed && $isParagraphNode(block)) {
           const fence = block.getTextContent().match(FENCE_ONLY_LINE)
           if (fence) {
             event?.preventDefault()
@@ -197,12 +200,18 @@ function ComposerEnterPlugin({
         }
         const container = $getComposerContainer(anchor)
         if ($isCodeNode(container)) {
+          if (!collapsed) return false
           event?.preventDefault()
           $insertCodeLine(container, selection)
           return true
         }
-        // A list item goes to ListPlugin, prose to RichTextPlugin.
-        return false
+        // A list item goes to ListPlugin: next item, or out of the list.
+        if ($isListItemNode(container)) return false
+        // Prose. Shift+Enter is RichTextPlugin's line break; a bare Enter sends.
+        if (!event || event.shiftKey) return false
+        event.preventDefault()
+        onSubmit()
+        return true
       },
       COMMAND_PRIORITY_LOW,
     )

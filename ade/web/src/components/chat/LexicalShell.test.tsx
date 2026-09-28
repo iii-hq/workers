@@ -133,9 +133,41 @@ function markdown(editor: LexicalEditor): string {
   return editor.getEditorState().read(() => $exportComposerMarkdown())
 }
 
-// Only Mod+Enter sends: ⌘↵ on a Mac (the suite's default, see the top of
-// the file), Ctrl+Enter everywhere else. Every other Enter is a new line.
+// Enter sends, Shift+Enter breaks the line, and Mod+Enter (⌘↵ on a Mac —
+// the suite's default, see the top of the file — Ctrl+Enter elsewhere) still
+// sends from anywhere.
 describe('composer keyboard submission', () => {
+  it('Enter submits once without inserting a newline', async () => {
+    const { editor, editable, onSubmit } = await renderComposer()
+    const event = await pressEnter(editable, {})
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(event.defaultPrevented).toBe(true)
+    expect(markdown(editor)).toBe('hello')
+  })
+
+  it('Shift+Enter inserts a newline and never submits', async () => {
+    const { editor, editable, onSubmit } = await renderComposer()
+    await pressEnter(editable, { shiftKey: true })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(markdown(editor)).toBe('hello\n')
+  })
+
+  it('Enter submits with prose selected, without replacing the selection', async () => {
+    const { editor, editable, onSubmit } = await renderComposer({
+      place: () => {
+        const text = $getRoot().getAllTextNodes()[0]
+        text.select(1, 4)
+      },
+    })
+    const event = await pressEnter(editable, {})
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(event.defaultPrevented).toBe(true)
+    expect(markdown(editor)).toBe('hello')
+  })
+
   it('Cmd+Enter submits once without inserting a newline', async () => {
     const { editor, editable, onSubmit } = await renderComposer()
     const event = await pressEnter(editable, { metaKey: true })
@@ -145,39 +177,26 @@ describe('composer keyboard submission', () => {
     expect(markdown(editor)).toBe('hello')
   })
 
-  it('Ctrl+Enter submits on Windows and Linux, where Cmd+Enter does not', async () => {
+  it('Ctrl+Enter submits on Windows and Linux', async () => {
     setUserAgent(WINDOWS_UA)
     const { editor, editable, onSubmit } = await renderComposer()
-    await pressEnter(editable, { metaKey: true })
-    expect(onSubmit).not.toHaveBeenCalled()
-    expect(markdown(editor)).toBe('hello\n')
-
     const event = await pressEnter(editable, { ctrlKey: true })
+
     expect(onSubmit).toHaveBeenCalledTimes(1)
     expect(event.defaultPrevented).toBe(true)
-    expect(markdown(editor)).toBe('hello\n')
-  })
-
-  it('does not submit a disabled composer with Cmd+Enter', async () => {
-    const { editable, onSubmit } = await renderComposer({ disabled: true })
-    await pressEnter(editable, { metaKey: true })
-
-    expect(onSubmit).not.toHaveBeenCalled()
+    expect(markdown(editor)).toBe('hello')
   })
 
   it.each([
     ['Enter', {}],
-    ['Shift+Enter', { shiftKey: true }],
-    ['Ctrl+Enter', { ctrlKey: true }],
-    ['Cmd+Shift+Enter', { metaKey: true, shiftKey: true }],
+    ['Cmd+Enter', { metaKey: true }],
   ] as const)(
-    '%s inserts a newline and never submits',
+    'does not submit a disabled composer with %s',
     async (_, modifiers) => {
-      const { editor, editable, onSubmit } = await renderComposer()
+      const { editable, onSubmit } = await renderComposer({ disabled: true })
       await pressEnter(editable, modifiers)
 
       expect(onSubmit).not.toHaveBeenCalled()
-      expect(markdown(editor)).toBe('hello\n')
     },
   )
 })
