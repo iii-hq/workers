@@ -616,6 +616,18 @@ async fn generate_step(
         &policy,
         &functions,
     );
+    // The snapshot can lag a fresh stack and miss internal ids, so an id it
+    // does not list is no proof of removal: ask `engine::functions::info`
+    // through agents::preload_contracts, the fallback the freeze used
+    // (MOT-4868, MOT-4929).
+    let unlisted = unlisted_preloaded(
+        record.options.preloaded_contracts.as_ref(),
+        &functions,
+        &policy,
+    );
+    let live = crate::agents::preload_contracts(deps, &unlisted, &policy)
+        .await
+        .2;
     // Preloaded contracts that drifted from the live registry: named per id
     // (the frozen block is never rewritten). The same drift is told once
     // while that notice is still in the window.
@@ -623,6 +635,7 @@ async fn generate_step(
         record.options.preloaded_contracts.as_ref(),
         &functions,
         &policy,
+        &live,
     )
     .filter(|text| {
         crate::window::latest_notice_text(&entries, &window, PRELOADED_STALE_NOTICE_KIND)
@@ -3594,6 +3607,27 @@ pub(crate) fn registry_notice(
     }
 }
 
+/// The frozen preloaded ids the cached snapshot cannot vouch for: frozen
+/// with a contract, permitted, and absent from the snapshot. The freeze
+/// fell back to `engine::functions::info` for such ids, so
+/// [`preloaded_stale_notice`] judges them by that source (`live`).
+pub(crate) fn unlisted_preloaded(
+    frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
+    snapshot: &crate::discovery::FunctionsSnapshot,
+    policy: &CompiledPolicy,
+) -> Vec<String> {
+    frozen
+        .into_iter()
+        .flatten()
+        .filter(|(id, digest)| {
+            digest.is_some()
+                && policy.allows(id)
+                && crate::agents::effective_contract(id, policy, snapshot).is_none()
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 /// Name the profile's preloaded contracts that no longer match the live
 /// registry. The frozen `<preloaded_functions>` block in the prompt is never
 /// rewritten (it is the shared cache prefix), so the correction rides as an
@@ -3604,6 +3638,7 @@ pub(crate) fn preloaded_stale_notice(
     frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
     snapshot: &crate::discovery::FunctionsSnapshot,
     policy: &CompiledPolicy,
+    live: &std::collections::BTreeMap<String, Option<String>>,
 ) -> Option<String> {
     let frozen = frozen?;
     let (mut changed, mut removed, mut available, mut denied) =
@@ -3617,7 +3652,13 @@ pub(crate) fn preloaded_stale_notice(
         }
         let descriptor = crate::agents::effective_contract(id, policy, snapshot);
         match (digest, descriptor) {
-            (Some(_), None) => removed.push(id.as_str()),
+            // Not in the snapshot: `live` (see [`unlisted_preloaded`]) says
+            // whether the engine still has it, and with which contract.
+            (Some(frozen_digest), None) => match live.get(id) {
+                Some(Some(current)) if current == frozen_digest => {}
+                Some(Some(_)) => changed.push(id.as_str()),
+                _ => removed.push(id.as_str()),
+            },
             (Some(frozen_digest), Some(d)) if d.request_schema.is_some() => {
                 if crate::agents::digest_of(&d) != *frozen_digest {
                     changed.push(id.as_str());
@@ -3759,6 +3800,16 @@ mod tests {
                 "state::get harness_deletion_guard: invocation timed out".into()
             ))
         ));
+    }
+
+    /// `preloaded_stale_notice` without a live lookup: an unlisted frozen id
+    /// reads as removed.
+    fn stale(
+        frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
+        snapshot: &crate::discovery::FunctionsSnapshot,
+        policy: &crate::policy::CompiledPolicy,
+    ) -> Option<String> {
+        super::preloaded_stale_notice(frozen, snapshot, policy, &Default::default())
     }
 
     fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {
@@ -4311,7 +4362,7 @@ mod tests {
                 )
             })
             .collect();
-        let notice = super::preloaded_stale_notice(Some(&frozen), &public_catalog, &policy);
+        let notice = stale(Some(&frozen), &public_catalog, &policy);
         assert!(
             notice.is_none(),
             "authorized effective contracts must not be removed by the public catalog: {notice:?}"
@@ -4363,7 +4414,7 @@ mod tests {
         snapshot
             .internal_ids
             .insert("engine::functions::info".to_string());
-        let notice = super::preloaded_stale_notice(Some(&frozen), &snapshot, &policy).unwrap();
+        let notice = stale(Some(&frozen), &snapshot, &policy).unwrap();
         assert_eq!(
             notice,
             "NOTE: preloaded function contracts in your instructions are out of date — \
@@ -4372,12 +4423,12 @@ mod tests {
              Do not call removed or denied functions."
         );
         // Nothing frozen, or nothing drifted: no notice.
-        assert!(super::preloaded_stale_notice(None, &snapshot, &policy).is_none());
+        assert!(stale(None, &snapshot, &policy).is_none());
         let steady = std::collections::BTreeMap::from([(
             "same::fn".to_string(),
             digest("same::fn", "unchanged"),
         )]);
-        assert!(super::preloaded_stale_notice(Some(&steady), &snapshot, &policy).is_none());
+        assert!(stale(Some(&steady), &snapshot, &policy).is_none());
     }
 
     #[test]
@@ -4878,6 +4929,50 @@ mod tests {
     }
 
     #[test]
+    fn an_unlisted_preloaded_id_is_judged_by_the_live_lookup_not_the_snapshot() {
+        use crate::{agents::contract_digest, policy::CompiledPolicy, types::turn::FunctionPolicy};
+        use std::collections::BTreeMap;
+        let all = CompiledPolicy::from(Some(&FunctionPolicy {
+            allow: vec!["*".into()],
+            ..Default::default()
+        }));
+        let schema = serde_json::json!({ "type": "object" });
+        let digest = contract_digest("state::get", Some("Get a value"), Some(schema.clone()));
+        let frozen = BTreeMap::from([
+            ("state::get".to_string(), Some(digest.clone())),
+            ("nope::missing".to_string(), None),
+        ]);
+        // A fresh stack: the snapshot has not seen state::get yet (MOT-4929).
+        let lagging = snap(&[]);
+        assert_eq!(
+            super::unlisted_preloaded(Some(&frozen), &lagging, &all),
+            ["state::get"],
+            "only a frozen contract the snapshot cannot vouch for is looked up"
+        );
+
+        let live = |value: Option<String>| BTreeMap::from([("state::get".to_string(), value)]);
+        assert!(
+            super::preloaded_stale_notice(Some(&frozen), &lagging, &all, &live(Some(digest)))
+                .is_none(),
+            "still registered with the same contract: no notice"
+        );
+        let changed = super::preloaded_stale_notice(
+            Some(&frozen),
+            &lagging,
+            &all,
+            &live(Some("other".into())),
+        )
+        .unwrap();
+        assert!(changed.contains("changed: `state::get`"), "{changed}");
+        let removed =
+            super::preloaded_stale_notice(Some(&frozen), &lagging, &all, &live(None)).unwrap();
+        assert!(
+            removed.contains("no longer registered: `state::get`"),
+            "{removed}"
+        );
+    }
+
+    #[test]
     fn effective_notice_matrix_keeps_true_drift_and_rejects_prefix_exceptions() {
         use crate::{
             agents::{contract_digest, effective_contract},
@@ -4913,16 +5008,15 @@ mod tests {
                     Some(schema.clone()),
                 )),
             )]);
-            assert!(super::preloaded_stale_notice(Some(&frozen), &snap(&live), &all).is_none());
-            let removed = super::preloaded_stale_notice(Some(&frozen), &snap(&[]), &all).unwrap();
+            assert!(stale(Some(&frozen), &snap(&live), &all).is_none());
+            let removed = stale(Some(&frozen), &snap(&[]), &all).unwrap();
             assert!(removed.contains(&format!("no longer registered: `{id}`")));
             assert!(
                 !removed.contains("with engine::functions::info"),
                 "permitted but absent introspection is not recommended: {removed}"
             );
             if id != "engine::functions::info" {
-                let removed =
-                    super::preloaded_stale_notice(Some(&frozen), &with_info, &all).unwrap();
+                let removed = stale(Some(&frozen), &with_info, &all).unwrap();
                 assert!(
                     removed.contains("with engine::functions::info"),
                     "permitted and present introspection is named: {removed}"
@@ -4931,11 +5025,11 @@ mod tests {
             let mut internal_only = snap(&[]);
             internal_only.internal_ids.insert(id.to_string());
             assert!(
-                super::preloaded_stale_notice(Some(&frozen), &internal_only, &all).is_none(),
+                stale(Some(&frozen), &internal_only, &all).is_none(),
                 "an id the registry knows but the public inventory hides is present, not \
                  removed (its schema is not judged: see effective_contract)"
             );
-            let changed = super::preloaded_stale_notice(
+            let changed = stale(
                 Some(&frozen),
                 &snap(&[desc(id, Some(serde_json::json!({"type":"string"})))]),
                 &all,
@@ -4944,23 +5038,15 @@ mod tests {
             assert!(changed.contains(&format!("changed: `{id}`")));
             for schema in [None, Some(serde_json::Value::Null)] {
                 assert!(
-                    super::preloaded_stale_notice(Some(&frozen), &snap(&[desc(id, schema)]), &all)
-                        .is_none(),
+                    stale(Some(&frozen), &snap(&[desc(id, schema)]), &all).is_none(),
                     "no schema is unjudged"
                 );
             }
             let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
-            assert!(
-                super::preloaded_stale_notice(Some(&missing), &snap(&live), &all)
-                    .unwrap()
-                    .contains("now available")
-            );
-            assert!(super::preloaded_stale_notice(
-                Some(&missing),
-                &snap(&live),
-                &CompiledPolicy::from(None)
-            )
-            .is_none());
+            assert!(stale(Some(&missing), &snap(&live), &all)
+                .unwrap()
+                .contains("now available"));
+            assert!(stale(Some(&missing), &snap(&live), &CompiledPolicy::from(None)).is_none());
         }
         for id in ["engine::register_trigger", "engine::unregister_trigger"] {
             let effective = effective_contract(id, &all, &snap(&[])).unwrap();
@@ -4973,7 +5059,7 @@ mod tests {
                 )),
             )]);
             assert!(
-                super::preloaded_stale_notice(
+                stale(
                     Some(&frozen),
                     &snap(&[desc(id, Some(schema.clone()))]),
                     &all
@@ -4985,22 +5071,20 @@ mod tests {
                 id.to_string(),
                 Some(contract_digest(id, Some("native"), Some(schema.clone()))),
             )]);
-            let changed = super::preloaded_stale_notice(Some(&legacy), &snap(&[]), &all).unwrap();
+            let changed = stale(Some(&legacy), &snap(&[]), &all).unwrap();
             assert!(changed.contains("changed:"));
             assert!(!changed.contains("no longer registered"));
             let missing = std::collections::BTreeMap::from([(id.to_string(), None)]);
-            assert!(
-                super::preloaded_stale_notice(Some(&missing), &snap(&[]), &all)
-                    .unwrap()
-                    .contains("now available")
-            );
+            assert!(stale(Some(&missing), &snap(&[]), &all)
+                .unwrap()
+                .contains("now available"));
             let denied = CompiledPolicy::from(Some(&FunctionPolicy {
                 allow: vec!["*".into()],
                 deny: vec![id.into(), "engine::functions::info".into()],
                 ..Default::default()
             }));
-            assert!(super::preloaded_stale_notice(Some(&missing), &with_info, &denied).is_none());
-            let notice = super::preloaded_stale_notice(Some(&frozen), &with_info, &denied).unwrap();
+            assert!(stale(Some(&missing), &with_info, &denied).is_none());
+            let notice = stale(Some(&frozen), &with_info, &denied).unwrap();
             assert!(notice.contains("not permitted in this session"));
             assert!(
                 !notice.contains("engine::functions::info"),
@@ -5040,6 +5124,6 @@ mod tests {
             "fixture must be non-idempotent under compaction to guard anything"
         );
         let frozen = std::collections::BTreeMap::from([(id.to_string(), Some(frozen_digest))]);
-        assert!(super::preloaded_stale_notice(Some(&frozen), &live, &all).is_none());
+        assert!(stale(Some(&frozen), &live, &all).is_none());
     }
 }
