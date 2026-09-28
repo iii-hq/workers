@@ -74,6 +74,25 @@ pub enum TunnelProbe {
     NotInstalled,
     /// Declared but not answering (restarting, stopped) or a transient error.
     NotResponding(String),
+    /// Not registered, and compose could not say whether it is declared.
+    Unconfirmed,
+}
+
+/// `compose::status` routed the way iii-directory and the harness route it:
+/// the supervisor's daemon namespace and compose file when set, otherwise this
+/// worker's own namespace with an empty payload. Returns (payload, namespace).
+pub fn compose_status_route(
+    namespace: Option<&str>,
+    file: Option<&str>,
+) -> (Value, Option<String>) {
+    let mut payload = serde_json::Map::new();
+    if let Some(file) = file {
+        payload.insert("file".into(), json!(file));
+    }
+    if let Some(namespace) = namespace {
+        payload.insert("namespace".into(), json!(namespace));
+    }
+    (Value::Object(payload), namespace.map(str::to_owned))
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -146,6 +165,16 @@ pub fn evaluate(
             format!("quick-tunnel did not answer: {e}"),
             None,
         ),
+        Err(TunnelProbe::Unconfirmed) => check(
+            "quick_tunnel",
+            "quick-tunnel worker",
+            CheckState::Unknown,
+            "quick-tunnel is not registered, and compose could not confirm whether it is installed.".into(),
+            Some(SetupFix::InstallWorker {
+                worker: QUICK_TUNNEL_WORKER.into(),
+                command: "compose::add { worker: \"quick-tunnel\" }".into(),
+            }),
+        ),
     };
     let cloudflared = match tunnel {
         Ok(status) => match status.pointer("/prerequisites/cloudflared") {
@@ -194,7 +223,7 @@ pub fn evaluate(
             None,
         ),
         // quick-tunnel exists but did not answer: unverifiable, never a blocker.
-        Err(TunnelProbe::NotResponding(_)) => check(
+        Err(TunnelProbe::NotResponding(_) | TunnelProbe::Unconfirmed) => check(
             "cloudflared",
             "cloudflared binary",
             CheckState::Unknown,
@@ -262,18 +291,24 @@ pub fn blockers(checks: &[SetupCheck]) -> Option<String> {
 }
 
 impl Service {
-    /// A missing quick-tunnel function is only "not installed" when compose
-    /// does not declare the worker either; a declared one is restarting.
-    async fn quick_tunnel_declared(&self) -> bool {
-        self.invoke("compose::status", json!({}))
+    /// Whether compose declares quick-tunnel: Some(declared) when compose
+    /// answered, None when it could not be asked (never proof of absence).
+    async fn quick_tunnel_declared(&self) -> Option<bool> {
+        let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let (payload, namespace) = compose_status_route(
+            env("III_COMPOSE_NAMESPACE").as_deref(),
+            env("III_COMPOSE_FILE").as_deref(),
+        );
+        let status = self
+            .invoke_target("compose::status", payload, namespace.as_deref(), None)
             .await
-            .ok()
-            .and_then(|status| status["containers"].as_array().cloned())
-            .is_some_and(|containers| {
-                containers
-                    .iter()
-                    .any(|c| c["container"] == QUICK_TUNNEL_WORKER)
-            })
+            .ok()?;
+        let containers = status["containers"].as_array()?;
+        Some(
+            containers
+                .iter()
+                .any(|c| c["container"] == QUICK_TUNNEL_WORKER),
+        )
     }
 
     /// The http worker's configuration id and raw value; None when http
@@ -300,12 +335,12 @@ impl Service {
             .await
         {
             Ok(status) => Ok(status),
-            Err(e) if function_missing(&e) => Err(if self.quick_tunnel_declared().await {
-                TunnelProbe::NotResponding(
+            Err(e) if function_missing(&e) => Err(match self.quick_tunnel_declared().await {
+                Some(true) => TunnelProbe::NotResponding(
                     "declared in compose but not answering (restarting or stopped)".into(),
-                )
-            } else {
-                TunnelProbe::NotInstalled
+                ),
+                Some(false) => TunnelProbe::NotInstalled,
+                None => TunnelProbe::Unconfirmed,
             }),
             Err(e) => Err(TunnelProbe::NotResponding(e.to_string())),
         };

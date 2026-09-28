@@ -19,6 +19,9 @@ pub const TRUSTED_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/usr
 
 /// How long a successful `--version` probe of an unchanged binary is reused.
 const PROBE_TTL: Duration = Duration::from_secs(60);
+/// A failed probe of a resolved binary (hang, bad exit) is reused briefly, so
+/// concurrent status readers do not each wait out the 5 s timeout.
+const FAILED_PROBE_TTL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct Prerequisites {
@@ -138,11 +141,14 @@ impl ProbeCache {
         let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         let mut slot = self.slot.lock().await;
         if let Some(cached) = slot.as_ref() {
-            if cached.path == path
-                && cached.modified == modified
-                && cached.at.elapsed() < PROBE_TTL
-                && cached.result.found
-            {
+            let ttl = if cached.result.found {
+                PROBE_TTL
+            } else {
+                FAILED_PROBE_TTL
+            };
+            // The lock is held across the probe: concurrent readers wait for
+            // one in-flight probe and then share its cached result.
+            if cached.path == path && cached.modified == modified && cached.at.elapsed() < ttl {
                 return cached.result.clone();
             }
         }
@@ -245,5 +251,32 @@ mod tests {
             Some("cloudflared version 2")
         );
         assert_eq!(count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failing_binary_is_probed_once_per_short_window() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        let exe = dir.path().join("cloudflared");
+        std::fs::write(
+            &exe,
+            format!("#!/bin/sh\necho run >> {}\nexit 3\n", runs.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cache = std::sync::Arc::new(ProbeCache::default());
+        let path = exe.to_str().unwrap().to_owned();
+        let readers: Vec<_> = (0..3)
+            .map(|_| {
+                let (cache, path) = (cache.clone(), path.clone());
+                tokio::spawn(async move { cache.check(&path).await })
+            })
+            .collect();
+        for reader in readers {
+            assert!(!reader.await.unwrap().found);
+        }
+        let count = std::fs::read_to_string(&runs).unwrap().lines().count();
+        assert_eq!(count, 1, "concurrent readers share one failed probe");
     }
 }

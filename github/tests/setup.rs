@@ -1,5 +1,5 @@
 use github::webhooks::setup::{
-    blockers, evaluate, function_missing, CheckState, SetupFix, TunnelProbe,
+    blockers, compose_status_route, evaluate, function_missing, CheckState, SetupFix, TunnelProbe,
     CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
 };
 use github::webhooks::Failure;
@@ -146,4 +146,31 @@ fn only_the_structured_function_not_found_code_means_missing() {
     assert!(!function_missing(&Failure::Invalid(
         "remote error (function_not_found): not found in namespace".into()
     )));
+}
+
+#[test]
+fn unconfirmed_absence_offers_install_but_never_blocks() {
+    let checks = evaluate(&Err(TunnelProbe::Unconfirmed), &listener_on());
+    assert_eq!(checks[0].state, CheckState::Unknown);
+    assert!(matches!(
+        &checks[0].fix,
+        Some(SetupFix::InstallWorker { .. })
+    ));
+    assert_eq!(checks[1].state, CheckState::Unknown);
+    assert!(blockers(&checks).is_none());
+}
+
+#[test]
+fn compose_status_is_routed_like_the_other_workers() {
+    let (payload, namespace) =
+        compose_status_route(Some("daemon-ns"), Some("/p/worker-compose.yaml"));
+    assert_eq!(namespace.as_deref(), Some("daemon-ns"));
+    assert_eq!(
+        payload,
+        json!({"file": "/p/worker-compose.yaml", "namespace": "daemon-ns"})
+    );
+    // Unsupervised: this worker's own namespace, empty payload.
+    let (payload, namespace) = compose_status_route(None, None);
+    assert!(namespace.is_none());
+    assert_eq!(payload, json!({}));
 }

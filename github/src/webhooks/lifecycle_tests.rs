@@ -847,3 +847,20 @@ async fn turning_on_the_listener_keeps_an_existing_one_unless_a_port_is_asked() 
     );
     s.iii.shutdown_async().await;
 }
+
+#[tokio::test]
+async fn watch_gate_passes_when_compose_cannot_be_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    bus.reply(
+        "quick-tunnel::status",
+        Err(not_found("quick-tunnel::status")),
+    );
+    // An unreachable compose is never proof that quick-tunnel is absent.
+    bus.reply("compose::status", Err(not_found("compose::status")));
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply("configuration::get", Ok(listener_on()));
+    s.require_setup().await.unwrap();
+    s.iii.shutdown_async().await;
+}
