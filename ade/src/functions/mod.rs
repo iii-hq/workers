@@ -8,6 +8,7 @@
 //! screen to the human.
 
 pub mod status;
+pub mod subscribe;
 pub mod working_directory;
 pub mod workspace;
 
@@ -41,8 +42,9 @@ pub fn register_all(
         tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
     }
     workspace::register(iii, workspace);
+    subscribe::register(iii);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}"
+        "registered console::status, console::ui-manifest, console::subscribe, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{get,set,list,open,close}}"
     );
 }
 

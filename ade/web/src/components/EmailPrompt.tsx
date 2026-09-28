@@ -12,16 +12,16 @@ import { useEmailPrompt } from '@/hooks/use-email-prompt'
 import { isEmailish } from '@/lib/email-prompt'
 import { getIiiClient } from '@/lib/iii-client'
 
-/** The onboarding worker owns the list; the console only hands it an address. */
-const SUBSCRIBE_FN = 'onboarding::subscribe'
+/** This worker owns the signup; the browser only hands it an address. */
+const SUBSCRIBE_FN = 'console::subscribe'
 const SUBSCRIBE_TIMEOUT_MS = 20_000
 
 /**
  * Asks once for an email address, after thirty minutes of console use.
  *
- * The browser sends the address to `onboarding::subscribe` over the engine
- * WebSocket and nowhere else. That worker adds it to the product update list
- * and announces it for the engine to write to this machine's person; the
+ * The browser sends the address to `console::subscribe` over the engine
+ * WebSocket and nowhere else. The console worker adds it to the product update
+ * list and announces it for the engine to write to this machine's person; the
  * browser never talks to the list or to the analytics vendor.
  */
 export function EmailPrompt() {
@@ -53,8 +53,13 @@ export function EmailPrompt() {
       } catch (cause) {
         // A failed signup keeps the box open with the address intact, and the
         // record stays `pending` so nothing is silently lost.
+        // The SDK rejects with the engine's plain `{ code, message }` object,
+        // not an `Error`, so read the message off whatever arrived.
+        const message = (cause as { message?: unknown } | null)?.message
         setError(
-          cause instanceof Error ? cause.message : 'could not add that address',
+          typeof message === 'string' && message
+            ? message
+            : 'could not add that address',
         )
       } finally {
         setSending(false)
@@ -73,8 +78,8 @@ export function EmailPrompt() {
         <DialogTitle className="pr-8 text-[14px]">Product updates</DialogTitle>
         <DialogDescription className="mt-2 text-[13px] leading-relaxed">
           iii moves quickly. If you&apos;d like to stay up to date on our work
-          please enter your email for roadmap, product, and educational
-          updates. We won&apos;t share your email with anyone else.
+          please enter your email for roadmap, product, and educational updates.
+          We won&apos;t share your email with anyone else.
         </DialogDescription>
         <form
           className="mt-4 flex flex-col gap-3"
