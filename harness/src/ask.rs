@@ -7,6 +7,10 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::trigger::ResultData;
+use crate::types::content::ContentBlock;
 
 /// Fewest questions one `harness::ask` call may carry.
 pub const MIN_QUESTIONS: usize = 1;
@@ -115,6 +119,42 @@ fn check_text(field: &str, value: &str, max: Option<usize>) -> Result<(), String
         }
     }
     Ok(())
+}
+
+/// The result of an accepted `harness::ask`: the card data for the UI in
+/// `details` and, for the model, the instruction to stop and wait.
+pub fn awaiting_result(
+    session_id: &str,
+    turn_id: &str,
+    call_id: &str,
+    req: &AskRequest,
+) -> ResultData {
+    ResultData {
+        content: vec![ContentBlock::text(AWAITING_TEXT)],
+        is_error: false,
+        details: serde_json::json!({
+            "status": "awaiting_answer",
+            "question_id": call_id,
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "questions": req.questions,
+        }),
+    }
+}
+
+/// What the model reads after a successful ask.
+const AWAITING_TEXT: &str = "The questions are now shown to the user as a card of options. \
+     Their answer arrives as their next message. \
+     Do not repeat the questions in text. End your turn now.";
+
+/// The `is_error` result for an `ask` that cannot be shown (invalid
+/// arguments, no human to answer, a second ask in the step).
+pub fn refused(reason: &str) -> ResultData {
+    ResultData {
+        content: vec![ContentBlock::text(reason)],
+        is_error: true,
+        details: Value::Null,
+    }
 }
 
 #[cfg(test)]
@@ -287,5 +327,91 @@ mod tests {
             question("Second", &["Yes", "No"]),
         ]);
         assert_eq!(validate(&req), Ok(()));
+    }
+
+    fn only_text(result: &ResultData) -> &str {
+        assert_eq!(result.content.len(), 1, "{:?}", result.content);
+        match &result.content[0] {
+            ContentBlock::Text { text } => text,
+            other => panic!("expected one text block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn awaiting_result_carries_the_card_in_details() {
+        // The second question omits multi_select and descriptions: the wire
+        // shape fills the default and leaves descriptions out.
+        let req: AskRequest = serde_json::from_value(json!({ "questions": [
+            {
+                "header": "Abordagem",
+                "question": "Quando o agente pergunta, o turno pausa ou termina?",
+                "multi_select": false,
+                "options": [
+                    { "label": "Pausa o turno", "description": "Como AskUserQuestion" },
+                    { "label": "Encerra o turno", "description": "Resposta vira a próxima mensagem" }
+                ]
+            },
+            {
+                "header": "Canais",
+                "question": "Onde avisar?",
+                "options": [ { "label": "Console" }, { "label": "Slack" } ]
+            }
+        ] }))
+        .unwrap();
+
+        let result = awaiting_result("sess_1", "turn_3", "call_7", &req);
+
+        assert!(!result.is_error);
+        assert_eq!(
+            result.details,
+            json!({
+                "status": "awaiting_answer",
+                "question_id": "call_7",
+                "session_id": "sess_1",
+                "turn_id": "turn_3",
+                "questions": [
+                    {
+                        "header": "Abordagem",
+                        "question": "Quando o agente pergunta, o turno pausa ou termina?",
+                        "multi_select": false,
+                        "options": [
+                            { "label": "Pausa o turno", "description": "Como AskUserQuestion" },
+                            { "label": "Encerra o turno", "description": "Resposta vira a próxima mensagem" }
+                        ]
+                    },
+                    {
+                        "header": "Canais",
+                        "question": "Onde avisar?",
+                        "multi_select": false,
+                        "options": [ { "label": "Console" }, { "label": "Slack" } ]
+                    }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn awaiting_result_tells_the_model_to_wait_for_the_answer() {
+        let req = request(vec![valid_question()]);
+        let result = awaiting_result("sess_1", "turn_3", "call_7", &req);
+        let text = only_text(&result).to_lowercase();
+        for phrase in [
+            "shown to the user",
+            "card of options",
+            "next message",
+            "do not repeat the questions",
+            "end your turn now",
+        ] {
+            assert!(text.contains(phrase), "missing {phrase:?} in {text:?}");
+        }
+    }
+
+    #[test]
+    fn refused_is_an_error_carrying_the_reason() {
+        let reason = "no human is available to answer; report blocked";
+        let result = refused(reason);
+        assert!(result.is_error);
+        assert_eq!(only_text(&result), reason);
+        assert_eq!(result.details, json!(null));
     }
 }
