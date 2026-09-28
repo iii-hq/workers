@@ -8,6 +8,8 @@ use super::*;
 pub const QUICK_TUNNEL_WORKER: &str = "quick-tunnel";
 /// quick-tunnel's default `webhooks` target is http://127.0.0.1:3112.
 pub const DEFAULT_LISTENER_PORT: u16 = 3112;
+/// Polls (300 ms apart) waiting for http to apply a new listener: about 3 s.
+const LISTENER_APPLY_POLLS: usize = 10;
 /// Shown when quick-tunnel cannot report its own install pointer.
 pub const CLOUDFLARED_INSTALL_URL: &str =
     "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
@@ -78,6 +80,25 @@ pub enum TunnelProbe {
     Unconfirmed,
 }
 
+/// The http listener as saved and as actually bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListenerProbe {
+    /// `webhook_listener` in the http configuration (desired).
+    pub configured: Option<Value>,
+    /// `http::webhook-listener::status` (`applied`, `last_reload_error`);
+    /// None when this http version cannot report it.
+    pub status: Option<Value>,
+}
+
+fn host_port(listener: &Value) -> (String, u64) {
+    (
+        listener["host"].as_str().unwrap_or("127.0.0.1").to_owned(),
+        listener["port"]
+            .as_u64()
+            .unwrap_or(u64::from(DEFAULT_LISTENER_PORT)),
+    )
+}
+
 /// `compose::status` routed the way iii-directory and the harness route it:
 /// the supervisor's daemon namespace and compose file when set, otherwise this
 /// worker's own namespace with an empty payload. Returns (payload, namespace).
@@ -138,7 +159,7 @@ pub fn function_missing(e: &Failure) -> bool {
 /// Build the three checks from what the workers answered. Pure for tests.
 pub fn evaluate(
     tunnel: &std::result::Result<Value, TunnelProbe>,
-    listener: &std::result::Result<Option<Value>, String>,
+    listener: &std::result::Result<Option<ListenerProbe>, String>,
 ) -> Vec<SetupCheck> {
     let quick = match tunnel {
         Ok(_) => check(
@@ -232,18 +253,7 @@ pub fn evaluate(
         ),
     };
     let http = match listener {
-        Ok(Some(value)) => match value.get("webhook_listener").filter(|l| l.is_object()) {
-            Some(l) => check(
-                "http_listener",
-                "http webhook listener",
-                CheckState::Ok,
-                format!(
-                    "Listening on {}:{}.",
-                    l["host"].as_str().unwrap_or("127.0.0.1"),
-                    l["port"].as_u64().unwrap_or(u64::from(DEFAULT_LISTENER_PORT))
-                ),
-                None,
-            ),
+        Ok(Some(probe)) => match &probe.configured {
             None => check(
                 "http_listener",
                 "http webhook listener",
@@ -253,6 +263,51 @@ pub fn evaluate(
                     port: DEFAULT_LISTENER_PORT,
                 }),
             ),
+            Some(configured) => {
+                let (host, port) = host_port(configured);
+                let applied = probe
+                    .status
+                    .as_ref()
+                    .map(|s| s["applied"].clone())
+                    .filter(|a| a.is_object());
+                let reload_error = probe
+                    .status
+                    .as_ref()
+                    .and_then(|s| s["last_reload_error"].as_str());
+                match (&probe.status, applied.as_ref().map(host_port), reload_error) {
+                    (None, _, _) => check(
+                        "http_listener",
+                        "http webhook listener",
+                        CheckState::Unknown,
+                        format!("Saved as {host}:{port}, but this http version cannot confirm the listener is bound; update it."),
+                        Some(SetupFix::UpdateWorker {
+                            worker: "http".into(),
+                            command: "compose::update { worker: \"http\" }".into(),
+                        }),
+                    ),
+                    (Some(_), Some(bound), _) if bound == (host.clone(), port) => check(
+                        "http_listener",
+                        "http webhook listener",
+                        CheckState::Ok,
+                        format!("Listening on {host}:{port}."),
+                        None,
+                    ),
+                    (Some(_), _, Some(error)) => check(
+                        "http_listener",
+                        "http webhook listener",
+                        CheckState::Missing,
+                        format!("Saved as {host}:{port}, but http could not bind it: {error}. Choose a free port."),
+                        None,
+                    ),
+                    (Some(_), _, None) => check(
+                        "http_listener",
+                        "http webhook listener",
+                        CheckState::Unknown,
+                        format!("Saved as {host}:{port}; waiting for http to apply it."),
+                        None,
+                    ),
+                }
+            }
         },
         Ok(None) => check(
             "http_listener",
@@ -328,6 +383,34 @@ impl Service {
         Ok(Some((id, got["value"].clone())))
     }
 
+    /// The applied listener; None when http cannot report it (older version).
+    async fn listener_status(&self) -> Result<Option<Value>> {
+        match self
+            .invoke("http::webhook-listener::status", json!({}))
+            .await
+        {
+            Ok(status) => Ok(Some(status)),
+            Err(e) if function_missing(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Saved and applied listener; None when http predates the listener.
+    async fn listener_probe(&self) -> Result<Option<ListenerProbe>> {
+        let Some((_, value)) = self.http_config().await? else {
+            return Ok(None);
+        };
+        let configured = value
+            .get("webhook_listener")
+            .filter(|l| l.is_object())
+            .cloned();
+        let status = match configured {
+            Some(_) => self.listener_status().await?,
+            None => None,
+        };
+        Ok(Some(ListenerProbe { configured, status }))
+    }
+
     pub(super) async fn setup_status(&self, _req: SetupStatusRequest) -> Result<SetupStatus> {
         let live = self.cell.read().await.webhooks.clone();
         let tunnel = match self
@@ -344,11 +427,7 @@ impl Service {
             }),
             Err(e) => Err(TunnelProbe::NotResponding(e.to_string())),
         };
-        let listener = self
-            .http_config()
-            .await
-            .map(|c| c.map(|(_, value)| value))
-            .map_err(|e| e.to_string());
+        let listener = self.listener_probe().await.map_err(|e| e.to_string());
         let checks = evaluate(&tunnel, &listener);
         let active = self.store.is_some();
         Ok(SetupStatus {
@@ -397,12 +476,27 @@ impl Service {
             .and_then(|l| l["host"].as_str())
             .unwrap_or("127.0.0.1")
             .to_owned();
-        value["webhook_listener"] = json!({
-            "host": host,
-            "port": req.port.unwrap_or(DEFAULT_LISTENER_PORT),
-        });
+        let port = req.port.unwrap_or(DEFAULT_LISTENER_PORT);
+        value["webhook_listener"] = json!({ "host": host, "port": port });
         self.invoke("configuration::set", json!({"id": id, "value": value}))
             .await?;
+        // http applies the change asynchronously: wait (bounded) until the
+        // requested listener is bound or http reports why it is not.
+        let wanted = (host, u64::from(port));
+        for _ in 0..LISTENER_APPLY_POLLS {
+            match self.listener_status().await? {
+                None => break,
+                Some(status) => {
+                    let bound = Some(&status["applied"])
+                        .filter(|a| a.is_object())
+                        .map(host_port);
+                    if bound.as_ref() == Some(&wanted) || status["last_reload_error"].is_string() {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
         self.setup_status(SetupStatusRequest {}).await
     }
 

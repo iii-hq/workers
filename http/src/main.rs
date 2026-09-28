@@ -124,6 +124,12 @@ async fn main() -> Result<()> {
     )
     .map_err(anyhow::Error::msg)
     .context("binding configuration trigger")?;
+    configuration::register_listener_status(
+        &iii,
+        boot.config.clone(),
+        boot.control.clone(),
+        boot.apply_lock.clone(),
+    );
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-http shutting down");

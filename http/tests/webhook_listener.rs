@@ -43,7 +43,26 @@ async fn start(enabled: bool) -> (FakeEngine, BootHandle) {
         boot.apply_lock.clone(),
     )
     .unwrap();
+    configuration::register_listener_status(
+        &engine.iii,
+        boot.config.clone(),
+        boot.control.clone(),
+        boot.apply_lock.clone(),
+    );
     (engine, boot)
+}
+
+async fn listener_status(engine: &FakeEngine) -> Value {
+    engine
+        .iii
+        .trigger(TriggerRequest {
+            function_id: "http::webhook-listener::status".into(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5000),
+        })
+        .await
+        .unwrap()
 }
 
 async fn bind(
@@ -280,6 +299,17 @@ async fn reload_enables_rebinds_disables_and_rolls_back_both_listeners() {
     assert_eq!(boot.current_addr().await, Some(original_normal));
     assert_eq!(boot.current_webhook_addr().await, Some(first));
     assert_eq!(boot.config.read().await.to_json(), next.to_json());
+    // The status reports the listener still bound, not the rejected request,
+    // plus why the reload failed.
+    let status = listener_status(&engine).await;
+    assert_eq!(
+        status["applied"]["port"],
+        json!(next.webhook_listener.as_ref().unwrap().port)
+    );
+    assert!(
+        status["last_reload_error"].as_str().is_some(),
+        "a failed bind is reported: {status}"
+    );
     let _released_candidate = TcpListener::bind(candidate_addr).await.unwrap();
 
     let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -288,6 +318,12 @@ async fn reload_enables_rebinds_disables_and_rolls_back_both_listeners() {
     reload(&engine, &next).await;
     let second = boot.current_webhook_addr().await.unwrap();
     assert_ne!(first, second);
+    let status = listener_status(&engine).await;
+    assert_eq!(status["applied"]["port"], json!(second.port()));
+    assert!(
+        status["last_reload_error"].is_null(),
+        "cleared by success: {status}"
+    );
     assert_closed(first).await;
     assert_eq!(
         client()

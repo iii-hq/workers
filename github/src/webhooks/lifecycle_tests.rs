@@ -641,6 +641,13 @@ fn reply_ready(bus: &MockBus) {
     bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply("configuration::get", Ok(listener_on()));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
+}
+fn applied(host: &str, port: u16) -> Value {
+    json!({"applied": {"host": host, "port": port}, "last_reload_error": null})
 }
 fn ready_tunnel() -> Value {
     json!({"status": "stopped", "leases": [], "prerequisites": {"cloudflared": {"found": true, "path": "/usr/local/bin/cloudflared", "version": "cloudflared version 2026.9.1"}}})
@@ -657,11 +664,19 @@ async fn enabling_the_http_listener_writes_it_and_keeps_other_http_settings() {
         Ok(json!({"id": "default-http", "value": {"port": 3111, "webhook_listener": null}})),
     );
     bus.reply("configuration::set", Ok(json!({})));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
     bus.reply("quick-tunnel::status", Ok(ready_tunnel()));
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply(
         "configuration::get",
         Ok(json!({"value": {"port": 3111, "webhook_listener": {"host": "127.0.0.1", "port": 3112}}})),
+    );
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
     );
     let status = s
         .enable_http_listener(setup::EnableListenerRequest::default())
@@ -726,6 +741,10 @@ async fn watch_gate_refuses_a_missing_quick_tunnel_with_the_fix() {
     bus.reply("compose::status", Ok(json!({"containers": []})));
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply("configuration::get", Ok(listener_on()));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
     let error = s.require_setup().await.unwrap_err().to_string();
     assert!(error.contains("quick-tunnel worker"), "{error}");
     assert!(error.contains("github::setup::webhooks-status"), "{error}");
@@ -832,6 +851,10 @@ async fn turning_on_the_listener_keeps_an_existing_one_unless_a_port_is_asked() 
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply("configuration::get", Ok(custom));
     bus.reply("configuration::set", Ok(json!({})));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("10.0.0.5", 3113)),
+    );
     reply_ready(bus);
     s.enable_http_listener(setup::EnableListenerRequest { port: Some(3113) })
         .await
@@ -861,6 +884,10 @@ async fn watch_gate_passes_when_compose_cannot_be_asked() {
     bus.reply("compose::status", Err(not_found("compose::status")));
     bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
     bus.reply("configuration::get", Ok(listener_on()));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
     s.require_setup().await.unwrap();
     s.iii.shutdown_async().await;
 }

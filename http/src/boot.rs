@@ -91,7 +91,9 @@ pub async fn start(iii: Arc<IIIClient>, config: RestApiConfig) -> anyhow::Result
     guard_against_builtin_http(&iii).await?;
 
     let cell = configuration::new_cell(config.normalized());
-    let apply_lock: ApplyLock = Arc::new(tokio::sync::Mutex::new(()));
+    let apply_lock: ApplyLock = Arc::new(tokio::sync::Mutex::new(
+        configuration::ReloadState::default(),
+    ));
 
     let handler = HttpTriggerHandler::new();
     let routes = handler.routes.clone();

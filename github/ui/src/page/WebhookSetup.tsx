@@ -70,6 +70,37 @@ const BADGES: Record<CheckState, { variant: 'ok' | 'warn' | 'alert' | 'default';
 
 /** Keep "Checking…" on screen long enough to be seen when the check is fast. */
 const MIN_CHECKING_MS = 500
+/** compose::add only admits the operation; its outcome is polled this often. */
+const OPERATION_POLL_MS = 1_000
+/** Give up waiting on an install after this long (it keeps running in compose). */
+const OPERATION_TIMEOUT_MS = 600_000
+
+interface OperationSnapshot {
+  operation_id?: string
+  status?: string
+  last_event?: { detail?: string; phase?: string }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Throw on a compose lifecycle result that resolved but reports a failure. */
+function assertComposeOk(action: string, result: unknown) {
+  if (!result || typeof result !== 'object') return
+  const r = result as {
+    error?: unknown
+    status?: unknown
+    containers?: { container?: string; error?: unknown }[]
+  }
+  const errors: string[] = []
+  if (typeof r.error === 'string' && r.error) errors.push(r.error)
+  if (typeof r.status === 'string' && ['failed', 'error', 'cancelled'].includes(r.status)) {
+    errors.push(`status ${r.status}`)
+  }
+  for (const c of r.containers ?? []) {
+    if (typeof c.error === 'string' && c.error) errors.push(`${c.container ?? 'container'}: ${c.error}`)
+  }
+  if (errors.length > 0) throw new Error(`${action} failed: ${errors.join('; ')}`)
+}
 
 function summarize(status: SetupStatus): string {
   const total = status.checks.length
@@ -91,6 +122,14 @@ export function WebhookSetup({ host }: { host: Host }) {
   const { confirm, dialog } = useConfirm()
   const latest = useRef(0)
   const announced = useRef(0)
+  /** Stops an install wait when the page unmounts. */
+  const mounted = useRef(true)
+  useEffect(
+    () => () => {
+      mounted.current = false
+    },
+    [],
+  )
 
   /** `announce` reads the result aloud: only for checks the user asked for. */
   const refresh = useCallback(
@@ -159,10 +198,36 @@ export function WebhookSetup({ host }: { host: Host }) {
       description: `Adds ${worker} to this project with compose::add and starts it. It runs cloudflared, which you install yourself.`,
       confirmLabel: 'Install',
     })
-    if (ok) {
-      await run(`install:${worker}`, () =>
-        host.iii.trigger('compose::add', { workers: [worker] }, { timeoutMs: 600_000 }),
+    if (ok) await run(`install:${worker}`, () => installAndWait(worker))
+  }
+
+  /** compose::add is asynchronous: follow its operation to a terminal status. */
+  const installAndWait = async (worker: string) => {
+    const operationId = `github-install-${worker}-${crypto.randomUUID().slice(0, 8)}`
+    const admitted = await host.iii.trigger(
+      'compose::add',
+      { workers: [worker], operation_id: operationId },
+      { timeoutMs: 60_000 },
+    )
+    assertComposeOk(`Installing ${worker}`, admitted)
+    const deadline = Date.now() + OPERATION_TIMEOUT_MS
+    while (mounted.current) {
+      const snapshot = await host.iii.trigger<OperationSnapshot>(
+        'compose::operation',
+        { operation_id: operationId },
+        { timeoutMs: 15_000 },
       )
+      if (snapshot?.status === 'succeeded') return
+      if (snapshot?.status === 'failed' || snapshot?.status === 'cancelled') {
+        const detail = snapshot.last_event?.detail
+        throw new Error(`Installing ${worker} ${snapshot.status}${detail ? `: ${detail}` : ''}`)
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `Installing ${worker} is still running after 10 minutes; check compose logs.`,
+        )
+      }
+      await sleep(OPERATION_POLL_MS)
     }
   }
 
@@ -181,8 +246,24 @@ export function WebhookSetup({ host }: { host: Host }) {
     })
   }
 
-  const restartGithub = () =>
-    host.iii.trigger('compose::restart', { container: GITHUB_CONTAINER }, { timeoutMs: 180_000 })
+  /** Unconfirmed: callers confirm first (Enable/Disable or restartConfirmed). */
+  const restartGithub = async () => {
+    const result = await host.iii.trigger(
+      'compose::restart',
+      { container: GITHUB_CONTAINER },
+      { timeoutMs: 180_000 },
+    )
+    assertComposeOk('Restarting github', result)
+  }
+
+  const restartConfirmed = async () => {
+    const ok = await confirm({
+      title: 'Restart the github worker?',
+      description: 'Applies the pending webhook setting; github calls in flight are interrupted.',
+      confirmLabel: 'Restart',
+    })
+    if (ok) await run('restart', restartGithub)
+  }
 
   const fixControl = (check: SetupCheck) => {
     const fix = check.fix
@@ -341,7 +422,7 @@ export function WebhookSetup({ host }: { host: Host }) {
                   variant="ghost"
                   disabled={busy !== null}
                   aria-busy={busy === 'restart'}
-                  onClick={() => void run('restart', restartGithub)}
+                  onClick={() => void restartConfirmed()}
                 >
                   {busy === 'restart' ? 'Restarting…' : 'Restart github'}
                 </Button>

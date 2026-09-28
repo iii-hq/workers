@@ -58,7 +58,16 @@ pub type ConfigCell = Arc<RwLock<Arc<RestApiConfig>>>;
 /// [`ServerControlCell`] out of order, leaving the config cell disagreeing
 /// with the actually-bound listener. Mirrors the engine's `apply_lock`
 /// (`engine/src/workers/rest_api/api_core.rs`).
-pub type ApplyLock = Arc<tokio::sync::Mutex<()>>;
+pub type ApplyLock = Arc<tokio::sync::Mutex<ReloadState>>;
+
+/// Outcome of the latest configuration reload, guarded by [`ApplyLock`] so a
+/// status read waits for an in-flight reload and then sees its result.
+#[derive(Debug, Default)]
+pub struct ReloadState {
+    /// Last reload failure (fetch, validation or bind, e.g. port in use);
+    /// cleared by the next successful reload.
+    pub last_error: Option<String>,
+}
 
 pub const DEFAULT_CONFIG_ID: &str = "http";
 
@@ -99,6 +108,51 @@ struct ConfigurationIdentityRequest {}
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct ConfigurationIdentityResponse {
     id: String,
+}
+
+/// What the restricted webhook listener is actually doing in this process.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct WebhookListenerStatus {
+    /// The listener this process has bound: the last successfully applied
+    /// configuration (a failed bind keeps the previous one). None when the
+    /// listener is off or the server is stopped.
+    pub applied: Option<crate::config::WebhookListenerConfig>,
+    /// Last configuration reload failure, e.g. the port is already in use;
+    /// cleared by the next successful reload.
+    pub last_reload_error: Option<String>,
+}
+
+/// Internal `http::webhook-listener::status`: the bound listener and the last
+/// reload error, so callers can tell a saved configuration from a working
+/// listener. Exposes nothing else of the configuration.
+pub fn register_listener_status(
+    iii: &Arc<IIIClient>,
+    cell: ConfigCell,
+    control: ServerControlCell,
+    apply_lock: ApplyLock,
+) {
+    iii.register_function(
+        "http::webhook-listener::status",
+        RegisterFunction::new_async(move |_request: ConfigurationIdentityRequest| {
+            let (cell, control, apply_lock) = (cell.clone(), control.clone(), apply_lock.clone());
+            async move {
+                // Waits for an in-flight reload, then reports its outcome.
+                let reload = apply_lock.lock().await;
+                let running = control.lock().await.is_some();
+                let applied = if running {
+                    cell.read().await.webhook_listener.clone()
+                } else {
+                    None
+                };
+                Ok::<_, Error>(WebhookListenerStatus {
+                    applied,
+                    last_reload_error: reload.last_error.clone(),
+                })
+            }
+        })
+        .description("Internal: the restricted webhook listener this process has actually bound and the last reload error.")
+        .metadata(json!({ "internal": true })),
+    );
 }
 
 /// Register the `http` configuration entry: schema + metadata refresh on every
@@ -246,19 +300,24 @@ async fn on_config_change(
     // mutations, leaving the config cell disagreeing with the actually-bound
     // listener. Held for the whole function body; `on_config_change` is the
     // only acquirer, so this never nests.
-    let _guard = apply_lock.lock().await;
+    let mut guard = apply_lock.lock().await;
 
     let cfg = match fetch_config(iii).await {
         Ok(cfg) => cfg,
         Err(e) => {
             tracing::error!(error = %e, "config-change: fetch failed; keeping previous config");
+            guard.last_error = Some(format!("configuration fetch failed: {e}"));
             return;
         }
     };
 
-    if let Err(e) = reload_listeners(cell, hot_router, control, cfg).await {
-        tracing::error!(error = %e, "http reload failed; keeping previous config and listeners");
-    }
+    guard.last_error = match reload_listeners(cell, hot_router, control, cfg).await {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::error!(error = %e, "http reload failed; keeping previous config and listeners");
+            Some(e.to_string())
+        }
+    };
 }
 
 /// Transactionally prepare both binds before changing live configuration.

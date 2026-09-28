@@ -1,6 +1,6 @@
 use github::webhooks::setup::{
-    blockers, compose_status_route, evaluate, function_missing, CheckState, SetupFix, TunnelProbe,
-    CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
+    blockers, compose_status_route, evaluate, function_missing, CheckState, ListenerProbe,
+    SetupFix, TunnelProbe, CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
 };
 use github::webhooks::Failure;
 use serde_json::{json, Value};
@@ -8,10 +8,17 @@ use serde_json::{json, Value};
 fn tunnel_with(cloudflared: Value) -> Result<Value, TunnelProbe> {
     Ok(json!({"status": "stopped", "leases": [], "prerequisites": {"cloudflared": cloudflared}}))
 }
-fn listener_on() -> Result<Option<Value>, String> {
-    Ok(Some(
-        json!({"port": 3111, "webhook_listener": {"host": "127.0.0.1", "port": 3112}}),
-    ))
+fn probe(
+    configured: Option<Value>,
+    status: Option<Value>,
+) -> Result<Option<ListenerProbe>, String> {
+    Ok(Some(ListenerProbe { configured, status }))
+}
+fn listener_on() -> Result<Option<ListenerProbe>, String> {
+    probe(
+        Some(json!({"host": "127.0.0.1", "port": 3112})),
+        Some(json!({"applied": {"host": "127.0.0.1", "port": 3112}, "last_reload_error": null})),
+    )
 }
 fn states(checks: &[github::webhooks::setup::SetupCheck]) -> Vec<CheckState> {
     checks.iter().map(|c| c.state).collect()
@@ -74,10 +81,7 @@ fn missing_cloudflared_points_at_cloudflare_and_never_installs() {
 
 #[test]
 fn listener_off_offers_enable_and_old_workers_are_unknown_not_blocking() {
-    let checks = evaluate(
-        &tunnel_with(json!({"found": true})),
-        &Ok(Some(json!({"webhook_listener": null}))),
-    );
+    let checks = evaluate(&tunnel_with(json!({"found": true})), &probe(None, None));
     assert_eq!(checks[2].state, CheckState::Missing);
     assert_eq!(
         checks[2].fix,
@@ -173,4 +177,46 @@ fn compose_status_is_routed_like_the_other_workers() {
     let (payload, namespace) = compose_status_route(None, None);
     assert!(namespace.is_none());
     assert_eq!(payload, json!({}));
+}
+
+#[test]
+fn a_saved_listener_is_ready_only_once_http_has_bound_it() {
+    let saved = || Some(json!({"host": "127.0.0.1", "port": 3112}));
+    let tunnel = tunnel_with(json!({"found": true}));
+    // Bind failed (port in use): definitely not listening, so it blocks.
+    let checks = evaluate(
+        &tunnel,
+        &probe(
+            saved(),
+            Some(
+                json!({"applied": null, "last_reload_error": "Address already in use (os error 98)"}),
+            ),
+        ),
+    );
+    assert_eq!(checks[2].state, CheckState::Missing);
+    assert!(
+        checks[2].detail.contains("could not bind"),
+        "{}",
+        checks[2].detail
+    );
+    assert!(blockers(&checks).is_some());
+    // A different listener still bound and no error yet: http has not applied it.
+    let checks = evaluate(
+        &tunnel,
+        &probe(
+            saved(),
+            Some(
+                json!({"applied": {"host": "127.0.0.1", "port": 4000}, "last_reload_error": null}),
+            ),
+        ),
+    );
+    assert_eq!(checks[2].state, CheckState::Unknown);
+    assert!(checks[2].detail.contains("waiting"));
+    // An http that cannot report the bound listener is unverifiable, never "Listening".
+    let checks = evaluate(&tunnel, &probe(saved(), None));
+    assert_eq!(checks[2].state, CheckState::Unknown);
+    assert!(!checks[2].detail.starts_with("Listening"));
+    assert!(
+        matches!(&checks[2].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "http")
+    );
 }
