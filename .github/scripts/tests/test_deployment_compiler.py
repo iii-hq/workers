@@ -28,6 +28,87 @@ def test_canonical_numbers_reject_non_json_values():
         deployment_compiler.canonical_bytes({"budget": float("nan")})
 
 
+@pytest.mark.parametrize(
+    "config_file",
+    [None, "", "# comments only\n", "{}\n", "null\n"],
+    ids=["absent", "empty", "comments", "empty-mapping", "explicit-null"],
+)
+def test_normalize_config_emits_null_without_public_defaults(
+    tmp_path: Path, config_file: str | None
+) -> None:
+    worker_dir = tmp_path / "smoke"
+    worker_dir.mkdir()
+    if config_file is not None:
+        (worker_dir / "config.yaml").write_text(config_file, encoding="utf-8")
+
+    assert deployment_compiler.normalize_config(worker_dir, {}) is None
+
+
+def test_normalize_config_emits_null_for_explicit_inline_null(tmp_path: Path) -> None:
+    worker_dir = tmp_path / "smoke"
+    worker_dir.mkdir()
+
+    assert deployment_compiler.normalize_config(worker_dir, {"config": None}) is None
+
+
+def test_normalize_config_preserves_defaults_and_inline_file_precedence(tmp_path: Path) -> None:
+    worker_dir = tmp_path / "smoke"
+    worker_dir.mkdir()
+    (worker_dir / "config.yaml").write_text(
+        "source: file\nnested:\n  enabled: true\n", encoding="utf-8"
+    )
+
+    file_defaults = {"source": "file", "nested": {"enabled": True}}
+    inline_defaults = {"source": "inline", "retries": 3}
+    assert deployment_compiler.normalize_config(worker_dir, {}) == file_defaults
+    assert deployment_compiler.normalize_config(
+        worker_dir, {"config": inline_defaults}
+    ) == inline_defaults
+    # A non-null inline value wins even when it normalizes to public absence.
+    assert deployment_compiler.normalize_config(worker_dir, {"config": {}}) is None
+    # The historical explicit-null behavior falls back to config.yaml.
+    assert deployment_compiler.normalize_config(
+        worker_dir, {"config": None}
+    ) == file_defaults
+
+
+@pytest.mark.parametrize(
+    ("manifest", "config_file"),
+    [({"config": []}, None), ({}, "- invalid\n")],
+    ids=["inline", "file"],
+)
+def test_normalize_config_rejects_invalid_shapes(
+    tmp_path: Path, manifest: dict, config_file: str | None
+) -> None:
+    worker_dir = tmp_path / "smoke"
+    worker_dir.mkdir()
+    if config_file is not None:
+        (worker_dir / "config.yaml").write_text(config_file, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="public config must be a mapping or null"):
+        deployment_compiler.normalize_config(worker_dir, manifest)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "config_file"),
+    [
+        ({"config": {"api_key": "released-secret"}}, None),
+        ({}, "nested:\n  access_token: released-secret\n"),
+    ],
+    ids=["inline", "file"],
+)
+def test_normalize_config_rejects_secret_defaults_from_both_sources(
+    tmp_path: Path, manifest: dict, config_file: str | None
+) -> None:
+    worker_dir = tmp_path / "smoke"
+    worker_dir.mkdir()
+    if config_file is not None:
+        (worker_dir / "config.yaml").write_text(config_file, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="secret defaults cannot be released"):
+        deployment_compiler.normalize_config(worker_dir, manifest)
+
+
 def test_compiler_derives_registry_interface_capture_policy_for_every_worker():
     catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
     descriptors = {
@@ -130,6 +211,49 @@ def test_descriptor_schema_validates_the_skills_projection():
     broken["registry_projection"]["skills"] = {"../escape.md": "x"}
     with pytest.raises(jsonschema.ValidationError):
         validator.validate(broken)
+
+
+def test_descriptor_schema_accepts_null_and_real_public_config() -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = json.loads(
+        (ROOT / ".github" / "contracts" / "deployment-descriptor.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    config_schema = schema["properties"]["registry_projection"]["properties"]["config"]
+    assert config_schema == {"type": ["object", "null"]}
+    validator = jsonschema.Draft202012Validator(schema)
+    catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
+
+    without_defaults = deployment_compiler.compile_worker(
+        ROOT, "acp", catalog["acp"], "a" * 40, "b" * 64
+    )
+    with_defaults = deployment_compiler.compile_worker(
+        ROOT, "security-scan", catalog["security-scan"], "a" * 40, "b" * 64
+    )
+
+    assert "config" in without_defaults["registry_projection"]
+    with_file_defaults = deployment_compiler.compile_worker(
+        ROOT, "claude-code", catalog["claude-code"], "a" * 40, "b" * 64
+    )
+    assert without_defaults["registry_projection"]["config"] is None
+    assert json.loads(json.dumps(without_defaults))["registry_projection"]["config"] is None
+    assert with_defaults["registry_projection"]["config"] == {
+        "repositories": [],
+        "analysis": {
+            "model": "",
+            "max_turns": 4,
+            "max_output_tokens": 8000,
+            "max_total_tokens": 50000,
+            "max_cost_usd": 2.0,
+        },
+    }
+    assert with_file_defaults["registry_projection"]["config"] == deployment_compiler.read_yaml(
+        ROOT / "claude-code" / "config.yaml"
+    )
+    validator.validate(without_defaults)
+    validator.validate(with_defaults)
+    validator.validate(with_file_defaults)
 
 
 def test_binary_catalog_restores_intel_macos_except_the_microvm_sandbox():
