@@ -467,9 +467,11 @@ fn without_advisory_tail_messages(input: &Value) -> Value {
     matched
 }
 
-/// True for the hint / registry-notice user messages the harness appends to a
-/// generation. They are persisted as `model_notice` entries and replayed where
-/// they were first sent, so every later request carries them mid-`messages`.
+/// True for the hint / registry / runtime-context notice user messages the
+/// harness appends to a generation. They are persisted as `model_notice`
+/// entries and replayed where they were first sent, so every later request
+/// carries them mid-`messages`. The runtime-context notice depends on what
+/// the caller (Console, scenario) sends per turn — policy, working directory.
 pub fn is_advisory_message(message: &Value) -> bool {
     message.get("role").and_then(Value::as_str) == Some("user")
         && message
@@ -481,6 +483,7 @@ pub fn is_advisory_message(message: &Value) -> bool {
             .is_some_and(|text| {
                 text.starts_with("<discovery_assist")
                     || text.starts_with("NOTE: the function registry changed")
+                    || text.starts_with("NOTE: the session context changed")
             })
 }
 
