@@ -28,12 +28,14 @@ import { usePaneState } from '@iii-dev/console-ui/hooks'
 import { useEffect, useRef } from 'react'
 import { GitGraph } from './GitGraph'
 import { ActivityFeed } from './index'
+import { WebhookSetup } from './WebhookSetup'
 
-type View = 'graph' | 'activity'
+type View = 'graph' | 'activity' | 'webhooks'
 
 const VIEWS: { value: View; label: string }[] = [
   { value: 'graph', label: 'Graph' },
   { value: 'activity', label: 'Activity' },
+  { value: 'webhooks', label: 'Webhooks' },
 ]
 
 /** The github mark (lucide `github` geometry) — the page's identity glyph.
@@ -66,7 +68,7 @@ export function GithubPage({
 }: { host: Host } & Partial<PageRenderProps>) {
   const storageKey = `github-ui:${tabId || 'page'}:view`
   const [stored, setView] = usePaneState<View>(storageKey, 'graph')
-  const view: View = stored === 'activity' ? 'activity' : 'graph'
+  const view: View = stored === 'activity' || stored === 'webhooks' ? stored : 'graph'
 
   // Set by whichever view is mounted (graph or activity), so one set of page
   // commands reaches either one without lifting their state up here.
@@ -117,7 +119,7 @@ export function GithubPage({
           onChange={setView}
           options={VIEWS}
           className="gh-ui-tabs"
-          aria-label="Graph or activity view"
+          aria-label="Graph, activity or webhook setup view"
         />
       </PageHeader>
       {view === 'graph' ? (
@@ -127,12 +129,14 @@ export function GithubPage({
           refreshRef={refreshRef}
           closeDetailRef={closeDetailRef}
         />
-      ) : (
+      ) : view === 'activity' ? (
         <ActivityFeed
           host={host}
           liveRef={liveRef}
           closeDetailRef={closeDetailRef}
         />
+      ) : (
+        <WebhookSetup host={host} />
       )}
     </PageShell>
   )

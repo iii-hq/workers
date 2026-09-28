@@ -30,6 +30,27 @@ is false. See [the webhook guide](../../docs/architecture/github-webhooks.md). Q
 failed deliveries and requests bounded redelivery, reconciling current state.
 Do not enable merely because a public repository can be read.
 
+## Guided webhook setup
+
+`quick-tunnel` is NOT a dependency of this worker: it is only needed for PR
+webhooks. Call `github::setup::webhooks-status` (read-only) for the checklist,
+in order:
+
+1. `quick_tunnel` — the quick-tunnel worker is installed (fix: `install_worker`,
+   `compose::add { worker: "quick-tunnel" }`; ask the user first).
+2. `cloudflared` — quick-tunnel found the cloudflared binary (fix: `open_url`,
+   Cloudflare's install page). Nothing downloads cloudflared; the user installs it.
+3. `http_listener` — the http worker's restricted webhook listener is on (fix:
+   `enable_http_listener`, `github::setup::enable-http-listener`, default port 3112).
+
+Each check is `ok`, `missing`, `blocked` (waits for an earlier one) or
+`unknown` (older worker version or transient error; never blocking).
+`github::setup::enable-webhooks { enabled: true }` is refused until every check
+is `ok` and reports `restart_required`: webhook storage opens at startup, so
+the github worker must restart. `github::pr::watch` refuses definite blockers
+with the same fix list. The console's GitHub page → Webhooks runs these steps
+with buttons; both enable functions keep needs_approval for agents.
+
 
 # github
 
