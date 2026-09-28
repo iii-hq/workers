@@ -54,7 +54,8 @@ pub const ASK_DESC: &str =
     "Ask the user for a decision between discrete options: 1-4 questions, 2-4 options each; \
      the UI adds a free-text \"Other\" choice, so do not include one. The questions are shown \
      as a clickable card in the chat, your turn ends, and the answer arrives as the user's next \
-     message, so do not repeat the questions in text. Not available to sub-agents.";
+     message, so do not repeat the questions in text. Not available to sub-agents or \
+     structured-output turns.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =

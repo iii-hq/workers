@@ -1428,6 +1428,10 @@ async fn finish_step(
         .collect();
     let submit_call = planned.iter().find(|c| c.kind == CallKind::SubmitResult);
 
+    // Set when a `harness::ask` in this step was accepted (its card is shown);
+    // a later ask in the same step is refused. Declared at step scope so the
+    // end-of-step code can read it to end the turn on the question (KAN-12).
+    let mut asked = false;
     if !trigger_calls.is_empty() {
         let policy = CompiledPolicy::from(record.options.functions.as_ref());
         let engine = deps.engine().await;
@@ -1677,6 +1681,55 @@ async fn finish_step(
                     continue;
                 }
             };
+
+            // harness::ask shows a card and never reaches a target: decide it
+            // here (who can answer, one per step, shape, limits), record the
+            // awaiting-answer result or the refusal, and mark it Done. Never
+            // parks. Refusals leave the turn running so the model can react.
+            if call.function_id == crate::functions::ASK_ID {
+                let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
+                let mut data =
+                    match crate::ask::decide(record.depth, strategy.is_json(), asked, &eff_args) {
+                        Ok(req) => {
+                            asked = true;
+                            crate::ask::awaiting_result(
+                                &record.session_id,
+                                &record.turn_id,
+                                &call.id,
+                                &req,
+                            )
+                        }
+                        Err(msg) => crate::ask::refused(&msg),
+                    };
+                let mut ask_annotations = pre_ann;
+                crate::reconcile::settle_result(
+                    deps,
+                    &cfg,
+                    &mut data,
+                    &mut ask_annotations,
+                    reconciled.as_ref().map(|r| r.changes.as_slice()),
+                    &call.function_id,
+                    call_args,
+                )
+                .await;
+                append_function_result(
+                    &session,
+                    &record,
+                    call,
+                    &data,
+                    &entry_id,
+                    &origin_with(&record.turn_id, &ask_annotations),
+                )
+                .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
+                mark_done(&mut record, &call.id, &entry_id);
+                crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
+                continue;
+            }
 
             // harness::spawn is fire-and-forget: seed a child and return its
             // ids immediately (never invoke a target, never park). The child's

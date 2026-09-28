@@ -146,6 +146,36 @@ fn check_text(field: &str, value: &str, max: Option<usize>) -> Result<(), String
     Ok(())
 }
 
+/// Refusal when no human can answer this turn: a sub-agent (depth > 0) or a
+/// turn that must deliver structured output.
+pub const NO_HUMAN_MESSAGE: &str = "harness::ask needs a human to answer and none is attached to \
+     this turn (sub-agent or structured-output turn); report blocked with your question instead";
+
+/// Refusal for a second `harness::ask` in the same step.
+pub const ONE_PER_STEP_MESSAGE: &str =
+    "only one harness::ask per step; put all your questions (up to 4) in one call";
+
+/// Decide an in-turn `harness::ask`: the request to show, or the refusal
+/// text for [`refused`]. Checked in order: someone to answer, one ask per
+/// step, the argument shape, then [`validate`].
+pub fn decide(
+    depth: u32,
+    has_output_contract: bool,
+    already_asked: bool,
+    args: &Value,
+) -> Result<AskRequest, String> {
+    if depth > 0 || has_output_contract {
+        return Err(NO_HUMAN_MESSAGE.into());
+    }
+    if already_asked {
+        return Err(ONE_PER_STEP_MESSAGE.into());
+    }
+    let req: AskRequest = serde_json::from_value(args.clone())
+        .map_err(|e| format!("invalid harness::ask arguments: {e}"))?;
+    validate(&req)?;
+    Ok(req)
+}
+
 /// The result of an accepted `harness::ask`: the card data for the UI in
 /// `details` and, for the model, the instruction to stop and wait.
 pub fn awaiting_result(
@@ -470,6 +500,68 @@ mod tests {
         assert!(
             err.to_string().contains("only works inside an agent turn"),
             "{err}"
+        );
+    }
+
+    const NO_HUMAN: &str = "harness::ask needs a human to answer and none is attached to this \
+         turn (sub-agent or structured-output turn); report blocked with your question instead";
+
+    #[test]
+    fn decide_refuses_a_sub_agent_before_anything_else() {
+        // Even an already-asked step with broken arguments gets the depth
+        // refusal: it is checked first.
+        assert_eq!(
+            decide(1, false, true, &json!({ "questions": "nope" })),
+            Err(NO_HUMAN.to_string())
+        );
+        assert_eq!(
+            decide(1, false, false, &contract_example()),
+            Err(NO_HUMAN.to_string())
+        );
+    }
+
+    #[test]
+    fn decide_refuses_a_structured_output_turn() {
+        assert_eq!(
+            decide(0, true, false, &contract_example()),
+            Err(NO_HUMAN.to_string())
+        );
+    }
+
+    #[test]
+    fn decide_refuses_a_second_ask_in_the_step() {
+        assert_eq!(
+            decide(0, false, true, &contract_example()),
+            Err(
+                "only one harness::ask per step; put all your questions (up to 4) in one call"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn decide_names_the_serde_error_for_malformed_arguments() {
+        let err = decide(0, false, false, &json!({ "questions": "not a list" })).unwrap_err();
+        assert!(err.starts_with("invalid harness::ask arguments: "), "{err}");
+        assert!(err.contains("invalid type"), "{err}");
+        let err = decide(0, false, false, &json!({})).unwrap_err();
+        assert!(err.contains("missing field `questions`"), "{err}");
+    }
+
+    #[test]
+    fn decide_returns_the_validation_message_for_broken_limits() {
+        assert_eq!(
+            decide(0, false, false, &json!({ "questions": [] })),
+            Err("questions must have 1-4 entries (got 0)".to_string())
+        );
+    }
+
+    #[test]
+    fn decide_accepts_a_valid_request_at_the_top_level() {
+        let req = decide(0, false, false, &contract_example()).unwrap();
+        assert_eq!(
+            req,
+            serde_json::from_value::<AskRequest>(contract_example()).unwrap()
         );
     }
 }
