@@ -196,6 +196,75 @@ describe('compactionWindow', () => {
     })
   })
 
+  function order(
+    entryId: string,
+    data: Record<string, unknown>,
+  ): TranscriptItem {
+    return { entry_id: entryId, custom: { custom_type: 'message_order', data } }
+  }
+
+  it('applies message_order records, then cuts in the order the model saw', () => {
+    // window.rs `the_compaction_tail_is_cut_in_the_order_the_model_saw`:
+    // model order is u1 a1 u2 a2.
+    const reordered: TranscriptItem[] = [
+      user('u1', 'go'),
+      user('u2', 'steer'),
+      assistant('a1', 'ok'),
+      order('o1', { after: 'a1', moved: ['u2'] }),
+      assistant('a2', 'answer'),
+    ]
+    const ids = (tail: string | null) =>
+      compactionWindow(reordered, {
+        entryId: 'c1',
+        summary: 's',
+        tailStartEntryId: tail,
+      }).map((e) => e.entry_id)
+    expect(compactionWindow(reordered, null).map((e) => e.entry_id)).toEqual([
+      'u1',
+      'a1',
+      'u2',
+      'a2',
+    ])
+    // A tail from u2 drops a1: the order's anchor sits before the cut.
+    expect(ids('u2')).toEqual(['u2', 'a2'])
+    // A tail from a1 keeps u2, logged before a1 but shown after it.
+    expect(ids('a1')).toEqual(['a1', 'u2', 'a2'])
+    // A boundary on the record itself opens at the next message logged.
+    expect(ids('o1')).toEqual(['a2'])
+  })
+
+  it('an order whose anchor is not model-bound or not on the path is a no-op', () => {
+    for (const after of ['k1', 'gone']) {
+      const path: TranscriptItem[] = [
+        user('u1', 'go'),
+        user('u2', 'steer'),
+        items[4],
+        assistant('a1', 'ok'),
+        order('o1', { after, moved: ['u1'] }),
+      ]
+      expect(compactionWindow(path, null).map((e) => e.entry_id)).toEqual([
+        'u1',
+        'u2',
+        'a1',
+      ])
+    }
+  })
+
+  it('an order listing its own anchor moves only the rest', () => {
+    const path: TranscriptItem[] = [
+      user('u1', 'go'),
+      user('u2', 'steer'),
+      assistant('a1', 'ok'),
+      order('o1', { after: 'a1', moved: ['a1', 'u2', 'gone'] }),
+      order('o2', { after: 'u1', moved: ['u1'] }),
+    ]
+    expect(compactionWindow(path, null).map((e) => e.entry_id)).toEqual([
+      'u1',
+      'a1',
+      'u2',
+    ])
+  })
+
   it('keeps entry ids aligned with message positions for tail_start_index mapping', () => {
     const window = compactionWindow(items, null)
     // context::compact indexes the `messages` array it receives; the window
