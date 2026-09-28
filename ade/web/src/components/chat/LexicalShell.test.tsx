@@ -344,6 +344,33 @@ describe('composer markdown blocks', () => {
     expect(onSubmit).toHaveBeenCalledTimes(1)
   })
 
+  it('Shift+Enter inside a list item breaks the line instead of sending', async () => {
+    const { editor, editable, onSubmit } = await renderComposer({
+      content: () => $bulletList('one'),
+    })
+    await pressEnter(editable, { shiftKey: true })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    editor.getEditorState().read(() => {
+      const list = $getRoot().getFirstChild()
+      expect($isListNode(list) && list.getChildrenSize()).toBe(1)
+    })
+  })
+
+  it('Shift+Enter inside a code block adds a line instead of sending', async () => {
+    const { editor, editable, onSubmit } = await renderComposer({
+      content: () => {
+        const code = $createCodeNode()
+        code.append($createTextNode('let a'))
+        $getRoot().append(code)
+      },
+    })
+    await pressEnter(editable, { shiftKey: true })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(markdown(editor)).toBe('```\nlet a\n\n```')
+  })
+
   it('``` and Enter open a code block with the language instead of sending', async () => {
     const { editor, editable, onSubmit } = await renderComposer({
       content: () => {
