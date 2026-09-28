@@ -69,6 +69,7 @@ Branch check: `pnpm test`, `pnpm lint`, `pnpm typecheck` in `ade/web`.
 
 ## Work
 
-Branch `feat/composer-enter-sends` off `feat/session-judge-provider`,
-worktree `.worktrees/composer-enter-sends`. Tickets on the kanban board,
-label `superpowers`, `composer-enter-sends`.
+Branch `feat/composer-enter-sends-main` off `main`, worktree
+`.worktrees/composer-enter-sends-main`. Tickets on the kanban board,
+label `superpowers`, `composer-enter-sends` (KAN-1, KAN-2, KAN-3; loose ends
+KAN-4, KAN-5, KAN-6 in backlog).
