@@ -539,7 +539,8 @@
   overflow-wrap: anywhere;
 }
 
-[data-iii-ui="github"] .gh-ui-webhooks__loading {
+[data-iii-ui="github"] .gh-ui-webhooks__loading,
+[data-iii-ui="github"] .gh-ui-webhooks__checked {
   color: var(--color-ink-faint);
 }
 

@@ -17,10 +17,13 @@ import {
   Button,
   EmptyState,
   type Host,
+  type LiveAnnouncement,
+  LiveRegion,
   PageMain,
   SettingsList,
   SettingsRow,
   SettingsSection,
+  uiClasses,
   useConfirm,
 } from '@iii-dev/console-ui'
 import { errorMessage } from '@iii-dev/console-ui/format'
@@ -64,25 +67,56 @@ const BADGES: Record<CheckState, { variant: 'ok' | 'warn' | 'alert' | 'default';
   unknown: { variant: 'warn', label: 'Unverified' },
 }
 
+/** Keep "Checking…" on screen long enough to be seen when the check is fast. */
+const MIN_CHECKING_MS = 500
+
+function summarize(status: SetupStatus): string {
+  const total = status.checks.length
+  const open = status.checks.filter((check) => check.state !== 'ok').length
+  return open === 0
+    ? `All ${total} prerequisites ready.`
+    : `${open} of ${total} prerequisites need attention.`
+}
+
 export function WebhookSetup({ host }: { host: Host }) {
   const [status, setStatus] = useState<SetupStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [checkedAt, setCheckedAt] = useState<Date | null>(null)
+  const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
   const { confirm, dialog } = useConfirm()
   const latest = useRef(0)
 
-  const refresh = useCallback(async () => {
-    const request = ++latest.current
-    try {
-      const next = await host.iii.trigger<SetupStatus>(STATUS_FN, {}, { timeoutMs: 20_000 })
-      if (request === latest.current) {
+  /** `announce` reads the result aloud: only for checks the user asked for. */
+  const refresh = useCallback(
+    async (announce = false) => {
+      const request = ++latest.current
+      setChecking(true)
+      const started = Date.now()
+      try {
+        const next = await host.iii.trigger<SetupStatus>(STATUS_FN, {}, { timeoutMs: 20_000 })
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, MIN_CHECKING_MS - (Date.now() - started))),
+        )
+        if (request !== latest.current) return
         setStatus(next)
         setError(null)
+        setCheckedAt(new Date())
+        if (announce) setAnnouncement({ seq: request, text: summarize(next), urgency: 'polite' })
+      } catch (err) {
+        if (request !== latest.current) return
+        const message = errorMessage(err)
+        setError(message)
+        if (announce) {
+          setAnnouncement({ seq: request, text: `Check failed: ${message}`, urgency: 'assertive' })
+        }
+      } finally {
+        if (request === latest.current) setChecking(false)
       }
-    } catch (err) {
-      if (request === latest.current) setError(errorMessage(err))
-    }
-  }, [host])
+    },
+    [host],
+  )
 
   useEffect(() => {
     void refresh()
@@ -97,7 +131,7 @@ export function WebhookSetup({ host }: { host: Host }) {
         setError(errorMessage(err))
       } finally {
         setBusy(null)
-        await refresh()
+        await refresh(true)
       }
     },
     [refresh],
@@ -185,7 +219,7 @@ export function WebhookSetup({ host }: { host: Host }) {
             icon={Webhook}
             title="Webhook setup unavailable"
             description={error}
-            action={{ label: 'Try again', onClick: () => void refresh() }}
+            action={{ label: 'Try again', onClick: () => void refresh(true) }}
           />
         ) : (
           <p className="gh-ui-webhooks__loading" role="status">
@@ -207,12 +241,20 @@ export function WebhookSetup({ host }: { host: Host }) {
   return (
     <PageMain className="gh-ui-main gh-ui-webhooks">
       {dialog}
+      <LiveRegion announcement={announcement} />
       <SettingsSection
         title="PR webhook setup"
         description="github::pr::watch needs these on this machine. Nothing is installed without asking, and cloudflared is never downloaded for you."
         action={
-          <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => void refresh()}>
-            <RefreshCw aria-hidden /> Check again
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy !== null || checking}
+            aria-busy={checking}
+            onClick={() => void refresh(true)}
+          >
+            <RefreshCw aria-hidden className={checking ? uiClasses.spin : undefined} />
+            {checking ? 'Checking…' : 'Check again'}
           </Button>
         }
       >
@@ -228,6 +270,13 @@ export function WebhookSetup({ host }: { host: Host }) {
             />
           ))}
         </SettingsList>
+        <p className="gh-ui-webhooks__checked">
+          {checking
+            ? 'Checking prerequisites…'
+            : checkedAt
+              ? `${summarize(status)} Last checked at ${checkedAt.toLocaleTimeString()}.`
+              : summarize(status)}
+        </p>
       </SettingsSection>
       <SettingsSection title="PR webhooks">
         <SettingsList>
