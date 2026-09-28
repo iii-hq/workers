@@ -6,6 +6,7 @@
 //! `harness::on-config-change`) are intentionally excluded — they are not part
 //! of the agent-facing surface.
 
+use crate::ask::{AskRequest, AskResponse};
 use crate::functions::{
     context_policy::{ContextPolicyRequest, ContextPolicyResponse},
     function_resolve::{FunctionResolveRequest, FunctionResolveResponse},
@@ -23,7 +24,7 @@ use crate::functions::{
     },
 };
 use crate::functions::{
-    CONTEXT_POLICY_ID, FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID,
+    ASK_ID, CONTEXT_POLICY_ID, FUNCTION_RESOLVE_ID, FUNCTION_TRIGGER_ID, METRICS_ID, SEND_ID,
     SESSION_TREE_ID, SPAWN_ID, STATUS_ID, STOP_ID, SYSTEM_PROMPT_ID, TURN_ID,
 };
 use crate::turn_loop::{TurnStepPayload, TurnStepResult};
@@ -66,6 +67,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<SendRequest, SendResponse>(SEND_ID),
         spec::<SpawnRequest, SpawnResponse>(SPAWN_ID),
+        spec::<AskRequest, AskResponse>(ASK_ID),
         spec::<TurnStepPayload, TurnStepResult>(TURN_ID),
         spec::<FunctionTriggerRequest, FunctionTriggerResponse>(FUNCTION_TRIGGER_ID),
         spec::<FunctionResolveRequest, FunctionResolveResponse>(FUNCTION_RESOLVE_ID),

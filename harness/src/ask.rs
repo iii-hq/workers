@@ -3,12 +3,15 @@
 //! The model calls `harness::ask` instead of writing a question in markdown;
 //! the console renders the questions as a card of clickable options and the
 //! user's pick arrives as their next message. This module owns the request
-//! shape and its validation. Pure functions only: no engine, no I/O.
+//! and response shapes, their validation, the results the turn loop records,
+//! and the direct-call entry (always an error: an ask only means something
+//! inside a turn). No engine, no I/O.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::error::HarnessError;
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
 
@@ -60,6 +63,28 @@ pub struct AskOption {
     /// Optional one-line explanation shown under the label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AskStatus {
+    /// The card is shown; the answer arrives as the user's next message.
+    AwaitingAnswer,
+}
+
+/// What an accepted ask records as its result `details`: the card the UI
+/// draws and the ids it uses to tell an open question from an answered one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AskResponse {
+    pub status: AskStatus,
+    /// The function-call id of this ask.
+    pub question_id: String,
+    pub session_id: String,
+    /// The turn that asked; once the session's current turn differs, the
+    /// question has been answered.
+    pub turn_id: String,
+    /// The questions as shown, in request order.
+    pub questions: Vec<AskQuestion>,
 }
 
 /// Check a request against the `harness::ask` limits. The error names the
@@ -132,12 +157,12 @@ pub fn awaiting_result(
     ResultData {
         content: vec![ContentBlock::text(AWAITING_TEXT)],
         is_error: false,
-        details: serde_json::json!({
-            "status": "awaiting_answer",
-            "question_id": call_id,
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "questions": req.questions,
+        details: serde_json::json!(AskResponse {
+            status: AskStatus::AwaitingAnswer,
+            question_id: call_id.to_owned(),
+            session_id: session_id.to_owned(),
+            turn_id: turn_id.to_owned(),
+            questions: req.questions.clone(),
         }),
     }
 }
@@ -155,6 +180,17 @@ pub fn refused(reason: &str) -> ResultData {
         is_error: true,
         details: Value::Null,
     }
+}
+
+/// Why a direct `harness::ask` call fails: only the turn loop can show a card
+/// and end the turn on it.
+pub const DIRECT_CALL_MESSAGE: &str =
+    "harness::ask only works inside an agent turn: call it from a model turn, not directly";
+
+/// The registered handler, reached only by a direct call (outside a turn,
+/// or before the turn loop intercepts it).
+pub async fn direct_handle(_req: AskRequest) -> Result<AskResponse, HarnessError> {
+    Err(HarnessError::InvalidRequest(DIRECT_CALL_MESSAGE.into()))
 }
 
 #[cfg(test)]
@@ -413,5 +449,27 @@ mod tests {
         assert!(result.is_error);
         assert_eq!(only_text(&result), reason);
         assert_eq!(result.details, json!(null));
+    }
+
+    #[tokio::test]
+    async fn a_direct_call_is_refused_outside_an_agent_turn() {
+        let err = direct_handle(request(vec![valid_question()]))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            HarnessError::InvalidRequest(
+                "harness::ask only works inside an agent turn: call it from a model turn, not directly"
+                    .into()
+            )
+        );
+        assert!(
+            err.to_string().starts_with("harness/invalid_request: "),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("only works inside an agent turn"),
+            "{err}"
+        );
     }
 }

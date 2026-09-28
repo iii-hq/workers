@@ -49,6 +49,13 @@ pub const SPAWN_DESC: &str =
      through whatever destination its task names. Check `harness::status` for child health; children are leaves unless \
      options.orchestrator is true.";
 
+pub const ASK_ID: &str = "harness::ask";
+pub const ASK_DESC: &str =
+    "Ask the user for a decision between discrete options: 1-4 questions, 2-4 options each; \
+     the UI adds a free-text \"Other\" choice, so do not include one. The questions are shown \
+     as a clickable card in the chat, your turn ends, and the answer arrives as the user's next \
+     message, so do not repeat the questions in text. Not available to sub-agents.";
+
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =
     "Internal durable loop step (enqueued onto the harness-turn queue); not called directly.";
@@ -295,6 +302,11 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     });
     register(iii, deps, SPAWN_ID, SPAWN_DESC, |d, r| async move {
         spawn::handle(&d, r).await
+    });
+    // Catalog-visible so the model finds it; the turn loop intercepts the
+    // call, and this handler only answers direct calls (always an error).
+    register(iii, deps, ASK_ID, ASK_DESC, |_d, r| async move {
+        crate::ask::direct_handle(r).await
     });
     // The ONE fire handler every agent-registered binding routes through.
     // Registered, kept off the catalog: agents describe their target in the
