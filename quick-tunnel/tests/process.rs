@@ -270,6 +270,26 @@ async fn corrupt_persistence_fails_closed_and_expired_leases_do_not_restart() {
     manager.shutdown().await;
 }
 
+#[tokio::test]
+async fn state_lock_waits_out_brief_contention_but_refuses_a_real_second_instance() {
+    use fs2::FileExt;
+    let (_dir, config) = fixture("ready");
+    let lock_path = config.state_path.with_extension("lock");
+    std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    // Held briefly (like a child between fork and exec): open still succeeds.
+    let holder = std::fs::File::create(&lock_path).unwrap();
+    holder.lock_exclusive().unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(holder);
+    });
+    let manager = Manager::open(config.clone()).unwrap();
+    release.join().unwrap();
+    // A live instance keeps it: a second open fails after the bounded retry.
+    assert!(Manager::open(config).is_err());
+    manager.shutdown().await;
+}
+
 // Keep a failed regression test from leaving a worker or tunnel running.
 struct ProcessGroupCleanup(u32);
 impl Drop for ProcessGroupCleanup {

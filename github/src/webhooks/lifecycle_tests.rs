@@ -891,3 +891,50 @@ async fn watch_gate_passes_when_compose_cannot_be_asked() {
     s.require_setup().await.unwrap();
     s.iii.shutdown_async().await;
 }
+
+#[tokio::test]
+async fn readiness_compares_resolved_config_while_writes_keep_raw_placeholders() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = service(dir.path()).await;
+    let bus = s.bus.as_ref().unwrap();
+    reply_ready(bus);
+    s.require_setup().await.unwrap();
+    let gets: Vec<_> = bus
+        .calls()
+        .into_iter()
+        .filter(|c| c.function == "configuration::get")
+        .collect();
+    assert_eq!(gets.len(), 1);
+    assert_eq!(
+        gets[0].payload["raw"], false,
+        "readiness uses resolved values"
+    );
+    // Writing the listener reads raw so env placeholders survive.
+    bus.reply("http::configuration-id", Ok(json!({"id": "default-http"})));
+    bus.reply(
+        "configuration::get",
+        Ok(json!({"value": {"port": "${HTTP_PORT}", "webhook_listener": null}})),
+    );
+    bus.reply("configuration::set", Ok(json!({})));
+    bus.reply(
+        "http::webhook-listener::status",
+        Ok(applied("127.0.0.1", 3112)),
+    );
+    reply_ready(bus);
+    s.enable_http_listener(setup::EnableListenerRequest::default())
+        .await
+        .unwrap();
+    let calls = bus.calls();
+    let raw_get = calls
+        .iter()
+        .filter(|c| c.function == "configuration::get")
+        .nth(1)
+        .unwrap();
+    assert_eq!(raw_get.payload["raw"], true);
+    let set = calls
+        .iter()
+        .find(|c| c.function == "configuration::set")
+        .unwrap();
+    assert_eq!(set.payload["value"]["port"], "${HTTP_PORT}");
+    s.iii.shutdown_async().await;
+}

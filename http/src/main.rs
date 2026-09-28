@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
     configuration::register_listener_status(
         &iii,
         boot.config.clone(),
-        boot.control.clone(),
+        boot.hot_router.clone(),
         boot.apply_lock.clone(),
     );
 

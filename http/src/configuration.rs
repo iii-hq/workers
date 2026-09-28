@@ -128,21 +128,29 @@ pub struct WebhookListenerStatus {
 pub fn register_listener_status(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
-    control: ServerControlCell,
+    hot_router: HotRouter,
     apply_lock: ApplyLock,
 ) {
     iii.register_function(
         "http::webhook-listener::status",
         RegisterFunction::new_async(move |_request: ConfigurationIdentityRequest| {
-            let (cell, control, apply_lock) = (cell.clone(), control.clone(), apply_lock.clone());
+            let (cell, hot_router, apply_lock) =
+                (cell.clone(), hot_router.clone(), apply_lock.clone());
             async move {
                 // Waits for an in-flight reload, then reports its outcome.
                 let reload = apply_lock.lock().await;
-                let running = control.lock().await.is_some();
-                let applied = if running {
-                    cell.read().await.webhook_listener.clone()
-                } else {
-                    None
+                // The port actually bound (differs from the configured one for
+                // an ephemeral port 0); the host is the applied configuration's.
+                let bound = match &hot_router.webhook {
+                    Some(webhook) => webhook.control.lock().await.as_ref().map(|c| c.local_addr),
+                    None => None,
+                };
+                let applied = match (bound, cell.read().await.webhook_listener.clone()) {
+                    (Some(addr), Some(configured)) => Some(crate::config::WebhookListenerConfig {
+                        host: configured.host,
+                        port: addr.port(),
+                    }),
+                    _ => None,
                 };
                 Ok::<_, Error>(WebhookListenerStatus {
                     applied,

@@ -46,7 +46,7 @@ async fn start(enabled: bool) -> (FakeEngine, BootHandle) {
     configuration::register_listener_status(
         &engine.iii,
         boot.config.clone(),
-        boot.control.clone(),
+        boot.hot_router.clone(),
         boot.apply_lock.clone(),
     );
     (engine, boot)
@@ -263,6 +263,11 @@ async fn reload_enables_rebinds_disables_and_rolls_back_both_listeners() {
     reload(&engine, &next).await;
     let first = boot.current_webhook_addr().await.unwrap();
     assert_ne!(first, original_normal);
+    // The fixture asks for port 0: status reports the port actually bound.
+    assert_eq!(
+        listener_status(&engine).await["applied"]["port"],
+        json!(first.port())
+    );
     assert_eq!(boot.current_addr().await, Some(original_normal));
 
     // Same-address updates rebuild the shared layers, without moving either listener.
@@ -302,10 +307,7 @@ async fn reload_enables_rebinds_disables_and_rolls_back_both_listeners() {
     // The status reports the listener still bound, not the rejected request,
     // plus why the reload failed.
     let status = listener_status(&engine).await;
-    assert_eq!(
-        status["applied"]["port"],
-        json!(next.webhook_listener.as_ref().unwrap().port)
-    );
+    assert_eq!(status["applied"]["port"], json!(first.port()));
     assert!(
         status["last_reload_error"].as_str().is_some(),
         "a failed bind is reported: {status}"

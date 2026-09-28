@@ -220,3 +220,22 @@ fn a_saved_listener_is_ready_only_once_http_has_bound_it() {
         matches!(&checks[2].fix, Some(SetupFix::UpdateWorker { worker, .. }) if worker == "http")
     );
 }
+
+#[test]
+fn an_ephemeral_listener_port_is_refused_for_the_tunnel() {
+    let checks = evaluate(
+        &tunnel_with(json!({"found": true})),
+        &probe(
+            Some(json!({"host": "127.0.0.1", "port": 0})),
+            Some(json!({"applied": {"host": "127.0.0.1", "port": 0}, "last_reload_error": null})),
+        ),
+    );
+    assert_eq!(checks[2].state, CheckState::Missing);
+    assert!(checks[2].detail.contains("port 0"), "{}", checks[2].detail);
+    assert_eq!(
+        checks[2].fix,
+        Some(SetupFix::EnableHttpListener {
+            port: DEFAULT_LISTENER_PORT
+        })
+    );
+}

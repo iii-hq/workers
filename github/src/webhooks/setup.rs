@@ -263,6 +263,15 @@ pub fn evaluate(
                     port: DEFAULT_LISTENER_PORT,
                 }),
             ),
+            Some(configured) if configured["port"].as_u64() == Some(0) => check(
+                "http_listener",
+                "http webhook listener",
+                CheckState::Missing,
+                "The listener uses port 0 (ephemeral); quick-tunnel forwards to a fixed port, so set one.".into(),
+                Some(SetupFix::EnableHttpListener {
+                    port: DEFAULT_LISTENER_PORT,
+                }),
+            ),
             Some(configured) => {
                 let (host, port) = host_port(configured);
                 let applied = probe
@@ -368,7 +377,9 @@ impl Service {
 
     /// The http worker's configuration id and raw value; None when http
     /// predates the webhook listener (no http::configuration-id).
-    async fn http_config(&self) -> Result<Option<(String, Value)>> {
+    /// `raw` keeps `${VAR}` placeholders (for read-modify-write); readiness
+    /// compares the resolved values http itself binds.
+    async fn http_config(&self, raw: bool) -> Result<Option<(String, Value)>> {
         let id = match self.invoke("http::configuration-id", json!({})).await {
             Ok(v) => v["id"]
                 .as_str()
@@ -378,7 +389,7 @@ impl Service {
             Err(e) => return Err(e),
         };
         let got = self
-            .invoke("configuration::get", json!({"id": id, "raw": true}))
+            .invoke("configuration::get", json!({"id": id, "raw": raw}))
             .await?;
         Ok(Some((id, got["value"].clone())))
     }
@@ -397,7 +408,7 @@ impl Service {
 
     /// Saved and applied listener; None when http predates the listener.
     async fn listener_probe(&self) -> Result<Option<ListenerProbe>> {
-        let Some((_, value)) = self.http_config().await? else {
+        let Some((_, value)) = self.http_config(false).await? else {
             return Ok(None);
         };
         let configured = value
@@ -455,7 +466,7 @@ impl Service {
         &self,
         req: EnableListenerRequest,
     ) -> Result<SetupStatus> {
-        let Some((id, mut value)) = self.http_config().await? else {
+        let Some((id, mut value)) = self.http_config(true).await? else {
             return Err(Failure::Invalid(
                 "this http version has no webhook listener; update http to 0.22 or later".into(),
             ));

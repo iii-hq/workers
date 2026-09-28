@@ -56,6 +56,26 @@ pub struct Manager {
     probe: std::sync::Arc<crate::prerequisites::ProbeCache>,
 }
 
+/// Take the single-instance state lock, retrying briefly on contention. flock
+/// belongs to the open file description: a child spawned anywhere in this
+/// process holds a copy of the descriptor until its exec closes it, and a
+/// previous instance may still be exiting. Both clear within milliseconds; a
+/// real second instance still fails after the bounded window.
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 20;
+    let mut attempt = 0;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && attempt < ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 impl Manager {
     pub fn open(config: Config) -> Result<Self> {
         config.validate().map_err(Error::Invalid)?;
@@ -68,7 +88,7 @@ impl Manager {
             .read(true)
             .write(true)
             .open(config.state_path.with_extension("lock"))?;
-        lock.try_lock_exclusive()?;
+        lock_exclusive(&lock)?;
         let leases: Vec<Lease> = match std::fs::read(&config.state_path) {
             Ok(bytes) => serde_json::from_slice(&bytes)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),

@@ -124,12 +124,13 @@ export function WebhookSetup({ host }: { host: Host }) {
   const announced = useRef(0)
   /** Stops an install wait when the page unmounts. */
   const mounted = useRef(true)
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on every setup: StrictMode replays setup after a cleanup.
+    mounted.current = true
+    return () => {
       mounted.current = false
-    },
-    [],
-  )
+    }
+  }, [])
 
   /** `announce` reads the result aloud: only for checks the user asked for. */
   const refresh = useCallback(
@@ -184,9 +185,12 @@ export function WebhookSetup({ host }: { host: Host }) {
         setActionError(message)
         setAnnouncement({ seq: ++announced.current, text: message, urgency: 'assertive' })
       } finally {
-        setBusy(null)
-        // Re-check either way, but never let the summary drown out a failure.
-        await refresh(!failed)
+        // After unmount there is nothing to update and no reason to re-check.
+        if (mounted.current) {
+          setBusy(null)
+          // Re-check either way, but never let the summary drown out a failure.
+          await refresh(!failed)
+        }
       }
     },
     [refresh],
