@@ -316,6 +316,7 @@ pub(super) async fn service(dir: &std::path::Path) -> Service {
         },
         engine_url: "ws://127.0.0.1:1".into(),
         store: Some(Store::open(&dir.join("store.sqlite3")).unwrap()),
+        storage_error: None,
         operations: Mutex::new(()),
         bus: None,
     }

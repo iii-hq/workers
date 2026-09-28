@@ -1,9 +1,11 @@
 use github::webhooks::setup::{
-    blockers, evaluate, CheckState, SetupFix, CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
+    blockers, evaluate, function_missing, CheckState, SetupFix, TunnelProbe,
+    CLOUDFLARED_INSTALL_URL, DEFAULT_LISTENER_PORT,
 };
+use github::webhooks::Failure;
 use serde_json::{json, Value};
 
-fn tunnel_with(cloudflared: Value) -> Result<Value, (bool, String)> {
+fn tunnel_with(cloudflared: Value) -> Result<Value, TunnelProbe> {
     Ok(json!({"status": "stopped", "leases": [], "prerequisites": {"cloudflared": cloudflared}}))
 }
 fn listener_on() -> Result<Option<Value>, String> {
@@ -31,7 +33,7 @@ fn everything_present_is_ready() {
 
 #[test]
 fn missing_quick_tunnel_offers_install_and_blocks_cloudflared() {
-    let checks = evaluate(&Err((true, "function_not_found".into())), &listener_on());
+    let checks = evaluate(&Err(TunnelProbe::NotInstalled), &listener_on());
     assert_eq!(
         states(&checks),
         [CheckState::Missing, CheckState::Blocked, CheckState::Ok]
@@ -99,7 +101,49 @@ fn listener_off_offers_enable_and_old_workers_are_unknown_not_blocking() {
     );
     assert!(blockers(&checks).is_none());
     // Transient errors are unknown too, and never refuse a watch.
-    let checks = evaluate(&Err((false, "timeout".into())), &Err("timeout".into()));
+    let checks = evaluate(
+        &Err(TunnelProbe::NotResponding("timeout".into())),
+        &Err("timeout".into()),
+    );
     assert_eq!(states(&checks), [CheckState::Unknown; 3]);
     assert!(blockers(&checks).is_none());
+}
+
+#[test]
+fn a_restarting_quick_tunnel_is_unknown_and_never_blocks() {
+    let checks = evaluate(
+        &Err(TunnelProbe::NotResponding(
+            "declared in compose but not answering".into(),
+        )),
+        &listener_on(),
+    );
+    assert_eq!(checks[0].state, CheckState::Unknown);
+    assert_eq!(checks[1].state, CheckState::Unknown);
+    assert!(
+        blockers(&checks).is_none(),
+        "a restart must not refuse a watch"
+    );
+}
+
+#[test]
+fn only_the_structured_function_not_found_code_means_missing() {
+    let remote = |code: &str, message: &str| {
+        Failure::Engine(iii_sdk::Error::Remote {
+            code: code.into(),
+            message: message.into(),
+            stacktrace: None,
+        })
+    };
+    assert!(function_missing(&remote(
+        "function_not_found",
+        "Function quick-tunnel::status not found in namespace default."
+    )));
+    // Text that merely mentions it is not the engine's answer.
+    assert!(!function_missing(&remote(
+        "invocation_failed",
+        "function_not_found in payload"
+    )));
+    assert!(!function_missing(&Failure::Invalid(
+        "remote error (function_not_found): not found in namespace".into()
+    )));
 }

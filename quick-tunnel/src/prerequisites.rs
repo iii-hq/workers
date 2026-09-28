@@ -5,15 +5,20 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 /// Cloudflare's official cloudflared downloads page.
 pub const INSTALL_URL: &str =
     "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
 
-/// Searched after the worker's own PATH. The child PATH is deliberately narrow,
-/// and Homebrew on Apple silicon installs outside it (`/opt/homebrew/bin`).
-const EXTRA_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+/// The only directories a bare name is resolved in. The worker's inherited PATH
+/// is deliberately NOT searched: a user-writable entry (~/.local/bin, shims)
+/// could shadow the binary that publishes a local service to the Internet.
+/// Anything else must be configured as an absolute path.
+pub const TRUSTED_DIRS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
+
+/// How long a successful `--version` probe of an unchanged binary is reused.
+const PROBE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct Prerequisites {
@@ -40,11 +45,9 @@ pub fn resolve(configured: &str) -> Option<PathBuf> {
         let path = PathBuf::from(configured);
         return is_executable(&path).then_some(path);
     }
-    let own_path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&own_path)
-        .chain(EXTRA_DIRS.iter().map(PathBuf::from))
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join(configured))
+    TRUSTED_DIRS
+        .iter()
+        .map(|dir| Path::new(dir).join(configured))
         .find(|candidate| is_executable(candidate))
 }
 
@@ -111,6 +114,49 @@ pub async fn check(configured: &str) -> CloudflaredCheck {
     }
 }
 
+/// Reuses a successful probe while the resolved binary is unchanged, so status
+/// callers do not spawn `cloudflared --version` on every read. A missing binary
+/// is re-resolved every time (cheap, no process), so installing it shows up at
+/// once.
+#[derive(Default)]
+pub struct ProbeCache {
+    slot: tokio::sync::Mutex<Option<CachedProbe>>,
+}
+
+struct CachedProbe {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    at: Instant,
+    result: CloudflaredCheck,
+}
+
+impl ProbeCache {
+    pub async fn check(&self, configured: &str) -> CloudflaredCheck {
+        let Some(path) = resolve(configured) else {
+            return check(configured).await;
+        };
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let mut slot = self.slot.lock().await;
+        if let Some(cached) = slot.as_ref() {
+            if cached.path == path
+                && cached.modified == modified
+                && cached.at.elapsed() < PROBE_TTL
+                && cached.result.found
+            {
+                return cached.result.clone();
+            }
+        }
+        let fresh = check(configured).await;
+        *slot = Some(CachedProbe {
+            path,
+            modified,
+            at: Instant::now(),
+            result: fresh.clone(),
+        });
+        fresh
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +188,62 @@ mod tests {
             Some("cloudflared version 2026.9.1 (built x)")
         );
         assert_eq!(check.path.as_deref(), exe.to_str());
+    }
+
+    #[test]
+    fn bare_names_resolve_only_in_trusted_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        // An executable outside the trusted list is never picked up by name.
+        let dir = tempfile::tempdir().unwrap();
+        let name = "quick-tunnel-shadow-cloudflared-test";
+        let exe = dir.path().join(name);
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(resolve(name).is_none());
+        // The same file is used when configured by absolute path.
+        assert_eq!(resolve(exe.to_str().unwrap()), Some(exe));
+    }
+
+    #[tokio::test]
+    async fn probe_cache_reuses_an_unchanged_binary_and_reprobes_a_changed_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        let exe = dir.path().join("cloudflared");
+        let script = |version: &str| {
+            format!(
+                "#!/bin/sh\necho run >> {}\necho 'cloudflared version {version}'\n",
+                runs.display()
+            )
+        };
+        std::fs::write(&exe, script("1")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cache = ProbeCache::default();
+        let path = exe.to_str().unwrap();
+        assert_eq!(
+            cache.check(path).await.version.as_deref(),
+            Some("cloudflared version 1")
+        );
+        assert_eq!(
+            cache.check(path).await.version.as_deref(),
+            Some("cloudflared version 1")
+        );
+        let count = || std::fs::read_to_string(&runs).unwrap().lines().count();
+        assert_eq!(count(), 1, "second read served from cache");
+        // A changed binary (new mtime) is probed again.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&exe, script("2")).unwrap();
+        let changed = SystemTime::now() + Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&exe)
+            .unwrap()
+            .set_modified(changed)
+            .unwrap();
+        assert_eq!(
+            cache.check(path).await.version.as_deref(),
+            Some("cloudflared version 2")
+        );
+        assert_eq!(count(), 2);
     }
 }

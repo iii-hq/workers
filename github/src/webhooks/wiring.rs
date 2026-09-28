@@ -94,7 +94,7 @@ impl TriggerHandler for EventHandler {
 /// database, probe gh, acquire a tunnel, register HTTP or publish to a queue.
 pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str) {
     let config = cell.read().await.webhooks.clone();
-    let store = if config.enabled {
+    let (store, storage_error) = if config.enabled {
         let storage_config = config.clone();
         match storage_task(async move {
             validate_config(&storage_config)?;
@@ -102,14 +102,14 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         })
         .await
         {
-            Ok(s) => Some(s),
+            Ok(s) => (Some(s), None),
             Err(e) => {
                 tracing::error!(error = %e, "webhook storage unavailable; mutations disabled");
-                None
+                (None, Some(e.to_string()))
             }
         }
     } else {
-        None
+        (None, None)
     };
     let service = Arc::new(Service {
         iii: iii.clone(),
@@ -117,6 +117,7 @@ pub async fn register(iii: &Arc<IIIClient>, cell: &ConfigCell, engine_url: &str)
         config,
         engine_url: engine_url.into(),
         store,
+        storage_error,
         operations: Mutex::new(()),
         #[cfg(test)]
         bus: None,

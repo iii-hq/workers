@@ -61,6 +61,19 @@ pub struct SetupStatus {
     /// github worker to apply it.
     pub restart_required: bool,
     pub checks: Vec<SetupCheck>,
+    /// Why webhook storage failed to open at startup while enabled; restarting
+    /// will not help until this is fixed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_error: Option<String>,
+}
+
+/// How `quick-tunnel::status` failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TunnelProbe {
+    /// The function does not exist and compose does not declare the worker.
+    NotInstalled,
+    /// Declared but not answering (restarting, stopped) or a transient error.
+    NotResponding(String),
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -98,14 +111,14 @@ fn check(
     }
 }
 
-fn function_missing(e: &Failure) -> bool {
-    let text = e.to_string();
-    text.contains("function_not_found") || text.contains("not found in namespace")
+/// The engine's structured "no such function" answer (never a text match).
+pub fn function_missing(e: &Failure) -> bool {
+    matches!(e, Failure::Engine(iii_sdk::Error::Remote { code, .. }) if code == "function_not_found")
 }
 
 /// Build the three checks from what the workers answered. Pure for tests.
 pub fn evaluate(
-    tunnel: &std::result::Result<Value, (bool, String)>,
+    tunnel: &std::result::Result<Value, TunnelProbe>,
     listener: &std::result::Result<Option<Value>, String>,
 ) -> Vec<SetupCheck> {
     let quick = match tunnel {
@@ -116,7 +129,7 @@ pub fn evaluate(
             "Installed.".into(),
             None,
         ),
-        Err((true, _)) => check(
+        Err(TunnelProbe::NotInstalled) => check(
             "quick_tunnel",
             "quick-tunnel worker",
             CheckState::Missing,
@@ -126,7 +139,7 @@ pub fn evaluate(
                 command: "compose::add { worker: \"quick-tunnel\" }".into(),
             }),
         ),
-        Err((false, e)) => check(
+        Err(TunnelProbe::NotResponding(e)) => check(
             "quick_tunnel",
             "quick-tunnel worker",
             CheckState::Unknown,
@@ -173,7 +186,7 @@ pub fn evaluate(
                 }),
             ),
         },
-        Err((true, _)) => check(
+        Err(TunnelProbe::NotInstalled) => check(
             "cloudflared",
             "cloudflared binary",
             CheckState::Blocked,
@@ -181,7 +194,7 @@ pub fn evaluate(
             None,
         ),
         // quick-tunnel exists but did not answer: unverifiable, never a blocker.
-        Err((false, _)) => check(
+        Err(TunnelProbe::NotResponding(_)) => check(
             "cloudflared",
             "cloudflared binary",
             CheckState::Unknown,
@@ -249,6 +262,20 @@ pub fn blockers(checks: &[SetupCheck]) -> Option<String> {
 }
 
 impl Service {
+    /// A missing quick-tunnel function is only "not installed" when compose
+    /// does not declare the worker either; a declared one is restarting.
+    async fn quick_tunnel_declared(&self) -> bool {
+        self.invoke("compose::status", json!({}))
+            .await
+            .ok()
+            .and_then(|status| status["containers"].as_array().cloned())
+            .is_some_and(|containers| {
+                containers
+                    .iter()
+                    .any(|c| c["container"] == QUICK_TUNNEL_WORKER)
+            })
+    }
+
     /// The http worker's configuration id and raw value; None when http
     /// predates the webhook listener (no http::configuration-id).
     async fn http_config(&self) -> Result<Option<(String, Value)>> {
@@ -268,10 +295,20 @@ impl Service {
 
     pub(super) async fn setup_status(&self, _req: SetupStatusRequest) -> Result<SetupStatus> {
         let live = self.cell.read().await.webhooks.clone();
-        let tunnel = self
+        let tunnel = match self
             .invoke("quick-tunnel::status", json!({"tunnel_id": live.tunnel_id}))
             .await
-            .map_err(|e| (function_missing(&e), e.to_string()));
+        {
+            Ok(status) => Ok(status),
+            Err(e) if function_missing(&e) => Err(if self.quick_tunnel_declared().await {
+                TunnelProbe::NotResponding(
+                    "declared in compose but not answering (restarting or stopped)".into(),
+                )
+            } else {
+                TunnelProbe::NotInstalled
+            }),
+            Err(e) => Err(TunnelProbe::NotResponding(e.to_string())),
+        };
         let listener = self
             .http_config()
             .await
@@ -285,6 +322,9 @@ impl Service {
             ready: checks.iter().all(|c| c.state == CheckState::Ok),
             restart_required: live.enabled != active,
             checks,
+            storage_error: (live.enabled && !active)
+                .then(|| self.storage_error.clone())
+                .flatten(),
         })
     }
 
@@ -309,8 +349,21 @@ impl Service {
         if !value.is_object() {
             value = json!({});
         }
+        let existing = value
+            .get("webhook_listener")
+            .filter(|l| l.is_object())
+            .cloned();
+        // An operator-configured listener is kept unless a port is requested.
+        if existing.is_some() && req.port.is_none() {
+            return self.setup_status(SetupStatusRequest {}).await;
+        }
+        let host = existing
+            .as_ref()
+            .and_then(|l| l["host"].as_str())
+            .unwrap_or("127.0.0.1")
+            .to_owned();
         value["webhook_listener"] = json!({
-            "host": "127.0.0.1",
+            "host": host,
             "port": req.port.unwrap_or(DEFAULT_LISTENER_PORT),
         });
         self.invoke("configuration::set", json!({"id": id, "value": value}))

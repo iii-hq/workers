@@ -548,3 +548,15 @@
   color: var(--color-alert);
   overflow-wrap: anywhere;
 }
+
+[data-iii-ui="github"] .gh-ui-webhooks__failure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="github"] .gh-ui-webhooks__failure .gh-ui-webhooks__error {
+  flex: 1 1 240px;
+  min-width: 0;
+}

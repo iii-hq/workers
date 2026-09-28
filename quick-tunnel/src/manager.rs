@@ -53,6 +53,7 @@ pub struct Manager {
     tx: mpsc::Sender<Request>,
     events: broadcast::Sender<Snapshot>,
     cloudflared: std::sync::Arc<str>,
+    probe: std::sync::Arc<crate::prerequisites::ProbeCache>,
 }
 
 impl Manager {
@@ -116,6 +117,7 @@ impl Manager {
             tx,
             events,
             cloudflared,
+            probe: Default::default(),
         })
     }
 
@@ -148,7 +150,7 @@ impl Manager {
         let mut response = rx.await.map_err(|_| Error::Stopped)??;
         // Probed outside the owning task: a slow `--version` never stalls leases.
         response.prerequisites = Some(crate::prerequisites::Prerequisites {
-            cloudflared: crate::prerequisites::check(&self.cloudflared).await,
+            cloudflared: self.probe.check(&self.cloudflared).await,
         });
         Ok(response)
     }
@@ -459,6 +461,13 @@ impl Actor {
                     Status::Reconnecting
                 };
                 tunnel.emit(&self.events, status, None);
+                // Only a binary that does not resolve is "not found"; any other
+                // spawn error (state dir gone, permissions) gets the generic one.
+                if crate::prerequisites::resolve(&self.config.cloudflared).is_none() {
+                    let error = crate::prerequisites::not_found_error(&self.config.cloudflared);
+                    fail(tunnel, &self.config, &self.events, error).await;
+                    continue;
+                }
                 match spawn(
                     &self.config,
                     id,
@@ -467,14 +476,10 @@ impl Actor {
                 ) {
                     Ok(process) => tunnel.process = Some(process),
                     Err(e) => {
-                        let error = if e.kind() == std::io::ErrorKind::NotFound {
-                            crate::prerequisites::not_found_error(&self.config.cloudflared)
-                        } else {
-                            format!(
-                                "cloudflared spawn failed ({:?}); verify prerequisite executable",
-                                e.kind()
-                            )
-                        };
+                        let error = format!(
+                            "cloudflared spawn failed ({:?}); verify prerequisite executable",
+                            e.kind()
+                        );
                         fail(tunnel, &self.config, &self.events, error).await
                     }
                 }

@@ -52,6 +52,7 @@ export interface SetupStatus {
   ready: boolean
   restart_required: boolean
   checks: SetupCheck[]
+  storage_error?: string
 }
 
 const STATUS_FN = 'github::setup::webhooks-status'
@@ -81,12 +82,15 @@ function summarize(status: SetupStatus): string {
 export function WebhookSetup({ host }: { host: Host }) {
   const [status, setStatus] = useState<SetupStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** An action's failure; only the next action or Dismiss clears it. */
+  const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [checking, setChecking] = useState(false)
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)
   const [announcement, setAnnouncement] = useState<LiveAnnouncement | null>(null)
   const { confirm, dialog } = useConfirm()
   const latest = useRef(0)
+  const announced = useRef(0)
 
   /** `announce` reads the result aloud: only for checks the user asked for. */
   const refresh = useCallback(
@@ -103,13 +107,19 @@ export function WebhookSetup({ host }: { host: Host }) {
         setStatus(next)
         setError(null)
         setCheckedAt(new Date())
-        if (announce) setAnnouncement({ seq: request, text: summarize(next), urgency: 'polite' })
+        if (announce) {
+          setAnnouncement({ seq: ++announced.current, text: summarize(next), urgency: 'polite' })
+        }
       } catch (err) {
         if (request !== latest.current) return
         const message = errorMessage(err)
         setError(message)
         if (announce) {
-          setAnnouncement({ seq: request, text: `Check failed: ${message}`, urgency: 'assertive' })
+          setAnnouncement({
+            seq: ++announced.current,
+            text: `Check failed: ${message}`,
+            urgency: 'assertive',
+          })
         }
       } finally {
         if (request === latest.current) setChecking(false)
@@ -125,13 +135,19 @@ export function WebhookSetup({ host }: { host: Host }) {
   const run = useCallback(
     async (key: string, action: () => Promise<unknown>) => {
       setBusy(key)
+      setActionError(null)
+      let failed = false
       try {
         await action()
       } catch (err) {
-        setError(errorMessage(err))
+        failed = true
+        const message = errorMessage(err)
+        setActionError(message)
+        setAnnouncement({ seq: ++announced.current, text: message, urgency: 'assertive' })
       } finally {
         setBusy(null)
-        await refresh(true)
+        // Re-check either way, but never let the summary drown out a failure.
+        await refresh(!failed)
       }
     },
     [refresh],
@@ -230,13 +246,23 @@ export function WebhookSetup({ host }: { host: Host }) {
     )
   }
 
-  const stateLine = status.active
-    ? 'Active: watched pull requests receive GitHub deliveries.'
-    : status.enabled
-      ? 'Enabled in configuration; restart the github worker to apply it.'
-      : status.ready
-        ? 'Every prerequisite is ready.'
-        : 'Complete the steps above to enable PR webhooks.'
+  const stateLine =
+    status.enabled && status.active
+      ? 'Active: watched pull requests receive GitHub deliveries.'
+      : status.enabled && status.storage_error
+        ? `Enabled, but webhook storage failed to open: ${status.storage_error}. Fix it, then restart github.`
+        : status.enabled
+          ? 'Enabled in configuration; restart github to apply it.'
+          : status.active
+            ? 'Disabled in configuration; restart github to apply it. Deliveries continue until then.'
+            : status.ready
+              ? 'Every prerequisite is ready.'
+              : 'Complete the steps above to enable PR webhooks.'
+  const badge = status.restart_required
+    ? { variant: 'warn' as const, label: 'Restart pending' }
+    : status.active
+      ? { variant: 'ok' as const, label: 'On' }
+      : { variant: 'default' as const, label: 'Off' }
 
   return (
     <PageMain className="gh-ui-main gh-ui-webhooks">
@@ -284,26 +310,24 @@ export function WebhookSetup({ host }: { host: Host }) {
             layout="auto"
             label="Webhooks"
             description={stateLine}
-            meta={
-              <Badge variant={status.active ? 'ok' : 'default'}>
-                {status.active ? 'On' : status.enabled ? 'Restart pending' : 'Off'}
-              </Badge>
-            }
+            meta={<Badge variant={badge.variant}>{badge.label}</Badge>}
             control={
               status.enabled ? (
                 <Button
                   size="sm"
                   variant="ghost"
                   disabled={busy !== null}
+                  aria-busy={busy === 'enable'}
                   onClick={() => void setEnabled(false)}
                 >
-                  Disable
+                  {busy === 'enable' ? 'Disabling…' : 'Disable'}
                 </Button>
               ) : (
                 <Button
                   size="sm"
                   variant="primary"
                   disabled={busy !== null || !status.ready}
+                  aria-busy={busy === 'enable'}
                   onClick={() => void setEnabled(true)}
                 >
                   {busy === 'enable' ? 'Enabling…' : 'Enable webhooks'}
@@ -311,23 +335,32 @@ export function WebhookSetup({ host }: { host: Host }) {
               )
             }
             action={
-              status.restart_required && status.enabled ? (
+              status.restart_required ? (
                 <Button
                   size="sm"
                   variant="ghost"
                   disabled={busy !== null}
+                  aria-busy={busy === 'restart'}
                   onClick={() => void run('restart', restartGithub)}
                 >
-                  Restart github
+                  {busy === 'restart' ? 'Restarting…' : 'Restart github'}
                 </Button>
               ) : undefined
             }
           />
         </SettingsList>
       </SettingsSection>
+      {actionError ? (
+        <div className="gh-ui-webhooks__failure" role="alert">
+          <p className="gh-ui-webhooks__error">{actionError}</p>
+          <Button size="sm" variant="ghost" onClick={() => setActionError(null)}>
+            Dismiss
+          </Button>
+        </div>
+      ) : null}
       {error ? (
-        <p className="gh-ui-webhooks__error" role="alert">
-          {error}
+        <p className="gh-ui-webhooks__error" role="status">
+          Could not re-check: {error}
         </p>
       ) : null}
     </PageMain>

@@ -80,6 +80,8 @@ pub struct Service {
     config: WebhookConfig,
     engine_url: String,
     store: Option<Store>,
+    /// Why storage did not open while webhooks were enabled at startup.
+    storage_error: Option<String>,
     operations: Mutex<()>,
     #[cfg(test)]
     bus: Option<lifecycle_tests::MockBus>,

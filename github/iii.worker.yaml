@@ -8,7 +8,7 @@ bin: github
 tags: [github, gh, git, pull-requests, issues, actions, releases, webhooks, ci, notifications]
 description: GitHub CLI and event-driven PR monitoring — typed queries and mutations, authenticated temporary webhooks, CI/comment/review notifications, and merge-triggered cleanup.
 # quick-tunnel is intentionally NOT a dependency: it is only needed for PR
-# webhooks, and the GitHub page installs it on demand (github::webhooks::setup-status
+# webhooks, and the GitHub page installs it on demand (github::setup::webhooks-status
 # lists every webhook prerequisite and how to satisfy it).
 dependencies:
   configuration: "latest"
