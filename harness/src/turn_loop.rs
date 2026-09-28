@@ -625,9 +625,9 @@ async fn generate_step(
         &functions,
         &policy,
     );
-    let live = crate::agents::preload_contracts(deps, &unlisted, &policy)
-        .await
-        .2;
+    // A failed lookup proves nothing either: those ids stay unjudged.
+    let (_, _, mut live, failed) = crate::agents::lookup_contracts(deps, &unlisted, &policy).await;
+    live.retain(|id, _| !failed.contains(id));
     // Preloaded contracts that drifted from the live registry: named per id
     // (the frozen block is never rewritten). The same drift is told once
     // while that notice is still in the window.
@@ -3657,7 +3657,9 @@ pub(crate) fn preloaded_stale_notice(
             (Some(frozen_digest), None) => match live.get(id) {
                 Some(Some(current)) if current == frozen_digest => {}
                 Some(Some(_)) => changed.push(id.as_str()),
-                _ => removed.push(id.as_str()),
+                Some(None) => removed.push(id.as_str()),
+                // Not looked up, or the lookup failed: no verdict.
+                None => {}
             },
             (Some(frozen_digest), Some(d)) if d.request_schema.is_some() => {
                 if crate::agents::digest_of(&d) != *frozen_digest {
@@ -3802,14 +3804,18 @@ mod tests {
         ));
     }
 
-    /// `preloaded_stale_notice` without a live lookup: an unlisted frozen id
-    /// reads as removed.
+    /// `preloaded_stale_notice` where the live lookup of every unlisted
+    /// frozen id succeeded and found nothing: those ids read as removed.
     fn stale(
         frozen: Option<&std::collections::BTreeMap<String, Option<String>>>,
         snapshot: &crate::discovery::FunctionsSnapshot,
         policy: &crate::policy::CompiledPolicy,
     ) -> Option<String> {
-        super::preloaded_stale_notice(frozen, snapshot, policy, &Default::default())
+        let live = super::unlisted_preloaded(frozen, snapshot, policy)
+            .into_iter()
+            .map(|id| (id, None))
+            .collect();
+        super::preloaded_stale_notice(frozen, snapshot, policy, &live)
     }
 
     fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {
@@ -4969,6 +4975,12 @@ mod tests {
         assert!(
             removed.contains("no longer registered: `state::get`"),
             "{removed}"
+        );
+        // A failed lookup leaves the id out of `live`: no verdict, no notice.
+        assert!(
+            super::preloaded_stale_notice(Some(&frozen), &lagging, &all, &BTreeMap::new())
+                .is_none(),
+            "a lookup that failed does not prove removal"
         );
     }
 
