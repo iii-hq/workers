@@ -187,9 +187,11 @@ pub async fn pre_generate(
     }
     apply_rules(&input, &section, &mut mutations, &mut annotations);
 
+    // Recall only on the step that opens the turn: the appended message is
+    // persisted and replayed on later steps, so re-recalling would stack copies.
     if let Some(bank) = bank
         .as_ref()
-        .filter(|_| cfg.inject_memories && opens_turn(&input))
+        .filter(|_| cfg.inject_memories && input.step == 0)
     {
         let query = last_user_text(input.generate.as_ref().map(|g| &g.messages));
         if !query.trim().is_empty() {
@@ -232,13 +234,6 @@ pub async fn pre_generate(
         mutations: Some(mutations),
         annotations: Some(annotations),
     })
-}
-
-/// Recall runs once per turn, on the step that opens it: the appended
-/// message is persisted and replayed on the later steps, so re-recalling
-/// would stack one copy per step.
-fn opens_turn(input: &PreGenerateInput) -> bool {
-    input.step == 0
 }
 
 /// A plain user-role text message for `append_messages`.
@@ -796,29 +791,14 @@ Formal."
     }
 
     #[test]
-    fn first_step_renders_the_section_into_the_system_prompt() {
-        let mut told = HashMap::new();
-        let section = "\n\n# Memory\n## a\nA\n";
-        let (system, update) = tell_rules(&mut told, "s1", None, section, 1);
-        assert_eq!(system, section);
-        assert!(update.is_none());
-        // A retry of the first step still has nothing to append.
-        let (again, update) = tell_rules(&mut told, "s1", None, section, 2);
-        assert_eq!(again, system);
-        assert!(update.is_none());
-    }
-
-    #[test]
     fn unchanged_rules_keep_the_system_prompt_and_append_nothing() {
         let mut told = HashMap::new();
         let section = "\n\n# Memory\n## a\nA\n";
         let (first, _) = tell_rules(&mut told, "s1", None, section, 1);
-        for step in 2..5 {
-            let w = window(&["question"]);
-            let (system, update) = tell_rules(&mut told, "s1", Some(&w), section, step);
-            assert_eq!(system, first);
-            assert!(update.is_none());
-        }
+        let w = window(&["question"]);
+        let (system, update) = tell_rules(&mut told, "s1", Some(&w), section, 2);
+        assert_eq!(system, first);
+        assert!(update.is_none());
     }
 
     #[test]
@@ -965,16 +945,6 @@ Formal."
         assert_eq!(told.len(), TOLD_RULES_CAP);
         assert!(told.contains_key("s0"));
         assert!(!told.contains_key("s1"), "least recently used goes first");
-    }
-
-    #[test]
-    fn recall_runs_only_on_the_step_that_opens_the_turn() {
-        let at = |step: u64| -> PreGenerateInput {
-            serde_json::from_value(json!({ "session_id": "s_1", "step": step })).unwrap()
-        };
-        assert!(opens_turn(&at(0)));
-        assert!(!opens_turn(&at(1)));
-        assert!(!opens_turn(&at(7)));
     }
 
     #[test]

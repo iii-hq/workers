@@ -95,13 +95,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .generation(
         Generation::new(1)
-            .expect(
-                Request::new()
-                    .turn_request_step(0)
-                    .system_prompt_sha256("{{system_prompt_sha256}}")
-                    .messages_exact([Message::user(MESSAGE)])
-                    .tools_exact([record.tool()]),
-            )
+            .expect(turn_one(0).messages_exact([Message::user(MESSAGE)]))
             .respond(call("call-1", "first")),
     )
     .generation(
@@ -138,17 +132,10 @@ pub(super) fn scenario() -> ScenarioFixture {
         run.expect_no_duplicate_messages()?;
         // The moved working directory reaches the model: turn 2's opening
         // request ends with the runtime-context notice.
-        let opener = run.router_evidence["calls"]
-            .as_array()
+        let opener = run
+            .step_zero_requests()
             .into_iter()
-            .flatten()
-            .filter_map(|call| call.get("request"))
             .filter(|request| request["session_id"] == run.session_id.as_str())
-            .filter(|request| {
-                request["request_id"]
-                    .as_str()
-                    .is_some_and(|id| id.ends_with(":0"))
-            })
             .nth(1)
             .ok_or_else(|| anyhow::anyhow!("no turn-2 step-0 router request"))?;
         let last = opener["messages"]

@@ -277,6 +277,23 @@ impl RunEvidence {
         Ok(())
     }
 
+    /// The raw router requests of every step-0 generation (`request_id` ends in
+    /// `:0`): each turn's opening call, across sessions, in arrival order.
+    pub fn step_zero_requests(&self) -> Vec<Value> {
+        self.router_evidence
+            .get("calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|call| call.get("request").cloned())
+            .filter(|request| {
+                request["request_id"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with(":0"))
+            })
+            .collect()
+    }
+
     /// Replace concrete run identities so failure text stays byte-comparable.
     pub fn scrub(&self, text: &str) -> String {
         let mut text = text.to_string();

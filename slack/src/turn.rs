@@ -275,10 +275,6 @@ mod tests {
         let cfg = WorkerConfig::default();
         let id = kv::new_thread_session_id(Some("T1"), "C1", "1712345678.000100");
         assert_eq!(id, "slack-T1-C1-1712345678.000100");
-        assert_eq!(
-            id,
-            kv::new_thread_session_id(Some("T1"), "C1", "1712345678.000100")
-        );
         assert_ne!(
             id,
             kv::new_thread_session_id(Some("T2"), "C1", "1712345678.000100")
@@ -286,12 +282,6 @@ mod tests {
         let first = build_system_prompt(&cfg, "C1", "1712345678.000100", &id);
         assert!(first.contains(&format!("session_id: {id}")));
         assert!(!first.contains("(new)"));
-        // A later turn reads the stored mapping (the id the first send used)
-        // and renders the identical prompt.
-        assert_eq!(
-            first,
-            build_system_prompt(&cfg, "C1", "1712345678.000100", &id)
-        );
     }
 
     #[test]

@@ -358,10 +358,7 @@ mod tests {
 
     #[test]
     fn headers_per_auth_mode() {
-        let h = build_headers(
-            &cfg(AuthMode::ApiKey),
-            &build_body(&args(), &mut Vec::new()),
-        );
+        let h = build_headers(&cfg(AuthMode::ApiKey), &json!({}));
         assert!(h.contains(&("x-api-key", "sk-test".to_string())));
         assert!(h.contains(&("anthropic-version", ANTHROPIC_VERSION.to_string())));
         // Tool-input streaming is the per-tool eager_input_streaming flag

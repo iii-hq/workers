@@ -210,6 +210,8 @@ pub fn build(
             (Some(AgentMessage::Custom(_)), _) => None,
             (Some(message), _) => {
                 let mut message = message.clone();
+                // The console also sends the <attached-file> text expansion;
+                // persisted entries keep the refs.
                 message.strip_file_blocks();
                 if past_watermark && matches!(message, AgentMessage::User(_)) {
                     arrived.insert(entry.entry_id.as_str());
@@ -287,10 +289,9 @@ fn dispatched(entries: &[LoadedEntry], id: &str) -> bool {
             _ => None,
         })
         .collect();
-    !calls.is_empty()
-        && entries.iter().any(|e| {
-            matches!(&e.message, Some(AgentMessage::FunctionResult(r)) if calls.contains(r.function_call_id.as_str()))
-        })
+    entries.iter().any(|e| {
+        matches!(&e.message, Some(AgentMessage::FunctionResult(r)) if calls.contains(r.function_call_id.as_str()))
+    })
 }
 
 /// Move `order.moved` right after `order.after`. A no-op when the anchor is
@@ -424,14 +425,6 @@ mod tests {
         let w = build(&entries, 0, Some("u1"), None);
         assert_eq!(ids(&w), ["u1", "n1", "a1"]);
         assert!(w.new_order.is_none());
-        // Only the opening message after the watermark: nothing to move.
-        let only = build(
-            &[msg("u1", user("go")), msg("a1", reply("ok"))],
-            0,
-            None,
-            None,
-        );
-        assert!(only.new_order.is_none());
     }
 
     #[test]

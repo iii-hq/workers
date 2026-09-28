@@ -550,12 +550,9 @@ async fn generate_step(
     // every retry.
     let prev_watermark = record.watermark_entry_id.clone();
     let watermark = entries.last().map(|e| e.entry_id.clone());
-    // The model-facing window, from the compaction anchor onward: the
-    // messages in the order earlier steps sent them (persisted notices
-    // replayed, recorded reorders applied). This step's own reply entry is
-    // left out: on a redelivered step it holds the dead attempt's reply,
-    // which this generation overwrites. Step notices are deduplicated against
-    // this window, so one a compaction summarized away is told again.
+    // The model-facing window from the compaction anchor (crate::window::build).
+    // Step notices are deduplicated against it, so one a compaction summarized
+    // away is told again.
     // ponytail: judged before this step's own compaction; a notice it summarizes away is re-told next step
     let anchor = compaction_anchor(&record.session_id, &entries);
     let window = crate::window::build(
@@ -639,10 +636,9 @@ async fn generate_step(
         (PRELOADED_STALE_NOTICE_KIND, preloaded_stale),
         (RUNTIME_CONTEXT_NOTICE_KIND, runtime_changed),
     ] {
-        let Some(notice) = notice else { continue };
-        if redelivered {
+        let Some(notice) = notice.filter(|_| !redelivered) else {
             continue;
-        }
+        };
         tracing::info!(
             session_id = %record.session_id,
             turn_id = %record.turn_id,
@@ -2943,12 +2939,6 @@ async fn assemble_context(
     step: u64,
     inputs: ContextAssemblyInputs<'_>,
 ) -> Result<Assembled, HarnessError> {
-    let anchored = anchor.summary.is_some();
-
-    // `file` attachment references are stripped from the window's
-    // MODEL-BOUND copy: neither `context::assemble` nor `router::chat` ever
-    // sees one (the console also sends the `<attached-file …>` text
-    // expansion, so the model loses nothing). The persisted entries keep them.
     if let Some(order) = &window.new_order {
         // Persisted before the request goes out, so every later step keeps
         // the moved messages where this one shows them (append-only prefix).
@@ -3051,7 +3041,7 @@ async fn assemble_context(
     let (summarized, summarized_head_tokens) = if out.applied.compacted {
         (true, out.applied.summarized_head_tokens)
     } else {
-        (anchored, anchor.summarized_head_tokens)
+        (anchor.summary.is_some(), anchor.summarized_head_tokens)
     };
 
     let messages: Vec<Value> = out

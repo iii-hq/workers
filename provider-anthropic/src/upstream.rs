@@ -115,6 +115,7 @@ async fn run_upstream(
         return;
     }
 
+    let sid = args.session_id.as_deref();
     let mut state = PartialState::new(args.warnings);
     if tx
         .send(AssistantMessageEvent::Start {
@@ -145,15 +146,7 @@ async fn run_upstream(
             }
         };
         append_utf8_chunk(&mut byte_buf, &mut text, &chunk);
-        if drain_blocks(
-            &mut text,
-            &mut state,
-            args.session_id.as_deref(),
-            &args.model,
-            &tx,
-        )
-        .await
-        {
+        if drain_blocks(&mut text, &mut state, sid, &args.model, &tx).await {
             return;
         }
     }
@@ -171,15 +164,7 @@ async fn run_upstream(
         TailFlush::Clean
     } else {
         let remainder = std::mem::take(&mut text);
-        if drain_blocks(
-            &mut (remainder + "\n\n"),
-            &mut state,
-            args.session_id.as_deref(),
-            &args.model,
-            &tx,
-        )
-        .await
-        {
+        if drain_blocks(&mut (remainder + "\n\n"), &mut state, sid, &args.model, &tx).await {
             return;
         }
         TailFlush::Clean
@@ -460,8 +445,7 @@ mod tests {
     }
 
     // current_thread: the thread-local subscriber must see the spawned task.
-    #[tokio::test]
-    async fn dropped_thinking_logs_per_new_array_even_on_a_cut_stream() {
+    async fn log_of(response: &'static str, sid: &str) -> String {
         let buf = LogBuf::default();
         let writer = buf.clone();
         let _guard = tracing::subscriber::set_default(
@@ -470,15 +454,20 @@ mod tests {
                 .with_ansi(false)
                 .finish(),
         );
-        let mut a = args(stub(DROPPED_THEN_CUT).await);
-        a.session_id = Some("sess-1".into());
+        let mut a = args(stub(response).await);
+        a.session_id = Some(sid.into());
         let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
         assert!(matches!(
             events.last(),
             Some(AssistantMessageEvent::Error { .. })
         ));
-
         let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        log // edition 2021: the lock guard temp must drop before `buf`
+    }
+
+    #[tokio::test]
+    async fn dropped_thinking_logs_per_new_array_even_on_a_cut_stream() {
+        let log = log_of(DROPPED_THEN_CUT, "sess-1").await;
         let lines: Vec<&str> = log
             .lines()
             .filter(|l| l.contains("anthropic dropped replayed thinking blocks"))
@@ -499,22 +488,7 @@ mod tests {
     /// the log fires when the array arrives, not at the normal stream end.
     #[tokio::test]
     async fn dropped_thinking_logs_before_a_mid_stream_error() {
-        let buf = LogBuf::default();
-        let writer = buf.clone();
-        let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::fmt()
-                .with_writer(move || writer.clone())
-                .with_ansi(false)
-                .finish(),
-        );
-        let mut a = args(stub(DROPPED_THEN_ERROR).await);
-        a.session_id = Some("sess-2".into());
-        let events = drain(spawn_upstream(reqwest::Client::new(), a)).await;
-        assert!(matches!(
-            events.last(),
-            Some(AssistantMessageEvent::Error { .. })
-        ));
-        let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let log = log_of(DROPPED_THEN_ERROR, "sess-2").await;
         let lines = log
             .lines()
             .filter(|l| l.contains("prefix_binding_mismatch"))

@@ -592,18 +592,6 @@ mod tests {
     }
 
     #[test]
-    fn input_transformations_on_message_start_become_one_warning() {
-        let (state, _) = run(&[
-            &start_with(&format!("[{DROP_A}]")),
-            "data: {\"type\":\"message_stop\"}",
-        ]);
-        let want: Value = serde_json::from_str(&format!("[{DROP_A}]")).unwrap();
-        assert_eq!(dropped(&state), [want]);
-        let warnings = build_partial(&state, "claude-test").warnings.unwrap();
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-    }
-
-    #[test]
     fn empty_input_transformations_add_no_warning() {
         let (state, _) = run(&[&start_with("[]"), "data: {\"type\":\"message_stop\"}"]);
         assert_eq!(build_partial(&state, "claude-test").warnings, None);
@@ -617,6 +605,8 @@ mod tests {
         ]);
         let a: Value = serde_json::from_str(&format!("[{DROP_A}]")).unwrap();
         assert_eq!(dropped(&state), [a], "a delta without the key keeps A");
+        let warnings = build_partial(&state, "claude-test").warnings.unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
 
         let (state, _) = run(&[
             &start_with(&format!("[{DROP_A}]")),
