@@ -624,7 +624,7 @@ async fn seed_child(
             req.parent_session_id.as_deref(),
             depth,
             display.as_ref(),
-            crate::reconcile::current_judge_provider().as_deref(),
+            crate::judge::current_provider().as_deref(),
         ),
         agent.as_ref(),
     );

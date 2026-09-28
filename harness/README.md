@@ -78,7 +78,9 @@ with the optional [`approval-gate`](https://github.com/iii-hq/workers/tree/main/
 Before dispatch, arguments that fail the target's schema are reconciled: stringified JSON the
 schema rejects is parsed. When the optional
 [`judge`](https://github.com/iii-hq/workers/tree/main/judge) worker is deployed, it also settles
-misnamed keys, off-enum values and unknown arguments. Every repair is noted in the call's result.
+misnamed keys, off-enum values and unknown arguments; it sees the arguments with secret-keyed
+values (`password`, `token`, `api_key`, `authorization`, …) masked and long strings cut. Every
+repair is noted in the call's result.
 
 The full function reference (every `harness::*` id and its request/response
 schema) lives in the code and `iii worker info harness`.
