@@ -274,24 +274,51 @@ pub fn build(
     }
 }
 
-/// Whether any call in entry `id`'s assistant message has a logged result.
+/// Whether a call in entry `id`'s assistant message has a result logged after
+/// it (call ids can repeat across replies, so an earlier one never counts).
 fn dispatched(entries: &[LoadedEntry], id: &str) -> bool {
-    let calls: HashSet<&str> = entries
+    let Some(at) = entries.iter().position(|e| e.entry_id == id) else {
+        return false;
+    };
+    let Some(AgentMessage::Assistant(reply)) = &entries[at].message else {
+        return false;
+    };
+    let calls: HashSet<&str> = reply
+        .content
         .iter()
-        .filter(|e| e.entry_id == id)
-        .filter_map(|e| match &e.message {
-            Some(AgentMessage::Assistant(a)) => Some(a),
-            _ => None,
-        })
-        .flat_map(|a| &a.content)
         .filter_map(|b| match b {
             ContentBlock::FunctionCall { id, .. } => Some(id.as_str()),
             _ => None,
         })
         .collect();
-    entries.iter().any(|e| {
+    entries[at + 1..].iter().any(|e| {
         matches!(&e.message, Some(AgentMessage::FunctionResult(r)) if calls.contains(r.function_call_id.as_str()))
     })
+}
+
+/// The notices this step still has to send. Once the step's own reply entry
+/// exists its request went out with every notice it persisted (the window
+/// replays them), so none. Before that the request never went out: a notice
+/// an earlier attempt persisted is already in the window, so only the ones it
+/// left out are sent (the per-notice appends are not atomic).
+pub fn unsent_notices(
+    entries: &[LoadedEntry],
+    own_reply: &str,
+    notice_prefix: &str,
+    candidates: impl IntoIterator<Item = (&'static str, Value)>,
+) -> Vec<(&'static str, Value)> {
+    if entries.iter().any(|e| e.entry_id == own_reply) {
+        return Vec::new();
+    }
+    let persisted: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e.entry_id.starts_with(notice_prefix))
+        .filter_map(|e| e.custom.as_ref().map(|c| &c.data))
+        .collect();
+    candidates
+        .into_iter()
+        .filter(|(kind, message)| !persisted.contains(&&notice_data(kind, message)))
+        .collect()
 }
 
 /// Move `order.moved` right after `order.after`. A no-op when the anchor is
@@ -566,6 +593,44 @@ mod tests {
         assert_eq!(
             ids(&build(&entries, 0, Some("u"), Some("a2"))),
             ["u", "a1", "a2", "r2", "n"]
+        );
+    }
+
+    /// A result for an earlier reply that reused the call id is not this
+    /// step's dispatch: the stale reply stays hidden.
+    #[test]
+    fn an_earlier_result_with_the_same_call_id_is_not_a_dispatch() {
+        let entries = vec![
+            msg("u", user("task")),
+            msg("a1", call("a1")),
+            msg("r1", result("r1")),
+            msg("a2", call("a2")),
+        ];
+        assert_eq!(
+            ids(&build(&entries, 0, Some("r1"), Some("a2"))),
+            ["u", "a1", "r1"]
+        );
+    }
+
+    #[test]
+    fn a_retried_step_sends_only_the_notices_it_has_not_persisted() {
+        let a = json!({"role": "user", "content": [{"type": "text", "text": "A"}], "timestamp": 1});
+        let b = json!({"role": "user", "content": [{"type": "text", "text": "B"}], "timestamp": 1});
+        let mut entries = vec![
+            msg("u", user("task")),
+            custom("e_t_0_notice_0", MODEL_NOTICE, notice_data("hook", &a)),
+        ];
+        let fresh = unsent_notices(
+            &entries,
+            "e_t_0_assistant",
+            "e_t_0_notice_",
+            [("hook", a.clone()), ("hook", b.clone())],
+        );
+        assert_eq!(fresh, [("hook", b.clone())]);
+        // Once the reply entry exists the request went out: nothing more.
+        entries.push(msg("e_t_0_assistant", reply("")));
+        assert!(
+            unsent_notices(&entries, "e_t_0_assistant", "e_t_0_notice_", [("hook", b)]).is_empty()
         );
     }
 

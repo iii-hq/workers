@@ -624,31 +624,15 @@ async fn generate_step(
         crate::window::latest_notice_text(&entries, &window, PRELOADED_STALE_NOTICE_KIND)
             != Some(text.as_str())
     });
-    // A redelivered step already persisted its notices; the window replays
-    // them, so this attempt adds none (hook appends included).
-    let redelivered = {
-        let prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
-        entries.iter().any(|e| e.entry_id.starts_with(&prefix))
-    };
-    let mut step_notices: Vec<(&'static str, Value)> = Vec::new();
-    for (kind, notice) in [
+    let step_notices: Vec<(&'static str, Value)> = [
         (REGISTRY_CHANGED_NOTICE_KIND, registry_changed),
         (PRELOADED_STALE_NOTICE_KIND, preloaded_stale),
         (RUNTIME_CONTEXT_NOTICE_KIND, runtime_changed),
-    ] {
-        let Some(notice) = notice.filter(|_| !redelivered) else {
-            continue;
-        };
-        tracing::info!(
-            session_id = %record.session_id,
-            turn_id = %record.turn_id,
-            step = record.step,
-            kind,
-            %notice,
-            "notice appended to the generate request"
-        );
-        step_notices.push((kind, notice_message(notice)));
-    }
+    ]
+    .into_iter()
+    .filter_map(|(kind, notice)| Some((kind, notice_message(notice?))))
+    .collect();
+    let notice_prefix = ids::notice_entry_prefix(&record.turn_id, payload.step);
     record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
@@ -784,16 +768,18 @@ async fn generate_step(
         // The notices land after the hooks ran (they must not read them as
         // the newest user message) and before their appends (hook messages
         // stay last, closest to the decision point).
-        let mut new_notices = step_notices.clone();
-        if !redelivered {
-            // Sent exactly as every later step replays it.
-            new_notices.extend(
+        // Hook appends are sent exactly as every later step replays them.
+        let new_notices = crate::window::unsent_notices(
+            &entries,
+            &ids::assistant_entry_id(&record.turn_id, payload.step),
+            &notice_prefix,
+            step_notices.iter().cloned().chain(
                 appended
                     .iter()
                     .filter_map(crate::window::replayed)
                     .map(|m| (HOOK_NOTICE_KIND, m)),
-            );
-        }
+            ),
+        );
         let hook_appended = !new_notices.is_empty();
         let mut gen_messages = assembled.messages.clone();
         gen_messages.extend(new_notices.iter().map(|(_, m)| m.clone()));
@@ -930,13 +916,26 @@ async fn generate_step(
 
     // Persist what this step adds to the model-facing messages before the
     // request goes out, so every later step replays it in place.
+    // Numbered after any an earlier attempt of this step persisted.
+    let persisted = entries
+        .iter()
+        .filter(|e| e.entry_id.starts_with(&notice_prefix))
+        .count();
     for (index, (kind, message)) in new_notices.iter().enumerate() {
+        tracing::info!(
+            session_id = %record.session_id,
+            turn_id = %record.turn_id,
+            step = record.step,
+            kind,
+            %message,
+            "notice appended to the generate request"
+        );
         session
             .append_custom(
                 &record.session_id,
                 crate::window::MODEL_NOTICE,
                 crate::window::notice_data(kind, message),
-                &ids::notice_entry_id(&record.turn_id, payload.step, index),
+                &ids::notice_entry_id(&record.turn_id, payload.step, persisted + index),
                 Some(&origin(&record.turn_id)),
             )
             .await?;
