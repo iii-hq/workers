@@ -174,7 +174,10 @@ pub(crate) fn prepare_info_result(
         }
     }
 
+    // `(function_id, digest, repeats)` sent in full this time, and the rows
+    // whose repeat was answered from the ledger.
     let mut full = Vec::new();
+    let mut counted = Vec::new();
     let mut changed = false;
     for (index, function_id) in candidates {
         let contract = match index {
@@ -190,19 +193,56 @@ pub(crate) fn prepare_info_result(
                     && source.contract_digest == contract_digest
                     && source.source_function_call_id != call_id =>
             {
-                let marker = json!({
-                    "function_id": function_id,
-                    "contract_status": "unchanged_in_context",
-                    "source_function_call_id": source.source_function_call_id,
-                });
-                match index {
-                    Some(index) => display["functions"][index] = marker,
-                    None => display = marker,
+                let source_id = &source.source_function_call_id;
+                let item = match index {
+                    Some(index) => &mut display["functions"][index],
+                    None => &mut display,
+                };
+                if source.repeats == 1 {
+                    // Asked again after one marker: send it in full once
+                    // more, in case the model (or its provider) cannot see
+                    // the source. This call becomes the source.
+                    item["note"] = json!(format!(
+                        "This contract was already in your context (call {source_id}) and is \
+                         sent again in full because it was requested again. Call \
+                         {function_id} now instead of fetching its contract."
+                    ));
+                    full.push((function_id, contract_digest, 2));
+                } else {
+                    let mut marker = json!({
+                        "function_id": function_id,
+                        "contract_status": "unchanged_in_context",
+                        "source_function_call_id": source_id,
+                    });
+                    // Past the re-send, the bare status did not stop the
+                    // loop (MOT-4928): say what to do instead.
+                    if source.repeats >= 2 {
+                        marker["note"] = json!(format!(
+                            "This contract was already sent in full (call {source_id}). Do \
+                             not fetch it again: call {function_id} now."
+                        ));
+                    }
+                    *item = marker;
+                    counted.push((
+                        function_id,
+                        FunctionContractLedgerEntry {
+                            repeats: source.repeats + 1,
+                            ..source.clone()
+                        },
+                    ));
                 }
                 changed = true;
             }
             Some(source) if source.source_function_call_id == call_id => {}
-            _ => full.push((function_id, contract_digest)),
+            // A same-step duplicate of a source sent moments ago (not yet
+            // confirmed visible) is still a repeat: keep its count.
+            _ => {
+                let repeats = ledger
+                    .get(&function_id)
+                    .filter(|source| source.contract_digest == contract_digest)
+                    .map_or(0, |source| source.repeats);
+                full.push((function_id, contract_digest, repeats));
+            }
         }
     }
 
@@ -227,7 +267,7 @@ pub(crate) fn prepare_info_result(
     };
     let updates = full
         .into_iter()
-        .map(|(function_id, contract_digest)| {
+        .map(|(function_id, contract_digest, repeats)| {
             (
                 function_id,
                 FunctionContractLedgerEntry {
@@ -235,9 +275,11 @@ pub(crate) fn prepare_info_result(
                     source_function_call_id: call_id.to_string(),
                     source_content_digest: source_content_digest.clone(),
                     eligible: false,
+                    repeats,
                 },
             )
         })
+        .chain(counted)
         .collect();
     (prepared, updates)
 }
@@ -1307,6 +1349,122 @@ mod tests {
     }
 
     #[test]
+    fn repeated_requests_for_an_unchanged_contract_escalate() {
+        let details = json!({
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let digest = digest_value(&details).unwrap();
+        let entry = |source: &str, repeats| FunctionContractLedgerEntry {
+            contract_digest: digest.clone(),
+            source_function_call_id: source.to_string(),
+            source_content_digest: "source".to_string(),
+            eligible: true,
+            repeats,
+        };
+        let ledger = |source: &str, repeats| {
+            BTreeMap::from([("worker::function".to_string(), entry(source, repeats))])
+        };
+        let arguments = json!({ "function_id": "worker::function" });
+        let shown = |prepared: &ResultData| -> Value {
+            serde_json::from_str(&ContentBlock::join_text(&prepared.content)).unwrap()
+        };
+
+        // The first repeat keeps the bare marker, and is counted.
+        let (first, updates) =
+            prepare_info_result("call_1", &arguments, &data, &ledger("call_0", 0), true);
+        assert_eq!(shown(&first)["contract_status"], "unchanged_in_context");
+        assert!(shown(&first).get("note").is_none());
+        assert_eq!(
+            updates,
+            vec![("worker::function".to_string(), entry("call_0", 1))]
+        );
+
+        // The next one sends the contract in full again, with a note, and
+        // becomes the source.
+        let (second, updates) =
+            prepare_info_result("call_2", &arguments, &data, &ledger("call_0", 1), true);
+        let second = shown(&second);
+        assert_eq!(second["request_schema"], json!({ "type": "object" }));
+        assert!(second["note"].as_str().unwrap().contains("(call call_0)"));
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].1.source_function_call_id, "call_2");
+        assert_eq!(updates[0].1.repeats, 2);
+
+        // After that, the marker says what to do instead.
+        let (third, updates) =
+            prepare_info_result("call_3", &arguments, &data, &ledger("call_2", 2), true);
+        let third = shown(&third);
+        assert_eq!(third["contract_status"], "unchanged_in_context");
+        assert!(third["note"]
+            .as_str()
+            .unwrap()
+            .contains("call worker::function now"));
+        assert_eq!(
+            updates,
+            vec![("worker::function".to_string(), entry("call_2", 3))]
+        );
+    }
+
+    #[test]
+    fn same_step_duplicates_keep_counting_until_the_instruction_note() {
+        let details = json!({
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let arguments = json!({ "function_id": "worker::function" });
+        let visible = |call: &str, prepared: &ResultData| {
+            json!({
+                "role": "function_result",
+                "function_call_id": call,
+                "function_id": "engine::functions::info",
+                "content": serde_json::to_value(&prepared.content).unwrap()
+            })
+        };
+        let mut ledger = BTreeMap::new();
+        let mut transcript = Vec::new();
+        let (full, updates) = prepare_info_result("call_0", &arguments, &data, &ledger, true);
+        apply_contract_updates_after_append(&mut ledger, "call_0", updates);
+        transcript.push(visible("call_0", &full));
+        retain_visible_contract_sources(&mut ledger, &transcript);
+
+        // Three identical calls in one step, applied one after another with
+        // no visibility check in between.
+        for call in ["call_1", "call_2", "call_3"] {
+            let (prepared, updates) = prepare_info_result(call, &arguments, &data, &ledger, true);
+            apply_contract_updates_after_append(&mut ledger, call, updates);
+            transcript.push(visible(call, &prepared));
+        }
+        assert_eq!(
+            ledger["worker::function"].repeats, 2,
+            "the duplicate kept the count"
+        );
+        retain_visible_contract_sources(&mut ledger, &transcript);
+
+        let (next, _) = prepare_info_result("call_4", &arguments, &data, &ledger, true);
+        let next: Value = serde_json::from_str(&ContentBlock::join_text(&next.content)).unwrap();
+        assert_eq!(next["contract_status"], "unchanged_in_context");
+        assert!(next["note"]
+            .as_str()
+            .unwrap()
+            .contains("call worker::function now"));
+    }
+
+    #[test]
     fn unchanged_info_contract_reuses_an_exact_model_visible_source() {
         let details = json!({
             "function_id": "worker::function",
@@ -1365,7 +1523,10 @@ mod tests {
             )]
         );
         assert_eq!(second.details, data.details, "details stay exact");
-        assert!(updates.is_empty(), "markers never replace the full source");
+        assert!(
+            updates.iter().all(|(_, entry)| entry.source_function_call_id == "call_123" && entry.repeats == 1),
+            "markers never replace the full source; they only count the repeat"
+        );
     }
 
     #[test]
@@ -1409,7 +1570,16 @@ mod tests {
         assert_eq!(functions[1], details["functions"][1]);
         assert_eq!(functions[2]["contract_status"], "unchanged_in_context");
         assert_eq!(prepared.details, details);
-        assert!(updates.is_empty());
+        // The markers only count the repeat; the full source stays.
+        let counted: BTreeMap<_, _> = updates.into_iter().collect();
+        assert_eq!(counted.keys().collect::<Vec<_>>(), ["a::one", "b::two"]);
+        for (id, entry) in &counted {
+            assert_eq!(
+                entry.source_function_call_id,
+                ledger[id].source_function_call_id
+            );
+            assert_eq!(entry.repeats, 1);
+        }
     }
 
     #[test]
@@ -1512,6 +1682,7 @@ mod tests {
                 source_function_call_id: "source".into(),
                 source_content_digest: "source-content".into(),
                 eligible: true,
+                repeats: 0,
             },
         )]);
 
@@ -1555,6 +1726,7 @@ mod tests {
                     source_function_call_id: "bad-source".into(),
                     source_content_digest: "bad-content".into(),
                     eligible: true,
+                    repeats: 0,
                 },
             ),
             (
@@ -1564,6 +1736,7 @@ mod tests {
                     source_function_call_id: "good-source".into(),
                     source_content_digest: "good-content".into(),
                     eligible: true,
+                    repeats: 0,
                 },
             ),
         ]);
@@ -1595,7 +1768,11 @@ mod tests {
             })
         );
         assert_eq!(prepared.details, details);
-        assert!(updates.is_empty());
+        // Only the reused contract is counted; its source stays.
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, "worker::good");
+        assert_eq!(updates[0].1.source_function_call_id, "good-source");
+        assert_eq!(updates[0].1.repeats, 1);
     }
 
     #[test]
@@ -1624,6 +1801,7 @@ mod tests {
                 source_function_call_id: "source".into(),
                 source_content_digest: "source-content".into(),
                 eligible: true,
+                repeats: 0,
             },
         )]);
 

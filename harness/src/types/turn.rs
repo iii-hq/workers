@@ -295,6 +295,15 @@ pub struct FunctionContractLedgerEntry {
     /// still model-visible. Newly appended and legacy rows start ineligible.
     #[serde(default)]
     pub eligible: bool,
+    /// How many times this turn answered a request for this contract from
+    /// the ledger instead of sending it. Drives the re-fetch loop breaker in
+    /// `trigger::prepare_info_result`; reset at the start of every turn.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub repeats: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// Consecutive identical failures of one call (same function and arguments)

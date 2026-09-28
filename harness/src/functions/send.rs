@@ -1319,9 +1319,13 @@ pub(crate) async fn seed_new(
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
     let functions_generation = prior.and_then(|record| record.functions_generation);
-    let function_contract_ledger = prior
+    // The ledger carries over, but its re-fetch counts are per turn.
+    let mut function_contract_ledger = prior
         .map(|record| record.function_contract_ledger.clone())
         .unwrap_or_default();
+    for entry in function_contract_ledger.values_mut() {
+        entry.repeats = 0;
+    }
     let skill_ack = prior.and_then(|record| record.skill_ack.clone());
     let skills_started = prior.is_some_and(|record| record.skills_started);
     let record = TurnRecord {

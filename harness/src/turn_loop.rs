@@ -3982,7 +3982,10 @@ mod tests {
                 .to_string()
             )]
         );
-        assert!(updates.is_empty());
+        // The marker only counts the repeat; its source stays.
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].1.source_function_call_id, "call-2");
+        assert_eq!(updates[0].1.repeats, 1);
         assert_eq!(
             first.content,
             crate::trigger::prepare_info_result(
@@ -4039,18 +4042,21 @@ mod tests {
             source_function_call_id: "reused-call".into(),
             source_content_digest: "old-content".into(),
             eligible: true,
+            repeats: 0,
         };
         let unrelated_source = FunctionContractLedgerEntry {
             contract_digest: "other".into(),
             source_function_call_id: "other-call".into(),
             source_content_digest: "other-content".into(),
             eligible: true,
+            repeats: 0,
         };
         let replacement = FunctionContractLedgerEntry {
             contract_digest: "new".into(),
             source_function_call_id: "reused-call".into(),
             source_content_digest: "new-content".into(),
             eligible: false,
+            repeats: 0,
         };
         let mut ledger = std::collections::BTreeMap::from([
             ("worker::function".into(), old_source),
