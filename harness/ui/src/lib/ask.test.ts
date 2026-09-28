@@ -1,6 +1,12 @@
 import type { FunctionTriggerMessage } from '@iii-dev/console-ui'
 import { describe, expect, it } from 'vitest'
-import { type AskView, parseAsk } from './ask'
+import {
+  type AskQuestionView,
+  type AskView,
+  formatAnswer,
+  isOpen,
+  parseAsk,
+} from './ask'
 
 /**
  * The row the console hands a renderer: the host contract plus the extra
@@ -199,5 +205,102 @@ describe('parseAsk', () => {
 
   it.each(malformed)('returns null when %s', (_case, details) => {
     expect(parseAsk(wrappedRow(okOutput(details)))).toBeNull()
+  })
+})
+
+const APPROACH: AskQuestionView = {
+  header: 'Approach',
+  question: 'When the agent asks, does the turn pause or end?',
+  multiSelect: false,
+  options: [
+    { label: 'Pause the turn', description: 'Like AskUserQuestion' },
+    { label: 'End the turn', description: 'The answer becomes the next message' },
+  ],
+}
+
+const CHANNELS: AskQuestionView = {
+  header: 'Channels',
+  question: 'Where should the card show up?',
+  multiSelect: true,
+  options: [{ label: 'Console' }, { label: 'Slack' }, { label: 'Telegram' }],
+}
+
+function viewOf(...questions: AskQuestionView[]): AskView {
+  return { questionId: 'call_ask_1', sessionId: 'sess_1', turnId: 'turn_7', questions }
+}
+
+describe('formatAnswer', () => {
+  it('answers a single-select with the picked label', () => {
+    expect(formatAnswer(viewOf(APPROACH), [{ picked: ['End the turn'] }])).toBe(
+      'Approach: End the turn',
+    )
+  })
+
+  it('joins multi-select picks in option order, not click order', () => {
+    expect(formatAnswer(viewOf(CHANNELS), [{ picked: ['Telegram', 'Console'] }])).toBe(
+      'Channels: Console, Telegram',
+    )
+  })
+
+  it('answers a single-select with the trimmed Other text', () => {
+    expect(formatAnswer(viewOf(APPROACH), [{ picked: [], other: '  Ask me later  ' }])).toBe(
+      'Approach: Ask me later',
+    )
+  })
+
+  it('on a single-select, typed Other text replaces the pick', () => {
+    expect(
+      formatAnswer(viewOf(APPROACH), [{ picked: ['Pause the turn'], other: 'Neither' }]),
+    ).toBe('Approach: Neither')
+  })
+
+  it('appends the Other text after the picks on a multi-select', () => {
+    expect(
+      formatAnswer(viewOf(CHANNELS), [{ picked: ['Slack', 'Console'], other: ' Email ' }]),
+    ).toBe('Channels: Console, Slack, Email')
+  })
+
+  it('gives one line per question, in question order', () => {
+    expect(
+      formatAnswer(viewOf(APPROACH, CHANNELS), [
+        { picked: ['End the turn'] },
+        { picked: ['Slack'] },
+      ]),
+    ).toBe('Approach: End the turn\nChannels: Slack')
+  })
+
+  it('returns null when any question is unanswered', () => {
+    expect(
+      formatAnswer(viewOf(APPROACH, CHANNELS), [{ picked: ['End the turn'] }, { picked: [] }]),
+    ).toBeNull()
+  })
+
+  it('returns null when a question has no selection entry at all', () => {
+    expect(formatAnswer(viewOf(APPROACH, CHANNELS), [{ picked: ['End the turn'] }])).toBeNull()
+  })
+
+  it('counts a whitespace-only Other as unanswered', () => {
+    expect(formatAnswer(viewOf(APPROACH), [{ picked: [], other: '   ' }])).toBeNull()
+  })
+
+  it('ignores a picked label that is not one of the options', () => {
+    expect(formatAnswer(viewOf(CHANNELS), [{ picked: ['Fax'] }])).toBeNull()
+    expect(formatAnswer(viewOf(CHANNELS), [{ picked: ['Fax', 'Slack'] }])).toBe('Channels: Slack')
+  })
+})
+
+describe('isOpen', () => {
+  const view = viewOf(APPROACH)
+
+  it('is open while the current turn is the one that asked', () => {
+    expect(isOpen(view, 'turn_7')).toBe(true)
+  })
+
+  it('is closed once the session moved to another turn', () => {
+    expect(isOpen(view, 'turn_8')).toBe(false)
+  })
+
+  it('is open when the current turn is unknown', () => {
+    expect(isOpen(view, undefined)).toBe(true)
   })
 })

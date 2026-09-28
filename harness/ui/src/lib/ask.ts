@@ -110,3 +110,68 @@ export function parseAsk(
     questions: parsed,
   }
 }
+
+/**
+ * What the card holds for one question; `formatAnswer` takes one per
+ * question, by position.
+ *
+ * - `picked`: the option labels the user ticked, in any (click) order. A
+ *   single-select (radio) holds at most one; if it holds more, the first in
+ *   option order counts. A label that is not one of the question's options
+ *   is ignored.
+ * - `other`: the free-text "Other" field as typed (a single-line input).
+ *   On a single-select a non-blank `other` replaces the pick, so the card
+ *   clears `other` when the user picks an option radio, and clears `picked`
+ *   when they choose Other.
+ */
+export interface AskSelection {
+  picked: readonly string[]
+  other?: string
+}
+
+/** One question's answer, or null when it has none. */
+function answerFor(
+  question: AskQuestionView,
+  selection: AskSelection | undefined,
+): string | null {
+  if (!selection) return null
+  const other = selection.other?.trim() ?? ''
+  // Option order, not click order.
+  const picked = question.options
+    .map((option) => option.label)
+    .filter((label) => selection.picked.includes(label))
+  if (!question.multiSelect) return other || picked[0] || null
+  const items = other ? [...picked, other] : picked
+  return items.length > 0 ? items.join(', ') : null
+}
+
+/**
+ * The message the card sends: one `Header: answer` line per question, in
+ * question order. The answer is the picked label (single-select), the
+ * picked labels joined with ", " in option order plus the Other text last
+ * (multi-select), or the trimmed Other text. `null` while any question is
+ * unanswered (no pick and a blank Other); never an empty string.
+ */
+export function formatAnswer(
+  view: AskView,
+  selections: readonly AskSelection[],
+): string | null {
+  if (view.questions.length === 0) return null
+  const lines: string[] = []
+  for (const [index, question] of view.questions.entries()) {
+    const answer = answerFor(question, selections[index])
+    if (answer === null) return null
+    lines.push(`${question.header}: ${answer}`)
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Whether the question still takes an answer: the session's current turn is
+ * the one that asked. An unknown current turn (`harness::status` not loaded
+ * or failed) counts as open. It is better to allow an answer than to block
+ * one.
+ */
+export function isOpen(view: AskView, currentTurnId: string | undefined): boolean {
+  return currentTurnId === undefined || currentTurnId === view.turnId
+}
