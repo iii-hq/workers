@@ -19,7 +19,8 @@ use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 use crate::types::turn::{
-    FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions, TurnRecord, TurnStatus,
+    FunctionContractLedgerEntry, FunctionPolicy, IdemRecord, ParentLink, SkillContext, TurnOptions,
+    TurnRecord, TurnStatus,
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
@@ -1303,6 +1304,20 @@ where
 /// loop's finalize-drain reseed path (`turn_loop::reseed_after_finalize_drain`)
 /// so a notification that parked during a turn's final step gets a turn to
 /// react to it, instead of being drained to the transcript and stranded.
+/// The contract ledger a new turn starts from: the prior turn's sources
+/// carry over, but their re-fetch counts are per turn.
+fn carried_contract_ledger(
+    prior: Option<&TurnRecord>,
+) -> BTreeMap<String, FunctionContractLedgerEntry> {
+    let mut ledger = prior
+        .map(|record| record.function_contract_ledger.clone())
+        .unwrap_or_default();
+    for entry in ledger.values_mut() {
+        entry.repeats = 0;
+    }
+    ledger
+}
+
 pub(crate) async fn seed_new(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -1319,13 +1334,7 @@ pub(crate) async fn seed_new(
     let turn_id = ids::new_turn_id();
     let now = AgentMessage::now_ms();
     let functions_generation = prior.and_then(|record| record.functions_generation);
-    // The ledger carries over, but its re-fetch counts are per turn.
-    let mut function_contract_ledger = prior
-        .map(|record| record.function_contract_ledger.clone())
-        .unwrap_or_default();
-    for entry in function_contract_ledger.values_mut() {
-        entry.repeats = 0;
-    }
+    let function_contract_ledger = carried_contract_ledger(prior);
     let skill_ack = prior.and_then(|record| record.skill_ack.clone());
     let skills_started = prior.is_some_and(|record| record.skills_started);
     let record = TurnRecord {
@@ -1936,6 +1945,31 @@ mod tests {
             lineage.dispatch_only_functions, record.dispatch_only_functions,
             "a reseeded child must not expose its injected grants as native tools"
         );
+    }
+
+    #[test]
+    fn a_new_turn_keeps_contract_sources_but_resets_their_repeat_counts() {
+        let mut prior = terminal_record_with_skill_state(1, true);
+        let source = FunctionContractLedgerEntry {
+            contract_digest: "digest".into(),
+            source_function_call_id: "call_1".into(),
+            source_content_digest: "content".into(),
+            eligible: true,
+            repeats: 3,
+        };
+        prior
+            .function_contract_ledger
+            .insert("worker::function".into(), source.clone());
+
+        let carried = carried_contract_ledger(Some(&prior));
+        assert_eq!(
+            carried["worker::function"],
+            FunctionContractLedgerEntry {
+                repeats: 0,
+                ..source
+            }
+        );
+        assert!(carried_contract_ledger(None).is_empty());
     }
 
     #[test]
