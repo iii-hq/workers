@@ -190,6 +190,29 @@ fn every_identity_prompt_teaches_the_live_surface() {
     }
 }
 
+#[test]
+fn default_prompt_teaches_asking_the_user() {
+    // A decision with discrete options goes through `harness::ask` (a card
+    // the user clicks), never a question or numbered list written in text;
+    // the turn ends on it and the answer is the user's next message.
+    let path = repo_root().join("harness/prompts/default.txt");
+    let name = label(&path);
+    let body = std::fs::read_to_string(&path).expect("prompt is readable");
+    let normalized = body.replace('\n', " ");
+    assert!(
+        body.contains("harness::ask"),
+        "{name} never teaches how to ask the user to choose"
+    );
+    assert!(
+        normalized.contains("the answer arrives as the user's next message"),
+        "{name} never says where the answer to harness::ask arrives"
+    );
+    assert!(
+        normalized.contains("do not also write the question in text"),
+        "{name} lets the model repeat the question in text"
+    );
+}
+
 /// Phrases that prescribe an orchestration PROCESS — a fixed ordering, a
 /// topology recipe, a mandated shared-state flow. The runtime no longer has a
 /// trigger→spawn path, and the prompts must not smuggle its doctrine back in:
