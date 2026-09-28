@@ -1428,10 +1428,6 @@ async fn finish_step(
         .collect();
     let submit_call = planned.iter().find(|c| c.kind == CallKind::SubmitResult);
 
-    // Set when a `harness::ask` in this step was accepted (its card is shown);
-    // a later ask in the same step is refused. Declared at step scope so the
-    // end-of-step code can read it to end the turn on the question (KAN-12).
-    let mut asked = false;
     if !trigger_calls.is_empty() {
         let policy = CompiledPolicy::from(record.options.functions.as_ref());
         let engine = deps.engine().await;
@@ -1688,19 +1684,26 @@ async fn finish_step(
             // parks. Refusals leave the turn running so the model can react.
             if call.function_id == crate::functions::ASK_ID {
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
-                let mut data =
-                    match crate::ask::decide(record.depth, strategy.is_json(), asked, &eff_args) {
-                        Ok(req) => {
-                            asked = true;
-                            crate::ask::awaiting_result(
-                                &record.session_id,
-                                &record.turn_id,
-                                &call.id,
-                                &req,
-                            )
-                        }
-                        Err(msg) => crate::ask::refused(&msg),
-                    };
+                // One ask per step, persisted on the record so a redelivered
+                // step still refuses a second ask and still ends on the first.
+                let already_asked = record.ask_step == Some(record.step);
+                let mut data = match crate::ask::decide(
+                    record.depth,
+                    strategy.is_json(),
+                    already_asked,
+                    &eff_args,
+                ) {
+                    Ok(req) => {
+                        record.ask_step = Some(record.step);
+                        crate::ask::awaiting_result(
+                            &record.session_id,
+                            &record.turn_id,
+                            &call.id,
+                            &req,
+                        )
+                    }
+                    Err(msg) => crate::ask::refused(&msg),
+                };
                 let mut ask_annotations = pre_ann;
                 crate::reconcile::settle_result(
                     deps,
@@ -1930,8 +1933,26 @@ async fn finish_step(
     }
 
     // With triggered calls and no submit_result, re-enqueue so the model
-    // reacts to the results.
+    // reacts to the results — unless the step showed a harness::ask card:
+    // then the turn ends on the question and the answer arrives as the
+    // user's next message. A user message already waiting (steering) needs
+    // the model, so that step advances as usual. Steering is only read when
+    // an ask was accepted, so ordinary function steps pay no extra reads.
     if !trigger_calls.is_empty() {
+        let asked_this_step = record.ask_step == Some(record.step);
+        let steering = asked_this_step
+            && (has_user_after_watermark(&session, &record).await?
+                || has_queued(deps, &record).await?);
+        if ends_after_ask(asked_this_step, submit_call.is_some(), steering) {
+            return finalize_with_contract(
+                deps,
+                &session,
+                &mut record,
+                &strategy,
+                &outcome.message,
+            )
+            .await;
+        }
         return advance(deps, &mut record).await;
     }
 
@@ -1941,6 +1962,13 @@ async fn finish_step(
     }
 
     finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+}
+
+/// Whether a step that accepted a `harness::ask` ends the turn on the
+/// question without another model call: only when no submit_result closes
+/// the step and no user message is waiting (steering needs the model).
+fn ends_after_ask(asked_this_step: bool, has_submit: bool, steering: bool) -> bool {
+    asked_this_step && !has_submit && !steering
 }
 
 fn turn_step_matches(
@@ -3876,6 +3904,27 @@ mod tests {
             .map(|id| (id, None))
             .collect();
         super::preloaded_stale_notice(frozen, snapshot, policy, &live)
+    }
+
+    #[test]
+    fn a_step_ends_on_an_accepted_ask_only_without_submit_or_steering() {
+        // (asked this step, submit_result in the step, steering) -> ends
+        for (asked, submit, steering, ends) in [
+            (true, false, false, true),
+            (true, false, true, false),
+            (true, true, false, false),
+            (true, true, true, false),
+            (false, false, false, false),
+            (false, false, true, false),
+            (false, true, false, false),
+            (false, true, true, false),
+        ] {
+            assert_eq!(
+                super::ends_after_ask(asked, submit, steering),
+                ends,
+                "asked={asked} submit={submit} steering={steering}"
+            );
+        }
     }
 
     fn snap(live: &[crate::clients::FunctionDescriptor]) -> crate::discovery::FunctionsSnapshot {
