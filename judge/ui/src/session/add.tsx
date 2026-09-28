@@ -117,7 +117,7 @@ export function AddJudgePanel({ registered, adds, onAdd, onBack }: AddJudgePanel
               <ListItem
                 key={judge.name}
                 as="div"
-                className="judge-ui-session-row judge-ui-session-add-row"
+                className={`judge-ui-session-row judge-ui-session-add-row${add?.kind === 'failed' ? ' judge-ui-session-add-row--failed' : ''}`}
                 leading={<span className="judge-ui-session-mark">{judge.provider.charAt(0).toUpperCase()}</span>}
                 label={
                   <>

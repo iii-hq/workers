@@ -68,6 +68,7 @@ vi.mock('@iii-dev/console-ui', () => ({
 let root: Root | null = null
 let host: HTMLElement | null = null
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   act(() => root?.unmount())
   host?.remove()
@@ -76,7 +77,11 @@ afterEach(() => {
 })
 
 function engine(registered = ['typesafe', 'semif']) {
-  const state = { registered: [...registered], addReply: { status: 'accepted' } as unknown }
+  const state = {
+    registered: [...registered],
+    addReply: { status: 'accepted' } as unknown,
+    operation: { status: 'running' } as unknown,
+  }
   const trigger = vi.fn(async (id: string) => {
     if (id === 'engine::functions::list') {
       return {
@@ -90,6 +95,7 @@ function engine(registered = ['typesafe', 'semif']) {
       if (state.addReply instanceof Error) throw state.addReply
       return state.addReply
     }
+    if (id === 'compose::operation') return state.operation
     return {}
   })
   return Object.assign({ trigger }, { state })
@@ -196,6 +202,8 @@ describe('per-session judge provider', () => {
   it('adds a registry judge that is not installed and follows it until it registers', async () => {
     vi.stubGlobal('fetch', registry())
     const iii = engine()
+    // Accepted, then still running when the judge registers.
+    iii.state.addReply = { status: 'accepted', operation_id: 'op-2', requested: 1 }
     const { view } = await mount({}, vi.fn(), iii)
     await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add a judge"]')!.click())
     await act(async () => {})
@@ -226,6 +234,52 @@ describe('per-session judge provider', () => {
     await act(async () => {})
     expect(view.querySelector('[role="alert"]')?.textContent).toBe('worker judge-decider not found')
     expect(view.querySelector('button[aria-label="Retry adding decider"]')).not.toBeNull()
+  })
+
+  it('shows why the compose operation failed after it was accepted', async () => {
+    vi.stubGlobal('fetch', registry())
+    const iii = engine()
+    const reason = "Worker 'judge-decider' does not support platform 'x86_64-unknown-linux-musl'."
+    // The daemon's detail, verbatim: the reason sits between resolver noise
+    // and advice for the publisher.
+    const detail = `container 'judge-decider': no version of 'judge-decider' satisfies '*'. ${reason} Publish a 'judge-decider' binary for 'x86_64-unknown-linux-musl' or install on a supported platform. (available: x86_64-unknown-linux-gnu)`
+    iii.state.addReply = { status: 'accepted', operation_id: 'op-1', requested: 1 }
+    iii.state.operation = { status: 'failed', last_event: { terminal: true, detail } }
+    const { view } = await mount({}, vi.fn(), iii)
+    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add a judge"]')!.click())
+    await act(async () => {})
+    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add decider"]')!.click())
+    expect(view.textContent).toContain('Adding…')
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 3_100))
+    })
+    expect(iii.trigger).toHaveBeenCalledWith('compose::operation', { operation_id: 'op-1' }, { timeoutMs: 5_000 })
+    expect(view.querySelector('[role="alert"]')?.textContent).toBe(reason)
+    expect(view.querySelector('button[aria-label="Retry adding decider"]')).not.toBeNull()
+  }, 10_000)
+
+  it('reports an add that compose calls done but whose judge never starts', async () => {
+    vi.stubGlobal('fetch', registry())
+    const iii = engine()
+    // A worker that is not required and failed to start, or one declared and
+    // stopped, still ends the operation as succeeded.
+    iii.state.addReply = { status: 'accepted', operation_id: 'op-3', requested: 1 }
+    iii.state.operation = { status: 'succeeded', last_event: { terminal: true, detail: 'all requested workers are ready' } }
+    const { view } = await mount({}, vi.fn(), iii)
+    vi.useFakeTimers()
+    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add a judge"]')!.click())
+    await act(async () => {})
+    await act(async () => view.querySelector<HTMLElement>('button[aria-label="Add decider"]')!.click())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_100)
+    })
+    expect(view.textContent).toContain('Adding…')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_100)
+    })
+    expect(view.querySelector('[role="alert"]')?.textContent).toBe(
+      'judge-decider was added but has not started; check its logs in Settings → Workers.',
+    )
   })
 
   it('says so when the registry is unreachable', async () => {

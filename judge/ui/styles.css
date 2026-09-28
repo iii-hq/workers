@@ -168,6 +168,12 @@
   -webkit-line-clamp: 2;
 }
 
+/* Why an add failed is the one thing to read in full. */
+[data-iii-ui='judge'] .judge-ui-session-add-row--failed .iii-ui-list-item__description {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+
 [data-iii-ui='judge'] .judge-ui-session-mark {
   display: inline-flex;
   width: 20px;

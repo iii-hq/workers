@@ -29,9 +29,56 @@ type Engine = Pick<ExtensionIii, 'trigger'>
 const ADD_POLL_MS = 3_000
 /** An added judge that has not registered by then is reported as stuck. */
 const ADD_GIVE_UP_MS = 10 * 60_000
+/**
+ * How long a judge whose add succeeded gets to show up in the list. Compose
+ * reports success once the worker is ready, but also when a worker that is
+ * not required failed to start, or was already declared and is stopped.
+ */
+const REGISTER_GRACE_MS = 15_000
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** A compose operation's latest snapshot (`compose::operation`). */
+interface OperationSnapshot {
+  status?: string
+  last_event?: { terminal?: boolean; detail?: string } | null
+}
+
+/**
+ * Why a compose operation failed. A worker with no build for this platform
+ * is the common case, and its detail wraps the reason in advice for the
+ * publisher, so only that sentence is shown.
+ */
+function failureReason(detail: string | undefined): string {
+  if (!detail) return 'compose::add failed'
+  return /[^.]*does not support platform[^.]*\./.exec(detail)?.[0].trim() ?? detail
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * `compose::add` only accepts the work: the operation resolves, installs and
+ * starts the worker afterwards. Follow it until it ends, so a failure (no
+ * build for this platform, a registry error) shows instead of a registration
+ * that never comes. Success is settled by the judge registering; `fail` only
+ * touches an add still in progress.
+ */
+async function followOperation(iii: Engine, worker: string, operationId: string, fail: (error: string) => void) {
+  const deadline = Date.now() + ADD_GIVE_UP_MS
+  while (Date.now() < deadline) {
+    await sleep(ADD_POLL_MS)
+    const snapshot = await iii
+      .trigger<OperationSnapshot>('compose::operation', { operation_id: operationId }, { timeoutMs: 5_000 })
+      .catch(() => null)
+    if (snapshot?.status === 'failed') return fail(failureReason(snapshot.last_event?.detail))
+    if (snapshot?.status === 'cancelled') return fail('The add was cancelled.')
+    if (snapshot?.last_event?.terminal) {
+      await sleep(REGISTER_GRACE_MS)
+      return fail(`${worker} was added but has not started; check its logs in Settings → Workers.`)
+    }
+  }
 }
 
 /** The hub's configuration entry and the default provider it stores. */
@@ -116,9 +163,10 @@ export function JudgeSessionPicker({ iii, metadata, setMetadata }: ComposerContr
         setAdds((current) => {
           const next = new Map(current)
           for (const [worker, add] of current) {
-            if (add.kind !== 'adding') continue
+            if (add.kind === 'done') continue
+            // A judge that registers is added, even after an add reported failure.
             if (registered.has(worker.slice('judge-'.length))) next.set(worker, { kind: 'done' })
-            else if (now - add.since > ADD_GIVE_UP_MS)
+            else if (add.kind === 'adding' && now - add.since > ADD_GIVE_UP_MS)
               next.set(worker, { kind: 'failed', error: 'Not registered after 10 minutes; check Settings → Workers.' })
           }
           return next
@@ -153,15 +201,20 @@ export function JudgeSessionPicker({ iii, metadata, setMetadata }: ComposerContr
   }, [open, pending, refreshProviders])
   const addJudge = (worker: string) => {
     setAdds((current) => new Map(current).set(worker, { kind: 'adding', since: Date.now() }))
-    const fail = (error: string) => setAdds((current) => new Map(current).set(worker, { kind: 'failed', error }))
+    // Only an add still in progress fails: a registered judge stays added.
+    const fail = (error: string) =>
+      setAdds((current) =>
+        current.get(worker)?.kind === 'adding' ? new Map(current).set(worker, { kind: 'failed', error }) : current,
+      )
     iii
-      .trigger<{ status?: string; error?: { message?: string } | null }>(
+      .trigger<{ status?: string; operation_id?: string; error?: { message?: string } | null }>(
         'compose::add',
         { workers: [worker] },
         { timeoutMs: 600_000 },
       )
       .then((reply) => {
         if (reply?.status === 'failed') fail(reply.error?.message ?? 'compose::add failed')
+        else if (reply?.operation_id) void followOperation(iii, worker, reply.operation_id, fail)
       })
       .catch((error: unknown) => fail(message(error)))
   }
