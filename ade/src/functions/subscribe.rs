@@ -153,8 +153,11 @@ pub fn register(iii: &Arc<IIIClient>) {
                     )));
                 }
                 post_signup(&email).await.map_err(Error::Handler)?;
-                let source = input.source.as_deref().unwrap_or("console");
-                publish_identify(&iii, &email, source).await;
+                // The list has the address; that is the signup. The
+                // announcement runs off the response path so its own timeout
+                // cannot push this call past the browser's deadline.
+                let source = input.source.unwrap_or_else(|| "console".into());
+                tokio::spawn(async move { publish_identify(&iii, &email, &source).await });
                 Ok::<_, Error>(SubscribeOutput { subscribed: true })
             }
         })
