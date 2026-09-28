@@ -21,7 +21,7 @@ interface RegistryJudge {
 export type AddState =
   | { kind: 'adding'; since: number }
   | { kind: 'done' }
-  | { kind: 'failed'; error: string }
+  | { kind: 'failed'; error: string; at: number }
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null

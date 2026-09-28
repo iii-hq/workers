@@ -280,6 +280,12 @@ describe('per-session judge provider', () => {
     expect(view.querySelector('[role="alert"]')?.textContent).toBe(
       'judge-decider was added but has not started; check its logs in Settings → Workers.',
     )
+    // It starts late: the open picker keeps checking and settles it.
+    iii.state.registered.push('decider')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_100)
+    })
+    expect(view.textContent).toContain('Added')
   })
 
   it('says so when the registry is unreachable', async () => {

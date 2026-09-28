@@ -35,6 +35,12 @@ const ADD_GIVE_UP_MS = 10 * 60_000
  * not required failed to start, or was already declared and is stopped.
  */
 const REGISTER_GRACE_MS = 15_000
+/**
+ * How long an open picker keeps checking after an add fails: a judge that
+ * registers late (after the grace, or once its daemon restarted) still
+ * turns into Added.
+ */
+const FAILED_WATCH_MS = 2 * 60_000
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -167,7 +173,11 @@ export function JudgeSessionPicker({ iii, metadata, setMetadata }: ComposerContr
             // A judge that registers is added, even after an add reported failure.
             if (registered.has(worker.slice('judge-'.length))) next.set(worker, { kind: 'done' })
             else if (add.kind === 'adding' && now - add.since > ADD_GIVE_UP_MS)
-              next.set(worker, { kind: 'failed', error: 'Not registered after 10 minutes; check Settings → Workers.' })
+              next.set(worker, {
+                kind: 'failed',
+                error: 'Not registered after 10 minutes; check Settings → Workers.',
+                at: now,
+              })
           }
           return next
         })
@@ -193,7 +203,10 @@ export function JudgeSessionPicker({ iii, metadata, setMetadata }: ComposerContr
 
   const running = new Set((providers ?? []).map((entry) => entry.provider))
 
-  const pending = [...adds.values()].some((add) => add.kind === 'adding')
+  // Each poll re-renders the picker, which re-evaluates this bound.
+  const pending = [...adds.values()].some(
+    (add) => add.kind === 'adding' || (add.kind === 'failed' && Date.now() - add.at < FAILED_WATCH_MS),
+  )
   useEffect(() => {
     if (!open || !pending) return
     const timer = setInterval(refreshProviders, ADD_POLL_MS)
@@ -204,7 +217,9 @@ export function JudgeSessionPicker({ iii, metadata, setMetadata }: ComposerContr
     // Only an add still in progress fails: a registered judge stays added.
     const fail = (error: string) =>
       setAdds((current) =>
-        current.get(worker)?.kind === 'adding' ? new Map(current).set(worker, { kind: 'failed', error }) : current,
+        current.get(worker)?.kind === 'adding'
+          ? new Map(current).set(worker, { kind: 'failed', error, at: Date.now() })
+          : current,
       )
     iii
       .trigger<{ status?: string; operation_id?: string; error?: { message?: string } | null }>(
