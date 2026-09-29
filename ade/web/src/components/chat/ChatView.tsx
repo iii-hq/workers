@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
+import { Button } from '@/components/ui/Button'
 import { LiveRegion } from '@/components/ui/LiveRegion'
 import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
@@ -61,6 +62,7 @@ import type {
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
+import { errText } from '@/lib/errors'
 import type { FileMentionRef } from '@/lib/file-mention-token'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { ChatFileNavigation, openChatFile } from '@/lib/file-navigation'
@@ -257,6 +259,7 @@ export function ChatView({
     boolean | null
   >(backend.id === 'real' ? null : false)
   const [importTurnError, setImportTurnError] = useState<string | null>(null)
+  const [importCheck, setImportCheck] = useState(0)
   const checkingImportedTurn =
     imported && !readOnly && importedTurnEstablished === null
   const importNeedsSetup =
@@ -354,7 +357,7 @@ export function ChatView({
     executionBlocked || checkingImportedTurn || importNeedsSetup
   const submitBlockedRef = useRef(executionBlocked)
   submitBlockedRef.current = executionBlocked
-  // biome-ignore lint/correctness/useExhaustiveDependencies: session status changes announce newly established turns.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: session status changes announce newly established turns; importCheck re-runs the check on Retry.
   useEffect(() => {
     if (
       !imported ||
@@ -373,10 +376,7 @@ export function ChatView({
         setImportTurnError(null)
       })
       .catch((error) => {
-        if (current)
-          setImportTurnError(
-            error instanceof Error ? error.message : String(error),
-          )
+        if (current) setImportTurnError(errText(error))
       })
     return () => {
       current = false
@@ -389,6 +389,7 @@ export function ChatView({
     conversation.id,
     conversation.status,
     connectionState,
+    importCheck,
   ])
   // This view is keyed by conversation, so mounting IS opening a session:
   // the caret belongs in the composer, on the devices where that is free.
@@ -1443,9 +1444,7 @@ export function ChatView({
           setImportedTurnEstablished(turnEstablished)
           setImportTurnError(null)
         } catch (error) {
-          setImportTurnError(
-            error instanceof Error ? error.message : String(error),
-          )
+          setImportTurnError(errText(error))
           return
         } finally {
           if (preparing) importStatusPendingRef.current = false
@@ -2912,7 +2911,20 @@ export function ChatView({
                 className="mb-2"
                 icon={<TriangleAlert className="h-full w-full" />}
                 headline="Could not check conversation state"
-                detail={`${importTurnError}. Reopen this conversation to retry.`}
+                detail={importTurnError}
+                action={
+                  <Button
+                    variant="pill"
+                    size="sm"
+                    onClick={() => {
+                      setImportTurnError(null)
+                      setImportedTurnEstablished(null)
+                      setImportCheck((attempt) => attempt + 1)
+                    }}
+                  >
+                    Retry
+                  </Button>
+                }
               />
             )}
             {importNeedsSetup && (
