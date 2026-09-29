@@ -128,15 +128,16 @@ export function GroupsListView({
     />
   )
 
-  // The way out of an empty list is whichever filter emptied it, so every
-  // filter that narrows it gets its own undo; the first is the primary.
-  const widen = [
-    ...(filters.search || filters.service
-      ? [{ label: 'Clear search and worker', onClick: () => onFilters({ ...filters, search: '', service: '' }) }]
-      : []),
-    ...(filters.window !== 'all' ? [{ label: 'Show all time', onClick: () => setWindow('all') }] : []),
-    ...(scope !== 'open' ? [{ label: 'Show open groups', onClick: () => setScope('open') }] : []),
-  ]
+  // One way out of an empty list: undo the most specific filter. If the list
+  // is still empty, the next empty state offers the next one.
+  const widen =
+    filters.search || filters.service
+      ? { label: 'Clear search and worker', onClick: () => onFilters({ ...filters, search: '', service: '' }) }
+      : filters.window !== 'all'
+        ? { label: 'Show all time', onClick: () => setWindow('all') }
+        : scope !== 'open'
+          ? { label: 'Show open groups', onClick: () => setScope('open') }
+          : undefined
 
   return (
     <div className="sentinel-ui-list">
@@ -238,7 +239,7 @@ export function GroupsListView({
           icon={Inbox}
           title="No group matches this filter"
           description="Sentinel keeps counting every occurrence either way; resolved and ignored groups have their own filter."
-          actions={widen}
+          action={widen}
         />
       ) : narrow ? (
         <List aria-label="Error groups">
@@ -341,10 +342,15 @@ export function ListStatus({
   const counts = status?.groups
   const within = WINDOW_WORDS[answered.window]
   const store = status?.engine.trace_store
-  const closed = counts && counts.resolved + counts.ignored > 0
+  // Only the parts that are not zero: "2 ignored hidden", not "0 resolved · 2 ignored hidden".
+  const hidden = counts
+    ? [counts.resolved && `${spaced(counts.resolved)} resolved`, counts.ignored && `${spaced(counts.ignored)} ignored`]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
   return (
     <StatusBar
-      aria-label="Groups shown"
+      className="sentinel-ui-statusbar"
       end={
         narrow ? null : (
           <>
@@ -360,11 +366,7 @@ export function ListStatus({
         {within ? ` ${within}` : ''}
       </span>
       {narrow ? null : <span>regressions first, then last seen</span>}
-      {!closed || scopeOf(answered.statuses) !== 'open' ? null : (
-        <span>
-          {counts.resolved} resolved · {counts.ignored} ignored hidden
-        </span>
-      )}
+      {hidden && scopeOf(answered.statuses) === 'open' ? <span>{hidden} hidden</span> : null}
     </StatusBar>
   )
 }

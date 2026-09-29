@@ -6,13 +6,14 @@ import {
   Chip,
   CodeHighlight,
   EmptyState,
+  IconButton,
   Markdown,
   Panel,
   StatusPanel,
   uiClasses,
 } from '@iii-dev/console-ui'
 import type { ChipTone, Host } from '@iii-dev/console-ui'
-import { MessageSquare, ScanSearch } from 'lucide-react'
+import { FileCode, MessageSquare, ScanSearch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { Diagnosis, DiagnosisRecord, GroupSummary, Investigation } from '../api'
 import { Dot } from './marks'
@@ -119,9 +120,9 @@ export function DiagnosisTab({
               </div>
               <div className="sentinel-ui-provenance-line sentinel-ui-quiet">
                 {onOpenSession ? (
-                  <Button size="sm" variant="ghost" className="sentinel-ui-wrap" onClick={onOpenSession}>
+                  <Button size="sm" variant="ghost" onClick={onOpenSession}>
                     <MessageSquare size={16} aria-hidden="true" />
-                    Sentinel: {group.exception_type ?? group.service_name}
+                    Open session
                   </Button>
                 ) : null}
                 <span className="sentinel-ui-mono">
@@ -244,25 +245,28 @@ function Reading({
               <Panel key={index} className="sentinel-ui-cited">
                 <Chip>{item.kind}</Chip>
                 <div className="sentinel-ui-cited-body">
-                  {location ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="sentinel-ui-mono sentinel-ui-wrap"
-                      onClick={() =>
-                        host.panels?.open({
-                          pageId: 'ide',
-                          context: { type: 'file', path: location.path, line: location.line },
-                        })
-                      }
-                    >
-                      {item.path}:{item.line ?? 1}
-                    </Button>
-                  ) : item.path ? (
-                    <span className="sentinel-ui-mono">
-                      {item.path}
-                      {item.line ? `:${item.line}` : ''}
-                    </span>
+                  {item.path ? (
+                    // The path is data and wraps like data; opening it is a
+                    // control of its own beside it.
+                    <div className="sentinel-ui-cited-where">
+                      <span className="sentinel-ui-mono">
+                        {item.path}
+                        {item.line ? `:${item.line}` : ''}
+                      </span>
+                      {location ? (
+                        <IconButton
+                          label="Open in the IDE"
+                          onClick={() =>
+                            host.panels?.open({
+                              pageId: 'ide',
+                              context: { type: 'file', path: location.path, line: location.line },
+                            })
+                          }
+                        >
+                          <FileCode size={16} />
+                        </IconButton>
+                      ) : null}
+                    </div>
                   ) : item.span_id ? (
                     <span className="sentinel-ui-mono">span {item.span_id}</span>
                   ) : null}

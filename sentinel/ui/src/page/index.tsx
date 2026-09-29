@@ -252,8 +252,9 @@ export function SentinelPage({
             {status?.engine.trace_store === 'disabled' ? (
               <StatusPanel
                 variant="warn"
-                headline="The engine's trace store is off"
-                detail="Sentinel cannot read traces back from the engine, so error spans are recorded without their span tree. Enable the trace store in the engine's observability configuration."
+                headline="Error spans are not being captured"
+                // Last observed, not probed: it changes when the next trace is read.
+                detail="At the last capture the engine's trace store was off, so a failing span leaves nothing to read and is counted as lost before capture. Error logs are still grouped, without their session. Turn the trace store back on to capture spans again."
               />
             ) : null}
             {status && !status.enabled && !status.config_error ? (

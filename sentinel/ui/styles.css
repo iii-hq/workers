@@ -95,19 +95,6 @@
   white-space: nowrap;
 }
 
-/* A button whose label is data — a path, a session title — wraps like the
-   text it is instead of running out of its column. */
-[data-iii-ui="sentinel"] .sentinel-ui-wrap {
-  justify-content: flex-start;
-  max-width: 100%;
-  height: auto;
-  min-height: 32px;
-  padding-block: 6px;
-  white-space: normal;
-  text-align: left;
-  overflow-wrap: anywhere;
-}
-
 [data-iii-ui="sentinel"] .sentinel-ui-visually-hidden {
   position: absolute;
   width: 1px;
@@ -703,6 +690,34 @@
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-cited-body p { margin: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-cited-where {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-cited-where > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The strip is one line: the count keeps its width, anything after it
+   gives way with an ellipsis rather than wrapping out of 28px. */
+[data-iii-ui="sentinel"] .sentinel-ui-statusbar { min-width: 0; }
+
+[data-iii-ui="sentinel"] .sentinel-ui-statusbar > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+[data-iii-ui="sentinel"] .sentinel-ui-statusbar > span ~ span {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 [data-iii-ui="sentinel"] .sentinel-ui-missing {
   padding: 10px 12px;
