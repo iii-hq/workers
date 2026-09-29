@@ -11,8 +11,9 @@ import {
   EmptyState,
   Skeleton,
   StatusPanel,
+  TerminalStream,
 } from '@iii-dev/console-ui'
-import { errorMessage } from '@iii-dev/console-ui/format'
+import { errorMessage, formatDuration } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import type { Host } from '@iii-dev/console-ui'
 import { Check, ChevronDown, Copy } from 'lucide-react'
@@ -156,27 +157,28 @@ function OriginSpan({
             {bundle.propagated_through.length} {bundle.propagated_through.length === 1 ? 'span' : 'spans'}
           </dd>
         </dl>
-        {type || message || stack ? (
-          <pre className="sentinel-ui-exception">
+        {type || message ? (
+          <dl className="sentinel-ui-kv sentinel-ui-wide">
             {type ? (
               <>
-                <span className="sentinel-ui-exception-key">exception.type</span>
-                <span className="sentinel-ui-alert">{type}</span>
+                <dt>exception.type</dt>
+                <dd>
+                  <span className="sentinel-ui-alert">{type}</span>
+                </dd>
               </>
             ) : null}
             {message ? (
               <>
-                <span className="sentinel-ui-exception-key">exception.message</span>
-                <span>{message}</span>
+                <dt>exception.message</dt>
+                <dd>{message}</dd>
               </>
             ) : null}
-            {stack ? (
-              <>
-                <span className="sentinel-ui-exception-key">exception.stacktrace</span>
-                <span>{stack}</span>
-              </>
-            ) : null}
-          </pre>
+          </dl>
+        ) : null}
+        {/* A Rust backtrace is a hundred lines: clamped, it never pushes the
+            trace path and the payloads out of the first screen. */}
+        {stack ? (
+          <TerminalStream className="sentinel-ui-wide" label="exception.stacktrace" text={stack} clampLines={12} />
         ) : null}
       </CardBody>
     </Card>
@@ -321,7 +323,7 @@ function LogRecord({ bundle, captured }: { bundle: EvidenceBundle; captured: str
           <dt>span_id</dt>
           <dd>{record?.span_id ?? '—'}</dd>
         </dl>
-        {record ? <pre className="sentinel-ui-exception">{record.body}</pre> : null}
+        {record ? <TerminalStream className="sentinel-ui-wide" label="log body" text={record.body} clampLines={12} /> : null}
         {attributes.length > 0 ? (
           <div className="sentinel-ui-attributes">
             {attributes.map(([key, value]) => (
@@ -363,9 +365,8 @@ function isError(span: EvidenceSpan): boolean {
 function duration(span: EvidenceSpan): string {
   if (!span.end_time_unix_nano || !span.start_time_unix_nano) return ''
   const ms = (span.end_time_unix_nano - span.start_time_unix_nano) / 1e6
-  if (ms < 1) return `${Math.round(ms * 1000)} µs`
-  if (ms < 1000) return `${ms.toFixed(1)} ms`
-  return `${(ms / 1000).toFixed(2)} s`
+  // `formatDuration` floors at 1 ms; a sub-millisecond span is still a fact.
+  return ms < 1 ? `${Math.round(ms * 1000)} µs` : formatDuration(ms)
 }
 
 function short(id: string): string {

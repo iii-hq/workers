@@ -327,24 +327,13 @@ export function GroupDetailView({
             {group.status === 'regressed' && group.regressed_at_ms ? (
               <span className="sentinel-ui-quiet-mono">{ago(group.regressed_at_ms, now)}</span>
             ) : null}
-            <Chip>{spaced(group.occurrence_count)} occurrences</Chip>
-            {group.sessions_affected > 0 ? (
-              <Chip>
-                {spaced(group.sessions_affected)} {group.sessions_affected === 1 ? 'session' : 'sessions'}
-              </Chip>
-            ) : null}
-            <span className="sentinel-ui-quiet-mono">{versionRange(group.first_version, group.last_version)}</span>
+            {/* No project is the banner below, once; a mapped one is a fact. */}
             {repository ? (
               <Chip tone={repository.exists ? 'neutral' : 'warning'} title={repository.path}>
                 <Folder size={16} aria-hidden="true" />
                 {repositoryName}/ · {repository.exists ? 'read-only' : 'missing on disk'}
               </Chip>
-            ) : (
-              <Chip tone="warning">
-                <Folder size={16} aria-hidden="true" />
-                no project mapped
-              </Chip>
-            )}
+            ) : null}
           </div>
           <div className="sentinel-ui-dhead-actions" role="toolbar" aria-label="Group actions">
             {sessionInView ? (
@@ -462,7 +451,7 @@ export function GroupDetailView({
           variant="info"
           icon={<Folder size={16} />}
           headline={`No project is mapped for ${group.service_name}.`}
-          detail={`An investigation reads the ${group.source === 'log' ? 'log window' : 'trace'} and nothing else. Grouping, evidence, regression and the whole list work the same — only the agent's code access is missing. To give it the source, open the settings icon at the top of this page and, under Projects, add ${group.service_name} to the project that holds its code.`}
+          detail={`An investigation reads the ${group.source === 'log' ? 'log window' : 'trace'} and nothing else. To give the agent the source, add ${group.service_name} to a project under Projects in this page's settings.`}
         />
       ) : null}
 

@@ -21,8 +21,8 @@ import { client } from '../api'
 import type { GroupStatus, GroupSummary, StatusResponse } from '../api'
 import { EVENT, PAGE_ID } from '../shared'
 import { GroupDetailView } from './detail'
-import { GroupsListView } from './list'
-import { OPEN_STATES, PAGE_SIZE, ago, bulkOutcome, sinceMs } from './present.js'
+import { GroupsListView, ListStatus } from './list'
+import { OPEN_STATES, PAGE_SIZE, bulkOutcome, sinceMs } from './present.js'
 
 type Props = { host: Host } & PageRenderProps
 
@@ -207,16 +207,9 @@ export function SentinelPage({
         description={selected ? undefined : describe(status)}
         onClose={onRequestClose}
         actions={
-          <>
-            {!selected && !narrow && status?.groups.last_seen_ms ? (
-              <span className="sentinel-ui-ingested">
-                ingested {ago(status.groups.last_seen_ms, now)}
-              </span>
-            ) : null}
-            <IconButton label="Refresh" onClick={() => groups.refresh()}>
-              <RefreshCw size={16} />
-            </IconButton>
-          </>
+          <IconButton label="Refresh" onClick={() => groups.refresh()}>
+            <RefreshCw size={16} />
+          </IconButton>
         }
       >
         {selected ? (
@@ -319,6 +312,16 @@ export function SentinelPage({
             />
           )}
         </div>
+        {selected || !groups.data ? null : (
+          <ListStatus
+            filters={filters}
+            narrow={narrow}
+            now={now}
+            shown={groups.data.groups.length}
+            status={status}
+            total={groups.data.total}
+          />
+        )}
       </PageMain>
     </PageShell>
   )

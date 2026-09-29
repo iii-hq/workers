@@ -119,18 +119,16 @@ export function DiagnosisTab({
               </div>
               <div className="sentinel-ui-provenance-line sentinel-ui-quiet">
                 {onOpenSession ? (
-                  <button type="button" className="sentinel-ui-link" onClick={onOpenSession}>
+                  <Button size="sm" variant="ghost" onClick={onOpenSession}>
                     <MessageSquare size={16} aria-hidden="true" />
                     Sentinel: {group.exception_type ?? group.service_name}
-                  </button>
+                  </Button>
                 ) : null}
                 <span className="sentinel-ui-mono">
                   investigated {investigation?.investigated_version ?? versionRange(group.first_version, group.last_version)}
-                </span>
-                <span className="sentinel-ui-mono">
+                  {' · '}
                   {investigation?.checkout_ref ? `checkout ${investigation.checkout_ref}` : 'no checkout — evidence only'}
                 </span>
-                <span className="sentinel-ui-mono sentinel-ui-accent">via sentinel::diagnosis::record</span>
               </div>
             </div>
             {onAsk ? (
@@ -181,13 +179,18 @@ export function DiagnosisTab({
                       {record.diagnosis?.missing_evidence?.[0] ?? 'no open questions'}
                     </span>
                     {record.id === shown.id ? (
-                      <span className="sentinel-ui-accent sentinel-ui-versions-tag">
+                      <span className="sentinel-ui-quiet sentinel-ui-versions-tag">
                         {index === 0 ? 'current' : 'shown'}
                       </span>
                     ) : (
-                      <button type="button" className="sentinel-ui-link sentinel-ui-versions-tag" onClick={() => setShownId(record.id)}>
-                        view
-                      </button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="sentinel-ui-versions-tag"
+                        onClick={() => setShownId(record.id)}
+                      >
+                        View
+                      </Button>
                     )}
                   </li>
                 ))}
@@ -242,9 +245,10 @@ function Reading({
                 <Chip>{item.kind}</Chip>
                 <div className="sentinel-ui-cited-body">
                   {location ? (
-                    <button
-                      type="button"
-                      className="sentinel-ui-link sentinel-ui-mono"
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="sentinel-ui-mono"
                       onClick={() =>
                         host.panels?.open({
                           pageId: 'ide',
@@ -253,7 +257,7 @@ function Reading({
                       }
                     >
                       {item.path}:{item.line ?? 1}
-                    </button>
+                    </Button>
                   ) : item.path ? (
                     <span className="sentinel-ui-mono">
                       {item.path}
