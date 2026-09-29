@@ -187,8 +187,21 @@ async fn the_daily_pass_drops_old_buckets_and_archives_quiet_resolved_groups() {
     config.retention.buckets_days = 7;
     config.retention.resolved_ttl_days = 30;
 
+    // `prune` reads the wall clock, so this test's ages are relative to it:
+    // against the fixture's fixed NOW they drift out of the window as real
+    // time passes. The buckets ingest wrote at NOW are not the ones under test.
+    let now = sentinel::ids::now_ms();
+    store
+        .db()
+        .execute(
+            "DELETE FROM sentinel_buckets WHERE group_id = ?",
+            vec![json!(group_id)],
+        )
+        .await
+        .expect("clear the fixture's buckets");
+
     // One bucket inside the window and one long outside it.
-    for hour_ms in [NOW - 2 * DAY, NOW - 40 * DAY] {
+    for hour_ms in [now - 2 * DAY, now - 40 * DAY] {
         store
             .db()
             .execute(
@@ -205,8 +218,8 @@ async fn the_daily_pass_drops_old_buckets_and_archives_quiet_resolved_groups() {
             "UPDATE sentinel_groups SET status = 'resolved', last_seen_ms = ?, \
              resolved_at_ms = ? WHERE id = ?",
             vec![
-                json!(NOW - 60 * DAY),
-                json!(NOW - 60 * DAY),
+                json!(now - 60 * DAY),
+                json!(now - 60 * DAY),
                 json!(group_id),
             ],
         )
