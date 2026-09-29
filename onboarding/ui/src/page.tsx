@@ -50,6 +50,9 @@ const TOUR_THINKING_LEVEL = 'minimal'
  */
 const OPEN_TIMEOUT_MS = 8_000
 
+/** Chat, the tour, then the panel a step opens beside it. */
+const TOUR_PANEL_SIZES = [0.3, 0.4, 0.3]
+
 /** How long the box stays on what a step's `on_closed` note points at. */
 const HINT_SPOTLIGHT_MS = 5_000
 
@@ -176,37 +179,51 @@ export function OnboardingPage({ host, onRequestClose, conversationId }: { host:
    * of chat) — a panel the tour is pointing at belongs on the far side of the
    * tour, not wedged between the tour and the conversation.
    *
-   * The widths ride along in the same call, so placement and sizing are one
-   * write: chat, the tour, then the panel. `sizes` is rejected outright when
-   * it does not match the column count, which is why it is sent only for the
-   * three-column layout this page knows it is making.
+   * `host.panels.openScreen` places it in this browser, in the tab showing
+   * this page: optimistic, with no bus round trip, and never in whichever tab
+   * another browser clicked last. The widths ride along, so placement and
+   * sizing are one step: chat, the tour, then the panel. A tab the screen is
+   * only reused in keeps its own widths.
    *
-   * The button moves on whether or not the call lands: an older console
-   * rejects `relative_to`, and the step is about reading the panel, not about
-   * us. The step itself closes on the `Continue` this turns into.
+   * An older console has no `openScreen`, so the page falls back to
+   * `console::workspace::open`, where a `sizes` that does not match the
+   * column count is rejected outright and the call retries without it. The
+   * button moves on whether or not that call lands: the step is about reading
+   * the panel, not about us. The step itself closes on the `Continue` this
+   * turns into.
    *
    * `Continue` waits for the panel to be ON SCREEN, not for the call to
-   * return. Returning only means the engine stored the layout — the console
-   * polls that entry, so the panel follows up to five seconds later, and a
-   * button that flipped on the response would be pointing at nothing.
+   * return: over the bus, returning only means the engine stored the layout,
+   * and the console re-reads it a moment later.
    */
   const openScreen = useCallback(
     (step: Step) => {
+      const screen = step.screen
       const open = (sizes?: number[]) =>
         host.iii.trigger('console::workspace::open', {
-          screen: step.screen,
+          screen,
           relative_to: 'ext:onboarding',
           direction: 'right',
           ...(sizes ? { sizes } : {}),
         })
-      const placed = step.screen
-        ? // A reused tab keeps its own column count, and a `sizes` that does
-          // not match it is rejected outright. The widths are the nicety; the
-          // screen is the step, so a rejection retries without them.
-          open([0.3, 0.4, 0.3])
-            .catch(() => open())
-            .catch(() => {})
-        : Promise.resolve()
+      const place = (): Promise<unknown> => {
+        if (!screen) return Promise.resolve()
+        if (host.panels?.openScreen) {
+          host.panels.openScreen({
+            screen,
+            relativeTo: 'ext:onboarding',
+            direction: 'right',
+            sizes: TOUR_PANEL_SIZES,
+          })
+          return Promise.resolve()
+        }
+        // The widths are the nicety; the screen is the step, so a rejection
+        // retries without them.
+        return open(TOUR_PANEL_SIZES)
+          .catch(() => open())
+          .catch(() => {})
+      }
+      const placed = place()
       setOpening(step.id)
       void placed
         .then(() => waitForAnchor(step.anchors, OPEN_TIMEOUT_MS))
