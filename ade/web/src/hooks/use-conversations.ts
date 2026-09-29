@@ -2641,32 +2641,66 @@ export function useConversations(
     ],
   )
 
+  /** Sessions with a write queued for this tick, and the title it carries. */
+  const metaWriteQueueRef = useRef(new Map<string, string | undefined>())
+
+  /* Every edit of one tick lands as ONE write, built after the last of them:
+     a model pick also sets that model's effort (two setters, one handler),
+     and a write built between the two would carry only half of the pick.
+     ponytail: writes from different ticks are not ordered, and the backend
+     may apply two in flight either way; a revision check on set-meta is the
+     upgrade path if that ever shows up. */
+  const writeMeta = useCallback(
+    (id: string, title?: string) => {
+      const queue = metaWriteQueueRef.current
+      const scheduled = queue.has(id)
+      queue.set(id, title ?? queue.get(id))
+      if (scheduled) return
+      queueMicrotask(() => {
+        const queuedTitle = queue.get(id)
+        queue.delete(id)
+        const conv = conversationsRef.current.find((c) => c.id === id)
+        if (!serverEnabled || !conv || conv.draft) return
+        void setSessionMeta({
+          session_id: id,
+          ...(queuedTitle ? { title: queuedTitle } : {}),
+          metadata: metadataForWrite(conv),
+        }).catch((err) => {
+          if (import.meta.env.DEV)
+            console.warn('[conversations] set_meta failed', err)
+        })
+      })
+    },
+    [serverEnabled],
+  )
+
+  /* Metadata setters edit through here. The live mirror moves now instead of
+     at the next render, so a second edit in the same tick builds on this one
+     and the write sees both: a write built from the render's `conversations`
+     re-sent the pre-pick model right after the pick. */
+  const editMeta = useCallback(
+    (id: string, edit: (c: Conversation) => Conversation, title?: string) => {
+      conversationsRef.current = conversationsRef.current.map((c) =>
+        c.id === id ? edit(c) : c,
+      )
+      patchConversation(id, edit)
+      writeMeta(id, title)
+    },
+    [patchConversation, writeMeta],
+  )
+
   const rename = useCallback(
     (id: string, title: string) => {
       const trimmed = title.trim()
-      patchConversation(id, (c) =>
+      const edit = (c: Conversation) =>
         applyConversationMetadataPatch(c, {
           title: trimmed || c.title,
           titleManual: true,
-        }),
-      )
-      if (!serverEnabled || !trimmed) return
-      const conv = conversations.find((c) => c.id === id)
-      if (!conv || conv.draft) return
-      const updated = applyConversationMetadataPatch(conv, {
-        title: trimmed,
-        titleManual: true,
-      })
-      void setSessionMeta({
-        session_id: id,
-        title: trimmed,
-        metadata: metadataForWrite(updated),
-      }).catch((err) => {
-        if (import.meta.env.DEV)
-          console.warn('[conversations] rename failed', err)
-      })
+        })
+      if (trimmed) editMeta(id, edit, trimmed)
+      else patchConversation(id, edit)
     },
-    [patchConversation, serverEnabled, conversations],
+    [patchConversation, editMeta],
   )
 
   const remove = useCallback(
@@ -2721,80 +2755,44 @@ export function useConversations(
     [serverEnabled, invalidateSessionMetaLookup, markConversationMissing],
   )
 
-  const writeMeta = useCallback(
-    (conv: Conversation) => {
-      if (!serverEnabled || conv.draft) return
-      void setSessionMeta({
-        session_id: conv.id,
-        metadata: metadataForWrite(conv),
-      }).catch((err) => {
-        if (import.meta.env.DEV)
-          console.warn('[conversations] set_meta failed', err)
-      })
-    },
-    [serverEnabled],
-  )
-
   const setModel = useCallback(
     (id: string, model: ModelId) => {
-      patchConversation(id, (c) => applyConversationMetadataPatch(c, { model }))
+      editMeta(id, (c) => applyConversationMetadataPatch(c, { model }))
       saveLastModel(model)
-      const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta(applyConversationMetadataPatch(conv, { model }))
     },
-    [patchConversation, conversations, writeMeta],
+    [editMeta],
   )
 
   const setThinkingLevel = useCallback(
     (id: string, thinkingLevel: ThinkingLevel) => {
-      patchConversation(id, (c) =>
-        applyConversationMetadataPatch(c, { thinkingLevel }),
-      )
+      editMeta(id, (c) => applyConversationMetadataPatch(c, { thinkingLevel }))
       saveLastThinkingLevel(thinkingLevel)
-      const conv = conversations.find((c) => c.id === id)
-      if (conv)
-        writeMeta(applyConversationMetadataPatch(conv, { thinkingLevel }))
     },
-    [patchConversation, conversations, writeMeta],
+    [editMeta],
   )
 
   const setMemoryBank = useCallback(
-    (id: string, memoryBank: string | null) => {
-      patchConversation(id, (c) =>
-        applyConversationMetadataPatch(c, { memoryBank }),
-      )
-      const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta(applyConversationMetadataPatch(conv, { memoryBank }))
-    },
-    [patchConversation, conversations, writeMeta],
+    (id: string, memoryBank: string | null) =>
+      editMeta(id, (c) => applyConversationMetadataPatch(c, { memoryBank })),
+    [editMeta],
   )
 
   // Same writer as model/thinking, so a worker control and the console never
   // race on the wholesale metadata replace.
   const setSessionMetadata = useCallback(
-    (id: string, patch: Record<string, unknown>) => {
-      const merge = (c: Conversation): Conversation => ({
+    (id: string, patch: Record<string, unknown>) =>
+      editMeta(id, (c) => ({
         ...c,
         sessionMetadata: patchSessionMetadata(c.sessionMetadata, patch),
         updatedAt: Date.now(),
-      })
-      patchConversation(id, merge)
-      const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta(merge(conv))
-    },
-    [patchConversation, conversations, writeMeta],
+      })),
+    [editMeta],
   )
 
   const setSystemPrompt = useCallback(
-    (id: string, systemPrompt: SystemPromptState) => {
-      patchConversation(id, (c) =>
-        applyConversationMetadataPatch(c, { systemPrompt }),
-      )
-      const conv = conversations.find((c) => c.id === id)
-      if (conv)
-        writeMeta(applyConversationMetadataPatch(conv, { systemPrompt }))
-    },
-    [patchConversation, conversations, writeMeta],
+    (id: string, systemPrompt: SystemPromptState) =>
+      editMeta(id, (c) => applyConversationMetadataPatch(c, { systemPrompt })),
+    [editMeta],
   )
 
   const setAgentProfile = useCallback(
@@ -2818,40 +2816,32 @@ export function useConversations(
             }
           : {}),
       }
-      patchConversation(id, (conversation) =>
+      editMeta(id, (conversation) =>
         applyConversationMetadataPatch(conversation, patch),
       )
-      const conversation = conversations.find((item) => item.id === id)
-      if (conversation) {
-        const updated = applyConversationMetadataPatch(conversation, patch)
-        writeMeta(updated)
-        if (agentProfile?.model) saveLastModel(agentProfile.model)
-        if (adoptThinkingLevel && agentProfile) {
-          saveLastThinkingLevel(
-            agentProfile.reasoningEffort ?? DEFAULT_THINKING_LEVEL,
-          )
-        }
+      if (agentProfile?.model) saveLastModel(agentProfile.model)
+      if (adoptThinkingLevel && agentProfile) {
+        saveLastThinkingLevel(
+          agentProfile.reasoningEffort ?? DEFAULT_THINKING_LEVEL,
+        )
       }
     },
-    [patchConversation, conversations, writeMeta],
+    [editMeta],
   )
 
   const setSkills = useCallback(
     (id: string, skills: string[] | undefined) => {
       const normalized = skills?.length ? skills : undefined
-      patchConversation(id, (c) =>
+      editMeta(id, (c) =>
         applyConversationMetadataPatch(c, { skills: normalized }),
       )
-      const conv = conversations.find((c) => c.id === id)
-      if (conv)
-        writeMeta(applyConversationMetadataPatch(conv, { skills: normalized }))
     },
-    [patchConversation, conversations, writeMeta],
+    [editMeta],
   )
 
   const setWorkingDir = useCallback(
     (id: string, dir: string | null) => {
-      patchConversation(id, (c) =>
+      editMeta(id, (c) =>
         applyConversationMetadataPatch(c, { workingDir: dir }),
       )
       // DirectoryPicker persists before selection; this also covers working
@@ -2862,11 +2852,8 @@ export function useConversations(
       // releases the claim (keepPath guards the pick-this-worktree flow,
       // which records the claim before updating the dir).
       void releaseConsoleClaimIfAny(id, { keepPath: dir })
-      const conv = conversations.find((c) => c.id === id)
-      if (conv)
-        writeMeta(applyConversationMetadataPatch(conv, { workingDir: dir }))
     },
-    [patchConversation, conversations, serverEnabled, writeMeta],
+    [editMeta, serverEnabled],
   )
 
   const prefillWorkingDir = useCallback(
