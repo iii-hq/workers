@@ -102,6 +102,8 @@ export function categorizeTurnFailure(input: {
   const text = input.text
 
   if (code === SEND_FAILED_CODE) return 'send'
+  // Assembly overflows are context failures, including older llm.permanent records.
+  if (code === 'harness.context_overflow') return 'context'
   if (
     code.startsWith('harness.') ||
     INTERNAL_CODES.has(code) ||
@@ -220,7 +222,7 @@ function ownershipFor(
     case 'configuration':
       return 'No provider is set up to serve this request. This is an ADE setup gap on your side, not a provider outage or an iii bug.'
     case 'context':
-      return 'The conversation has outgrown the context window of the selected model. Nothing is broken; the history is simply too large to send.'
+      return 'The conversation exceeds the selected model’s available input budget. It could not be reduced enough to send; switching models can change that budget.'
     case 'rate-limit':
       return `${api} is throttling requests right now. This happens under load and is not caused by you or by iii.`
     case 'connection':
@@ -259,7 +261,8 @@ function defaultActionsFor(
     case 'context':
       return [
         'Send /compact to summarise the conversation so far.',
-        'Or switch to a model with a larger context window.',
+        'If compaction fails, switch back to a model with a larger context window and compact before switching again.',
+        'Or shorten the input or start a new conversation.',
       ]
     case 'rate-limit':
       return [
@@ -301,6 +304,7 @@ function defaultActionsFor(
 const PREFER_CONSOLE_ACTIONS = new Set<TurnFailureCategory>([
   'auth',
   'billing',
+  'context',
   'send',
 ])
 

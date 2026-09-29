@@ -53,7 +53,7 @@ const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.context_overflow",
     phase: "context_assembly",
     retryable: false,
-    kind: None,
+    kind: Some(ErrorKind::ContextOverflow),
     detail: None,
     provider: None,
     model: None,
@@ -2402,6 +2402,13 @@ fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> Failu
             "The provider is busy right now.",
             &["Wait a moment, then retry the turn."],
         ),
+        "harness.context_overflow" => (
+            "The conversation could not be compacted to fit the selected model.",
+            &[
+                "Switch back to a model with a larger context window and compact the conversation before switching again.",
+                "Shorten the input or start a new conversation.",
+            ],
+        ),
         "router/context_overflow" => (
             "The conversation is too large for the selected model.",
             &[
@@ -4425,6 +4432,21 @@ mod tests {
                 "Choose another available provider or model."
             ]
         );
+    }
+
+    #[test]
+    fn assembly_overflow_preserves_context_class_and_recovery_actions() {
+        let failure = super::CONTEXT_OVERFLOW_FAILURE;
+        assert_eq!(super::failure_class(failure), "llm.context_overflow");
+        assert!(!failure.retryable);
+        let presentation =
+            super::failure_presentation("context/overflow: 214000 > 124000", failure);
+        assert_eq!(
+            presentation.summary,
+            "The conversation could not be compacted to fit the selected model."
+        );
+        assert!(presentation.next_actions[0].contains("before switching again"));
+        assert!(presentation.next_actions[1].contains("new conversation"));
     }
 
     #[test]

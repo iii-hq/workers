@@ -203,3 +203,40 @@ describe('classifyTurnFailure', () => {
     expect(presentation.title).toBe('iii could not complete the turn')
   })
 })
+
+describe('model-switch context overflow', () => {
+  it.each(['llm.permanent', 'llm.context_overflow'])(
+    'classifies assembly overflow as context even with class %s',
+    (klass) => {
+      const presentation = classifyTurnFailure({
+        content:
+          'context/overflow: assembled context requires 213917 tokens but usable budget is 124000',
+        technicalDetails: {
+          code: 'harness.context_overflow',
+          class: klass,
+          provider: 'openai-codex',
+          model: 'codex/gpt-5.6-sol',
+        },
+        nextActions: [
+          'Inspect the failure details.',
+          'Retry only after correcting the dependency or request.',
+        ],
+      })
+      expect(presentation.category).toBe('context')
+      expect(presentation.ownerLabel).toBe('Needs your attention')
+      expect(presentation.title).toBe('Conversation too large for this model')
+      expect(presentation.actions.join(' ')).toContain('before switching again')
+      expect(presentation.actions.join(' ')).toContain('new conversation')
+      expect(presentation.actions).not.toContain('Inspect the failure details.')
+    },
+  )
+
+  it('does not reinterpret an unrelated internal failure that mentions context', () => {
+    expect(
+      categorizeTurnFailure({
+        code: 'harness.turn_internal',
+        text: 'context/overflow appeared in a dependency log',
+      }),
+    ).toBe('internal')
+  })
+})

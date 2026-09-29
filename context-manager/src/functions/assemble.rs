@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::summarize::{summarize_head, PromptSteering};
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
 use crate::core::estimate::{by_role_from_sizes, estimator_for_model, Estimator};
 use crate::core::lease;
@@ -22,12 +23,10 @@ use crate::core::prune::{
     cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes, PruneParams,
 };
 use crate::core::selection::select;
-use crate::core::summary::{
-    build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
-};
+use crate::core::summary::render_system_prompt;
 use crate::error::ContextError;
 use crate::functions::resolve_model;
-use crate::ports::{Deps, SummarizeRequest};
+use crate::ports::Deps;
 use crate::types::{
     AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, ModelInput, Role,
     ThinkingLevel,
@@ -524,15 +523,18 @@ async fn try_compact(
         }
 
         let tokens_before: u64 = sizes[..selection.head_len].iter().sum();
-        let stripped = strip_media(head, config.max_output_chars);
-        let request = SummarizeRequest {
-            system_prompt: build_system_prompt(previous_summary, None),
-            user_prompt: render_user_prompt(&stripped),
-            model: model.id.clone(),
-            provider: model.provider.clone(),
-        };
-
-        match deps.summarizer.summarize(request).await {
+        match summarize_head(
+            deps,
+            model,
+            head,
+            usable_budget,
+            PromptSteering {
+                previous_summary,
+                instructions: None,
+            },
+        )
+        .await
+        {
             Ok(summary) => Some(CompactionOutcome {
                 summary,
                 head_len: selection.head_len,

@@ -66,7 +66,8 @@ to. On later calls pass only the post-compaction window as `messages` plus the
 stored summary as `options.previous_summary` — the summary is rendered into the
 system prompt under `# Conversation summary`, and any further compaction
 *updates* it instead of starting over. Callers that skip persistence stay
-correct at the cost of one summariser call per over-budget request.
+correct at the cost of repeating the bounded summarisation pipeline on every
+over-budget request.
 
 Before token accounting, `context::assemble` normalizes images in its cloned
 model-facing view. A known catalog model receives placeholders unless it
@@ -124,3 +125,21 @@ cargo test                          # unit + BDD (engine scenarios soft-skip)
 cargo test --test bdd -- --tags @pure    # no engine required
 UPDATE_GOLDENS=1 cargo test --test schemas   # regenerate wire-schema goldens
 ```
+
+
+### Switching to a smaller model (MOT-4937)
+
+Automatic assembly and explicit compaction summarize on the selected model and
+provider; neither silently routes history to a different provider. If the rendered
+history exceeds the resolved usable input budget, it is consumed in consecutive,
+UTF-8-safe fragments. Each request includes the summary of earlier fragments as an
+anchor and is estimated with its system prompt, JSON-escaped user message and
+request overhead. The final verbatim tail and its original indices are unchanged.
+
+The pipeline allows at most 32 summary calls and shares one deadline across them,
+limited by `summarizer_timeout_ms` and the compaction lease lifetime. A failed call,
+oversized anchor, deadline or call-count limit does not return a partial summary:
+assembly falls through to its existing emergency reduction and hard-limit check;
+explicit compaction returns `overflow`. No user/assistant text is discarded merely
+to fit a fragment. The estimator remains heuristic, so an upstream overflow can
+still require a larger-budget model, shorter input, or a new conversation.

@@ -6,8 +6,8 @@ Feature: the compaction round trip — summaries persist, converge, never grow
   rendered into the system prompt under "# Conversation summary"; when
   compaction triggers again the summariser UPDATES that summary instead
   of starting over, so summaries converge. Callers that skip
-  persistence still get correct output — at one summariser call per
-  over-budget request.
+  persistence still get correct output — at one bounded summarisation pipeline per
+  over-budget request. Large histories require multiple anchored calls.
 
   # Prevents: a persisted summary silently vanishing from the model's
   # view — the round trip's whole point is that the summary comes back
@@ -62,7 +62,7 @@ Feature: the compaction round trip — summaries persist, converge, never grow
       """
     Then the response field "applied.compacted" is true
     And the summariser system prompt contains "Update the anchored summary"
-    And the summariser system prompt contains "OLD-ANCHOR-TEXT"
+    And the first summariser system prompt contains "OLD-ANCHOR-TEXT"
 
   # Prevents: a first compaction hallucinating an anchor it never had.
   Scenario: a first compaction starts fresh
@@ -75,13 +75,14 @@ Feature: the compaction round trip — summaries persist, converge, never grow
     And an assistant message "recent answer"
     When I assemble the history with model "small"
     Then the response field "applied.compacted" is true
-    And the summariser system prompt contains "Create a new anchored summary"
-    And the summariser system prompt does not contain "<previous-summary>"
+    And the first summariser system prompt contains "Create a new anchored summary"
+    And the first summariser system prompt does not contain "<previous-summary>"
+    And the summariser system prompt contains "Update the anchored summary"
 
   # Prevents: misunderstanding the cost model — a caller that never
-  # persists the summary stays correct but pays one summariser call per
+  # persists the summary stays correct but pays for bounded summary calls on every
   # over-budget request. This scenario IS the documented trade-off.
-  Scenario: skipping persistence costs one summariser call per request
+  Scenario: skipping persistence repeats the bounded summarisation pipeline
     Given inline model "small" with context window 5000 and max output 500
     And a user message of ~3000 tokens
     And an assistant message "r0"
@@ -93,4 +94,4 @@ Feature: the compaction round trip — summaries persist, converge, never grow
     And I assemble the history with model "small"
     Then the call succeeds
     And the response field "applied.compacted" is true
-    And the summariser was invoked 2 times
+    And the summariser was invoked 4 times

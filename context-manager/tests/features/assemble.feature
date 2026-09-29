@@ -266,7 +266,7 @@ Feature: context::assemble — the model-ready context pipeline
     And the response field "system_prompt" contains "# Conversation summary"
     And the response field "system_prompt" contains "ship the feature"
     And the response messages start at request message 3
-    And the summariser was invoked 1 time
+    And the summariser was invoked 2 times
     And no lease claim remains
 
   # Prevents: an oversized final turn being summarised into an EMPTY
