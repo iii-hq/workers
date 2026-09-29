@@ -574,7 +574,8 @@
 }
 
 [data-iii-ui="github"] .gh-ui-webhooks__install-guide {
-  display: inline-flex;
+  display: flex;
+  width: fit-content;
   align-items: center;
   gap: 4px;
   margin-top: 12px;
