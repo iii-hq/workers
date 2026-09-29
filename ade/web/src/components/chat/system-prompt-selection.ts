@@ -13,6 +13,7 @@
  */
 
 import type { SystemPromptSelection } from '@/lib/backend/harness-send'
+import type { Message } from '@/types/chat'
 
 export type PromptStrategy = 'enrich' | 'override'
 
@@ -112,6 +113,23 @@ export function toSelection(
        blank base always ships as enrich. */
     strategy: base.trim() ? s.strategy : 'enrich',
   }
+}
+
+/**
+ * Whether the conversation already holds a row a harness turn produced. Once
+ * one exists the session's identity (prompt, skills, agent) is frozen: later
+ * sends must omit it, and the harness refuses a repeated `options.agent`.
+ *
+ * An assistant text row counts, and so does a function-trigger row: a turn
+ * can produce only calls (a first turn that ends on `harness::ask` shows the
+ * card and nothing else). User rows and the system notices the console adds
+ * when a send fails before any turn ran do not count, so that retry still
+ * carries the selection.
+ */
+export function turnEstablishedFrom(messages: readonly Message[]): boolean {
+  return messages.some(
+    (m) => m.role === 'assistant' || m.role === 'function-trigger',
+  )
 }
 
 /**
