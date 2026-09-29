@@ -2,9 +2,24 @@
 
 Além das APIs CLI existentes, `github::pr::watch`, `github::pr::unwatch`,
 `github::pr::watch-status`, `github::pr::recover` e o trigger `github::pr::event`
-implementam monitoramento por webhooks. Desabilitado por padrão; leia
-[guia de webhooks](../docs/architecture/github-webhooks.md) para habilitação, permissões, recuperação e limitações.
-Nenhum recurso externo é criado durante o registro da interface com defaults.
+implementam monitoramento por webhooks. O recurso fica desabilitado por padrão;
+consulte o [guia de webhooks](../docs/architecture/github-webhooks.md) para
+conhecer as permissões, a recuperação e as limitações. Nenhum recurso externo é
+criado ao registrar a interface com a configuração padrão.
+
+Antes de habilitá-lo, abra **GitHub → Webhooks** no Console ou chame
+`github::setup::webhooks-status`. A lista verifica se o worker opcional
+`quick-tunnel` está instalado, se o `cloudflared` está disponível e se o
+listener restrito do `http` foi realmente aberto. O Console só instala
+`quick-tunnel` depois da confirmação do operador; ele nunca instala
+`cloudflared` e, quando necessário, mostra o
+[guia oficial de instalação](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
+Use `github::setup::enable-http-listener` e
+`github::setup::enable-webhooks` para as alterações guiadas. Ativar os webhooks
+exige todos os itens confirmados e requer reiniciar o worker `github` para
+abrir o armazenamento. `github::pr::watch` recusa apenas pré-requisitos
+sabidamente ausentes ou bloqueados; uma verificação temporariamente
+`unknown` não gera um falso bloqueio.
 
 # github
 
