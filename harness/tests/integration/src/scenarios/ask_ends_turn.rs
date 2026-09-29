@@ -40,7 +40,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .send(
         Send::message(MESSAGE)
-            .idempotency_key("{{run_id}}:integration-036")
+            .idempotency_key("{{run_id}}:integration-037")
             .allow_id(ASK),
     )
     .generation(

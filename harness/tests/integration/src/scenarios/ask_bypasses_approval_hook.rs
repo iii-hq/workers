@@ -1,4 +1,4 @@
-//! INT-038 — `harness::ask` bypasses the pre_trigger hooks (KAN-7 item 6).
+//! INT-038 — `harness::ask` bypasses the pre_trigger hooks.
 //!
 //! `harness::ask` is a harness control like `submit_result`: an approval hook
 //! that holds it would park the turn, and the deferred release path cannot
@@ -59,7 +59,7 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .send(
         Send::message(FIRST_MESSAGE)
-            .idempotency_key("{{run_id}}:integration-037")
+            .idempotency_key("{{run_id}}:integration-038")
             .allow_id(ASK),
     )
     .terminal_turns(2)
@@ -82,7 +82,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         json!({
             "session_id": "{{session_id}}",
             "message": SECOND_MESSAGE,
-            "idempotency_key": "{{run_id}}:integration-037-b"
+            "idempotency_key": "{{run_id}}:integration-038-b"
         }),
     )
     .function(gate)

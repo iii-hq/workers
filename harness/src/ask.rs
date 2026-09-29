@@ -1,4 +1,4 @@
-//! `harness::ask` — structured questions the agent puts to the user (KAN-7).
+//! `harness::ask` — structured questions the agent puts to the user.
 //!
 //! The model calls `harness::ask` instead of writing a question in markdown;
 //! the console renders the questions as a card of clickable options and the
