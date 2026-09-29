@@ -6,10 +6,10 @@
  * unlocks when all three are green.
  *
  * Nothing downloads cloudflared: its row links Cloudflare's install page and
- * re-checks on demand. Installing the quick-tunnel worker runs `compose::add`
- * only after an explicit confirmation. Enabling writes `webhooks.enabled` and
- * restarts the github worker (asked first), because webhook storage opens at
- * startup. A late response never overwrites a newer one.
+ * re-checks on demand. Installing or updating a worker uses Compose only after
+ * explicit confirmation. Enabling writes `webhooks.enabled` and restarts the
+ * github worker (asked first), because webhook storage opens at startup. A late
+ * response never overwrites a newer one.
  */
 
 import {
@@ -78,9 +78,9 @@ const BADGES: Record<CheckState, { variant: 'ok' | 'warn' | 'alert' | 'default';
 
 /** Keep "Checking…" on screen long enough to be seen when the check is fast. */
 const MIN_CHECKING_MS = 500
-/** compose::add only admits the operation; its outcome is polled this often. */
+/** compose worker operations are asynchronous: poll their outcome this often. */
 const OPERATION_POLL_MS = 1_000
-/** Give up waiting on an install after this long (it keeps running in compose). */
+/** Stop polling a worker change after this long (it keeps running in Compose). */
 const OPERATION_TIMEOUT_MS = 600_000
 
 interface OperationSnapshot {
@@ -279,15 +279,20 @@ export function WebhookSetup({ host }: { host: Host }) {
     setInstallWorkerPrompt(worker)
   }
 
-  /** compose::add is asynchronous: follow its operation to a terminal status. */
-  const installAndWait = async (worker: string) => {
-    const operationId = `github-install-${worker}-${crypto.randomUUID().slice(0, 8)}`
+  type WorkerOperation = 'install' | 'update'
+
+  /** Follow an asynchronous Compose worker operation to a terminal status. */
+  const changeWorkerAndWait = async (action: WorkerOperation, worker: string) => {
+    const installing = action === 'install'
+    const present = installing ? 'Installing' : 'Updating'
+    const functionId = installing ? 'compose::add' : 'compose::update'
+    const operationId = `github-${action}-${worker}-${crypto.randomUUID().slice(0, 8)}`
     const admitted = await host.iii.trigger(
-      'compose::add',
+      functionId,
       { workers: [worker], operation_id: operationId },
       { timeoutMs: 60_000 },
     )
-    assertComposeOk(`Installing ${worker}`, admitted)
+    assertComposeOk(`${present} ${worker}`, admitted)
     const deadline = Date.now() + OPERATION_TIMEOUT_MS
     while (mounted.current) {
       const snapshot = await host.iii.trigger<OperationSnapshot>(
@@ -298,15 +303,24 @@ export function WebhookSetup({ host }: { host: Host }) {
       if (snapshot?.status === 'succeeded') return
       if (snapshot?.status === 'failed' || snapshot?.status === 'cancelled') {
         const detail = snapshot.last_event?.detail
-        throw new Error(`Installing ${worker} ${snapshot.status}${detail ? `: ${detail}` : ''}`)
+        throw new Error(`${present} ${worker} ${snapshot.status}${detail ? `: ${detail}` : ''}`)
       }
       if (Date.now() > deadline) {
         throw new Error(
-          `Installing ${worker} is still running after 10 minutes; check compose logs.`,
+          `${present} ${worker} is still running after 10 minutes; check compose logs.`,
         )
       }
       await sleep(OPERATION_POLL_MS)
     }
+  }
+
+  const updateWorker = async (worker: string) => {
+    const ok = await confirm({
+      title: `Update the ${worker} worker?`,
+      description: `The ${worker} worker restarts while Compose applies its latest compatible version, so its calls may be briefly unavailable.`,
+      confirmLabel: `Update ${worker}`,
+    })
+    if (ok) await run(`update:${worker}`, () => changeWorkerAndWait('update', worker))
   }
 
   const setEnabled = async (enabled: boolean) => {
@@ -382,7 +396,17 @@ export function WebhookSetup({ host }: { host: Host }) {
           </Button>
         )
       case 'update_worker':
-        return <code className="gh-ui-webhooks__command">{fix.command}</code>
+        return (
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={busy !== null}
+            aria-busy={busy === `update:${fix.worker}`}
+            onClick={() => void updateWorker(fix.worker)}
+          >
+            {busy === `update:${fix.worker}` ? 'Updating…' : `Update ${fix.worker}`}
+          </Button>
+        )
     }
   }
 
@@ -433,7 +457,7 @@ export function WebhookSetup({ host }: { host: Host }) {
         }}
         onInstall={() => {
           const worker = installWorkerPrompt
-          if (worker) void run(`install:${worker}`, () => installAndWait(worker))
+          if (worker) void run(`install:${worker}`, () => changeWorkerAndWait('install', worker))
         }}
       />
       <LiveRegion announcement={announcement} />
