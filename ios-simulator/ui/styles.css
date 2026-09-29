@@ -1,0 +1,556 @@
+/* ios-simulator console stylesheet. Every rule is scoped under
+   [data-iii-ui="ios-simulator"]; page chrome, lists, toolbars, status bars and
+   dialogs come from @iii-dev/console-ui. This sheet lays out the rail and the
+   stage and draws the iPhone: a hardware object, so its colors are the device's
+   own (declared once below) and its corners follow the real silhouette. */
+
+[data-iii-ui="ios-simulator"] {
+  --ios-ui-bezel: #0b0b0c;
+  --ios-ui-frame: #3a3a3d;
+  --ios-ui-frame-hover: #56565a;
+  --ios-ui-glass: #000;
+}
+
+/* ── page ────────────────────────────────────────────────────────────── */
+
+[data-iii-ui="ios-simulator"] .ios-ui-shell {
+  min-height: 360px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  white-space: nowrap;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-body {
+  min-height: 0;
+}
+
+/* ── rail ────────────────────────────────────────────────────────────── */
+
+[data-iii-ui="ios-simulator"] .ios-ui-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-tenant {
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 12px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-skeletons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-skeleton-row {
+  display: block;
+  height: 44px;
+}
+
+/* ── stage ───────────────────────────────────────────────────────────── */
+
+[data-iii-ui="ios-simulator"] .ios-ui-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-toolbar {
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-crumb {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-record[data-recording] {
+  color: var(--color-alert);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-problem {
+  margin: 8px 12px 0;
+  flex-shrink: 0;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-tabs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-tablist {
+  flex-shrink: 0;
+  padding: 0 12px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-status {
+  flex-shrink: 0;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-fact {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-fact[data-tone="alert"] {
+  color: var(--color-alert-strong);
+}
+
+/* Narrow panes drop the gesture hint; every action stays in the toolbar. */
+@container (max-width: 30rem) {
+  [data-iii-ui="ios-simulator"] .ios-ui-status > :last-child {
+    display: none;
+  }
+}
+
+/* ── the iPhone ──────────────────────────────────────────────────────── */
+
+/* The fit box is a size container; the phone takes the largest size that
+   keeps its aspect ratio (screen + bezel, set inline as --ios-ui-ratio). */
+[data-iii-ui="ios-simulator"] .ios-ui-fit {
+  flex: 1;
+  min-height: 0;
+  container-type: size;
+  display: grid;
+  place-items: center;
+  padding: 20px 24px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-phone {
+  position: relative;
+  container-type: inline-size;
+  aspect-ratio: var(--ios-ui-ratio);
+  height: min(100cqh, calc(100cqw / var(--ios-ui-ratio)));
+  max-height: 100%;
+}
+
+/* Inside the phone, 1cqw is 1% of its width: bezel and corners scale with it. */
+[data-iii-ui="ios-simulator"] .ios-ui-bezel {
+  position: absolute;
+  inset: 0;
+  padding: 3.2cqw;
+  background: var(--ios-ui-bezel);
+  border: 0.6cqw solid var(--ios-ui-frame);
+  /* lint-allow radius: the device's own corner radius, scaled with the phone */
+  border-radius: 16cqw;
+  box-shadow: var(--shadow-floating);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-glass {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ios-ui-glass);
+  /* lint-allow radius: the display's own corner radius, scaled with the phone */
+  border-radius: 12.4cqw;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-glass[data-live] {
+  cursor: pointer;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-glass:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 3px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-screen {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-glass-note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-ink-ghost);
+}
+
+/* Side buttons sit just outside the frame, where the real ones are. */
+[data-iii-ui="ios-simulator"] .ios-ui-side {
+  position: absolute;
+  width: 1.4cqw;
+  padding: 0;
+  border: 0;
+  background: var(--ios-ui-frame);
+  cursor: pointer;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-side:hover,
+[data-iii-ui="ios-simulator"] .ios-ui-side:active {
+  background: var(--ios-ui-frame-hover);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-side:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-side--action,
+[data-iii-ui="ios-simulator"] .ios-ui-side--vol-up,
+[data-iii-ui="ios-simulator"] .ios-ui-side--vol-down {
+  left: -1.2cqw;
+  /* lint-allow radius: rounded hardware key */
+  border-radius: 0.8cqw 0 0 0.8cqw;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-side--action {
+  top: 15%;
+  height: 4%;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-side--vol-up {
+  top: 22%;
+  height: 7%;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-side--vol-down {
+  top: 30.5%;
+  height: 7%;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-side--power {
+  right: -1.2cqw;
+  top: 25%;
+  height: 11%;
+  /* lint-allow radius: rounded hardware key */
+  border-radius: 0 0.8cqw 0.8cqw 0;
+}
+
+/* ── media ───────────────────────────────────────────────────────────── */
+
+[data-iii-ui="ios-simulator"] .ios-ui-media {
+  padding: 8px 12px 16px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-video-dialog {
+  width: min(92vw, 720px);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-video {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  background: var(--ios-ui-glass);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-video-skeleton {
+  display: block;
+  height: 320px;
+}
+
+/* ── create dialog ───────────────────────────────────────────────────── */
+
+[data-iii-ui="ios-simulator"] .ios-ui-create {
+  width: min(92vw, 480px);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── configuration form ──────────────────────────────────────────────── */
+
+[data-iii-ui="ios-simulator"] .ios-ui-config {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-mono {
+  font-family: var(--font-mono);
+}
+
+/* ── chat screenshot ─────────────────────────────────────────────────── */
+
+[data-iii-ui="ios-simulator"] .ios-ui-shot {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-shot-gallery {
+  display: grid;
+  gap: 8px;
+  max-width: 100%;
+  padding: 12px;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-shot-img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+  object-fit: contain;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-shot-more {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-shot-caption {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-break {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+[data-iii-ui="ios-simulator"] .ios-ui-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── live preview overlay (host.overlays): picture-in-picture thumbnails ──
+ * Corner phones of the simulators agents boot, open or drive (after the browser worker's). The deck reveals with a
+ * translate + fade + cross-blur; the group tweens its pinched width and the
+ * snap-back of a dragged or flung box; the cards tween between folded and
+ * fanned-out spots. Transitions are off while a finger or a fling drives the
+ * box. Folded, the cards behind tilt a few degrees each way so their corners
+ * show; fanned out they spread sideways like a hand of cards along a shallow
+ * arc that bends away from the anchored edge. Touch layouts get the top-right
+ * corner (under the mobile header), pointer layouts the bottom-right. */
+[data-iii-ui="ios-simulator"] .ios-ui-pip {
+  --panel-translate-y: -24px;
+  --panel-blur: 2px;
+  /* which way the arc bends and where the fanned cards pivot: away from
+   * the anchored edge (+1 down on touch, -1 up with a pointer) */
+  --pip-peek: 1;
+  --pip-fan-origin: top center;
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 72px);
+  right: 12px;
+  z-index: 1;
+  pointer-events: auto;
+  max-width: calc(100vw - 24px);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    width var(--motion-duration-panel) var(--motion-ease-standard),
+    transform var(--motion-duration-panel) var(--motion-ease-standard);
+  will-change: width, transform;
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui="ios-simulator"] .ios-ui-pip {
+    --panel-translate-y: 24px;
+    --pip-peek: -1;
+    --pip-fan-origin: bottom center;
+    top: auto;
+    right: 16px;
+    bottom: 16px;
+  }
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip.is-pinching,
+[data-iii-ui="ios-simulator"] .ios-ui-pip.is-moving {
+  transition: none;
+}
+/* cards hug the anchored (right) edge: a portrait one is narrower than
+ * the deck, since its height is capped and its aspect ratio kept */
+[data-iii-ui="ios-simulator"] .ios-ui-pip-deck {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+}
+/* the shared card, as a picture: the edge ring and the floating shadow */
+[data-iii-ui="ios-simulator"] .ios-ui-pip-card {
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--color-panel);
+  box-shadow: 0 0 0 1px var(--color-edge), var(--shadow-floating);
+  transform-origin: center;
+  /* folded: each card behind is tilted its own way and a touch smaller,
+   * so its corners show around the front card */
+  transform: rotate(var(--tilt)) scale(calc(1 - var(--depth) * 0.03));
+  opacity: calc(1 - var(--depth) * 0.12);
+  transition:
+    transform var(--motion-duration-control) var(--motion-ease-standard),
+    transform-origin var(--motion-duration-control) var(--motion-ease-standard),
+    opacity var(--motion-duration-control) var(--motion-ease-standard);
+  animation: ios-ui-pip-card-in var(--motion-duration-panel) var(--motion-ease-enter);
+  will-change: transform;
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip-card[data-front="true"] {
+  position: relative;
+}
+/* fanned out: a hand of cards spreading sideways (`--fan-dir`, a step of
+ * `--fan-step` per card), each one turned a little more and lifted along
+ * a shallow arc, all fully in view */
+[data-iii-ui="ios-simulator"] .ios-ui-pip[data-expanded="true"] .ios-ui-pip-card {
+  transform-origin: var(--pip-fan-origin);
+  transform: translate(
+      calc(var(--depth) * var(--fan-dir) * var(--fan-step)),
+      calc(var(--depth) * var(--depth) * var(--pip-peek) * 3px)
+    )
+    rotate(calc(var(--depth) * var(--fan-dir) * 7deg));
+  opacity: 1;
+  transition-duration: var(--motion-duration-panel);
+}
+@keyframes ios-ui-pip-card-in {
+  from {
+    opacity: 0;
+  }
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip-surface {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  cursor: grab;
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip.is-moving .ios-ui-pip-surface {
+  cursor: grabbing;
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip-surface img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  opacity: 0;
+  transition: opacity var(--motion-duration-panel) var(--motion-ease-enter);
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip-card[data-ready="true"] .ios-ui-pip-surface img {
+  opacity: 1;
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip-controls {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-panel-raised) 90%, transparent);
+  box-shadow: var(--shadow-floating);
+  opacity: 0;
+  transform: scale(0.96);
+  pointer-events: none;
+  transition:
+    opacity var(--motion-duration-control) var(--motion-ease-exit),
+    transform var(--motion-duration-control) var(--motion-ease-exit);
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip-controls[data-open="true"] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition:
+    opacity var(--motion-duration-panel) var(--motion-ease-enter),
+    transform var(--motion-duration-panel) var(--motion-ease-enter);
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-iii-ui="ios-simulator"] .ios-ui-pip-card[data-front="true"]:hover .ios-ui-pip-controls {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+/* the deck's reveal: translate + fade + cross-blur, exit a step quicker */
+[data-iii-ui="ios-simulator"] .ios-ui-pip-reveal {
+  transform: translateY(var(--panel-translate-y));
+  opacity: 0;
+  filter: blur(var(--panel-blur));
+  pointer-events: none;
+  transition:
+    transform var(--motion-duration-panel) var(--motion-ease-exit),
+    opacity var(--motion-duration-panel) var(--motion-ease-exit),
+    filter var(--motion-duration-panel) var(--motion-ease-exit);
+  will-change: transform, opacity, filter;
+}
+[data-iii-ui="ios-simulator"] .ios-ui-pip-reveal[data-open="true"] {
+  transform: translateY(0);
+  opacity: 1;
+  filter: blur(0);
+  pointer-events: auto;
+  transition:
+    transform var(--motion-duration-panel) var(--motion-ease-enter),
+    opacity var(--motion-duration-panel) var(--motion-ease-enter),
+    filter var(--motion-duration-panel) var(--motion-ease-enter);
+}

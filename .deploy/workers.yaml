@@ -851,6 +851,41 @@ workers:
       binary: image-resize
       targets: *id001
     publish: true
+  ios-simulator:
+    source:
+      path: ios-simulator
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: ios-simulator
+      targets:
+      - aarch64-apple-darwin
+      - x86_64-apple-darwin
+      windows_exception: drives iOS Simulators through Xcode, which only runs on macOS
+      frontends:
+      - workspace_root: .
+        source_path: ios-simulator/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
   judge:
     source:
       path: judge
