@@ -907,6 +907,7 @@ dependencies = [
  "iii-helpers",
  "iii-sdk",
  "iii-worker-paths",
+ "judge-contract",
  "libc",
  "notify",
  "once_cell",
@@ -1117,6 +1118,15 @@ dependencies = [
  "futures-util",
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "judge-contract"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

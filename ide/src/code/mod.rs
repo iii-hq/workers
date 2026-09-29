@@ -7,7 +7,8 @@
 //! wire shapes. They run over a [`path::PathResolver`] (multi-root jail with
 //! glob "visible-but-locked" protection) built from the merged config's
 //! `code:` block, sharing the [`crate::path`] canonicalization leaf with the
-//! `shell::fs::*` jail.
+//! `shell::fs::*` jail. A tenth, `coder::find-relevant`, walks the same jail
+//! asking the optional judge worker what is relevant ([`find_relevant`]).
 //!
 //! These handlers keep their original `std::fs`-over-`PathResolver` logic; the
 //! heaviest unbounded scans (`tree`/`search` recursion, batched reads) are
@@ -17,7 +18,9 @@
 pub mod change_journal;
 pub mod config;
 pub mod error;
+pub mod find_relevant;
 pub mod functions;
+pub mod judge;
 pub mod path;
 pub mod state;
 

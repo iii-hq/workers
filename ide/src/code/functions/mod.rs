@@ -137,6 +137,20 @@ const MOVE_FILE_DESC: &str = "Move or rename one or more paths; per-entry overwr
      if the delete fails. Paths: relative to the primary root or absolute \
      inside an allowed root (see coder::info).";
 
+const FIND_RELEVANT_ID: &str = "coder::find-relevant";
+const FIND_RELEVANT_DESC: &str =
+    "Find the code relevant to a behavioural question (how, why or where \
+     something works, even one naming a function or setting): walks folders \
+     then files asking the judge yes/no relevance questions and returns \
+     files best first. Start behavioural discovery here before broad text \
+     searches; for exact symbols, strings or filenames use coder::search. \
+     Read the returned files before searching again. incomplete = partial \
+     coverage (see issues; narrow path); unavailable = no judge, use \
+     coder::search. Sends the query, root-relative paths and file text \
+     (never protected, ignored, hidden or secret-looking files) to the \
+     session's judge provider, which may be hosted. Paths: relative to the \
+     primary root or absolute inside an allowed root (see coder::info).";
+
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.
 ///
@@ -202,6 +216,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
         ),
         spec::<tree::TreeInput, tree::TreeOutput>(TREE_ID, TREE_DESC),
         spec::<move_file::MoveFileInput, move_file::MoveFileOutput>(MOVE_FILE_ID, MOVE_FILE_DESC),
+        spec::<
+            crate::code::find_relevant::FindRelevantInput,
+            crate::code::find_relevant::FindRelevantOutput,
+        >(FIND_RELEVANT_ID, FIND_RELEVANT_DESC),
     ]
 }
 
@@ -229,7 +247,9 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     registered += 1;
     register_tree(iii, cells.clone());
     registered += 1;
-    register_move_file(iii, cells);
+    register_move_file(iii, cells.clone());
+    registered += 1;
+    register_find_relevant(iii, cells);
     registered += 1;
     debug_assert_eq!(
         registered,
@@ -430,6 +450,29 @@ fn register_move_file(iii: &IIIClient, cells: CodeCells) {
             }
         })
         .description(MOVE_FILE_DESC),
+    );
+}
+
+fn register_find_relevant(iii: &IIIClient, cells: CodeCells) {
+    let client = iii.clone();
+    iii.register_function(
+        FIND_RELEVANT_ID,
+        RegisterFunction::new_async(move |req: crate::code::find_relevant::FindRelevantInput| {
+            let cells = cells.clone();
+            let client = client.clone();
+            async move {
+                let resolver = cells.resolver.read().await.clone();
+                let resolver = resolver.session_scoped(
+                    crate::fs::scope_root(req.fs_scope.as_ref()),
+                    crate::fs::scope_grants(req.fs_scope.as_ref()),
+                );
+                let cfg = cells.config.read().await.clone();
+                crate::code::find_relevant::handle(resolver, cfg, client, req)
+                    .await
+                    .map_err(Error::from)
+            }
+        })
+        .description(FIND_RELEVANT_DESC),
     );
 }
 

@@ -441,6 +441,9 @@ rules:
   - coder::search
   - coder::list-folder
   - coder::tree
+  # Read-only too, but sends file text to the session's judge provider
+  # (possibly hosted); a deny rule is its kill switch.
+  - coder::find-relevant
   # fp: the twenty-three pure value transforms are side-effect-free reshapes (no
   # I/O, no authority). fp::pipe stays at the needs_approval default ON
   # PURPOSE: its steps run with the fp worker's authority, so the pipe
