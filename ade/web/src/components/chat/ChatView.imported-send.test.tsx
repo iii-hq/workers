@@ -12,7 +12,14 @@ const statusTrigger = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/iii-client', () => ({
   getIiiClient: async () => ({ trigger: statusTrigger }),
 }))
+// No conversations provider unless a test installs one.
+const ctx = vi.hoisted(() => ({ value: null as unknown }))
+vi.mock('@/lib/conversations-context', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useConversationsCtxOptional: () => ctx.value,
+}))
 const composer = vi.hoisted(() => ({
+  mounts: 0,
   props: null as null | {
     model: string | null
     submitBlocked: boolean
@@ -22,6 +29,7 @@ const composer = vi.hoisted(() => ({
 vi.mock('./Composer', () => ({
   Composer: (props: NonNullable<typeof composer.props>) => {
     composer.props = props
+    composer.mounts += 1
     return <textarea />
   },
 }))
@@ -71,6 +79,8 @@ function render(conversation: Conversation) {
   return composer.props
 }
 beforeEach(() => {
+  ctx.value = null
+  composer.mounts = 0
   statusTrigger.mockReset().mockResolvedValue(null)
   stream.mockClear()
   composer.props = null
@@ -221,4 +231,50 @@ it('allows only one first submission while its native turn lookup is pending', a
   expect(stream).toHaveBeenCalledWith('First', 'ade::chosen', expect.anything())
   await props.onSubmit({ text: 'Next', attachments: [] })
   expect(stream).toHaveBeenCalledTimes(2)
+})
+
+it('puts a send the imported-session check turns away back into the draft', async () => {
+  const setDraftText = vi.fn()
+  const setDraftAttachments = vi.fn()
+  ctx.value = {
+    conversations: [],
+    connectionState: 'connected',
+    harnessStatus: {
+      present: true,
+      loading: false,
+      installing: false,
+      stages: [],
+      error: null,
+    },
+    shellAvailable: false,
+    worktreeAvailable: false,
+    memoryAvailable: false,
+    approvalGateAvailable: false,
+    getDraftText: () => undefined,
+    getDraftAttachments: () => undefined,
+    setDraftText,
+    setDraftAttachments,
+  }
+  const props = render({
+    ...session,
+    model: 'ade::chosen',
+    workingDir: '/ade/project',
+  })
+  const attachment = {
+    id: 'a1',
+    name: 'notes.txt',
+    type: 'text/plain',
+    size: 3,
+  }
+  // The composer has already cleared itself when the lookup fails.
+  statusTrigger.mockRejectedValueOnce({
+    code: 'invocation_failed',
+    message: 'state is down',
+  })
+  await props.onSubmit({ text: 'Keep me', attachments: [attachment] as never })
+  expect(stream).not.toHaveBeenCalled()
+  expect(setDraftText).toHaveBeenCalledWith('new-native-copy', 'Keep me')
+  expect(setDraftAttachments).toHaveBeenCalledWith('new-native-copy', [
+    attachment,
+  ])
 })

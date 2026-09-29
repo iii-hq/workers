@@ -1422,6 +1422,19 @@ export function ChatView({
   }, [backend.id, conversation.id, getDraftAttachments, setDraftAttachments])
 
   const importStatusPendingRef = useRef(false)
+  // The Composer clears itself as soon as it hands a payload over, but an imported session is
+  // only checked after that: a send it turns away goes back into the draft, and the Composer
+  // remounts to pick the text and chips up again.
+  const [composerGeneration, setComposerGeneration] = useState(0)
+  const restoreDraft = useCallback(
+    (payload: ComposerSubmitPayload) => {
+      if (!conversationsCtx) return
+      conversationsCtx.setDraftText(conversation.id, payload.text)
+      conversationsCtx.setDraftAttachments(conversation.id, payload.attachments)
+      setComposerGeneration((generation) => generation + 1)
+    },
+    [conversationsCtx, conversation.id],
+  )
   const submit = useCallback(
     async (payload: ComposerSubmitPayload) => {
       if (submitBlockedRef.current) return
@@ -1431,7 +1444,10 @@ export function ChatView({
       )
       if (imported) {
         const preparing = !isStreaming && !serverWorking
-        if (preparing && importStatusPendingRef.current) return
+        if (preparing && importStatusPendingRef.current) {
+          restoreDraft(payload)
+          return
+        }
         if (preparing) {
           importStatusPendingRef.current = true
           setImportedTurnEstablished(null)
@@ -1445,6 +1461,7 @@ export function ChatView({
           setImportTurnError(null)
         } catch (error) {
           setImportTurnError(errText(error))
+          restoreDraft(payload)
           return
         } finally {
           if (preparing) importStatusPendingRef.current = false
@@ -1452,8 +1469,10 @@ export function ChatView({
         if (
           !turnEstablished &&
           (!conversation.model || !conversation.workingDir)
-        )
+        ) {
+          restoreDraft(payload)
           return
+        }
       }
 
       // Steering a discovered/sub-agent session: inherit the model the
@@ -2145,6 +2164,7 @@ export function ChatView({
     },
     [
       imported,
+      restoreDraft,
       conversation.id,
       conversation.agentProfile,
       conversation.model,
@@ -2936,6 +2956,7 @@ export function ChatView({
               </p>
             )}
             <Composer
+              key={composerGeneration}
               model={effectiveModel}
               modelOptions={modelOptions}
               catalogLoading={catalogLoading}
