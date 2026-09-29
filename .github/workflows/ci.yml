@@ -891,6 +891,55 @@ jobs:
       save-cache: ${{ github.event_name == 'push' }}
 
   # ──────────────────────────────────────────────────────────────
+  # Harness E2E (non-required). A pull request from this repository that
+  # changes a worker of the harness release graph runs the E2E `pr` suite with
+  # those workers built from the PR head. It warns and never gates: the job
+  # turns red when the stack did not pass, and no branch rule waits for it.
+  # The verdict is read from the run's summary, not its conclusion. A newer
+  # push cancels this job, which cancels the run it started.
+  # ──────────────────────────────────────────────────────────────
+  harness-e2e:
+    name: harness e2e (pr suite)
+    needs: discover
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && needs.discover.outputs.changed_workers != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Mint a token that can run iii-hq/harness-e2e
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: harness-e2e
+          permission-actions: write
+
+      - name: Run the pr suite on the workers built from this PR
+        id: e2e
+        uses: iii-hq/harness-e2e/.github/actions/verify-stack@e13e884fb6c292e5796e445be67157ef4bfce04e
+        with:
+          token: ${{ steps.app.outputs.token }}
+          comment-token: ${{ github.token }}
+          pins: ${{ needs.discover.outputs.changed_workers }}
+          commit: ${{ github.event.pull_request.head.sha }}
+          comment-pr: ${{ github.repository }}#${{ github.event.pull_request.number }}
+
+      - name: Turn red when the stack did not pass
+        if: steps.e2e.outputs.status != 'passed' && steps.e2e.outputs.status != 'skipped'
+        env:
+          SUMMARY: ${{ steps.e2e.outputs.summary }}
+        run: |
+          echo "::warning::Harness E2E: ${SUMMARY:-no verdict}"
+          exit 1
+
+  # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test
   # ──────────────────────────────────────────────────────────────
   node:
