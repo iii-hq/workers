@@ -119,7 +119,7 @@ export function DiagnosisTab({
               </div>
               <div className="sentinel-ui-provenance-line sentinel-ui-quiet">
                 {onOpenSession ? (
-                  <Button size="sm" variant="ghost" onClick={onOpenSession}>
+                  <Button size="sm" variant="ghost" className="sentinel-ui-wrap" onClick={onOpenSession}>
                     <MessageSquare size={16} aria-hidden="true" />
                     Sentinel: {group.exception_type ?? group.service_name}
                   </Button>
@@ -248,7 +248,7 @@ function Reading({
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="sentinel-ui-mono"
+                      className="sentinel-ui-mono sentinel-ui-wrap"
                       onClick={() =>
                         host.panels?.open({
                           pageId: 'ide',

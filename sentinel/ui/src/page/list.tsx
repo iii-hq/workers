@@ -128,13 +128,15 @@ export function GroupsListView({
     />
   )
 
-  // The way out of an empty list is the filter that emptied it.
-  const widen =
-    filters.window !== 'all'
-      ? { label: 'Show all time', onClick: () => setWindow('all') }
-      : filters.search || filters.service
-        ? { label: 'Clear search and worker', onClick: () => onFilters({ ...filters, search: '', service: '' }) }
-        : undefined
+  // The way out of an empty list is whichever filter emptied it, so every
+  // filter that narrows it gets its own undo; the first is the primary.
+  const widen = [
+    ...(filters.search || filters.service
+      ? [{ label: 'Clear search and worker', onClick: () => onFilters({ ...filters, search: '', service: '' }) }]
+      : []),
+    ...(filters.window !== 'all' ? [{ label: 'Show all time', onClick: () => setWindow('all') }] : []),
+    ...(scope !== 'open' ? [{ label: 'Show open groups', onClick: () => setScope('open') }] : []),
+  ]
 
   return (
     <div className="sentinel-ui-list">
@@ -235,8 +237,8 @@ export function GroupsListView({
         <EmptyState
           icon={Inbox}
           title="No group matches this filter"
-          description="Sentinel keeps counting every occurrence either way."
-          action={widen}
+          description="Sentinel keeps counting every occurrence either way; resolved and ignored groups have their own filter."
+          actions={widen}
         />
       ) : narrow ? (
         <List aria-label="Error groups">
@@ -321,14 +323,15 @@ export function GroupsListView({
  * scrolls.
  */
 export function ListStatus({
-  filters,
+  answered,
   narrow,
   now,
   shown,
   status,
   total,
 }: {
-  filters: Filters
+  /** The filters the counts answer — not the ones being fetched right now. */
+  answered: Pick<Filters, 'statuses' | 'window'>
   narrow: boolean
   now: number
   shown: number
@@ -336,7 +339,7 @@ export function ListStatus({
   total: number
 }) {
   const counts = status?.groups
-  const within = WINDOW_WORDS[filters.window]
+  const within = WINDOW_WORDS[answered.window]
   const store = status?.engine.trace_store
   const closed = counts && counts.resolved + counts.ignored > 0
   return (
@@ -345,18 +348,19 @@ export function ListStatus({
       end={
         narrow ? null : (
           <>
-            {store && store !== 'unknown' ? <span>trace store: {store === 'disabled' ? 'off' : store}</span> : null}
+            {/* Off is a banner above the list; here it is only a fact. */}
+            {store === 'memory' ? <span>trace store: memory</span> : null}
             {counts?.last_seen_ms ? <span>ingested {ago(counts.last_seen_ms, now)}</span> : null}
           </>
         )
       }
     >
       <span>
-        {total > shown ? `${shown} of ${spaced(total)} groups` : `${shown} ${shown === 1 ? 'group' : 'groups'}`}
+        {total > shown ? `${spaced(shown)} of ${spaced(total)} groups` : `${spaced(shown)} ${shown === 1 ? 'group' : 'groups'}`}
         {within ? ` ${within}` : ''}
       </span>
       {narrow ? null : <span>regressions first, then last seen</span>}
-      {narrow || !closed || scopeOf(filters.statuses) !== 'open' ? null : (
+      {!closed || scopeOf(answered.statuses) !== 'open' ? null : (
         <span>
           {counts.resolved} resolved · {counts.ignored} ignored hidden
         </span>

@@ -95,6 +95,19 @@
   white-space: nowrap;
 }
 
+/* A button whose label is data — a path, a session title — wraps like the
+   text it is instead of running out of its column. */
+[data-iii-ui="sentinel"] .sentinel-ui-wrap {
+  justify-content: flex-start;
+  max-width: 100%;
+  height: auto;
+  min-height: 32px;
+  padding-block: 6px;
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
 [data-iii-ui="sentinel"] .sentinel-ui-visually-hidden {
   position: absolute;
   width: 1px;
@@ -512,6 +525,8 @@
   font-family: var(--font-mono);
   font-size: 12px;
   overflow-wrap: anywhere;
+  /* An exception message can be a cause chain: its line breaks are content. */
+  white-space: pre-wrap;
 }
 
 [data-iii-ui="sentinel"] .sentinel-ui-attributes {
@@ -727,6 +742,9 @@
   gap: 12px;
   min-width: 0;
 }
+
+/* Every version row is as tall as the one holding a View button. */
+[data-iii-ui="sentinel"] .sentinel-ui-versions li { min-height: 32px; }
 
 [data-iii-ui="sentinel"] .sentinel-ui-versions-when { width: 96px; }
 

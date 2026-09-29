@@ -13,7 +13,7 @@ import {
   StatusPanel,
   TerminalStream,
 } from '@iii-dev/console-ui'
-import { errorMessage, formatDuration } from '@iii-dev/console-ui/format'
+import { errorMessage } from '@iii-dev/console-ui/format'
 import { useCopyFlash } from '@iii-dev/console-ui/hooks'
 import type { Host } from '@iii-dev/console-ui'
 import { Check, ChevronDown, Copy } from 'lucide-react'
@@ -178,7 +178,7 @@ function OriginSpan({
         {/* A Rust backtrace is a hundred lines: clamped, it never pushes the
             trace path and the payloads out of the first screen. */}
         {stack ? (
-          <TerminalStream className="sentinel-ui-wide" label="exception.stacktrace" text={stack} clampLines={12} />
+          <TerminalStream className="sentinel-ui-wide" label="Stack trace" text={stack} />
         ) : null}
       </CardBody>
     </Card>
@@ -323,7 +323,7 @@ function LogRecord({ bundle, captured }: { bundle: EvidenceBundle; captured: str
           <dt>span_id</dt>
           <dd>{record?.span_id ?? '—'}</dd>
         </dl>
-        {record ? <TerminalStream className="sentinel-ui-wide" label="log body" text={record.body} clampLines={12} /> : null}
+        {record ? <TerminalStream className="sentinel-ui-wide" label="Log body" text={record.body} /> : null}
         {attributes.length > 0 ? (
           <div className="sentinel-ui-attributes">
             {attributes.map(([key, value]) => (
@@ -364,9 +364,14 @@ function isError(span: EvidenceSpan): boolean {
 
 function duration(span: EvidenceSpan): string {
   if (!span.end_time_unix_nano || !span.start_time_unix_nano) return ''
+  // Not `formatDuration`: it rounds to whole milliseconds, and a trace tells
+  // spans apart by the tenth. Rounded first so no unit reads 1000.
   const ms = (span.end_time_unix_nano - span.start_time_unix_nano) / 1e6
-  // `formatDuration` floors at 1 ms; a sub-millisecond span is still a fact.
-  return ms < 1 ? `${Math.round(ms * 1000)} µs` : formatDuration(ms)
+  const us = Math.round(ms * 1000)
+  if (us < 1000) return `${us} µs`
+  const tenths = Math.round(ms * 10) / 10
+  if (tenths < 1000) return `${tenths.toFixed(1)} ms`
+  return `${(ms / 1000).toFixed(2)} s`
 }
 
 function short(id: string): string {

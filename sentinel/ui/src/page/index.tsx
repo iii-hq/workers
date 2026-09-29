@@ -100,13 +100,17 @@ export function SentinelPage({
     triggers: [EVENT.groupChanged, EVENT.investigationChanged],
     fetch: useCallback(
       () =>
-        api.groups({
-          status: filters.statuses,
-          service_name: filters.service || undefined,
-          since_ms: sinceMs(filters.window, Date.now()) ?? undefined,
-          search: search || undefined,
-          limit,
-        }),
+        api
+          .groups({
+            status: filters.statuses,
+            service_name: filters.service || undefined,
+            since_ms: sinceMs(filters.window, Date.now()) ?? undefined,
+            search: search || undefined,
+            limit,
+          })
+          // What this answer is an answer to: until the next one lands, the
+          // counts under the list describe these filters, not the new ones.
+          .then((response) => ({ ...response, answered: { statuses: filters.statuses, window: filters.window } })),
       [api, filters.statuses, filters.service, filters.window, search, limit],
     ),
   })
@@ -245,6 +249,13 @@ export function SentinelPage({
                 detail={`${status.config_error} — the worker is running on defaults and is not ingesting.`}
               />
             ) : null}
+            {status?.engine.trace_store === 'disabled' ? (
+              <StatusPanel
+                variant="warn"
+                headline="The engine's trace store is off"
+                detail="Sentinel cannot read traces back from the engine, so error spans are recorded without their span tree. Enable the trace store in the engine's observability configuration."
+              />
+            ) : null}
             {status && !status.enabled && !status.config_error ? (
               <StatusPanel
                 variant="warn"
@@ -314,7 +325,7 @@ export function SentinelPage({
         </div>
         {selected || !groups.data ? null : (
           <ListStatus
-            filters={filters}
+            answered={groups.data.answered}
             narrow={narrow}
             now={now}
             shown={groups.data.groups.length}
